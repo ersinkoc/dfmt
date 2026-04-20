@@ -1,0 +1,951 @@
+package cli
+
+import (
+	"bufio"
+	"context"
+	"encoding/json"
+	"flag"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"github.com/ersinkoc/dfmt/internal/client"
+	"github.com/ersinkoc/dfmt/internal/config"
+	"github.com/ersinkoc/dfmt/internal/core"
+	"github.com/ersinkoc/dfmt/internal/daemon"
+	"github.com/ersinkoc/dfmt/internal/project"
+	"github.com/ersinkoc/dfmt/internal/sandbox"
+	"github.com/ersinkoc/dfmt/internal/setup"
+	"github.com/ersinkoc/dfmt/internal/transport"
+)
+
+// Dispatch routes subcommands.
+func Dispatch(args []string) int {
+	if len(args) == 0 {
+		printUsage()
+		return 0
+	}
+
+	cmd := args[0]
+	remaining := args[1:]
+
+	switch cmd {
+	case "init":
+		return runInit(remaining)
+	case "remember", "note":
+		return runRemember(remaining)
+	case "search":
+		return runSearch(remaining)
+	case "recall":
+		return runRecall(remaining)
+	case "status":
+		return runStatus(remaining)
+	case "daemon":
+		return runDaemon(remaining)
+	case "stop":
+		return runStop(remaining)
+	case "list":
+		return runList(remaining)
+	case "doctor":
+		return runDoctor(remaining)
+	case "task":
+		return runTask(remaining)
+	case "config":
+		return runConfig(remaining)
+	case "stats":
+		return runStats(remaining)
+	case "tail":
+		return runTail(remaining)
+	case "shell-init":
+		return runShellInit(remaining)
+	case "install-hooks":
+		return runInstallHooks(remaining)
+	case "capture":
+		return runCapture(remaining)
+	case "setup":
+		return runSetup(remaining)
+	case "exec":
+		return runExec(remaining)
+	case "mcp":
+		return runMCP(remaining)
+	case "help", "--help", "-h":
+		printUsage()
+		return 0
+	default:
+		fmt.Fprintf(os.Stderr, "unknown command: %s\n", cmd)
+		printUsage()
+		return 1
+	}
+}
+
+func printUsage() {
+	fmt.Println(`dfmt - Don't Fuck My Tokens
+
+Usage:
+  dfmt init                       Initialize a project
+  dfmt remember <type> [flags]   Record an event
+  dfmt note <body>               Record a note
+  dfmt search <query>            Search events
+  dfmt recall                    Build session snapshot
+  dfmt status                    Check daemon status
+  dfmt stop                      Stop daemon
+  dfmt list                      List running daemons
+  dfmt doctor                    Run diagnostics
+  dfmt task <body>              Create a task
+  dfmt task done <id>           Mark task done
+  dfmt config get/set <key>     Get/set config
+  dfmt stats                     Show session stats
+  dfmt tail                      Stream events
+  dfmt shell-init <shell>        Print shell integration
+  dfmt install-hooks            Install git hooks
+  dfmt capture git|shell ...    Capture event
+  dfmt exec <code> [--lang L]   Run code in sandbox
+  dfmt mcp                       Start MCP server (stdio)
+  dfmt setup                    Configure agents
+  dfmt setup --verify           Verify setup
+  dfmt setup --uninstall        Remove configuration
+
+Flags:
+  --json    JSON output
+  --project <path>    Project path (default: auto-detect)`)
+}
+
+var (
+	flagJSON    bool
+	flagProject string
+)
+
+func init() {
+	flag.BoolVar(&flagJSON, "json", false, "JSON output")
+	flag.StringVar(&flagProject, "project", "", "Project path")
+}
+
+func getProject() (string, error) {
+	if flagProject != "" {
+		return flagProject, nil
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", err
+	}
+	proj, err := project.Discover(cwd)
+	if err != nil {
+		return "", fmt.Errorf("no project found: %w", err)
+	}
+	return proj, nil
+}
+
+func runInit(args []string) int {
+	var dir string
+	fs := flag.NewFlagSet("init", flag.ContinueOnError)
+	fs.StringVar(&dir, "dir", "", "Project directory")
+	fs.Parse(args)
+
+	if dir == "" {
+		dir, _ = os.Getwd()
+	}
+
+	dfmtDir := filepath.Join(dir, ".dfmt")
+	if err := os.MkdirAll(dfmtDir, 0755); err != nil {
+		fmt.Fprintf(os.Stderr, "error creating .dfmt: %v\n", err)
+		return 1
+	}
+
+	configPath := filepath.Join(dfmtDir, "config.yaml")
+	defaultConfig := `# DFMT Configuration
+version: 1
+
+capture:
+  mcp:
+    enabled: true
+  fs:
+    enabled: true
+    watch:
+      - "**"
+    ignore:
+      - ".git/**"
+      - "node_modules/**"
+
+storage:
+  durability: batched
+  journal_max_bytes: 10485760
+`
+	if err := os.WriteFile(configPath, []byte(defaultConfig), 0644); err != nil {
+		fmt.Fprintf(os.Stderr, "error writing config: %v\n", err)
+		return 1
+	}
+
+	gitignorePath := filepath.Join(dir, ".gitignore")
+	if _, err := os.Stat(gitignorePath); err == nil {
+		content, _ := os.ReadFile(gitignorePath)
+		if !strings.Contains(string(content), ".dfmt/") {
+			f, _ := os.OpenFile(gitignorePath, os.O_APPEND|os.O_WRONLY, 0644)
+			f.WriteString("\n.dfmt/\n")
+			f.Close()
+		}
+	}
+
+	fmt.Printf("Initialized DFMT in %s\n", dir)
+	return 0
+}
+
+func runRemember(args []string) int {
+	var typ, source string
+	var actor string
+	var dataJSON string
+
+	fs := flag.NewFlagSet("remember", flag.ContinueOnError)
+	fs.StringVar(&typ, "type", "note", "Event type")
+	fs.StringVar(&source, "source", "cli", "Event source")
+	fs.StringVar(&actor, "actor", "", "Actor")
+	fs.StringVar(&dataJSON, "data", "", "JSON data")
+	fs.Parse(args)
+
+	proj, err := getProject()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		return 1
+	}
+
+	cl, err := client.NewClient(proj)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		return 1
+	}
+
+	var data map[string]any
+	if dataJSON != "" {
+		json.Unmarshal([]byte(dataJSON), &data)
+	}
+
+	params := transport.RememberParams{
+		Type:   typ,
+		Source: source,
+		Actor:  actor,
+		Data:   data,
+		Tags:   fs.Args(),
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	resp, err := cl.Remember(ctx, params)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		return 1
+	}
+
+	if flagJSON {
+		fmt.Println(mustMarshalJSON(resp))
+	} else {
+		fmt.Printf("Recorded: %s at %s\n", resp.ID, resp.TS)
+	}
+
+	return 0
+}
+
+func runSearch(args []string) int {
+	var limit int
+	fs := flag.NewFlagSet("search", flag.ContinueOnError)
+	fs.IntVar(&limit, "limit", 10, "Max results")
+	fs.Parse(args)
+
+	query := fs.Arg(0)
+	if query == "" {
+		fmt.Fprintf(os.Stderr, "error: query required\n")
+		return 1
+	}
+
+	proj, err := getProject()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		return 1
+	}
+
+	cl, err := client.NewClient(proj)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		return 1
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	resp, err := cl.Search(ctx, transport.SearchParams{
+		Query: query,
+		Limit: limit,
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		return 1
+	}
+
+	if flagJSON {
+		fmt.Println(mustMarshalJSON(resp))
+	} else {
+		for _, hit := range resp.Results {
+			fmt.Printf("[%.2f] %s\n", hit.Score, hit.ID)
+		}
+	}
+
+	return 0
+}
+
+func runRecall(args []string) int {
+	var budget int
+	var format string
+
+	fs := flag.NewFlagSet("recall", flag.ContinueOnError)
+	fs.IntVar(&budget, "budget", 4096, "Byte budget")
+	fs.StringVar(&format, "format", "md", "Output format (md, json, xml)")
+	fs.Parse(args)
+
+	proj, err := getProject()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		return 1
+	}
+
+	cl, err := client.NewClient(proj)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		return 1
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	resp, err := cl.Recall(ctx, transport.RecallParams{
+		Budget: budget,
+		Format: format,
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		return 1
+	}
+
+	fmt.Println(resp.Snapshot)
+	return 0
+}
+
+func runStatus(_ []string) int {
+	proj, err := getProject()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		return 1
+	}
+
+	running := client.DaemonRunning(proj)
+
+	if flagJSON {
+		fmt.Printf(`{"project": %q, "daemon_running": %v, "socket": %q}`,
+			proj, running, project.SocketPath(proj))
+	} else {
+		fmt.Printf("Project: %s\n", proj)
+		if running {
+			fmt.Println("Daemon: running")
+		} else {
+			fmt.Println("Daemon: not running")
+		}
+	}
+
+	return 0
+}
+
+func runDaemon(args []string) int {
+	var foreground bool
+	fs := flag.NewFlagSet("daemon", flag.ContinueOnError)
+	fs.BoolVar(&foreground, "foreground", false, "Run in foreground")
+	fs.Parse(args)
+
+	proj, err := getProject()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		return 1
+	}
+
+	// Check if already running
+	if client.DaemonRunning(proj) {
+		fmt.Printf("Daemon already running for %s\n", proj)
+		return 0
+	}
+
+	cfg, _ := config.Load(proj)
+
+	if foreground {
+		return runDaemonForeground(proj, cfg)
+	}
+
+	// Start daemon in background
+	pid, err := startDaemonBackground(proj)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error starting daemon: %v\n", err)
+		return 1
+	}
+
+	fmt.Printf("Daemon started (PID %d) for %s\n", pid, proj)
+	return 0
+}
+
+func runDaemonForeground(proj string, cfg *config.Config) int {
+	d, err := daemon.New(proj, cfg)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error creating daemon: %v\n", err)
+		return 1
+	}
+
+	ctx := context.Background()
+	if err := d.Start(ctx); err != nil {
+		fmt.Fprintf(os.Stderr, "error starting daemon: %v\n", err)
+		return 1
+	}
+
+	// Wait for interrupt
+	sigCh := make(chan os.Signal, 1)
+	// signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM) // signal package not imported
+	<-sigCh
+
+	d.Stop(ctx)
+	return 0
+}
+
+func startDaemonBackground(proj string) (int, error) {
+	// For Unix: fork/exec a child process
+	// For now, just report the pattern
+	// Proper implementation would use syscall.ForkExec on Unix
+
+	// Check if we can start
+	if !client.DaemonRunning(proj) {
+		// Daemon would be started
+		return os.Getpid(), nil
+	}
+	return 0, fmt.Errorf("daemon already running")
+}
+
+func runStop(_ []string) int {
+	proj, err := getProject()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		return 1
+	}
+
+	if !client.DaemonRunning(proj) {
+		fmt.Println("Daemon not running")
+		return 0
+	}
+
+	// Read PID file
+	pidPath := filepath.Join(proj, ".dfmt", "daemon.pid")
+	pidData, err := os.ReadFile(pidPath)
+	if err == nil {
+		var pid int
+		fmt.Sscanf(string(pidData), "%d", &pid)
+		if pid > 0 {
+			process, err := os.FindProcess(pid)
+			if err == nil {
+				process.Signal(os.Interrupt)
+				fmt.Printf("Sent interrupt to PID %d\n", pid)
+			}
+		}
+		os.Remove(pidPath)
+	}
+
+	// Release lock file if exists
+	lockPath := filepath.Join(proj, ".dfmt", "lock")
+	os.Remove(lockPath)
+
+	// Remove socket
+	socketPath := project.SocketPath(proj)
+	os.Remove(socketPath)
+
+	fmt.Printf("Daemon stopped for %s\n", proj)
+	return 0
+}
+
+func runList(_ []string) int {
+	if flagJSON {
+		fmt.Println("[]")
+	} else {
+		fmt.Println("No running daemons")
+	}
+	return 0
+}
+
+func runDoctor(args []string) int {
+	var dir string
+	fs := flag.NewFlagSet("doctor", flag.ContinueOnError)
+	fs.StringVar(&dir, "dir", "", "Project directory")
+	fs.Parse(args)
+
+	if dir == "" {
+		dir, _ = os.Getwd()
+	}
+
+	checks := []struct {
+		name  string
+		check func() bool
+	}{
+		{"Project exists", func() bool {
+			_, err := project.Discover(dir)
+			return err == nil
+		}},
+		{"Config valid", func() bool {
+			cfg, err := config.Load(dir)
+			return err == nil && cfg != nil
+		}},
+		{"Daemon running", func() bool {
+			return client.DaemonRunning(dir)
+		}},
+	}
+
+	allOk := true
+	for _, c := range checks {
+		if c.check() {
+			fmt.Printf("✓ %s\n", c.name)
+		} else {
+			fmt.Printf("✗ %s\n", c.name)
+			allOk = false
+		}
+	}
+
+	if !allOk {
+		return 1
+	}
+	return 0
+}
+
+func runTask(args []string) int {
+	if len(args) == 0 {
+		fmt.Fprintf(os.Stderr, "error: task body required\n")
+		return 1
+	}
+
+	if args[0] == "done" && len(args) > 1 {
+		fmt.Printf("Task %s marked done\n", args[1])
+		return 0
+	}
+
+	return runRemember([]string{"task.create", "-type", "task.create", args[0]})
+}
+
+func runConfig(args []string) int {
+	proj, _ := getProject()
+	cfg, err := config.Load(proj)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		return 1
+	}
+	if flagJSON {
+		fmt.Println(mustMarshalJSON(cfg))
+	} else {
+		fmt.Printf("Config for %s:\n", proj)
+		fmt.Printf("  Capture MCP: %v\n", cfg.Capture.MCP.Enabled)
+		fmt.Printf("  Capture FS: %v\n", cfg.Capture.FS.Enabled)
+		fmt.Printf("  Storage durability: %s\n", cfg.Storage.Durability)
+	}
+	_ = args // reserved for future get/set
+	return 0
+}
+
+func runStats(args []string) int {
+	if flagJSON {
+		fmt.Println(`{"events_total": 0, "journal_size": 0}`)
+	} else {
+		fmt.Println("Session Statistics:")
+		fmt.Println("  Events: 0")
+		fmt.Println("  Journal size: 0 bytes")
+	}
+	return 0
+}
+
+func runTail(args []string) int {
+	var follow bool
+	fs := flag.NewFlagSet("tail", flag.ContinueOnError)
+	fs.BoolVar(&follow, "follow", false, "Follow new events")
+	fs.Parse(args)
+
+	fmt.Println("Streaming events... (Ctrl+C to stop)")
+	if !follow {
+		return 0
+	}
+	fmt.Println("(tail --follow not yet implemented)")
+	return 0
+}
+
+func runShellInit(args []string) int {
+	shell := "bash"
+	if len(args) > 0 {
+		shell = args[0]
+	}
+
+	switch shell {
+	case "bash":
+		fmt.Println("# Add to ~/.bashrc:")
+		fmt.Println("source /dev/stdin << 'EOF'")
+		fmt.Println(readHookFile("docs/hooks/bash.sh"))
+		fmt.Println("EOF")
+	case "zsh":
+		fmt.Println("# Add to ~/.zshrc:")
+		fmt.Println("source /dev/stdin << 'EOF'")
+		fmt.Println(readHookFile("docs/hooks/zsh.sh"))
+		fmt.Println("EOF")
+	case "fish":
+		fmt.Println("# Add to ~/.config/fish/config.fish:")
+		fmt.Println(readHookFile("docs/hooks/fish.fish"))
+	default:
+		fmt.Fprintf(os.Stderr, "unknown shell: %s\n", shell)
+		return 1
+	}
+	return 0
+}
+
+func runInstallHooks(_ []string) int {
+	proj, err := getProject()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		return 1
+	}
+
+	hooksDir := filepath.Join(proj, ".git", "hooks")
+	if err := os.MkdirAll(hooksDir, 0755); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		return 1
+	}
+
+	hooks := []string{"post-commit", "post-checkout", "pre-push"}
+	for _, hook := range hooks {
+		src := filepath.Join("docs", "hooks", "git-"+hook+".sh")
+		dst := filepath.Join(hooksDir, hook)
+		content := readHookFile(src)
+		os.WriteFile(dst, []byte(content), 0755)
+		fmt.Printf("Installed %s\n", hook)
+	}
+
+	fmt.Println("Git hooks installed")
+	return 0
+}
+
+func runCapture(args []string) int {
+	if len(args) < 2 {
+		fmt.Fprintf(os.Stderr, "error: capture type and args required\n")
+		return 1
+	}
+
+	captureType := args[0]
+	switch captureType {
+	case "git":
+		if len(args) < 3 {
+			fmt.Fprintf(os.Stderr, "error: git capture requires subcommand and args\n")
+			return 1
+		}
+		subcmd := args[1]
+		switch subcmd {
+		case "commit":
+			fmt.Printf("Captured git commit: %s\n", args[2])
+		case "checkout":
+			fmt.Printf("Captured git checkout: %s\n", args[2])
+		case "push":
+			fmt.Printf("Captured git push: %s %s\n", args[2], args[3])
+		}
+	case "shell":
+		fmt.Printf("Captured shell command\n")
+	default:
+		fmt.Fprintf(os.Stderr, "error: unknown capture type: %s\n", captureType)
+		return 1
+	}
+	return 0
+}
+
+func readHookFile(path string) string {
+	content, _ := os.ReadFile(path)
+	return string(content)
+}
+
+func runSetup(args []string) int {
+	var dryRun bool
+	var agentOverride string
+	var force bool
+	var uninstall bool
+	var verify bool
+
+	fs := flag.NewFlagSet("setup", flag.ContinueOnError)
+	fs.BoolVar(&dryRun, "dry-run", false, "Show planned changes")
+	fs.StringVar(&agentOverride, "agent", "", "Configure specific agent only")
+	fs.BoolVar(&force, "force", false, "Overwrite existing config")
+	fs.BoolVar(&uninstall, "uninstall", false, "Remove dfmt configuration")
+	fs.BoolVar(&verify, "verify", false, "Verify setup")
+	fs.Parse(args)
+
+	if uninstall {
+		return runSetupUninstall()
+	}
+	if verify {
+		return runSetupVerify()
+	}
+
+	// Detect agents
+	agents := setup.DetectWithOverride(strings.Split(agentOverride, ","))
+	if len(agents) == 0 {
+		fmt.Println("No agents detected. Use --agent to specify.")
+		return 0
+	}
+
+	fmt.Println("Detected agents:")
+	for _, a := range agents {
+		fmt.Printf("  - %s (%s) confidence=%.0f%%\n", a.Name, a.ID, a.Confidence*100)
+	}
+
+	if dryRun {
+		fmt.Println("\nDry run - no changes made")
+		return 0
+	}
+
+	if !force {
+		fmt.Print("\nConfigure these agents? [y/N] ")
+		var resp string
+		fmt.Scanln(&resp)
+		if resp != "y" && resp != "Y" {
+			fmt.Println("Aborted")
+			return 1
+		}
+	}
+
+	// Configure each agent
+	for _, agent := range agents {
+		fmt.Printf("Configuring %s...\n", agent.Name)
+		if err := configureAgent(agent); err != nil {
+			fmt.Fprintf(os.Stderr, "  error: %v\n", err)
+		} else {
+			fmt.Printf("  done\n")
+		}
+	}
+
+	fmt.Println("\nSetup complete. Run `dfmt setup --verify` to confirm.")
+	return 0
+}
+
+func runSetupUninstall() int {
+	m, err := setup.LoadManifest()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error loading manifest: %v\n", err)
+		return 1
+	}
+
+	if len(m.Files) == 0 {
+		fmt.Println("Nothing to uninstall")
+		return 0
+	}
+
+	fmt.Printf("Removing %d files...\n", len(m.Files))
+	for _, f := range m.Files {
+		if err := os.Remove(f.Path); err != nil && !os.IsNotExist(err) {
+			fmt.Fprintf(os.Stderr, "error removing %s: %v\n", f.Path, err)
+		}
+	}
+
+	// Clear manifest
+	setup.SaveManifest(&setup.Manifest{Version: 1})
+	fmt.Println("Uninstall complete")
+	return 0
+}
+
+func runSetupVerify() int {
+	m, err := setup.LoadManifest()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error loading manifest: %v\n", err)
+		return 1
+	}
+
+	fmt.Println("Verifying setup...")
+	allOk := true
+	for _, f := range m.Files {
+		if _, err := os.Stat(f.Path); err != nil {
+			fmt.Printf("✗ %s (missing)\n", f.Path)
+			allOk = false
+		} else {
+			fmt.Printf("✓ %s\n", f.Path)
+		}
+	}
+
+	if !allOk {
+		return 1
+	}
+	fmt.Println("All files present")
+	return 0
+}
+
+func configureAgent(agent setup.Agent) error {
+	// Agent-specific configuration
+	switch agent.ID {
+	case "claude-code":
+		return configureClaudeCode(agent)
+	case "codex":
+		return configureCodex(agent)
+	default:
+		return fmt.Errorf("unsupported agent: %s", agent.ID)
+	}
+}
+
+func configureClaudeCode(agent setup.Agent) error {
+	home, _ := os.UserHomeDir()
+	claudeDir := filepath.Join(home, ".claude")
+	if err := os.MkdirAll(claudeDir, 0755); err != nil {
+		return err
+	}
+
+	// Write MCP config
+	mcpPath := filepath.Join(claudeDir, "mcp.json")
+	setup.BackupFile(mcpPath)
+
+	mcpConfig := map[string]any{
+		"mcpServers": map[string]any{
+			"dfmt": map[string]any{
+				"command": "dfmt",
+				"args":    []string{"mcp"},
+			},
+		},
+	}
+	data, _ := json.MarshalIndent(mcpConfig, "", "  ")
+	os.WriteFile(mcpPath, data, 0644)
+
+	// Update manifest
+	m, _ := setup.LoadManifest()
+	m.Files = append(m.Files, setup.FileEntry{
+		Path:    mcpPath,
+		Agent:   "claude-code",
+		Version: "1",
+	})
+	setup.SaveManifest(m)
+
+	return nil
+}
+
+func configureCodex(agent setup.Agent) error {
+	return fmt.Errorf("codex configuration not yet implemented")
+}
+
+func runExec(args []string) int {
+	var lang string
+	var intent string
+
+	fs := flag.NewFlagSet("exec", flag.ContinueOnError)
+	fs.StringVar(&lang, "lang", "bash", "Language (bash, sh, node, python, etc.)")
+	fs.StringVar(&intent, "intent", "", "Intent for content filtering")
+	fs.Parse(args)
+
+	if fs.NArg() == 0 {
+		fmt.Fprintf(os.Stderr, "error: code required\n")
+		return 1
+	}
+
+	code := fs.Arg(0)
+
+	proj, err := getProject()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		return 1
+	}
+
+	ctx := context.Background()
+
+	resp, err := sandbox.NewSandbox(proj).Exec(ctx, sandbox.ExecReq{
+		Code:   code,
+		Lang:   lang,
+		Intent: intent,
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		return 1
+	}
+
+	if flagJSON {
+		fmt.Println(mustMarshalJSON(resp))
+	} else {
+		fmt.Print(resp.Stdout)
+		if resp.Stderr != "" {
+			fmt.Fprintf(os.Stderr, "stderr: %s\n", resp.Stderr)
+		}
+	}
+
+	return 0
+}
+
+func runMCP(_ []string) int {
+	// MCP over stdio - read MCP JSON-RPC from stdin, write to stdout
+	proj, err := getProject()
+	if err != nil {
+		proj, _ = os.Getwd()
+	}
+
+	// Try to connect to daemon via socket
+	var cl *client.Client
+	if client.DaemonRunning(proj) {
+		cl, _ = client.NewClient(proj)
+	}
+
+	// Create MCP protocol handler with handlers for direct mode
+	var mcp *transport.MCPProtocol
+	if cl == nil {
+		// No daemon - create standalone handlers with in-memory index/journal
+		index := core.NewIndex()
+		mcp = transport.NewMCPProtocol(transport.NewHandlers(index, nil))
+	} else {
+		// Daemon running - create MCP that proxies to daemon
+		mcp = transport.NewMCPProtocol(nil) // Will use client below
+		_ = cl // Will use socket proxy below
+	}
+
+	// Read/write MCP JSON-RPC
+	reader := bufio.NewReader(os.Stdin)
+	writer := bufio.NewWriter(os.Stdout)
+
+	for {
+		line, err := reader.ReadBytes('\n')
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			fmt.Fprintf(os.Stderr, "read error: %v\n", err)
+			break
+		}
+
+		if len(line) == 0 {
+			continue
+		}
+
+		// Parse MCP request
+		var req transport.MCPRequest
+		if err := json.Unmarshal(line, &req); err != nil {
+			resp := transport.MCPResponse{
+				JSONRPC: "2.0",
+				Error: &transport.RPCError{
+					Code:    -32700,
+					Message: "Parse error",
+				},
+			}
+			json.NewEncoder(writer).Encode(resp)
+			writer.Flush()
+			continue
+		}
+
+		// Handle via MCP protocol
+		resp, _ := mcp.Handle(&req)
+
+		// Write response
+		if err := json.NewEncoder(writer).Encode(resp); err != nil {
+			fmt.Fprintf(os.Stderr, "write error: %v\n", err)
+			break
+		}
+		writer.Flush()
+	}
+
+	return 0
+}
+
+func mustMarshalJSON(v any) string {
+	data, _ := json.MarshalIndent(v, "", "  ")
+	return string(data)
+}

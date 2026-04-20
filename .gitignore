@@ -1,0 +1,61 @@
+# === Binaries ===
+dfmt
+dfmt.exe
+dfmt-bench
+dfmt-bench.exe
+*.exe
+*.dll
+*.so
+*.dylib
+
+# === Test binaries ===
+*.test
+*.out
+
+# === Output directories ===
+dist/
+tmp/
+bench/latest/
+
+# === Local daemon state ===
+.dfmt/
+
+# === Go ===
+go.work
+go.work.sum
+
+# === IDE/Editor ===
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.#*
+
+# === OS ===
+.DS_Store
+Thumbs.db
+ehthumbs.db
+
+# === Logs ===
+*.log
+logs/
+
+# === Coverage reports ===
+coverage.out
+*.out
+
+# === Private/Internal docs (uncomment if needed) ===
+# AGENT-INTEGRATION.md
+# BRANDING.md
+# TASKS.md
+# IMPLEMENTATION.md
+# SPECIFICATION.md
+
+# === Temporary files ===
+*.tmp
+*.bak
+*.backup
+
+.dmft/
+.project/
