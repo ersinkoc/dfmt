@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 )
@@ -407,5 +408,142 @@ func TestRetrievalThrottleDefaults(t *testing.T) {
 	}
 	if cfg.Retrieval.Throttle.ResultsSecondTier != 10 {
 		t.Errorf("ResultsSecondTier = %d, want 10", cfg.Retrieval.Throttle.ResultsSecondTier)
+	}
+}
+
+func TestLoadWithEmptyProjectPath(t *testing.T) {
+	// When projectPath is empty, Load should still work using global config only
+	tmpDir := t.TempDir()
+	globalDir := filepath.Join(tmpDir, "dfmt")
+	os.MkdirAll(globalDir, 0755)
+	globalConfigPath := filepath.Join(globalDir, "config.yaml")
+
+	configContent := `
+version: 1
+capture:
+  mcp:
+    enabled: false
+`
+	os.WriteFile(globalConfigPath, []byte(configContent), 0644)
+
+	os.Setenv("XDG_DATA_HOME", tmpDir)
+	defer os.Unsetenv("XDG_DATA_HOME")
+
+	// Empty project path should still load global config
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load(\"\") failed: %v", err)
+	}
+	// MCP should be disabled from global config
+	if cfg.Capture.MCP.Enabled {
+		t.Error("MCP.Enabled should be false from global config")
+	}
+}
+
+func TestLoadWithGlobalConfigMergeError(t *testing.T) {
+	// Create a global config with invalid YAML that will cause merge error
+	tmpDir := t.TempDir()
+	globalDir := filepath.Join(tmpDir, "dfmt")
+	os.MkdirAll(globalDir, 0755)
+	globalConfigPath := filepath.Join(globalDir, "config.yaml")
+
+	// Write an invalid YAML (leading spaces not valid in YAML without document start)
+	invalidContent := `version: 1
+  invalid indent: value
+`
+	os.WriteFile(globalConfigPath, []byte(invalidContent), 0644)
+
+	os.Setenv("XDG_DATA_HOME", tmpDir)
+	defer os.Unsetenv("XDG_DATA_HOME")
+
+	// Load should fail due to merge error
+	_, err := Load("")
+	if err == nil {
+		t.Error("Load should fail when global config has invalid YAML")
+	}
+}
+
+func TestLoadWithProjectConfigMergeError(t *testing.T) {
+	// Create a project with invalid config YAML
+	tmpDir := t.TempDir()
+	dfmtDir := filepath.Join(tmpDir, ".dfmt")
+	os.MkdirAll(dfmtDir, 0755)
+	configPath := filepath.Join(dfmtDir, "config.yaml")
+
+	// Write invalid YAML
+	invalidContent := `version: 1
+  invalid indent: value
+`
+	os.WriteFile(configPath, []byte(invalidContent), 0644)
+
+	os.Setenv("XDG_DATA_HOME", "/nonexistent")
+	defer os.Unsetenv("XDG_DATA_HOME")
+
+	// Load should fail due to project config merge error
+	_, err := Load(tmpDir)
+	if err == nil {
+		t.Error("Load should fail when project config has invalid YAML")
+	}
+}
+
+func TestGlobalConfigPathEmptyXDGHomeOnWindows(t *testing.T) {
+	// On Windows, os.UserHomeDir() doesn't use HOME env var,
+	// so we can only test that XDG_DATA_HOME is used when set
+	// and that globalConfigPath() returns a valid path structure
+	origXDG := os.Getenv("XDG_DATA_HOME")
+	defer func() {
+		if origXDG != "" {
+			os.Setenv("XDG_DATA_HOME", origXDG)
+		} else {
+			os.Unsetenv("XDG_DATA_HOME")
+		}
+	}()
+
+	os.Unsetenv("XDG_DATA_HOME")
+	path := globalConfigPath()
+
+	// On Windows, UserHomeDir should return something like C:\Users\<name>
+	// The path should end with dfmt\config.yaml
+	if !strings.HasSuffix(path, filepath.Join("dfmt", "config.yaml")) {
+		t.Errorf("globalConfigPath() = %q, doesn't end with dfmt\\config.yaml", path)
+	}
+}
+
+func TestGlobalConfigPathWithXDGHOME(t *testing.T) {
+	// When XDG_DATA_HOME is set, it should be used
+	tmpDir := t.TempDir()
+	os.Setenv("XDG_DATA_HOME", tmpDir)
+	defer os.Unsetenv("XDG_DATA_HOME")
+
+	path := globalConfigPath()
+	expected := filepath.Join(tmpDir, "dfmt", "config.yaml")
+	if path != expected {
+		t.Errorf("globalConfigPath() = %q, want %q", path, expected)
+	}
+}
+
+func TestMergeReadFileError(t *testing.T) {
+	cfg := Default()
+
+	// Attempt to merge a non-existent path
+	// Should not error for missing file (line 183-185 in config.go)
+	err := merge(cfg, "/nonexistent/config.yaml")
+	if err != nil {
+		t.Errorf("merge should not error for missing file: %v", err)
+	}
+}
+
+func TestMergeYAMLUnmarshalError(t *testing.T) {
+	cfg := Default()
+
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "bad.yaml")
+
+	// Write invalid YAML content
+	os.WriteFile(configPath, []byte("invalid: yaml: content: ["), 0644)
+
+	err := merge(cfg, configPath)
+	if err == nil {
+		t.Error("merge should fail for invalid YAML")
 	}
 }

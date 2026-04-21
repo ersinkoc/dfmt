@@ -1,6 +1,9 @@
 package content
 
 import (
+	"compress/gzip"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -474,4 +477,167 @@ func TestPersistChunkSet(t *testing.T) {
 	if loaded.Source != "echo hello" {
 		t.Errorf("Source = %q, want 'echo hello'", loaded.Source)
 	}
+}
+
+func TestPersistChunkSetCreateError(t *testing.T) {
+	// Use an invalid path that may cause os.Create to fail
+	store, _ := NewStore(StoreOptions{
+		Path: "/nonexistent/directory/that/cannot/be/created",
+	})
+
+	set := &ChunkSet{
+		ID:      "test-set",
+		Kind:    "test",
+		Source:  "test source",
+		Chunks:  []string{},
+		Created: time.Now(),
+		TTL:     0, // Will try to persist
+	}
+
+	// This may or may not fail depending on filesystem
+	// Just verify it doesn't panic
+	store.persistChunkSet(set)
+}
+
+func TestLoadChunkSetFileNotFound(t *testing.T) {
+	tmpDir := t.TempDir()
+	store, _ := NewStore(StoreOptions{
+		Path: tmpDir,
+	})
+
+	// LoadChunkSet for non-existent file should fail
+	_, err := store.LoadChunkSet("nonexistent-set")
+	if err == nil {
+		t.Error("LoadChunkSet should fail for nonexistent set")
+	}
+}
+
+func TestLoadChunkSetInvalidGzip(t *testing.T) {
+	tmpDir := t.TempDir()
+	// Create a file that is valid gzip but contains invalid JSON
+	gzipPath := filepath.Join(tmpDir, "invalid.json.gz")
+
+	f, err := os.Create(gzipPath)
+	if err != nil {
+		t.Skipf("skipping: could not create test file: %v", err)
+	}
+	gz := gzip.NewWriter(f)
+	gz.Write([]byte("not valid json"))
+	gz.Close()
+	f.Close()
+
+	store, _ := NewStore(StoreOptions{
+		Path: tmpDir,
+	})
+
+	_, err = store.LoadChunkSet("invalid")
+	if err == nil {
+		t.Error("LoadChunkSet should fail for invalid JSON in gzip")
+	}
+}
+
+func TestLoadChunkSetTruncatedGzip(t *testing.T) {
+	tmpDir := t.TempDir()
+	// Create a truncated gzip file
+	gzipPath := filepath.Join(tmpDir, "truncated.json.gz")
+
+	f, err := os.Create(gzipPath)
+	if err != nil {
+		t.Skipf("skipping: could not create test file: %v", err)
+	}
+	// Write a valid gzip header but truncated data
+	gz := gzip.NewWriter(f)
+	gz.Write([]byte(`{"id":`)) // truncated JSON
+	gz.Close()
+	f.Close()
+
+	store, _ := NewStore(StoreOptions{
+		Path: tmpDir,
+	})
+
+	_, err = store.LoadChunkSet("truncated")
+	if err == nil {
+		t.Error("LoadChunkSet should fail for truncated gzip")
+	}
+}
+
+func TestNewStoreWithEmptyPath(t *testing.T) {
+	// Empty path should still work (no directory creation attempted)
+	store, err := NewStore(StoreOptions{
+		Path:    "",
+		MaxSize: 1024,
+	})
+	if err != nil {
+		t.Fatalf("NewStore with empty path failed: %v", err)
+	}
+	if store == nil {
+		t.Fatal("NewStore returned nil for empty path")
+	}
+}
+
+func TestNewStoreWithInvalidPath(t *testing.T) {
+	// Use a path that cannot be created
+	store, err := NewStore(StoreOptions{
+		Path:    "/",
+		MaxSize: 1024,
+	})
+	// Creating store should still work even if directory creation fails
+	// because directory creation is not fatal - it just won't persist
+	if err != nil {
+		t.Logf("NewStore error (may be expected on some systems): %v", err)
+	}
+	_ = store // store may or may not be nil depending on system
+}
+
+func TestStoreEvictWithNoSets(t *testing.T) {
+	store, _ := NewStore(StoreOptions{MaxSize: 10})
+
+	// evict should handle empty sets gracefully
+	err := store.evict()
+	if err != nil {
+		t.Errorf("evict with no sets should not error: %v", err)
+	}
+}
+
+func TestCloseWithEmptyPath(t *testing.T) {
+	store, _ := NewStore(StoreOptions{
+		Path: "", // No path - nothing to persist
+	})
+
+	set := &ChunkSet{
+		ID:      "test-set",
+		Kind:    "test",
+		Source:  "test",
+		Chunks:  []string{},
+		Created: time.Now(),
+		TTL:     0,
+	}
+	store.PutChunkSet(set)
+
+	// Close should succeed even with no path
+	err := store.Close()
+	if err != nil {
+		t.Fatalf("Close with empty path failed: %v", err)
+	}
+}
+
+func TestClosePersistError(t *testing.T) {
+	// Use an invalid path that may cause persist to fail
+	store, _ := NewStore(StoreOptions{
+		Path: "/nonexistent/dir/cannot/write",
+	})
+
+	set := &ChunkSet{
+		ID:      "test-set",
+		Kind:    "test",
+		Source:  "test",
+		Chunks:  []string{},
+		Created: time.Now(),
+		TTL:     0, // Will try to persist
+	}
+	store.PutChunkSet(set)
+
+	// This may or may not fail depending on filesystem
+	// Just verify it doesn't panic
+	store.Close()
 }
