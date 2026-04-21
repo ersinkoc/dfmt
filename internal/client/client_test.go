@@ -771,10 +771,37 @@ func TestNewClientEmptyPath(t *testing.T) {
 	}
 }
 
-func TestMustMarshal(t *testing.T) {
-	result := mustMarshal(map[string]any{"key": "value"})
-	if len(result) == 0 {
-		t.Error("mustMarshal returned empty result")
+func TestClientRememberResponseParsing(t *testing.T) {
+	// Test that the client can properly parse RememberResponse
+	respJSON := `{"id":"test-id","ts":"2024-01-01T00:00:00Z"}`
+	var resp transport.RememberResponse
+	if err := json.Unmarshal([]byte(respJSON), &resp); err != nil {
+		t.Errorf("Failed to parse RememberResponse: %v", err)
+	}
+	if resp.ID != "test-id" {
+		t.Errorf("resp.ID = %s, want test-id", resp.ID)
+	}
+}
+
+func TestClientSearchResponseParsing(t *testing.T) {
+	respJSON := `{"results":[{"id":"doc1","score":0.95}],"layer":"bm25"}`
+	var resp transport.SearchResponse
+	if err := json.Unmarshal([]byte(respJSON), &resp); err != nil {
+		t.Errorf("Failed to parse SearchResponse: %v", err)
+	}
+	if len(resp.Results) != 1 {
+		t.Errorf("len(resp.Results) = %d, want 1", len(resp.Results))
+	}
+}
+
+func TestClientRecallResponseParsing(t *testing.T) {
+	respJSON := `{"snapshot":"# Session","format":"md"}`
+	var resp transport.RecallResponse
+	if err := json.Unmarshal([]byte(respJSON), &resp); err != nil {
+		t.Errorf("Failed to parse RecallResponse: %v", err)
+	}
+	if resp.Snapshot != "# Session" {
+		t.Errorf("resp.Snapshot = %s, want # Session", resp.Snapshot)
 	}
 }
 
