@@ -226,6 +226,12 @@ type StatsResponse struct {
 	EventsByPriority map[string]int `json:"events_by_priority"`
 	SessionStart    string         `json:"session_start"`
 	SessionEnd      string         `json:"session_end"`
+	// Token metrics
+	TotalInputTokens  int     `json:"total_input_tokens"`
+	TotalOutputTokens int     `json:"total_output_tokens"`
+	TotalCachedTokens int     `json:"total_cached_tokens"`
+	TokenSavings      int     `json:"token_savings"`
+	CacheHitRate      float64 `json:"cache_hit_rate"`
 }
 
 // Stats returns aggregated statistics from the journal.
@@ -247,10 +253,22 @@ func (h *Handlers) Stats(ctx context.Context, params StatsParams) (*StatsRespons
 
 	classifier := core.NewClassifier()
 	var earliest, latest time.Time
+	var totalInput, totalOutput, totalCached int
 
 	for _, e := range events {
 		resp.EventsByType[string(e.Type)]++
 		resp.EventsByPriority[string(classifier.Classify(e))]++
+
+		// Extract token data from event Data field
+		if inputTokens, ok := getInt(e.Data, core.KeyInputTokens); ok {
+			totalInput += inputTokens
+		}
+		if outputTokens, ok := getInt(e.Data, core.KeyOutputTokens); ok {
+			totalOutput += outputTokens
+		}
+		if cachedTokens, ok := getInt(e.Data, core.KeyCachedTokens); ok {
+			totalCached += cachedTokens
+		}
 
 		if earliest.IsZero() || e.TS.Before(earliest) {
 			earliest = e.TS
@@ -258,6 +276,14 @@ func (h *Handlers) Stats(ctx context.Context, params StatsParams) (*StatsRespons
 		if latest.IsZero() || e.TS.After(latest) {
 			latest = e.TS
 		}
+	}
+
+	resp.TotalInputTokens = totalInput
+	resp.TotalOutputTokens = totalOutput
+	resp.TotalCachedTokens = totalCached
+	resp.TokenSavings = totalCached
+	if totalInput > 0 {
+		resp.CacheHitRate = float64(totalCached) / float64(totalInput) * 100
 	}
 
 	if !earliest.IsZero() {
@@ -268,6 +294,27 @@ func (h *Handlers) Stats(ctx context.Context, params StatsParams) (*StatsRespons
 	}
 
 	return resp, nil
+}
+
+// getInt extracts an integer from a map[string]any.
+func getInt(data map[string]any, key string) (int, bool) {
+	if data == nil {
+		return 0, false
+	}
+	val, ok := data[key]
+	if !ok {
+		return 0, false
+	}
+	switch v := val.(type) {
+	case int:
+		return v, true
+	case int64:
+		return int(v), true
+	case float64:
+		return int(v), true
+	default:
+		return 0, false
+	}
 }
 
 // StreamParams are the parameters for the Stream method.

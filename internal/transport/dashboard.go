@@ -44,6 +44,13 @@ h2 { color: #aaa; margin: 20px 0 10px; font-size: 1rem; text-transform: uppercas
 <div class="card"><div class="card-value" id="total-events">0</div><div class="card-label">Total Events</div></div>
 <div class="card"><div class="card-value" id="session-duration">-</div><div class="card-label">Session Duration</div></div>
 </div>
+<h2>Token Metrics</h2>
+<div class="cards">
+<div class="card"><div class="card-value" id="total-input">0</div><div class="card-label">Input Tokens</div></div>
+<div class="card"><div class="card-value" id="total-output">0</div><div class="card-label">Output Tokens</div></div>
+<div class="card"><div class="card-value" id="token-savings">0</div><div class="card-label">Cache Savings</div></div>
+<div class="card"><div class="card-value" id="cache-hit-rate">0%</div><div class="card-label">Cache Hit Rate</div></div>
+</div>
 <h2>Events by Type</h2>
 <div class="chart"><div class="bar-chart" id="type-chart"></div></div>
 <h2>Events by Priority</h2>
@@ -87,6 +94,12 @@ var hours = Math.floor(ms / 3600000);
 var mins = Math.floor((ms % 3600000) / 60000);
 if (hours > 0) return hours + 'h ' + mins + 'm';
 return mins + 'm';
+}
+
+function formatNumber(num) {
+if (num >= 1000000) return (num / 1000000).toFixed(1) + 'M';
+if (num >= 1000) return (num / 1000).toFixed(1) + 'K';
+return num.toString();
 }
 
 function renderChart(containerId, data) {
@@ -151,6 +164,10 @@ throw new Error(data.error.message || 'Unknown error');
 
 var stats = data.result;
 document.getElementById('total-events').textContent = stats.events_total;
+document.getElementById('total-input').textContent = formatNumber(stats.total_input_tokens || 0);
+document.getElementById('total-output').textContent = formatNumber(stats.total_output_tokens || 0);
+document.getElementById('token-savings').textContent = formatNumber(stats.token_savings || 0);
+document.getElementById('cache-hit-rate').textContent = (stats.cache_hit_rate || 0).toFixed(1) + '%';
 
 if (stats.session_start && stats.session_end) {
 var start = new Date(stats.session_start);
