@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"strings"
 	"testing"
 )
 
@@ -95,5 +96,74 @@ func TestWriteResponse_EncodeError(t *testing.T) {
 	err := codec.WriteResponse(resp)
 	if err == nil {
 		t.Errorf("expected encode error, got nil")
+	}
+}
+
+func TestReadRequest_MarshalError(t *testing.T) {
+	// Create a pipe
+	r, w := net.Pipe()
+	defer r.Close()
+
+	codec := NewCodec(r)
+
+	// Write invalid JSON (valid JSON but wrong type for Request unmarshal)
+	go func() {
+		w.Write([]byte("invalid json here\n"))
+		w.Close()
+	}()
+
+	req, err := codec.ReadRequest()
+	if req != nil {
+		t.Errorf("expected nil request, got %v", req)
+	}
+	if err == nil {
+		t.Error("expected error for invalid JSON, got nil")
+	}
+}
+
+func TestReadResponse_MarshalError(t *testing.T) {
+	// Create a pipe
+	r, w := net.Pipe()
+	defer r.Close()
+
+	codec := NewCodec(r)
+
+	// Write something that unmarshals but isn't a proper Response
+	go func() {
+		w.Write([]byte("not a response object\n"))
+		w.Close()
+	}()
+
+	resp, err := codec.ReadResponse()
+	if resp != nil {
+		t.Errorf("expected nil response, got %v", resp)
+	}
+	if err == nil {
+		t.Error("expected error for invalid JSON, got nil")
+	}
+}
+
+func TestReadRequest_UnsupportedVersion(t *testing.T) {
+	// Create a pipe
+	r, w := net.Pipe()
+	defer r.Close()
+
+	codec := NewCodec(r)
+
+	// Write a request with unsupported JSON-RPC version
+	go func() {
+		w.Write([]byte(`{"jsonrpc":"1.0","method":"test","id":1}` + "\n"))
+		w.Close()
+	}()
+
+	req, err := codec.ReadRequest()
+	if req != nil {
+		t.Errorf("expected nil request, got %v", req)
+	}
+	if err == nil {
+		t.Error("expected error for unsupported version, got nil")
+	}
+	if err != nil && !strings.Contains(err.Error(), "unsupported") {
+		t.Errorf("expected unsupported version error, got %v", err)
 	}
 }
