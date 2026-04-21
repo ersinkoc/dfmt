@@ -184,7 +184,7 @@ func (h *Handlers) Recall(ctx context.Context, params RecallParams) (*RecallResp
 		prefix := fmt.Sprintf("- [%s] %s", e.Priority, e.Type)
 		var dataStr string
 		if e.Data != nil {
-			dataStr = fmt.Sprintf(" %v", e.Data)
+			dataStr = formatEventData(e.Data)
 		}
 		lineSize := len(prefix) + len(dataStr) + len(e.Tags)*10 + 50 // rough estimate
 
@@ -294,6 +294,56 @@ func (h *Handlers) Stats(ctx context.Context, params StatsParams) (*StatsRespons
 	}
 
 	return resp, nil
+}
+
+// formatEventData formats event data for display, highlighting token fields.
+func formatEventData(data map[string]any) string {
+	if data == nil {
+		return ""
+	}
+	// Check for token fields
+	inputTokens, _ := getInt(data, core.KeyInputTokens)
+	outputTokens, _ := getInt(data, core.KeyOutputTokens)
+	cachedTokens, _ := getInt(data, core.KeyCachedTokens)
+	model, hasModel := data[core.KeyModel]
+
+	if inputTokens > 0 || outputTokens > 0 || cachedTokens > 0 {
+		var parts []string
+		if inputTokens > 0 {
+			parts = append(parts, fmt.Sprintf("in:%d", inputTokens))
+		}
+		if outputTokens > 0 {
+			parts = append(parts, fmt.Sprintf("out:%d", outputTokens))
+		}
+		if cachedTokens > 0 {
+			parts = append(parts, fmt.Sprintf("cached:%d", cachedTokens))
+		}
+		if hasModel && model != nil {
+			parts = append(parts, fmt.Sprintf("@%v", model))
+		}
+		return " " + strings.Join(parts, " ")
+	}
+
+	// Default: use first few keys as summary
+	var keys []string
+	for k := range data {
+		keys = append(keys, k)
+	}
+	if len(keys) == 0 {
+		return ""
+	}
+	// Show up to 3 key=value pairs
+	summary := ""
+	for i := 0; i < len(keys) && i < 3; i++ {
+		if summary != "" {
+			summary += " "
+		}
+		summary += fmt.Sprintf("%s:%v", keys[i], data[keys[i]])
+	}
+	if len(keys) > 3 {
+		summary += " ..."
+	}
+	return " " + summary
 }
 
 // getInt extracts an integer from a map[string]any.
