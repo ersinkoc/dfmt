@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"time"
 
@@ -14,13 +15,19 @@ import (
 	"github.com/ersinkoc/dfmt/internal/transport"
 )
 
+// Server is the interface for network servers (Unix socket or TCP).
+type Server interface {
+	Start(ctx context.Context) error
+	Stop(ctx context.Context) error
+}
+
 // Daemon is the main DFMT daemon process.
 type Daemon struct {
 	projectPath string
 	config     *config.Config
 	index      *core.Index
 	journal    core.Journal
-	socket     *transport.SocketServer
+	server     Server
 	handlers   *transport.Handlers
 
 	mu         sync.Mutex
@@ -77,16 +84,26 @@ func New(projectPath string, cfg *config.Config) (*Daemon, error) {
 	// Create handlers
 	handlers := transport.NewHandlers(index, journal)
 
-	// Create socket server
-	socketPath := project.SocketPath(projectPath)
-	socket := transport.NewSocketServer(socketPath, handlers)
+	// Create server based on platform
+	var server Server
+	if runtime.GOOS == "windows" {
+		// On Windows, use TCP server and write port file
+		tcpServer := transport.NewTCPServer("localhost:0", handlers)
+		portFile := filepath.Join(dfmtDir, "port")
+		tcpServer.SetPortFile(portFile)
+		server = tcpServer
+	} else {
+		// On Unix, use Unix socket
+		socketPath := project.SocketPath(projectPath)
+		server = transport.NewSocketServer(socketPath, handlers)
+	}
 
 	d := &Daemon{
 		projectPath: projectPath,
 		config:     cfg,
 		index:      index,
 		journal:    journal,
-		socket:     socket,
+		server:     server,
 		handlers:   handlers,
 		shutdownCh: make(chan struct{}),
 	}
@@ -104,9 +121,9 @@ func (d *Daemon) Start(ctx context.Context) error {
 	d.running = true
 	d.mu.Unlock()
 
-	// Start socket server
-	if err := d.socket.Start(ctx); err != nil {
-		return fmt.Errorf("start socket: %w", err)
+	// Start server
+	if err := d.server.Start(ctx); err != nil {
+		return fmt.Errorf("start server: %w", err)
 	}
 
 	// Write PID file
@@ -146,9 +163,9 @@ func (d *Daemon) Stop(ctx context.Context) error {
 	hiID, _ := d.journal.Checkpoint(ctx)
 	core.PersistIndex(d.index, indexPath, hiID)
 
-	// Stop socket
-	if err := d.socket.Stop(ctx); err != nil {
-		return fmt.Errorf("stop socket: %w", err)
+	// Stop server
+	if err := d.server.Stop(ctx); err != nil {
+		return fmt.Errorf("stop server: %w", err)
 	}
 
 	// Close journal
