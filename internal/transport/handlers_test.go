@@ -1596,7 +1596,7 @@ func TestHTTPServerHandleRemember(t *testing.T) {
 		ID:      1,
 	}
 
-	resp := hs.handleRemember(req, "session123")
+	resp := hs.handleRemember(context.Background(), req)
 	if resp.JSONRPC != "2.0" {
 		t.Errorf("JSONRPC = %s, want '2.0'", resp.JSONRPC)
 	}
@@ -1617,7 +1617,7 @@ func TestHTTPServerHandleSearch(t *testing.T) {
 		ID:      1,
 	}
 
-	resp := hs.handleSearch(req, "session123")
+	resp := hs.handleSearch(context.Background(), req)
 	if resp.JSONRPC != "2.0" {
 		t.Errorf("JSONRPC = %s, want '2.0'", resp.JSONRPC)
 	}
@@ -1636,7 +1636,7 @@ func TestHTTPServerHandleRecall(t *testing.T) {
 		ID:      1,
 	}
 
-	resp := hs.handleRecall(req, "session123")
+	resp := hs.handleRecall(context.Background(), req)
 	if resp.JSONRPC != "2.0" {
 		t.Errorf("JSONRPC = %s, want '2.0'", resp.JSONRPC)
 	}

@@ -120,7 +120,7 @@ func (s *HTTPServer) handle(w http.ResponseWriter, r *http.Request) {
 	}
 	defer r.Body.Close()
 
-	sessionID := r.Header.Get("X-DFMT-Session")
+	ctx := r.Context()
 
 	var req Request
 	if err := json.Unmarshal(body, &req); err != nil {
@@ -135,11 +135,11 @@ func (s *HTTPServer) handle(w http.ResponseWriter, r *http.Request) {
 	var resp interface{}
 	switch req.Method {
 	case "dfmt.remember":
-		resp = s.handleRemember(req, sessionID)
+		resp = s.handleRemember(ctx, req)
 	case "dfmt.search":
-		resp = s.handleSearch(req, sessionID)
+		resp = s.handleSearch(ctx, req)
 	case "dfmt.recall":
-		resp = s.handleRecall(req, sessionID)
+		resp = s.handleRecall(ctx, req)
 	default:
 		resp = Response{
 			JSONRPC: "2.0",
@@ -151,14 +151,14 @@ func (s *HTTPServer) handle(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(resp)
 }
 
-func (s *HTTPServer) handleRemember(req Request, sessionID string) Response {
+func (s *HTTPServer) handleRemember(ctx context.Context, req Request) Response {
 	var params RememberParams
 	if req.Params != nil {
 		data, _ := json.Marshal(req.Params)
 		json.Unmarshal(data, &params)
 	}
 
-	resp, err := s.handlers.Remember(context.Background(), params)
+	resp, err := s.handlers.Remember(ctx, params)
 	if err != nil {
 		return Response{
 			JSONRPC: "2.0",
@@ -169,14 +169,14 @@ func (s *HTTPServer) handleRemember(req Request, sessionID string) Response {
 	return Response{JSONRPC: "2.0", ID: req.ID, Result: resp}
 }
 
-func (s *HTTPServer) handleSearch(req Request, sessionID string) Response {
+func (s *HTTPServer) handleSearch(ctx context.Context, req Request) Response {
 	var params SearchParams
 	if req.Params != nil {
 		data, _ := json.Marshal(req.Params)
 		json.Unmarshal(data, &params)
 	}
 
-	resp, err := s.handlers.Search(context.Background(), params)
+	resp, err := s.handlers.Search(ctx, params)
 	if err != nil {
 		return Response{
 			JSONRPC: "2.0",
@@ -187,14 +187,14 @@ func (s *HTTPServer) handleSearch(req Request, sessionID string) Response {
 	return Response{JSONRPC: "2.0", ID: req.ID, Result: resp}
 }
 
-func (s *HTTPServer) handleRecall(req Request, sessionID string) Response {
+func (s *HTTPServer) handleRecall(ctx context.Context, req Request) Response {
 	var params RecallParams
 	if req.Params != nil {
 		data, _ := json.Marshal(req.Params)
 		json.Unmarshal(data, &params)
 	}
 
-	resp, err := s.handlers.Recall(context.Background(), params)
+	resp, err := s.handlers.Recall(ctx, params)
 	if err != nil {
 		return Response{
 			JSONRPC: "2.0",
