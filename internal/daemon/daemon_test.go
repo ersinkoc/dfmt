@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -323,4 +324,74 @@ func TestDaemonStartAlreadyRunning(t *testing.T) {
 	}
 
 	d.Stop(ctx)
+}
+
+func TestDaemonServerInterface(t *testing.T) {
+	tmpDir := t.TempDir()
+	dfmtDir := filepath.Join(tmpDir, ".dfmt")
+	os.MkdirAll(dfmtDir, 0755)
+
+	cfg := newTestConfig()
+
+	d, err := New(tmpDir, cfg)
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+
+	// Verify server field is set (either SocketServer or TCPServer)
+	if d.server == nil {
+		t.Error("server should not be nil")
+	}
+
+	// Stop server (without starting - journal not yet active)
+	ctx := context.Background()
+	d.server.Stop(ctx)
+
+	// Close journal manually (if it was created)
+	if d.journal != nil {
+		d.journal.Close()
+	}
+}
+
+func TestDaemonStartStopPIDFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	dfmtDir := filepath.Join(tmpDir, ".dfmt")
+	os.MkdirAll(dfmtDir, 0755)
+
+	cfg := newTestConfig()
+
+	d, err := New(tmpDir, cfg)
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+
+	ctx := context.Background()
+
+	if err := d.Start(ctx); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+
+	pidPath := filepath.Join(tmpDir, ".dfmt", "daemon.pid")
+	data, err := os.ReadFile(pidPath)
+	if err != nil {
+		t.Fatalf("Failed to read PID file: %v", err)
+	}
+
+	var pid int
+	if _, parseErr := fmt.Sscanf(string(data), "%d", &pid); parseErr != nil {
+		t.Fatalf("Failed to parse PID: %v", parseErr)
+	}
+
+	if pid != os.Getpid() {
+		t.Errorf("PID = %d, want %d", pid, os.Getpid())
+	}
+
+	if err := d.Stop(ctx); err != nil {
+		t.Fatalf("Stop failed: %v", err)
+	}
+
+	// PID file should be removed
+	if _, err := os.Stat(pidPath); !os.IsNotExist(err) {
+		t.Error("PID file should be removed after stop")
+	}
 }
