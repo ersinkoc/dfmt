@@ -160,13 +160,13 @@ func (s *HTTPServer) handle(w http.ResponseWriter, r *http.Request) {
 
 	var resp interface{}
 	switch req.Method {
-	case "dfmt.remember":
+	case "dfmt.remember", "remember":
 		resp = s.handleRemember(ctx, req)
-	case "dfmt.search":
+	case "dfmt.search", "search":
 		resp = s.handleSearch(ctx, req)
-	case "dfmt.recall":
+	case "dfmt.recall", "recall":
 		resp = s.handleRecall(ctx, req)
-	case "dfmt.stats":
+	case "dfmt.stats", "stats":
 		resp = s.handleStats(ctx, req)
 	default:
 		resp = Response{

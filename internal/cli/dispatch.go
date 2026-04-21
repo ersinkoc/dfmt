@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -413,16 +414,29 @@ func runDaemonForeground(proj string, cfg *config.Config) int {
 }
 
 func startDaemonBackground(proj string) (int, error) {
-	// For Unix: fork/exec a child process
-	// For now, just report the pattern
-	// Proper implementation would use syscall.ForkExec on Unix
-
-	// Check if we can start
-	if !client.DaemonRunning(proj) {
-		// Daemon would be started
-		return os.Getpid(), nil
+	if client.DaemonRunning(proj) {
+		return 0, fmt.Errorf("daemon already running")
 	}
-	return 0, fmt.Errorf("daemon already running")
+
+	exePath, err := os.Executable()
+	if err != nil {
+		return 0, fmt.Errorf("find executable: %w", err)
+	}
+
+	cmd := exec.Command(exePath, "daemon", "--foreground")
+	cmd.Dir = proj
+	cmd.Stdout = nil
+	cmd.Stderr = nil
+
+	if err := cmd.Start(); err != nil {
+		return 0, fmt.Errorf("start daemon: %w", err)
+	}
+
+	pidPath := filepath.Join(proj, ".dfmt", "daemon.pid")
+	pidData := fmt.Sprintf("%d\n", cmd.Process.Pid)
+	os.WriteFile(pidPath, []byte(pidData), 0644)
+
+	return cmd.Process.Pid, nil
 }
 
 func runStop(_ []string) int {

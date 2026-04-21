@@ -1,10 +1,13 @@
 package client
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -67,25 +70,18 @@ func (c *Client) Connect(ctx context.Context) (*transport.Codec, error) {
 
 // Remember submits an event to the daemon.
 func (c *Client) Remember(ctx context.Context, params transport.RememberParams) (*transport.RememberResponse, error) {
-	codec, err := c.Connect(ctx)
-	if err != nil {
-		return nil, err
-	}
-	defer codec.ReadResponse() // drain
-
-	req := &transport.Request{
+	body, err := c.doHTTP("/", transport.Request{
 		Method: "remember",
 		Params: mustMarshal(params),
 		ID:     1,
-	}
-
-	if err := codec.WriteRequest(req); err != nil {
-		return nil, fmt.Errorf("write request: %w", err)
-	}
-
-	resp, err := codec.ReadResponse()
+	})
 	if err != nil {
-		return nil, fmt.Errorf("read response: %w", err)
+		return nil, err
+	}
+
+	var resp transport.Response
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, fmt.Errorf("unmarshal response: %w", err)
 	}
 
 	if resp.Error != nil {
@@ -102,25 +98,18 @@ func (c *Client) Remember(ctx context.Context, params transport.RememberParams) 
 
 // Search queries the daemon.
 func (c *Client) Search(ctx context.Context, params transport.SearchParams) (*transport.SearchResponse, error) {
-	codec, err := c.Connect(ctx)
-	if err != nil {
-		return nil, err
-	}
-	defer codec.ReadResponse()
-
-	req := &transport.Request{
+	body, err := c.doHTTP("/", transport.Request{
 		Method: "search",
 		Params: mustMarshal(params),
 		ID:     1,
-	}
-
-	if err := codec.WriteRequest(req); err != nil {
-		return nil, fmt.Errorf("write request: %w", err)
-	}
-
-	resp, err := codec.ReadResponse()
+	})
 	if err != nil {
-		return nil, fmt.Errorf("read response: %w", err)
+		return nil, err
+	}
+
+	var resp transport.Response
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, fmt.Errorf("unmarshal response: %w", err)
 	}
 
 	if resp.Error != nil {
@@ -137,25 +126,18 @@ func (c *Client) Search(ctx context.Context, params transport.SearchParams) (*tr
 
 // Recall requests a session snapshot.
 func (c *Client) Recall(ctx context.Context, params transport.RecallParams) (*transport.RecallResponse, error) {
-	codec, err := c.Connect(ctx)
-	if err != nil {
-		return nil, err
-	}
-	defer codec.ReadResponse()
-
-	req := &transport.Request{
+	body, err := c.doHTTP("/", transport.Request{
 		Method: "recall",
 		Params: mustMarshal(params),
 		ID:     1,
-	}
-
-	if err := codec.WriteRequest(req); err != nil {
-		return nil, fmt.Errorf("write request: %w", err)
-	}
-
-	resp, err := codec.ReadResponse()
+	})
 	if err != nil {
-		return nil, fmt.Errorf("read response: %w", err)
+		return nil, err
+	}
+
+	var resp transport.Response
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, fmt.Errorf("unmarshal response: %w", err)
 	}
 
 	if resp.Error != nil {
@@ -191,25 +173,20 @@ func DaemonRunning(projectPath string) bool {
 
 // Stats returns aggregated statistics from the daemon.
 func (c *Client) Stats(ctx context.Context) (*transport.StatsResponse, error) {
-	codec, err := c.Connect(ctx)
+	// Use HTTP since daemon exposes HTTP endpoint
+	params := mustMarshal(transport.StatsParams{})
+	body, err := c.doHTTP("/api/stats", transport.Request{
+		Method: "stats",
+		Params: params,
+		ID:     1,
+	})
 	if err != nil {
 		return nil, err
 	}
-	defer codec.ReadResponse()
 
-	req := &transport.Request{
-		Method: "stats",
-		Params: mustMarshal(transport.StatsParams{}),
-		ID:     1,
-	}
-
-	if err := codec.WriteRequest(req); err != nil {
-		return nil, fmt.Errorf("write request: %w", err)
-	}
-
-	resp, err := codec.ReadResponse()
-	if err != nil {
-		return nil, fmt.Errorf("read response: %w", err)
+	var resp transport.Response
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, fmt.Errorf("unmarshal response: %w", err)
 	}
 
 	if resp.Error != nil {
@@ -222,6 +199,35 @@ func (c *Client) Stats(ctx context.Context) (*transport.StatsResponse, error) {
 	}
 
 	return &result, nil
+}
+
+// doHTTP makes an HTTP JSON-RPC request.
+func (c *Client) doHTTP(method string, req transport.Request) ([]byte, error) {
+	body, err := json.Marshal(req)
+	if err != nil {
+		return nil, err
+	}
+
+	url := fmt.Sprintf("http://%s%s", c.address, method)
+	httpReq, err := http.NewRequest("POST", url, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: c.timeout}
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("http request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	result, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read body: %w", err)
+	}
+
+	return result, nil
 }
 
 func mustMarshal(v any) json.RawMessage {
