@@ -46,13 +46,6 @@ coverage.out
 coverage.html
 *.out
 
-# === Private/Internal docs (uncomment if needed) ===
-# AGENT-INTEGRATION.md
-# BRANDING.md
-# TASKS.md
-# IMPLEMENTATION.md
-# SPECIFICATION.md
-
 # === Temporary files ===
 *.tmp
 *.bak

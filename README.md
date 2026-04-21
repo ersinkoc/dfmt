@@ -169,6 +169,7 @@ dfmt task <body>                   # create a task
 dfmt recall                        # print current session snapshot
 dfmt search <query>                # search session events
 dfmt tail --follow                 # stream events live
+dfmt stats                         # show stats or open dashboard
 
 # Sandbox tools (usually called by the agent)
 dfmt exec <code> --lang bash --intent "..."
@@ -182,6 +183,69 @@ dfmt --licenses                    # show third-party license attribution
 ```
 
 All commands support `--json` for machine-readable output and `--project <path>` to target a specific project.
+
+## Dashboard
+
+DFMT includes a web dashboard for visualizing your session statistics.
+
+**Access the dashboard:**
+
+```bash
+# Start the daemon and visit the dashboard URL
+dfmt daemon &
+# Then open: http://localhost:<port>/dashboard
+
+# Or use the stats command for instructions
+dfmt stats
+```
+
+**Dashboard features:**
+- Total event count
+- Events by type (bar chart)
+- Events by priority tier (P1-P4)
+- Session duration and timeline
+- Real-time refresh
+
+**HTTP API:**
+
+The daemon exposes an HTTP API for custom integrations:
+
+```bash
+# Get session statistics
+curl -X POST http://localhost:25076/api/stats \
+  -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","method":"dfmt.stats","params":{},"id":1}'
+
+# Response:
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "events_total": 142,
+    "events_by_type": {
+      "file.edit": 45,
+      "git.commit": 12,
+      "task.done": 8
+    },
+    "events_by_priority": {
+      "p1": 15,
+      "p2": 38,
+      "p3": 67,
+      "p4": 22
+    },
+    "session_start": "2024-01-21T10:30:00Z",
+    "session_end": "2024-01-21T11:45:00Z"
+  }
+}
+```
+
+**Available API endpoints:**
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/dashboard` | GET | HTML dashboard UI |
+| `/api/stats` | POST | JSON stats via JSON-RPC 2.0 |
+| `/` | POST | Main JSON-RPC endpoint (dfmt.remember, dfmt.search, dfmt.recall) |
 
 ## Benchmarks
 
