@@ -503,7 +503,7 @@ func TestLoadManifest_JSONFailsThenYAMLFails(t *testing.T) {
 	manifestPath := filepath.Join(dfmtDir, "setup-manifest.json")
 
 	// Invalid JSON AND invalid YAML — both unmarshals fail.
-	os.WriteFile(manifestPath, []byte("{ invalid json content"), 0644)
+	os.WriteFile(manifestPath, []byte("{ invalid json content: ["), 0644)
 
 	_, err := LoadManifest()
 	if err == nil {

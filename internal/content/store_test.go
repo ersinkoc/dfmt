@@ -703,6 +703,35 @@ func TestPutChunkAppendsToSet(t *testing.T) {
 	}
 }
 
+func TestPutChunkWithNonexistentParentID(t *testing.T) {
+	store, _ := NewStore(StoreOptions{})
+
+	// Add chunk with ParentID pointing to non-existent set
+	chunk := &Chunk{
+		ID:       "orphan-chunk",
+		ParentID: "nonexistent-set",
+		Index:    0,
+		Kind:     ChunkKindText,
+		Body:     "orphan content",
+		Tokens:   2,
+		Created:  time.Now(),
+	}
+
+	// Should succeed silently (ParentID set but no set to append to)
+	if err := store.PutChunk(chunk); err != nil {
+		t.Fatalf("PutChunk with nonexistent ParentID failed: %v", err)
+	}
+
+	// Chunk should still be stored
+	got, ok := store.GetChunk("orphan-chunk")
+	if !ok {
+		t.Fatal("GetChunk returned false, expected true")
+	}
+	if got.Body != "orphan content" {
+		t.Errorf("got.Body = %q, want 'orphan content'", got.Body)
+	}
+}
+
 func TestSearchWithLimitTruncation(t *testing.T) {
 	store, _ := NewStore(StoreOptions{})
 
