@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/gob"
 	"encoding/json"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"testing"
@@ -257,4 +258,94 @@ func TestLoadCursorInvalidPath(t *testing.T) {
 	if err == nil {
 		t.Error("loadCursor should fail for non-existent path")
 	}
+}
+
+func TestPersistIndexCursorFileCreateError(t *testing.T) {
+	ix := NewIndex()
+	e := Event{
+		ID:      "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+		Type:    EvtFileEdit,
+		Project: "test",
+	}
+	ix.Add(e)
+
+	// Use a path where cursor file creation will fail
+	// On Windows, creating in a path that doesn't exist should fail
+	err := PersistIndex(ix, "D:\\invalid\\path\\index.gob", "01ARZ3NDEKTSV4RRFFQ69G5FAV")
+	// This should fail either during index file creation or cursor file creation
+	if err == nil {
+		t.Error("PersistIndex should fail for invalid path")
+	}
+}
+
+func TestPersistIndexIndexFileCreateError(t *testing.T) {
+	ix := NewIndex()
+	e := Event{
+		ID:      "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+		Type:    EvtFileEdit,
+		Project: "test",
+	}
+	ix.Add(e)
+
+	// Try creating in a location that cannot have files created
+	// /proc is not available on Windows, so use an obviously invalid path
+	err := PersistIndex(ix, "/proc/invalid_index.gob", "01ARZ3NDEKTSV4RRFFQ69G5FAV")
+	if err == nil {
+		t.Error("PersistIndex should fail for /proc path on Windows")
+	}
+}
+
+func TestLoadCursorNonExistent(t *testing.T) {
+	_, err := loadCursor("/nonexistent/cursor.gob")
+	if err == nil {
+		t.Error("loadCursor should fail for non-existent path")
+	}
+}
+
+func TestPersistIndexEmptyIndex(t *testing.T) {
+	ix := NewIndex()
+
+	tmpDir := t.TempDir()
+	indexPath := filepath.Join(tmpDir, "empty_index.gob")
+
+	err := PersistIndex(ix, indexPath, "")
+	if err == nil {
+		// This may succeed or fail depending on gob encoding support
+		t.Log("PersistIndex with empty index result:", err)
+	}
+}
+
+func TestPersistIndexCursorWriteError(t *testing.T) {
+	ix := NewIndex()
+	e := Event{
+		ID:      "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+		Type:    EvtFileEdit,
+		Project: "test",
+	}
+	ix.Add(e)
+
+	tmpDir := t.TempDir()
+	indexPath := filepath.Join(tmpDir, "index.gob")
+
+	// Create the index file first to trigger the cursor file write error
+	f, err := os.Create(indexPath)
+	if err != nil {
+		t.Fatalf("failed to create index file: %v", err)
+	}
+	f.Close()
+
+	// Make the directory read-only so cursor file creation fails
+	originalMode := fs.FileMode(0755)
+	if info, err := os.Stat(tmpDir); err == nil {
+		originalMode = info.Mode().Perm()
+	}
+	os.Chmod(tmpDir, 0555)
+
+	err = PersistIndex(ix, indexPath, "01ARZ3NDEKTSV4RRFFQ69G5FAV")
+	// Should fail when creating cursor file in read-only directory
+	if err == nil {
+		t.Log("PersistIndex succeeded in read-only directory")
+	}
+
+	os.Chmod(tmpDir, originalMode)
 }

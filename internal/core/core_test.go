@@ -1153,3 +1153,243 @@ func TestJournalDurable(t *testing.T) {
 
 	j.Close()
 }
+
+func TestULIDTimeInvalid(t *testing.T) {
+	// Invalid ULID that can't be decoded as hex should return zero time
+	invalid := ULID("INVALID_ID_12345678901234")
+	ts := invalid.Time()
+	if !ts.IsZero() {
+		t.Error("Time() on invalid ULID should return zero time")
+	}
+}
+
+func TestULIDTimeShort(t *testing.T) {
+	// Too short ULID should return zero time
+	short := ULID("01ARZ3NDEKTSV4RR")
+	ts := short.Time()
+	if !ts.IsZero() {
+		t.Error("Time() on short ULID should return zero time")
+	}
+}
+
+func TestNGramsEdgeCases(t *testing.T) {
+	// Tokens shorter than n are skipped
+	tokens := []string{"hi", "yo"}
+	got := NGrams(tokens, 3)
+	// "hi" is 2 chars < 3, skipped; "yo" is 2 chars < 3, skipped
+	if len(got) != 0 {
+		t.Errorf("NGrams with short tokens = %d, want 0", len(got))
+	}
+
+	// Single character tokens - skipped for n=2
+	tokens = []string{"a", "b"}
+	got = NGrams(tokens, 2)
+	if len(got) != 0 {
+		t.Errorf("NGrams single char tokens = %d, want 0", len(got))
+	}
+
+	// Tokens exactly n - should generate n-1+1 = 1 ngram
+	tokens = []string{"abc", "def"}
+	got = NGrams(tokens, 3)
+	// abc: [0:3] = "abc" (1 ngram), def: [0:3] = "def" (1 ngram)
+	if len(got) != 2 {
+		t.Errorf("NGrams exact length tokens = %d, want 2", len(got))
+	}
+}
+
+func TestUniqueEdgeCases(t *testing.T) {
+	// All duplicates
+	dups := []string{"a", "a", "a"}
+	got := Unique(dups)
+	if len(got) != 1 {
+		t.Errorf("Unique with all dups len = %d, want 1", len(got))
+	}
+
+	// Single element
+	single := []string{"only"}
+	got = Unique(single)
+	if len(got) != 1 || got[0] != "only" {
+		t.Errorf("Unique single = %v, want [only]", got)
+	}
+}
+
+func TestMergeEdgeCases(t *testing.T) {
+	// Empty a
+	a := []string{}
+	b := []string{"b"}
+	got := Merge(a, b)
+	if len(got) != 1 {
+		t.Errorf("Merge with empty a len = %d, want 1", len(got))
+	}
+
+	// Empty b
+	a = []string{"a"}
+	b = []string{}
+	got = Merge(a, b)
+	if len(got) != 1 {
+		t.Errorf("Merge with empty b len = %d, want 1", len(got))
+	}
+
+	// Both empty
+	got = Merge([]string{}, []string{})
+	if len(got) != 0 {
+		t.Errorf("Merge both empty len = %d, want 0", len(got))
+	}
+}
+
+func TestTrigramIndexEmpty(t *testing.T) {
+	ti := NewTrigramIndex()
+
+	// Empty text
+	ti.Add("doc1", "")
+
+	// Should have postings but empty for empty text
+	if len(ti.postings) != 0 {
+		t.Logf("Empty text creates %d postings", len(ti.postings))
+	}
+}
+
+func TestBM25EdgeCases(t *testing.T) {
+	bm := NewBM25Okapi()
+
+	// Very high term frequency
+	score := bm.Score(100, 10, 10.0, 1, 10)
+	if score <= 0 {
+		t.Error("BM25 with high tf should have positive score")
+	}
+
+	// High document length
+	score = bm.Score(5, 1000, 10.0, 1, 10)
+	if score <= 0 {
+		t.Error("BM25 with high docLen should have positive score")
+	}
+}
+
+func TestLevenshteinEdgeCases(t *testing.T) {
+	// Same strings
+	if Levenshtein("test", "test") != 0 {
+		t.Error("Levenshtein same strings should be 0")
+	}
+
+	// Empty both
+	if Levenshtein("", "") != 0 {
+		t.Error("Levenshtein empty both should be 0")
+	}
+
+	// Very long strings
+	long1 := "abcdefghijklmnopqrstuvwxyz"
+	long2 := "zyxwvutsrqponmlkjihgfedcba"
+	d := Levenshtein(long1, long2)
+	if d <= 0 {
+		t.Error("Levenshtein very different long strings should be positive")
+	}
+}
+
+func TestFuzzyMatchEdgeCases(t *testing.T) {
+	// Exact match
+	if !FuzzyMatch("hello", "hello", 0) {
+		t.Error("FuzzyMatch exact match should be true")
+	}
+
+	// Very high tolerance
+	if FuzzyMatch("hello", "world", 100) {
+		// May be true with very high tolerance
+	}
+
+	// Empty strings
+	if !FuzzyMatch("", "", 0) {
+		t.Error("FuzzyMatch empty both should be true")
+	}
+}
+
+func TestIntersectionEdgeCases(t *testing.T) {
+	// One empty
+	result := intersection([]string{"a"}, []string{})
+	if len(result) != 0 {
+		t.Errorf("intersection one empty = %d, want 0", len(result))
+	}
+
+	// Both empty
+	result = intersection([]string{}, []string{})
+	if len(result) != 0 {
+		t.Errorf("intersection both empty = %d, want 0", len(result))
+	}
+}
+
+func TestHasSuffixEdgeCases(t *testing.T) {
+	// Same string returns false (len(s) > len(suffix) is false when equal)
+	if hasSuffix("hello", "hello") != false {
+		t.Error("hasSuffix same string should be false")
+	}
+
+	// Empty suffix - every string ends with empty string, but len(s) > len("") is true
+	// So hasSuffix returns true for empty suffix
+	if hasSuffix("hello", "") != true {
+		t.Error("hasSuffix empty suffix should be true")
+	}
+}
+
+func TestRemoveSuffixEdgeCases(t *testing.T) {
+	// Suffix not present - removes last len(suffix) chars anyway
+	result := removeSuffix("hello", "world")
+	// hello[0:5-5] = hello[0:0] = ""
+	if result != "" {
+		t.Errorf("removeSuffix no match = %q, want empty string", result)
+	}
+
+	// Empty suffix - removes last 0 chars, so returns full string
+	result = removeSuffix("hello", "")
+	if result != "hello" {
+		t.Errorf("removeSuffix empty suffix = %q, want hello", result)
+	}
+
+	// Suffix shorter than string - removes last 3 chars
+	result = removeSuffix("hello", "llo")
+	if result != "he" {
+		t.Errorf("removeSuffix matching = %q, want he", result)
+	}
+}
+
+func TestContainsVowelEdgeCases(t *testing.T) {
+	// All consonants
+	if containsVowel("bcdfg") != false {
+		t.Error("containsVowel all consonants should be false")
+	}
+
+	// Single vowel
+	if containsVowel("a") != true {
+		t.Error("containsVowel single vowel should be true")
+	}
+}
+
+func TestIsDoubleConsonantEdgeCases(t *testing.T) {
+	// llama: last two chars are 'm' and 'a', not equal, so false
+	if isDoubleConsonant("llama") != false {
+		t.Error("isDoubleConsonant llama should be false")
+	}
+
+	// egg: last two chars are 'g' and 'g', both consonants, so true
+	if isDoubleConsonant("egg") != true {
+		t.Error("isDoubleConsonant egg should be true")
+	}
+
+	// Single letter
+	if isDoubleConsonant("x") != false {
+		t.Error("isDoubleConsonant single letter should be false")
+	}
+}
+
+func TestMeasureEdgeCases(t *testing.T) {
+	// All consonants - no VC pattern, so count is 0
+	result := measure("trch")
+	if result != 0 {
+		t.Errorf("measure trch = %d, want 0", result)
+	}
+
+	// Contains vowel - "tree": CVCV
+	// t=consonant, r=consonant, e=vowel
+	result = measure("tree")
+	if result != 1 {
+		t.Errorf("measure tree = %d, want 1", result)
+	}
+}

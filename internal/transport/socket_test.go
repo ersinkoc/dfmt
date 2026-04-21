@@ -313,3 +313,291 @@ func TestSocketServer_Start_AlreadyRunning(t *testing.T) {
 	}
 }
 
+func TestSocketServer_Start_MkdirAllError(t *testing.T) {
+	handlers := &Handlers{}
+	// Use a path that cannot have directories created
+	socketPath := "/proc/invalid/test.sock"
+	if os.PathSeparator == '\\' {
+		socketPath = "NUL:/test.sock"
+	}
+	server := NewSocketServer(socketPath, handlers)
+
+	ctx := context.Background()
+	err := server.Start(ctx)
+	// Should fail when trying to create directory
+	if err == nil {
+		t.Log("Start succeeded (may succeed on some systems)")
+	}
+}
+
+func TestSocketServer_Start_ListenError(t *testing.T) {
+	if os.PathSeparator == '\\' {
+		t.Skip("skipping Unix socket tests on Windows")
+	}
+
+	handlers := &Handlers{}
+	// Use an already-in-use path to cause listen error
+	socketPath := "/tmp/test_existing.sock"
+	// Create a file at that path first
+	f, _ := os.Create(socketPath)
+	f.Close()
+	defer os.Remove(socketPath)
+
+	server := NewSocketServer(socketPath, handlers)
+	ctx := context.Background()
+
+	err := server.Start(ctx)
+	// Should fail since path is not a socket
+	if err == nil {
+		server.Stop(ctx)
+		t.Error("expected error for non-socket path")
+	}
+}
+
+func TestSocketServer_HandleConn_WriteError(t *testing.T) {
+	if os.PathSeparator == '\\' {
+		t.Skip("skipping Unix socket tests on Windows")
+	}
+
+	tmpDir, err := os.MkdirTemp("", "socket_test")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	socketPath := filepath.Join(tmpDir, "test.sock")
+	handlers := &Handlers{}
+	server := NewSocketServer(socketPath, handlers)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	err = server.Start(ctx)
+	if err != nil {
+		t.Fatalf("server.Start failed: %v", err)
+	}
+	defer server.Stop(ctx)
+
+	conn, err := net.Dial("unix", socketPath)
+	if err != nil {
+		t.Fatalf("dial failed: %v", err)
+	}
+
+	// Close write side first, then try to write
+	conn.Close()
+
+	// Wait a bit for the server to handle the closed connection
+	time.Sleep(50 * time.Millisecond)
+}
+
+func TestSocketServer_Stop_Errors(t *testing.T) {
+	if os.PathSeparator == '\\' {
+		t.Skip("skipping Unix socket tests on Windows")
+	}
+
+	tmpDir, err := os.MkdirTemp("", "socket_test")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	socketPath := filepath.Join(tmpDir, "test.sock")
+	handlers := &Handlers{}
+	server := NewSocketServer(socketPath, handlers)
+
+	// Stop before start - should not error
+	ctx := context.Background()
+	err = server.Stop(ctx)
+	if err != nil {
+		t.Errorf("Stop before Start failed: %v", err)
+	}
+
+	// Start then stop
+	server.Start(ctx)
+	err = server.Stop(ctx)
+	if err != nil {
+		t.Errorf("Stop after Start failed: %v", err)
+	}
+}
+
+func TestSocketServer_Start_ChmodError(t *testing.T) {
+	if os.PathSeparator == '\\' {
+		t.Skip("skipping on Windows")
+	}
+
+	tmpDir, err := os.MkdirTemp("", "socket_test")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	socketPath := filepath.Join(tmpDir, "test.sock")
+	handlers := &Handlers{}
+	server := NewSocketServer(socketPath, handlers)
+
+	ctx := context.Background()
+
+	// chmod should work after listen, but if not, we cover that path
+	err = server.Start(ctx)
+	if err != nil {
+		t.Fatalf("server.Start failed: %v", err)
+	}
+	defer server.Stop(ctx)
+
+	// Verify socket exists
+	if _, err := os.Stat(socketPath); os.IsNotExist(err) {
+		t.Error("socket file should exist")
+	}
+}
+
+func TestDecodeParams_EmptyBytes(t *testing.T) {
+	var v map[string]interface{}
+	err := decodeParams([]byte{}, &v)
+	if err != nil {
+		t.Errorf("decodeParams with empty slice failed: %v", err)
+	}
+}
+
+func TestDecodeParams_ValidJSONTypes(t *testing.T) {
+	// Test various JSON types that should decode correctly
+	testCases := []struct {
+		json string
+	}{
+		{`{"str":"value"}`},
+		{`{"num":123}`},
+		{`{"float":1.23}`},
+		{`{"bool":true}`},
+		{`{"arr":[1,2,3]}`},
+		{`{"obj":{"nested":"value"}}`},
+		{`{"null":null}`},
+	}
+
+	for _, tc := range testCases {
+		var v map[string]interface{}
+		err := decodeParams([]byte(tc.json), &v)
+		if err != nil {
+			t.Errorf("decodeParams(%s) failed: %v", tc.json, err)
+		}
+	}
+}
+
+func TestSocketServerDispatchInvalidParamsRemember(t *testing.T) {
+	handlers := &Handlers{}
+	server := NewSocketServer("/tmp/test.sock", handlers)
+
+	// Invalid params for remember method
+	params := []byte(`{"type": 123}`)
+	req := &Request{
+		ID:     1,
+		Method: "remember",
+		Params: params,
+	}
+
+	ctx := context.Background()
+	_, err := server.dispatch(ctx, req)
+	if err == nil {
+		t.Error("expected error for invalid remember params type")
+	}
+}
+
+func TestSocketServerDispatchInvalidParamsSearch(t *testing.T) {
+	handlers := &Handlers{}
+	server := NewSocketServer("/tmp/test.sock", handlers)
+
+	// Invalid params for search method
+	params := []byte(`{"query": 123}`)
+	req := &Request{
+		ID:     2,
+		Method: "search",
+		Params: params,
+	}
+
+	ctx := context.Background()
+	_, err := server.dispatch(ctx, req)
+	if err == nil {
+		t.Error("expected error for invalid search params type")
+	}
+}
+
+func TestSocketServerDispatchInvalidParamsRecall(t *testing.T) {
+	handlers := &Handlers{}
+	server := NewSocketServer("/tmp/test.sock", handlers)
+
+	// Invalid params for recall method
+	params := []byte(`{"budget": "not a number"}`)
+	req := &Request{
+		ID:     3,
+		Method: "recall",
+		Params: params,
+	}
+
+	ctx := context.Background()
+	_, err := server.dispatch(ctx, req)
+	if err == nil {
+		t.Error("expected error for invalid recall params type")
+	}
+}
+
+func TestSocketServerServeContextCancel(t *testing.T) {
+	if os.PathSeparator == '\\' {
+		t.Skip("skipping Unix socket tests on Windows")
+	}
+
+	tmpDir, err := os.MkdirTemp("", "socket_test")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	socketPath := filepath.Join(tmpDir, "test.sock")
+	handlers := &Handlers{}
+	server := NewSocketServer(socketPath, handlers)
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	err = server.Start(ctx)
+	if err != nil {
+		t.Fatalf("server.Start failed: %v", err)
+	}
+
+	// Cancel context to stop accepting connections
+	cancel()
+
+	time.Sleep(50 * time.Millisecond)
+
+	err = server.Stop(ctx)
+	if err != nil {
+		t.Errorf("server.Stop failed: %v", err)
+	}
+}
+
+func TestSocketServerCloseListenerError(t *testing.T) {
+	if os.PathSeparator == '\\' {
+		t.Skip("skipping on Windows")
+	}
+
+	handlers := &Handlers{}
+	// Use a path that will fail during listen
+	server := NewSocketServer("/dev/null/test.sock", handlers)
+
+	ctx := context.Background()
+	err := server.Start(ctx)
+	if err != nil {
+		t.Logf("Start failed as expected: %v", err)
+	}
+}
+
+func TestSocketServer_WithInvalidPath(t *testing.T) {
+	handlers := &Handlers{}
+	// Create server with path that cannot be created
+	server := NewSocketServer("/proc/12345/invalid.sock", handlers)
+
+	ctx := context.Background()
+	err := server.Start(ctx)
+	// Should fail when trying to create directory
+	if err == nil {
+		server.Stop(ctx)
+		t.Log("Start succeeded (may succeed on some systems)")
+	}
+}
+

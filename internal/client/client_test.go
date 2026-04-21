@@ -1503,3 +1503,556 @@ func TestClientDefaultTimeout(t *testing.T) {
 		t.Errorf("default timeout = %v, want 5s", cl.timeout)
 	}
 }
+
+// =============================================================================
+// Client Remember error path tests (18.8% coverage)
+// =============================================================================
+
+func TestRememberWithConnectError(t *testing.T) {
+	if os.PathSeparator == '\\' {
+		t.Skip("skipping Unix socket test on Windows")
+	}
+	tmpDir := t.TempDir()
+	// No socket created - Connect will fail
+	cl, _ := NewClient(tmpDir)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	_, err := cl.Remember(ctx, transport.RememberParams{Type: "test"})
+	if err == nil {
+		t.Error("Remember should fail when daemon not running")
+	}
+	if err != nil && !strings.Contains(err.Error(), "dial") && !strings.Contains(err.Error(), "connect") {
+		t.Logf("Remember error: %v", err)
+	}
+}
+
+func TestRememberWithWriteError(t *testing.T) {
+	if os.PathSeparator == '\\' {
+		t.Skip("skipping Unix socket test on Windows")
+	}
+	tmpDir := t.TempDir()
+	socketPath := filepath.Join(tmpDir, "daemon.sock")
+
+	ln, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Skipf("skipping: could not create socket: %v", err)
+	}
+	defer ln.Close()
+
+	// Server that immediately closes connection (will cause write error)
+	go func() {
+		conn, _ := ln.Accept()
+		if conn != nil {
+			conn.Close()
+		}
+	}()
+
+	cl, _ := NewClient(tmpDir)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	_, err = cl.Remember(ctx, transport.RememberParams{Type: "test"})
+	if err == nil {
+		t.Error("Remember should fail when connection is closed")
+	}
+}
+
+func TestRememberWithReadResponseError(t *testing.T) {
+	if os.PathSeparator == '\\' {
+		t.Skip("skipping Unix socket test on Windows")
+	}
+	tmpDir := t.TempDir()
+	socketPath := filepath.Join(tmpDir, "daemon.sock")
+
+	ln, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Skipf("skipping: could not create socket: %v", err)
+	}
+	defer ln.Close()
+
+	// Server that sends malformed response
+	go func() {
+		conn, _ := ln.Accept()
+		if conn != nil {
+			defer conn.Close()
+			reader := bufio.NewReader(conn)
+			for {
+				_, err := reader.ReadBytes('\n')
+				if err != nil {
+					return
+				}
+				// Send malformed response
+				conn.Write([]byte("not valid json\n"))
+				return
+			}
+		}
+	}()
+
+	cl, _ := NewClient(tmpDir)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	_, err = cl.Remember(ctx, transport.RememberParams{Type: "test"})
+	if err == nil {
+		t.Error("Remember should fail with malformed response")
+	}
+}
+
+func TestRememberWithRPCErrorResponse(t *testing.T) {
+	if os.PathSeparator == '\\' {
+		t.Skip("skipping Unix socket test on Windows")
+	}
+	tmpDir := t.TempDir()
+	socketPath := filepath.Join(tmpDir, "daemon.sock")
+
+	ln, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Skipf("skipping: could not create socket: %v", err)
+	}
+	defer ln.Close()
+
+	// Server that returns RPC error
+	go func() {
+		conn, _ := ln.Accept()
+		if conn != nil {
+			defer conn.Close()
+			reader := bufio.NewReader(conn)
+			for {
+				line, err := reader.ReadBytes('\n')
+				if err != nil {
+					return
+				}
+				var req transport.Request
+				if json.Unmarshal(line, &req) != nil {
+					return
+				}
+
+				resp := transport.Response{
+					JSONRPC: "2.0",
+					ID:      req.ID,
+					Error: &transport.RPCError{
+						Code:    -32603,
+						Message: "internal error",
+					},
+				}
+				data, _ := json.Marshal(resp)
+				conn.Write(append(data, '\n'))
+				return
+			}
+		}
+	}()
+
+	cl, _ := NewClient(tmpDir)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	_, err = cl.Remember(ctx, transport.RememberParams{Type: "test"})
+	if err == nil {
+		t.Error("Remember should fail on RPC error")
+	}
+	if err != nil && !strings.Contains(err.Error(), "rpc error") {
+		t.Errorf("expected rpc error, got: %v", err)
+	}
+}
+
+func TestRememberWithResultUnmarshalError(t *testing.T) {
+	if os.PathSeparator == '\\' {
+		t.Skip("skipping Unix socket test on Windows")
+	}
+	tmpDir := t.TempDir()
+	socketPath := filepath.Join(tmpDir, "daemon.sock")
+
+	ln, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Skipf("skipping: could not create socket: %v", err)
+	}
+	defer ln.Close()
+
+	// Server that returns valid JSON but wrong type for result
+	go func() {
+		conn, _ := ln.Accept()
+		if conn != nil {
+			defer conn.Close()
+			reader := bufio.NewReader(conn)
+			for {
+				line, err := reader.ReadBytes('\n')
+				if err != nil {
+					return
+				}
+				var req transport.Request
+				if json.Unmarshal(line, &req) != nil {
+					return
+				}
+
+				resp := transport.Response{
+					JSONRPC: "2.0",
+					ID:      req.ID,
+					Result: "not an object", // Invalid result type
+				}
+				data, _ := json.Marshal(resp)
+				conn.Write(append(data, '\n'))
+				return
+			}
+		}
+	}()
+
+	cl, _ := NewClient(tmpDir)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	_, err = cl.Remember(ctx, transport.RememberParams{Type: "test"})
+	if err == nil {
+		t.Error("Remember should fail when result unmarshal fails")
+	}
+}
+
+// =============================================================================
+// Client Search error path tests (18.8% coverage)
+// =============================================================================
+
+func TestSearchWithConnectError(t *testing.T) {
+	if os.PathSeparator == '\\' {
+		t.Skip("skipping Unix socket test on Windows")
+	}
+	tmpDir := t.TempDir()
+	// No socket - connection refused
+	cl, _ := NewClient(tmpDir)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	_, err := cl.Search(ctx, transport.SearchParams{Query: "test"})
+	if err == nil {
+		t.Error("Search should fail when daemon not running")
+	}
+}
+
+func TestSearchWithWriteError(t *testing.T) {
+	if os.PathSeparator == '\\' {
+		t.Skip("skipping Unix socket test on Windows")
+	}
+	tmpDir := t.TempDir()
+	socketPath := filepath.Join(tmpDir, "daemon.sock")
+
+	ln, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Skipf("skipping: could not create socket: %v", err)
+	}
+	defer ln.Close()
+
+	go func() {
+		conn, _ := ln.Accept()
+		if conn != nil {
+			conn.Close()
+		}
+	}()
+
+	cl, _ := NewClient(tmpDir)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	_, err = cl.Search(ctx, transport.SearchParams{Query: "test"})
+	if err == nil {
+		t.Error("Search should fail when connection closed")
+	}
+}
+
+func TestSearchWithRPCError(t *testing.T) {
+	if os.PathSeparator == '\\' {
+		t.Skip("skipping Unix socket test on Windows")
+	}
+	tmpDir := t.TempDir()
+	socketPath := filepath.Join(tmpDir, "daemon.sock")
+
+	ln, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Skipf("skipping: could not create socket: %v", err)
+	}
+	defer ln.Close()
+
+	go func() {
+		conn, _ := ln.Accept()
+		if conn != nil {
+			defer conn.Close()
+			reader := bufio.NewReader(conn)
+			for {
+				line, err := reader.ReadBytes('\n')
+				if err != nil {
+					return
+				}
+				var req transport.Request
+				if json.Unmarshal(line, &req) != nil {
+					return
+				}
+
+				resp := transport.Response{
+					JSONRPC: "2.0",
+					ID:      req.ID,
+					Error: &transport.RPCError{
+						Code:    -32603,
+						Message: "search failed",
+					},
+				}
+				data, _ := json.Marshal(resp)
+				conn.Write(append(data, '\n'))
+				return
+			}
+		}
+	}()
+
+	cl, _ := NewClient(tmpDir)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	_, err = cl.Search(ctx, transport.SearchParams{Query: "test"})
+	if err == nil {
+		t.Error("Search should fail on RPC error")
+	}
+}
+
+func TestSearchWithResultUnmarshalError(t *testing.T) {
+	if os.PathSeparator == '\\' {
+		t.Skip("skipping Unix socket test on Windows")
+	}
+	tmpDir := t.TempDir()
+	socketPath := filepath.Join(tmpDir, "daemon.sock")
+
+	ln, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Skipf("skipping: could not create socket: %v", err)
+	}
+	defer ln.Close()
+
+	go func() {
+		conn, _ := ln.Accept()
+		if conn != nil {
+			defer conn.Close()
+			reader := bufio.NewReader(conn)
+			for {
+				line, err := reader.ReadBytes('\n')
+				if err != nil {
+					return
+				}
+				var req transport.Request
+				if json.Unmarshal(line, &req) != nil {
+					return
+				}
+
+				resp := transport.Response{
+					JSONRPC: "2.0",
+					ID:      req.ID,
+					Result: 123, // Invalid - should be object
+				}
+				data, _ := json.Marshal(resp)
+				conn.Write(append(data, '\n'))
+				return
+			}
+		}
+	}()
+
+	cl, _ := NewClient(tmpDir)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	_, err = cl.Search(ctx, transport.SearchParams{Query: "test"})
+	if err == nil {
+		t.Error("Search should fail when result unmarshal fails")
+	}
+}
+
+// =============================================================================
+// Client Recall error path tests (18.8% coverage)
+// =============================================================================
+
+func TestRecallWithConnectError(t *testing.T) {
+	if os.PathSeparator == '\\' {
+		t.Skip("skipping Unix socket test on Windows")
+	}
+	tmpDir := t.TempDir()
+	// No socket - connection refused
+	cl, _ := NewClient(tmpDir)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	_, err := cl.Recall(ctx, transport.RecallParams{})
+	if err == nil {
+		t.Error("Recall should fail when daemon not running")
+	}
+}
+
+func TestRecallWithWriteError(t *testing.T) {
+	if os.PathSeparator == '\\' {
+		t.Skip("skipping Unix socket test on Windows")
+	}
+	tmpDir := t.TempDir()
+	socketPath := filepath.Join(tmpDir, "daemon.sock")
+
+	ln, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Skipf("skipping: could not create socket: %v", err)
+	}
+	defer ln.Close()
+
+	go func() {
+		conn, _ := ln.Accept()
+		if conn != nil {
+			conn.Close()
+		}
+	}()
+
+	cl, _ := NewClient(tmpDir)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	_, err = cl.Recall(ctx, transport.RecallParams{})
+	if err == nil {
+		t.Error("Recall should fail when connection closed")
+	}
+}
+
+func TestRecallWithRPCError(t *testing.T) {
+	if os.PathSeparator == '\\' {
+		t.Skip("skipping Unix socket test on Windows")
+	}
+	tmpDir := t.TempDir()
+	socketPath := filepath.Join(tmpDir, "daemon.sock")
+
+	ln, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Skipf("skipping: could not create socket: %v", err)
+	}
+	defer ln.Close()
+
+	go func() {
+		conn, _ := ln.Accept()
+		if conn != nil {
+			defer conn.Close()
+			reader := bufio.NewReader(conn)
+			for {
+				line, err := reader.ReadBytes('\n')
+				if err != nil {
+					return
+				}
+				var req transport.Request
+				if json.Unmarshal(line, &req) != nil {
+					return
+				}
+
+				resp := transport.Response{
+					JSONRPC: "2.0",
+					ID:      req.ID,
+					Error: &transport.RPCError{
+						Code:    -32603,
+						Message: "recall failed",
+					},
+				}
+				data, _ := json.Marshal(resp)
+				conn.Write(append(data, '\n'))
+				return
+			}
+		}
+	}()
+
+	cl, _ := NewClient(tmpDir)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	_, err = cl.Recall(ctx, transport.RecallParams{})
+	if err == nil {
+		t.Error("Recall should fail on RPC error")
+	}
+}
+
+func TestRecallWithResultUnmarshalError(t *testing.T) {
+	if os.PathSeparator == '\\' {
+		t.Skip("skipping Unix socket test on Windows")
+	}
+	tmpDir := t.TempDir()
+	socketPath := filepath.Join(tmpDir, "daemon.sock")
+
+	ln, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Skipf("skipping: could not create socket: %v", err)
+	}
+	defer ln.Close()
+
+	go func() {
+		conn, _ := ln.Accept()
+		if conn != nil {
+			defer conn.Close()
+			reader := bufio.NewReader(conn)
+			for {
+				line, err := reader.ReadBytes('\n')
+				if err != nil {
+					return
+				}
+				var req transport.Request
+				if json.Unmarshal(line, &req) != nil {
+					return
+				}
+
+				resp := transport.Response{
+					JSONRPC: "2.0",
+					ID:      req.ID,
+					Result: 123, // Invalid - should be object
+				}
+				data, _ := json.Marshal(resp)
+				conn.Write(append(data, '\n'))
+				return
+			}
+		}
+	}()
+
+	cl, _ := NewClient(tmpDir)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	_, err = cl.Recall(ctx, transport.RecallParams{})
+	if err == nil {
+		t.Error("Recall should fail when result unmarshal fails")
+	}
+}
+
+// =============================================================================
+// Client Connect timeout tests
+// =============================================================================
+
+func TestClientConnectToUnixSocketRefused(t *testing.T) {
+	if os.PathSeparator == '\\' {
+		t.Skip("skipping Unix socket test on Windows")
+	}
+	tmpDir := t.TempDir()
+	socketPath := filepath.Join(tmpDir, "daemon.sock")
+
+	// Create socket but don't accept - simulate refused connection
+	ln, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Skipf("skipping: could not create socket: %v", err)
+	}
+	// Don't accept - just close to simulate refused
+
+	cl, _ := NewClient(tmpDir)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	_, err = cl.Connect(ctx)
+	if err == nil {
+		t.Error("Connect should fail when nothing accepting")
+	}
+
+	ln.Close()
+}
