@@ -3,6 +3,7 @@ package capture
 import (
 	"context"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 
@@ -79,15 +80,14 @@ func (gc *GitCapture) SubmitPush(ctx context.Context, remote string, branch stri
 
 // GitLog parses git log output.
 func GitLog(limit int) ([]GitCommit, error) {
-	cmd := exec.Command("git", "log", "--oneline", "-n", strings.TrimSpace(string(rune(limit))))
+	cmd := exec.Command("git", "log", "--oneline", "-n", strconv.Itoa(limit))
 	out, err := cmd.Output()
 	if err != nil {
 		return nil, err
 	}
 
 	var commits []GitCommit
-	lines := strings.Split(string(out), "\n")
-	for _, line := range lines {
+	for line := range strings.SplitSeq(string(out), "\n") {
 		if line == "" {
 			continue
 		}

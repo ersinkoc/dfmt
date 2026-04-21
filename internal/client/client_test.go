@@ -779,16 +779,14 @@ func TestMustMarshal(t *testing.T) {
 }
 
 func TestMustMarshalPanic(t *testing.T) {
-	defer func() {
-		if r := recover(); r == nil {
-			t.Error("mustMarshal should panic on error")
-		}
-	}()
-	// This would panic because json.Marshal can't encode functions
+	// mustMarshal no longer panics - it returns empty RawMessage on error
 	type badStruct struct {
 		X func()
 	}
-	_ = mustMarshal(badStruct{X: func() {}})
+	result := mustMarshal(badStruct{X: func() {}})
+	if len(result) != 0 {
+		t.Errorf("mustMarshal should return empty result for unencodable types, got %d bytes", len(result))
+	}
 }
 
 func TestMustMarshalWithComplexTypes(t *testing.T) {

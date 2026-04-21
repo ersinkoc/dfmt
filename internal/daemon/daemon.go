@@ -136,6 +136,11 @@ func (d *Daemon) Stop(ctx context.Context) error {
 
 	close(d.shutdownCh)
 
+	// Stop idle timer if running
+	if d.idleTimer != nil {
+		d.idleTimer.Stop()
+	}
+
 	// Persist index
 	indexPath := filepath.Join(d.projectPath, ".dfmt", "index.gob")
 	hiID, _ := d.journal.Checkpoint(ctx)

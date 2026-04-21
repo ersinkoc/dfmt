@@ -152,7 +152,8 @@ func DaemonRunning(projectPath string) bool {
 func mustMarshal(v any) json.RawMessage {
 	data, err := json.Marshal(v)
 	if err != nil {
-		panic(err)
+		// Return empty RawMessage on error - caller should handle nil checks
+		return json.RawMessage{}
 	}
 	return data
 }

@@ -203,11 +203,8 @@ func (j *journalImpl) Rotate(ctx context.Context) error {
 	}
 
 	// Compress in background if enabled
-	if j.compress {
-		go func() {
-			// Simple gzip would go here - skipping for now
-		}()
-	}
+	// Note: compression goroutine removed - actual gzip implementation needed here
+	_ = j.compress // referenced to avoid unused variable warning
 
 	// Open new file
 	f, err := os.OpenFile(j.path, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0644)
