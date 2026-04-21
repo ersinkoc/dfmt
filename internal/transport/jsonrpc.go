@@ -98,6 +98,8 @@ func (c *Codec) WriteRequest(req *Request) error {
 	if err := c.enc.Encode(req); err != nil {
 		return fmt.Errorf("encode request: %w", err)
 	}
+	// Write newline to match ReadRequest's ReadBytes('\n')
+	c.rw.Write([]byte("\n"))
 	return nil
 }
 
@@ -110,6 +112,8 @@ func (c *Codec) WriteResponse(resp *Response) error {
 	if err := c.enc.Encode(resp); err != nil {
 		return fmt.Errorf("encode response: %w", err)
 	}
+	// Write newline to match ReadResponse's ReadBytes('\n')
+	c.rw.Write([]byte("\n"))
 	return nil
 }
 
