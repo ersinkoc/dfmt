@@ -57,6 +57,8 @@ func (s *HTTPServer) Start(ctx context.Context) error {
 	mux.HandleFunc("/", s.handle)
 	mux.HandleFunc("/dashboard", s.handleDashboard)
 	mux.HandleFunc("/api/stats", s.handleAPIStats)
+	mux.HandleFunc("/healthz", s.handleHealth)
+	mux.HandleFunc("/readyz", s.handleHealth)
 
 	s.server = &http.Server{
 		Handler:      mux,
@@ -95,11 +97,24 @@ func (s *HTTPServer) Start(ctx context.Context) error {
 
 	// Start serving
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				// Log and exit - don't let panic kill the server
+				fmt.Printf("http server panic: %v\n", r)
+			}
+		}()
 		<-ctx.Done()
 		s.server.Shutdown(context.Background())
 	}()
 
-	go s.server.Serve(ln)
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				fmt.Printf("http serve panic: %v\n", r)
+			}
+		}()
+		s.server.Serve(ln)
+	}()
 
 	s.mu.Lock()
 	s.running = true
@@ -139,9 +154,10 @@ func (s *HTTPServer) handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	body, err := io.ReadAll(r.Body)
+	// Limit request body to 1MB to prevent OOM
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
 	if err != nil {
-		http.Error(w, "Bad request", http.StatusBadRequest)
+		http.Error(w, "Request too large", http.StatusRequestEntityTooLarge)
 		return
 	}
 	defer r.Body.Close()
@@ -158,7 +174,7 @@ func (s *HTTPServer) handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var resp interface{}
+	var resp any
 	switch req.Method {
 	case "dfmt.remember", "remember":
 		resp = s.handleRemember(ctx, req)
@@ -314,4 +330,10 @@ func (s *HTTPServer) handleAPIStats(w http.ResponseWriter, r *http.Request) {
 		ID:      req.ID,
 		Result:  resp,
 	})
+}
+
+func (s *HTTPServer) handleHealth(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/plain")
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte("ok"))
 }

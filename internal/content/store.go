@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 	"time"
 
@@ -187,13 +188,9 @@ func (s *Store) Search(query string, limit int) ([]*Chunk, error) {
 	}
 
 	// Sort by score descending
-	for i := 0; i < len(results); i++ {
-		for j := i + 1; j < len(results); j++ {
-			if results[j].score > results[i].score {
-				results[i], results[j] = results[j], results[i]
-			}
-		}
-	}
+	sort.Slice(results, func(i, j int) bool {
+		return results[i].score > results[j].score
+	})
 
 	if limit > 0 && len(results) > limit {
 		results = results[:limit]

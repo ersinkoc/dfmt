@@ -4,6 +4,7 @@ import (
 	"container/heap"
 	"encoding/gob"
 	"os"
+	"strings"
 	"sync"
 )
 
@@ -98,11 +99,16 @@ func joinStrings(parts []string, sep string) string {
 	if len(parts) == 0 {
 		return ""
 	}
-	result := parts[0]
-	for i := 1; i < len(parts); i++ {
-		result += sep + parts[i]
+	if len(parts) == 1 {
+		return parts[0]
 	}
-	return result
+	var b strings.Builder
+	b.WriteString(parts[0])
+	for i := 1; i < len(parts); i++ {
+		b.WriteString(sep)
+		b.WriteString(parts[i])
+	}
+	return b.String()
 }
 
 // SearchBM25 searches the index using BM25.
@@ -183,9 +189,25 @@ func (ix *Index) Remove(id string) {
 	defer ix.mu.Unlock()
 
 	delete(ix.docLen, id)
-	// Note: In a full implementation, we'd also remove from posting lists
-	// For now, we just decrement total
 	ix.totalDocs--
+
+	// Remove from all posting lists
+	for stem, pl := range ix.stemPL {
+		newIDs := make([]string, 0, len(pl.IDs))
+		newTFs := make([]uint16, 0, len(pl.TFs))
+		for i, docID := range pl.IDs {
+			if docID != id {
+				newIDs = append(newIDs, docID)
+				newTFs = append(newTFs, pl.TFs[i])
+			}
+		}
+		if len(newIDs) == 0 {
+			delete(ix.stemPL, stem)
+		} else {
+			pl.IDs = newIDs
+			pl.TFs = newTFs
+		}
+	}
 }
 
 // Persist saves the index to a file.
