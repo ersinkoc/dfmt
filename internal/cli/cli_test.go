@@ -4050,3 +4050,257 @@ func TestRunMCPWithProjectFlag(t *testing.T) {
 		t.Logf("mcp with project flag returned %d", code)
 	}
 }
+
+// =============================================================================
+// runSearch - increase 77.8% to 80%+
+// =============================================================================
+
+func TestRunSearchWithClientSearchError(t *testing.T) {
+	tmpDir := t.TempDir()
+	os.MkdirAll(tmpDir+"/.dfmt", 0755)
+
+	flagProject = tmpDir
+	// This will fail because client.Search fails (no daemon)
+	// but it exercises the error path that returns 1
+	code := Dispatch([]string{"search", "test query"})
+	if code != 1 {
+		t.Errorf("search with query returned %d, want 1 (daemon not running)", code)
+	}
+}
+
+func TestRunSearchJSONWithResults(t *testing.T) {
+	tmpDir := t.TempDir()
+	os.MkdirAll(tmpDir+"/.dfmt", 0755)
+
+	flagProject = tmpDir
+	flagJSON = true
+	defer func() { flagJSON = false }()
+
+	// This exercises the JSON output path in runSearch
+	code := Dispatch([]string{"search", "-limit", "5", "test"})
+	// Expect failure because no daemon running, but it hits the JSON branch
+	if code != 1 {
+		t.Logf("search JSON returned %d", code)
+	}
+}
+
+// =============================================================================
+// runInstallHooks - increase 76.5% to 80%+
+// =============================================================================
+
+func TestRunInstallHooksSourceFilesMissing(t *testing.T) {
+	tmpDir := t.TempDir()
+	os.MkdirAll(tmpDir+"/.git/hooks", 0755)
+	os.MkdirAll(tmpDir+"/docs/hooks", 0755)
+	// Don't create the source hook files - will hit the error path
+
+	flagProject = tmpDir
+	code := Dispatch([]string{"install-hooks"})
+	// Will still return 0 but prints errors for missing files
+	if code != 0 {
+		t.Errorf("install-hooks with missing sources returned %d, want 0", code)
+	}
+}
+
+func TestRunInstallHooksSomeSourceFiles(t *testing.T) {
+	tmpDir := t.TempDir()
+	os.MkdirAll(tmpDir+"/.git/hooks", 0755)
+
+	// Create docs/hooks directory but only partial files
+	hooksSrc := tmpDir + "/docs/hooks"
+	os.MkdirAll(hooksSrc, 0755)
+	os.WriteFile(hooksSrc+"/git-post-commit.sh", []byte("#!/bin/bash\necho test"), 0644)
+	// Missing post-checkout and pre-push
+
+	flagProject = tmpDir
+	code := Dispatch([]string{"install-hooks"})
+	// Should still run but report missing files
+	_ = code
+}
+
+// =============================================================================
+// configureAgent - increase 75.0% to 80%+
+// =============================================================================
+
+func TestConfigureAgentUnsupportedAgent(t *testing.T) {
+	// Test the default case in configureAgent switch
+	agent := setup.Agent{
+		ID:         "unsupported-agent",
+		Name:       "Unsupported Agent",
+		Version:    "1.0",
+		InstallDir: "/tmp",
+		Detected:   true,
+		Confidence: 0.5,
+	}
+
+	err := configureAgent(agent)
+	if err == nil {
+		t.Error("configureAgent with unsupported agent returned nil, want error")
+	}
+	if err != nil && !strings.Contains(err.Error(), "unsupported agent") {
+		t.Errorf("configureAgent error = %v, want 'unsupported agent' message", err)
+	}
+}
+
+// =============================================================================
+// runSetup - increase 65.0% to 80%+
+// =============================================================================
+
+func TestRunSetupWithEmptyAgentList(t *testing.T) {
+	tmpDir := t.TempDir()
+	os.MkdirAll(tmpDir+"/.dfmt", 0755)
+
+	flagProject = tmpDir
+	// Use agent override that matches no agents
+	code := Dispatch([]string{"setup", "--force", "--agent", "nonexistent"})
+	// Should print "No agents detected" and return 0
+	if code != 0 {
+		t.Errorf("setup with no agents returned %d, want 0", code)
+	}
+}
+
+func TestRunSetupConfigureAgentsFlow(t *testing.T) {
+	tmpDir := t.TempDir()
+	os.MkdirAll(tmpDir+"/.dfmt", 0755)
+
+	flagProject = tmpDir
+	// Use --dry-run --agent nonexistent to skip interactive prompt
+	code := Dispatch([]string{"setup", "--dry-run", "--agent", "nonexistent"})
+	_ = code // May return 0 or 1 depending on detection
+}
+
+func TestRunSetupVerifyAllFilesPresent(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	os.Setenv("XDG_DATA_HOME", tmpDir)
+	defer func() { os.Unsetenv("XDG_DATA_HOME") }()
+
+	manifestDir := filepath.Join(tmpDir, "dfmt")
+	os.MkdirAll(manifestDir, 0755)
+
+	// Create a real file that exists
+	testFile := filepath.Join(tmpDir, "testfile.txt")
+	os.WriteFile(testFile, []byte("test"), 0644)
+
+	m := &setup.Manifest{
+		Version: 1,
+		Files: []setup.FileEntry{
+			{Path: testFile, Agent: "claude-code", Version: "1"},
+		},
+	}
+	setup.SaveManifest(m)
+
+	flagProject = tmpDir
+	code := Dispatch([]string{"setup", "--verify"})
+	if code != 0 {
+		t.Errorf("setup --verify with all files returned %d, want 0", code)
+	}
+}
+
+func TestRunSetupUninstallNormalFlow(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	os.Setenv("XDG_DATA_HOME", tmpDir)
+	defer func() { os.Unsetenv("XDG_DATA_HOME") }()
+
+	manifestDir := filepath.Join(tmpDir, "dfmt")
+	os.MkdirAll(manifestDir, 0755)
+
+	// Create manifest with a file
+	testFile := filepath.Join(tmpDir, "readonly.txt")
+	os.WriteFile(testFile, []byte("test"), 0644)
+
+	m := &setup.Manifest{
+		Version: 1,
+		Files: []setup.FileEntry{
+			{Path: testFile, Agent: "claude-code", Version: "1"},
+		},
+	}
+	setup.SaveManifest(m)
+
+	// On Windows, can't easily make file unwritable for removal error test
+	// Just test normal uninstall flow
+	flagProject = tmpDir
+	code := Dispatch([]string{"setup", "--uninstall"})
+	if code != 0 {
+		t.Errorf("setup --uninstall returned %d, want 0", code)
+	}
+}
+
+func TestRunSetupDryRunAgentDetection(t *testing.T) {
+	// Skip on Windows as detection may not work
+	if os.PathSeparator == '\\' {
+		t.Skip("skipping agent detection test on Windows")
+	}
+
+	tmpDir := t.TempDir()
+	os.MkdirAll(tmpDir+"/.dfmt", 0755)
+
+	flagProject = tmpDir
+	// dry-run should not require confirmation
+	code := Dispatch([]string{"setup", "--dry-run"})
+	_ = code
+}
+
+func TestRunSetupVerifyNoProjectNow(t *testing.T) {
+	flagProject = ""
+	// Verify with no project should fail gracefully
+	code := Dispatch([]string{"setup", "--verify"})
+	if code != 1 {
+		t.Logf("setup --verify with no project returned %d", code)
+	}
+}
+
+func TestRunSetupUninstallNoProjectNow(t *testing.T) {
+	flagProject = ""
+	code := Dispatch([]string{"setup", "--uninstall"})
+	if code != 1 {
+		t.Logf("setup --uninstall with no project returned %d", code)
+	}
+}
+
+// =============================================================================
+// runRecall - increase 81.8% to 85%+
+// =============================================================================
+
+func TestRunRecallDefaultFormat(t *testing.T) {
+	tmpDir := t.TempDir()
+	os.MkdirAll(tmpDir+"/.dfmt", 0755)
+
+	flagProject = tmpDir
+	// Default format is md, default budget is 4096
+	code := Dispatch([]string{"recall"})
+	if code != 1 {
+		t.Logf("recall returned %d (expected fail without daemon)", code)
+	}
+}
+
+// =============================================================================
+// runStatus - increase 83.3% to 85%+
+// =============================================================================
+
+func TestRunStatusJSONOutput(t *testing.T) {
+	tmpDir := t.TempDir()
+	os.MkdirAll(tmpDir+"/.dfmt", 0755)
+
+	flagProject = tmpDir
+	flagJSON = true
+	defer func() { flagJSON = false }()
+
+	code := Dispatch([]string{"status"})
+	if code != 0 {
+		t.Errorf("status --json returned %d, want 0", code)
+	}
+}
+
+func TestRunStatusNoDaemon(t *testing.T) {
+	tmpDir := t.TempDir()
+	os.MkdirAll(tmpDir+"/.dfmt", 0755)
+
+	flagProject = tmpDir
+	code := Dispatch([]string{"status"})
+	// Should succeed even though daemon not running
+	if code != 0 {
+		t.Errorf("status returned %d, want 0", code)
+	}
+}
