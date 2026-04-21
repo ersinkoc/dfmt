@@ -223,15 +223,28 @@ func (j *journalImpl) Close() error {
 	defer j.mu.Unlock()
 
 	// Flush pending
+	var lastErr error
 	for _, e := range j.pending {
-		data, _ := json.Marshal(e)
-		j.file.Write(append(data, '\n'))
+		data, err := json.Marshal(e)
+		if err != nil {
+			lastErr = fmt.Errorf("marshal event: %w", err)
+			continue
+		}
+		if _, err := j.file.Write(append(data, '\n')); err != nil {
+			lastErr = fmt.Errorf("write event: %w", err)
+			continue
+		}
 	}
 	j.pending = nil
 
 	// Sync before close
-	j.file.Sync()
-	return j.file.Close()
+	if err := j.file.Sync(); err != nil {
+		lastErr = fmt.Errorf("sync: %w", err)
+	}
+	if err := j.file.Close(); err != nil {
+		return fmt.Errorf("close: %w", err)
+	}
+	return lastErr
 }
 
 // scanLastID scans the file to find the last event ID.

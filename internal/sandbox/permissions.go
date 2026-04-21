@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -170,12 +172,21 @@ func globToRegex(pattern string) string {
 	return "^" + result.String() + "$"
 }
 
+// regexCache caches compiled regex patterns for performance.
+var regexCache sync.Map
+
 func regexMatch(pattern, text string) bool {
-	// Use Go's regexp for proper matching
+	// Check cache first
+	if cached, ok := regexCache.Load(pattern); ok {
+		return cached.(*regexp.Regexp).MatchString(text)
+	}
+
+	// Compile and cache
 	re, err := regexp.Compile(pattern)
 	if err != nil {
 		return false
 	}
+	regexCache.Store(pattern, re)
 	return re.MatchString(text)
 }
 
@@ -226,15 +237,74 @@ func (s *SandboxImpl) PolicyCheck(op, text string) error {
 	return nil
 }
 
+// extractBaseCommand extracts the base command (first word) from a shell command.
+func extractBaseCommand(cmd string) string {
+	// Remove leading/trailing whitespace
+	cmd = strings.TrimSpace(cmd)
+
+	// Handle quoted strings - find first unquoted space
+	inQuote := false
+	quoteChar := byte(0)
+	for i := 0; i < len(cmd); i++ {
+		if !inQuote && (cmd[i] == '"' || cmd[i] == '\'') {
+			inQuote = true
+			quoteChar = cmd[i]
+		} else if inQuote && cmd[i] == quoteChar {
+			inQuote = false
+		} else if !inQuote && cmd[i] == ' ' {
+			return cmd[:i]
+		}
+	}
+	return cmd
+}
+
+// shellOperators returns true if cmd contains shell operators that chain commands.
+func hasShellChainOperators(cmd string) bool {
+	// Check for common shell operators that chain commands
+	operators := []string{"&&", "||", ";", "|", ">", ">>", "<", "<<", "\n"}
+	for _, op := range operators {
+		if strings.Contains(cmd, op) {
+			return true
+		}
+	}
+	return false
+}
+
 // Exec implements the Sandbox interface.
 func (s *SandboxImpl) Exec(ctx context.Context, req ExecReq) (ExecResp, error) {
-	// Policy check
+	// Policy check - for shell commands, check each chained command
 	cmd := req.Code
-	if req.Lang != "" && req.Lang != "sh" && req.Lang != "bash" {
+	isLangPrefix := req.Lang != "" && req.Lang != "sh" && req.Lang != "bash"
+	if isLangPrefix {
 		cmd = req.Lang + " " + cmd
 	}
-	if err := s.PolicyCheck("exec", cmd); err != nil {
-		return ExecResp{}, err
+
+	// For shell commands with operators, check each command separately
+	if hasShellChainOperators(cmd) {
+		// Split by operators and check each command
+		parts := splitByShellOperators(cmd)
+		for _, part := range parts {
+			part = strings.TrimSpace(part)
+			if part == "" {
+				continue
+			}
+			baseCmd := extractBaseCommand(part)
+			if err := s.PolicyCheck("exec", baseCmd); err != nil {
+				return ExecResp{}, fmt.Errorf("operation denied by policy: %s: %v", part, err)
+			}
+		}
+	} else if isLangPrefix {
+		// For non-shell single commands, check the full command with lang prefix
+		// e.g., "python script.py" against "python *"
+		if err := s.PolicyCheck("exec", cmd); err != nil {
+			return ExecResp{}, err
+		}
+	} else {
+		// For shell single commands, extract base and check
+		baseCmd := extractBaseCommand(cmd)
+		if err := s.PolicyCheck("exec", baseCmd); err != nil {
+			return ExecResp{}, err
+		}
 	}
 
 	// Get runtime
@@ -247,15 +317,93 @@ func (s *SandboxImpl) Exec(ctx context.Context, req ExecReq) (ExecResp, error) {
 	return s.execImpl(ctx, req, rt)
 }
 
+// splitByShellOperators splits a command string by shell operators.
+func splitByShellOperators(cmd string) []string {
+	var parts []string
+	var current strings.Builder
+	inQuote := false
+	quoteChar := byte(0)
+
+	for i := 0; i < len(cmd); i++ {
+		c := cmd[i]
+
+		if !inQuote && (c == '"' || c == '\'') {
+			inQuote = true
+			quoteChar = c
+			current.WriteByte(c)
+		} else if inQuote && c == quoteChar {
+			inQuote = false
+			current.WriteByte(c)
+		} else if !inQuote {
+			// Check for two-char operators
+			if i+1 < len(cmd) {
+				next := cmd[i+1]
+				if c == '&' && next == '&' {
+					parts = append(parts, current.String())
+					current.Reset()
+					i++
+					continue
+				}
+				if c == '|' && next == '|' {
+					parts = append(parts, current.String())
+					current.Reset()
+					i++
+					continue
+				}
+			}
+			if c == ';' || c == '|' || c == '>' || c == '<' {
+				if current.Len() > 0 {
+					parts = append(parts, current.String())
+					current.Reset()
+				}
+				continue
+			}
+			if c == '\n' {
+				if current.Len() > 0 {
+					parts = append(parts, current.String())
+					current.Reset()
+				}
+				continue
+			}
+			current.WriteByte(c)
+		} else {
+			current.WriteByte(c)
+		}
+	}
+
+	if current.Len() > 0 {
+		parts = append(parts, current.String())
+	}
+
+	return parts
+}
+
 // Read implements the Sandbox interface.
 func (s *SandboxImpl) Read(ctx context.Context, req ReadReq) (ReadResp, error) {
-	// Policy check
-	if err := s.PolicyCheck("read", req.Path); err != nil {
+	// Clean the path to prevent directory traversal
+	cleanPath := filepath.Clean(req.Path)
+
+	// If working directory is set and path is relative, verify it's within wd
+	if s.wd != "" && !filepath.IsAbs(cleanPath) {
+		absWd, err := filepath.Abs(s.wd)
+		if err == nil {
+			absPath := filepath.Join(absWd, cleanPath)
+			cleanAbsPath := filepath.Clean(absPath)
+			// Verify the resolved path is still within working directory
+			rel, err := filepath.Rel(absWd, cleanAbsPath)
+			if err != nil || strings.HasPrefix(rel, "..") {
+				return ReadResp{}, fmt.Errorf("path outside working directory: %s", req.Path)
+			}
+		}
+	}
+
+	// Policy check with the clean path
+	if err := s.PolicyCheck("read", cleanPath); err != nil {
 		return ReadResp{}, err
 	}
 
 	// Basic read - full implementation would handle chunking
-	data, err := os.ReadFile(req.Path)
+	data, err := os.ReadFile(cleanPath)
 	if err != nil {
 		return ReadResp{}, err
 	}
@@ -372,13 +520,22 @@ func writeTempFile(lang, code string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer tmpfile.Close()
+	// Ensure cleanup on error - name needed for removal before Close
+	tmpName := tmpfile.Name()
+	defer func() {
+		if err != nil {
+			tmpfile.Close()
+			os.Remove(tmpName)
+		}
+	}()
 
 	if _, err := tmpfile.WriteString(code); err != nil {
 		return "", err
 	}
-
-	return tmpfile.Name(), nil
+	// Sync before returning to ensure data is written
+	tmpfile.Sync()
+	tmpfile.Close()
+	return tmpName, nil
 }
 
 // buildEnv builds the environment for a subprocess.

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ersinkoc/dfmt/internal/config"
@@ -31,10 +32,10 @@ type Daemon struct {
 	server     Server
 	handlers   *transport.Handlers
 
-	mu         sync.Mutex
-	running    bool
-	idleTimer  *time.Timer
-	shutdownCh chan struct{}
+	mu          sync.Mutex
+	running     atomic.Bool // Use atomic for race-free access
+	idleTimer   *time.Timer
+	shutdownCh  chan struct{}
 }
 
 // New creates a new daemon instance.
@@ -119,16 +120,14 @@ func New(projectPath string, cfg *config.Config) (*Daemon, error) {
 
 // Start starts the daemon.
 func (d *Daemon) Start(ctx context.Context) error {
-	d.mu.Lock()
-	if d.running {
-		d.mu.Unlock()
+	if d.running.Load() {
 		return fmt.Errorf("daemon already running")
 	}
-	d.running = true
-	d.mu.Unlock()
+	d.running.Store(true)
 
 	// Start server
 	if err := d.server.Start(ctx); err != nil {
+		d.running.Store(false)
 		return fmt.Errorf("start server: %w", err)
 	}
 
@@ -149,13 +148,9 @@ func (d *Daemon) Start(ctx context.Context) error {
 
 // Stop stops the daemon gracefully.
 func (d *Daemon) Stop(ctx context.Context) error {
-	d.mu.Lock()
-	if !d.running {
-		d.mu.Unlock()
-		return nil
+	if !d.running.CompareAndSwap(true, false) {
+		return nil // Already stopped
 	}
-	d.running = false
-	d.mu.Unlock()
 
 	// Close shutdown channel only once
 	select {
@@ -172,7 +167,10 @@ func (d *Daemon) Stop(ctx context.Context) error {
 
 	// Persist index
 	indexPath := filepath.Join(d.projectPath, ".dfmt", "index.gob")
-	hiID, _ := d.journal.Checkpoint(ctx)
+	hiID, err := d.journal.Checkpoint(ctx)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: checkpoint failed: %v\n", err)
+	}
 	core.PersistIndex(d.index, indexPath, hiID)
 
 	// Stop server
@@ -203,10 +201,8 @@ func (d *Daemon) startIdleMonitor(ctx context.Context) {
 	}
 
 	d.idleTimer = time.AfterFunc(idleTimeout, func() {
-		select {
-		case <-d.shutdownCh:
-			return
-		default:
+		// Check if still running before attempting shutdown
+		if d.running.Load() {
 			fmt.Println("Daemon idle timeout, shutting down...")
 			d.Stop(ctx)
 		}

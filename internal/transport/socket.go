@@ -110,21 +110,21 @@ func (s *SocketServer) handleConn(conn net.Conn) {
 // dispatch dispatches a request to the appropriate handler method.
 func (s *SocketServer) dispatch(ctx context.Context, req *Request) (any, error) {
 	switch req.Method {
-	case "remember":
+	case "dfmt.remember", "remember":
 		var params RememberParams
 		if err := decodeParams(req.Params, &params); err != nil {
 			return nil, err
 		}
 		return s.handlers.Remember(ctx, params)
 
-	case "search":
+	case "dfmt.search", "search":
 		var params SearchParams
 		if err := decodeParams(req.Params, &params); err != nil {
 			return nil, err
 		}
 		return s.handlers.Search(ctx, params)
 
-	case "recall":
+	case "dfmt.recall", "recall":
 		var params RecallParams
 		if err := decodeParams(req.Params, &params); err != nil {
 			return nil, err
