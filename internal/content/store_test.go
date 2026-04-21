@@ -622,6 +622,110 @@ func TestStoreEvictWithNoSets(t *testing.T) {
 	}
 }
 
+func TestPutChunkTriggersEviction(t *testing.T) {
+	// Create store with tiny max size so eviction triggers easily
+	store, _ := NewStore(StoreOptions{MaxSize: 50})
+
+	// Create multiple chunk sets so eviction doesn't remove our test set
+	// (evict removes the oldest set by Created time)
+	for i := 0; i < 3; i++ {
+		set := &ChunkSet{
+			ID:      "set-" + string(rune('A'+i)),
+			Kind:    "test",
+			Source:  "test",
+			Created: time.Now().Add(time.Duration(i) * time.Second), // Stagger creation times
+		}
+		store.PutChunkSet(set)
+	}
+
+	// Add chunks until we trigger eviction
+	// Each chunk body is 30 bytes, maxSize is 50
+	for i := 0; i < 5; i++ {
+		chunk := &Chunk{
+			ID:       "chunk-" + string(rune(i)),
+			ParentID: "set-A", // Use the oldest set
+			Index:    i,
+			Kind:     ChunkKindText,
+			Body:     "123456789012345678901234567890", // 30 bytes
+			Tokens:   5,
+			Created:  time.Now(),
+		}
+		if err := store.PutChunk(chunk); err != nil {
+			t.Fatalf("PutChunk %d failed: %v", i, err)
+		}
+	}
+
+	// Verify store still has chunks after eviction
+	count, _ := store.Stats()
+	if count == 0 {
+		t.Error("Expected some chunks to remain after eviction")
+	}
+}
+
+func TestPutChunkAppendsToSet(t *testing.T) {
+	store, _ := NewStore(StoreOptions{})
+
+	// First add the chunk set
+	set := &ChunkSet{
+		ID:      "set-1",
+		Kind:    "test",
+		Source:  "test source",
+		Chunks:  []string{},
+		Created: time.Now(),
+	}
+	store.PutChunkSet(set)
+
+	// Now add a chunk with that ParentID
+	chunk := &Chunk{
+		ID:       "chunk-1",
+		ParentID: "set-1",
+		Index:    0,
+		Kind:     ChunkKindText,
+		Body:     "test content",
+		Tokens:   2,
+		Created:  time.Now(),
+	}
+
+	if err := store.PutChunk(chunk); err != nil {
+		t.Fatalf("PutChunk failed: %v", err)
+	}
+
+	// Verify chunk was added to the set
+	gotSet, ok := store.GetChunkSet("set-1")
+	if !ok {
+		t.Fatal("GetChunkSet returned false, expected true")
+	}
+	if len(gotSet.Chunks) != 1 {
+		t.Errorf("set.Chunks len = %d, want 1", len(gotSet.Chunks))
+	}
+	if gotSet.Chunks[0] != "chunk-1" {
+		t.Errorf("set.Chunks[0] = %q, want 'chunk-1'", gotSet.Chunks[0])
+	}
+}
+
+func TestSearchWithLimitTruncation(t *testing.T) {
+	store, _ := NewStore(StoreOptions{})
+
+	// Add many chunks with different content to get different scores
+	for i := 0; i < 10; i++ {
+		chunk := &Chunk{
+			ID:      "chunk-" + string(rune('A'+i)),
+			Body:    "test content word match", // All same body for same score
+			Created: time.Now(),
+		}
+		store.PutChunk(chunk)
+	}
+
+	// Search with limit=3 should truncate results
+	results, err := store.Search("word", 3)
+	if err != nil {
+		t.Fatalf("Search failed: %v", err)
+	}
+	if len(results) != 3 {
+		t.Errorf("Search with limit=3 returned %d results, want 3", len(results))
+	}
+}
+
 func TestCloseWithEmptyPath(t *testing.T) {
 	store, _ := NewStore(StoreOptions{
 		Path: "", // No path - nothing to persist
