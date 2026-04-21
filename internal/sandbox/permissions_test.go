@@ -920,6 +920,23 @@ func TestRegexMatchErrorBranch(t *testing.T) {
 	}
 }
 
+func TestWriteTempFileMultipleLangs(t *testing.T) {
+	tmpDir := t.TempDir()
+	origTmpDir := os.Getenv("TMPDIR")
+	os.Setenv("TMPDIR", tmpDir)
+	defer os.Setenv("TMPDIR", origTmpDir)
+
+	langs := []string{"python", "node", "ruby", "perl", "php", "R", "elixir", "go", "bash", "sh"}
+
+	for _, lang := range langs {
+		path, err := writeTempFile(lang, "code")
+		if err != nil {
+			t.Fatalf("writeTempFile(%s) failed: %v", lang, err)
+		}
+		defer os.Remove(path)
+	}
+}
+
 // runtimes is a package-level reference to Runtimes for test access
 var runtimes *Runtimes
 

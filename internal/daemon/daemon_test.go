@@ -674,3 +674,107 @@ func (m *mockJournal) Rotate(ctx context.Context) error {
 func (m *mockJournal) Close() error {
 	return m.closeError
 }
+
+// =============================================================================
+// startIdleMonitor error path tests (50.0% coverage)
+// =============================================================================
+
+func TestStartIdleMonitorWithVeryLongTimeout(t *testing.T) {
+	tmpDir := t.TempDir()
+	dfmtDir := filepath.Join(tmpDir, ".dfmt")
+	os.MkdirAll(dfmtDir, 0755)
+
+	cfg := newTestConfig()
+	cfg.Lifecycle.IdleTimeout = "999h" // Very long timeout
+
+	d, err := New(tmpDir, cfg)
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+
+	ctx := context.Background()
+	d.startIdleMonitor(ctx)
+
+	if d.idleTimer == nil {
+		t.Error("idleTimer should be set with very long timeout")
+	}
+
+	// Clean up
+	if d.idleTimer != nil {
+		d.idleTimer.Stop()
+	}
+
+	// Clean up daemon resources
+	if d.journal != nil {
+		d.journal.Close()
+	}
+}
+
+func TestStartIdleMonitorWithShortTimeout(t *testing.T) {
+	tmpDir := t.TempDir()
+	dfmtDir := filepath.Join(tmpDir, ".dfmt")
+	os.MkdirAll(dfmtDir, 0755)
+
+	cfg := newTestConfig()
+	cfg.Lifecycle.IdleTimeout = "1ms" // Very short timeout
+
+	d, err := New(tmpDir, cfg)
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+
+	ctx := context.Background()
+	d.startIdleMonitor(ctx)
+
+	if d.idleTimer == nil {
+		t.Error("idleTimer should be set")
+	}
+
+	// Wait for timer to potentially fire
+	time.Sleep(10 * time.Millisecond)
+
+	// Clean up
+	if d.idleTimer != nil {
+		d.idleTimer.Stop()
+	}
+
+	// Clean up daemon resources
+	if d.journal != nil {
+		d.journal.Close()
+	}
+}
+
+func TestStartIdleMonitorContextCancel(t *testing.T) {
+	tmpDir := t.TempDir()
+	dfmtDir := filepath.Join(tmpDir, ".dfmt")
+	os.MkdirAll(dfmtDir, 0755)
+
+	cfg := newTestConfig()
+	cfg.Lifecycle.IdleTimeout = "1h" // Long timeout so timer won't fire
+
+	d, err := New(tmpDir, cfg)
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	// Start the monitor
+	d.startIdleMonitor(ctx)
+
+	// Cancel the context immediately - should trigger shutdown path
+	cancel()
+
+	// Give it a moment to process
+	time.Sleep(10 * time.Millisecond)
+
+	// Stop the timer to clean up
+	if d.idleTimer != nil {
+		d.idleTimer.Stop()
+	}
+
+	// Clean up daemon resources
+	if d.journal != nil {
+		d.journal.Close()
+	}
+}

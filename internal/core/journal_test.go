@@ -656,6 +656,391 @@ func TestOpenJournalErrors(t *testing.T) {
 	})
 }
 
+func TestOpenJournalMkdirAllError(t *testing.T) {
+	// Create a path that cannot be created
+	// On Windows, using a reserved name might fail
+	j, err := OpenJournal("NUL:/test.journal", JournalOptions{})
+	// This might succeed or fail depending on platform
+	if err != nil {
+		t.Logf("OpenJournal failed for reserved path (expected on some platforms): %v", err)
+		return
+	}
+	j.Close()
+}
+
+func TestStreamNonExistingFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	journalPath := filepath.Join(tmpDir, "nonexistent.journal")
+
+	j, err := OpenJournal(journalPath, JournalOptions{})
+	if err != nil {
+		t.Fatalf("OpenJournal failed: %v", err)
+	}
+	defer j.Close()
+
+	// Stream from non-existing file should return empty channel
+	ch, err := j.Stream(context.Background(), "")
+	if err != nil {
+		t.Fatalf("Stream failed: %v", err)
+	}
+
+	count := 0
+	for range ch {
+		count++
+	}
+	if count != 0 {
+		t.Errorf("expected 0 events for non-existing file, got %d", count)
+	}
+}
+
+func TestAppendNonDurable(t *testing.T) {
+	tmpDir := t.TempDir()
+	journalPath := filepath.Join(tmpDir, "nondurable.journal")
+
+	j, err := OpenJournal(journalPath, JournalOptions{Durable: false})
+	if err != nil {
+		t.Fatalf("OpenJournal failed: %v", err)
+	}
+	defer j.Close()
+
+	e := Event{ID: "01ARZ3NDEKTSV4RRFFQ69G5FAV", Type: EvtNote}
+	err = j.Append(context.Background(), e)
+	if err != nil {
+		t.Fatalf("Append failed: %v", err)
+	}
+
+	cursor, _ := j.Checkpoint(context.Background())
+	if cursor != e.ID {
+		t.Errorf("expected cursor %q, got %q", e.ID, cursor)
+	}
+}
+
+func TestAppendDurable(t *testing.T) {
+	tmpDir := t.TempDir()
+	journalPath := filepath.Join(tmpDir, "durable.journal")
+
+	j, err := OpenJournal(journalPath, JournalOptions{Durable: true})
+	if err != nil {
+		t.Fatalf("OpenJournal failed: %v", err)
+	}
+	defer j.Close()
+
+	e := Event{ID: "01ARZ3NDEKTSV4RRFFQ69G5FAV", Type: EvtNote}
+	err = j.Append(context.Background(), e)
+	if err != nil {
+		t.Fatalf("Append failed: %v", err)
+	}
+
+	cursor, _ := j.Checkpoint(context.Background())
+	if cursor != e.ID {
+		t.Errorf("expected cursor %q, got %q", e.ID, cursor)
+	}
+}
+
+func TestAppendWithMaxBytesExact(t *testing.T) {
+	tmpDir := t.TempDir()
+	journalPath := filepath.Join(tmpDir, "maxbytes.journal")
+
+	// Pre-create file at exactly MaxBytes limit
+	f, err := os.Create(journalPath)
+	if err != nil {
+		t.Fatalf("failed to create file: %v", err)
+	}
+	// Write exactly 100 bytes (MaxBytes)
+	f.Write(make([]byte, 100))
+	f.Close()
+
+	j, err := OpenJournal(journalPath, JournalOptions{MaxBytes: 100})
+	if err != nil {
+		t.Fatalf("OpenJournal failed: %v", err)
+	}
+	defer j.Close()
+
+	// Append should fail - file is at maxBytes
+	e := Event{ID: "01ARZ3NDEKTSV4RRFFQ69G5FAV", Type: EvtNote}
+	err = j.Append(context.Background(), e)
+	if err != ErrJournalFull {
+		t.Errorf("expected ErrJournalFull, got %v", err)
+	}
+}
+
+func TestRotateMultipleEvents(t *testing.T) {
+	tmpDir := t.TempDir()
+	journalPath := filepath.Join(tmpDir, "multi.journal")
+
+	j, err := OpenJournal(journalPath, JournalOptions{})
+	if err != nil {
+		t.Fatalf("OpenJournal failed: %v", err)
+	}
+	defer j.Close()
+
+	// Append multiple events
+	for i := range 5 {
+		e := Event{ID: fmt.Sprintf("01ARZ3NDEKTSV4RRFFQ69G5F%02d", i), Type: EvtNote}
+		j.Append(context.Background(), e)
+	}
+
+	err = j.Rotate(context.Background())
+	if err != nil {
+		t.Fatalf("Rotate failed: %v", err)
+	}
+
+	// Verify rotated file exists
+	files, _ := filepath.Glob(journalPath + ".*")
+	if len(files) == 0 {
+		t.Error("expected rotated file")
+	}
+}
+
+func TestScanLastIDEmptyFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	journalPath := filepath.Join(tmpDir, "empty.journal")
+
+	f, err := os.Create(journalPath)
+	if err != nil {
+		t.Fatalf("failed to create empty file: %v", err)
+	}
+	f.Close()
+
+	j, err := OpenJournal(journalPath, JournalOptions{})
+	if err != nil {
+		t.Fatalf("OpenJournal failed: %v", err)
+	}
+	defer j.Close()
+
+	cursor, _ := j.Checkpoint(context.Background())
+	if cursor != "" {
+		t.Errorf("expected empty cursor for empty file, got %q", cursor)
+	}
+}
+
+func TestScanLastIDOnlyMalformed(t *testing.T) {
+	tmpDir := t.TempDir()
+	journalPath := filepath.Join(tmpDir, "malformed.journal")
+
+	f, err := os.Create(journalPath)
+	if err != nil {
+		t.Fatalf("failed to create file: %v", err)
+	}
+	f.WriteString("{broken json\n")
+	f.WriteString("also broken\n")
+	f.Close()
+
+	j, err := OpenJournal(journalPath, JournalOptions{})
+	if err != nil {
+		t.Fatalf("OpenJournal failed: %v", err)
+	}
+	defer j.Close()
+
+	// Should get empty cursor since no valid events
+	cursor, _ := j.Checkpoint(context.Background())
+	if cursor != "" {
+		t.Errorf("expected empty cursor for malformed file, got %q", cursor)
+	}
+}
+
+func TestStreamWithMalformedJSON(t *testing.T) {
+	tmpDir := t.TempDir()
+	journalPath := filepath.Join(tmpDir, "malformed.journal")
+
+	f, err := os.Create(journalPath)
+	if err != nil {
+		t.Fatalf("failed to create file: %v", err)
+	}
+	f.WriteString(`{"id":"valid1","type":"note"}
+invalid line
+{"id":"valid2","type":"note"}
+`)
+	f.Close()
+
+	j, err := OpenJournal(journalPath, JournalOptions{})
+	if err != nil {
+		t.Fatalf("OpenJournal failed: %v", err)
+	}
+	defer j.Close()
+
+	ch, err := j.Stream(context.Background(), "")
+	if err != nil {
+		t.Fatalf("Stream failed: %v", err)
+	}
+
+	count := 0
+	for range ch {
+		count++
+	}
+	// Should skip malformed line and get 2 valid events
+	if count != 2 {
+		t.Errorf("expected 2 valid events, got %d", count)
+	}
+}
+
+func TestStreamFromEmptyCursor(t *testing.T) {
+	tmpDir := t.TempDir()
+	journalPath := filepath.Join(tmpDir, "stream.journal")
+
+	j, err := OpenJournal(journalPath, JournalOptions{Durable: true})
+	if err != nil {
+		t.Fatalf("OpenJournal failed: %v", err)
+	}
+
+	for i := range 3 {
+		e := Event{ID: fmt.Sprintf("01ARZ3NDEKTSV4RRFFQ69G5F%02d", i), Type: EvtNote}
+		j.Append(context.Background(), e)
+	}
+	j.Close()
+
+	// Reopen and stream from empty cursor (beginning)
+	j2, err := OpenJournal(journalPath, JournalOptions{})
+	if err != nil {
+		t.Fatalf("OpenJournal failed: %v", err)
+	}
+	defer j2.Close()
+
+	ch, err := j2.Stream(context.Background(), "")
+	if err != nil {
+		t.Fatalf("Stream failed: %v", err)
+	}
+
+	count := 0
+	for range ch {
+		count++
+	}
+	if count != 3 {
+		t.Errorf("expected 3 events from empty cursor, got %d", count)
+	}
+}
+
+func TestStreamEmptyJournal(t *testing.T) {
+	tmpDir := t.TempDir()
+	journalPath := filepath.Join(tmpDir, "empty.journal")
+
+	j, err := OpenJournal(journalPath, JournalOptions{})
+	if err != nil {
+		t.Fatalf("OpenJournal failed: %v", err)
+	}
+	defer j.Close()
+
+	// Stream from empty journal (no events ever appended)
+	ch, err := j.Stream(context.Background(), "")
+	if err != nil {
+		t.Fatalf("Stream failed: %v", err)
+	}
+
+	count := 0
+	for range ch {
+		count++
+	}
+	if count != 0 {
+		t.Errorf("expected 0 events from empty journal, got %d", count)
+	}
+}
+
+func TestStreamEmptyJournalWithCursor(t *testing.T) {
+	tmpDir := t.TempDir()
+	journalPath := filepath.Join(tmpDir, "emptycursor.journal")
+
+	j, err := OpenJournal(journalPath, JournalOptions{})
+	if err != nil {
+		t.Fatalf("OpenJournal failed: %v", err)
+	}
+	defer j.Close()
+
+	// Stream with a cursor on empty journal
+	ch, err := j.Stream(context.Background(), "somecursor")
+	if err != nil {
+		t.Fatalf("Stream failed: %v", err)
+	}
+
+	count := 0
+	for range ch {
+		count++
+	}
+	// Empty journal with cursor should return 0 events
+	if count != 0 {
+		t.Errorf("expected 0 events from empty journal with cursor, got %d", count)
+	}
+}
+
+func TestStreamContextCancellation(t *testing.T) {
+	tmpDir := t.TempDir()
+	journalPath := filepath.Join(tmpDir, "cancelled.journal")
+
+	j, err := OpenJournal(journalPath, JournalOptions{Durable: true})
+	if err != nil {
+		t.Fatalf("OpenJournal failed: %v", err)
+	}
+
+	// Append many events
+	for i := range 100 {
+		e := Event{ID: fmt.Sprintf("01ARZ3NDEKTSV4RRFFQ69G5F%02d", i), Type: EvtNote}
+		j.Append(context.Background(), e)
+	}
+	j.Close()
+
+	// Reopen
+	j2, err := OpenJournal(journalPath, JournalOptions{})
+	if err != nil {
+		t.Fatalf("OpenJournal failed: %v", err)
+	}
+	defer j2.Close()
+
+	// Cancel context immediately
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	ch, err := j2.Stream(ctx, "")
+	if err != nil {
+		t.Fatalf("Stream failed: %v", err)
+	}
+
+	count := 0
+	for range ch {
+		count++
+		// Should get 0 events since context is cancelled
+	}
+	t.Logf("Got %d events before cancellation processed", count)
+}
+
+func TestStreamFromFirstEvent(t *testing.T) {
+	tmpDir := t.TempDir()
+	journalPath := filepath.Join(tmpDir, "first.journal")
+
+	j, err := OpenJournal(journalPath, JournalOptions{Durable: true})
+	if err != nil {
+		t.Fatalf("OpenJournal failed: %v", err)
+	}
+
+	events := []Event{
+		{ID: "01ARZ3NDEKTSV4RRFFQ69G5FA1", Type: EvtNote},
+		{ID: "01ARZ3NDEKTSV4RRFFQ69G5FA2", Type: EvtNote},
+		{ID: "01ARZ3NDEKTSV4RRFFQ69G5FA3", Type: EvtNote},
+	}
+	for _, e := range events {
+		j.Append(context.Background(), e)
+	}
+	j.Close()
+
+	j2, err := OpenJournal(journalPath, JournalOptions{})
+	if err != nil {
+		t.Fatalf("OpenJournal failed: %v", err)
+	}
+	defer j2.Close()
+
+	// Stream from first event ID - should skip first and return 2
+	ch, err := j2.Stream(context.Background(), "01ARZ3NDEKTSV4RRFFQ69G5FA1")
+	if err != nil {
+		t.Fatalf("Stream failed: %v", err)
+	}
+
+	count := 0
+	for range ch {
+		count++
+	}
+	if count != 2 {
+		t.Errorf("expected 2 events when streaming from first ID, got %d", count)
+	}
+}
+
 func TestStreamNonExistentFile(t *testing.T) {
 	tmpDir := t.TempDir()
 	journalPath := filepath.Join(tmpDir, "nonexistent.journal")

@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -1093,5 +1094,129 @@ deny:read:.env
 	}
 	if len(policy.Deny) != 2 {
 		t.Errorf("len(Deny) = %d, want 2", len(policy.Deny))
+	}
+}
+
+func TestRuntimesProbeAllLangs(t *testing.T) {
+	r := NewRuntimes()
+	ctx := context.Background()
+
+	r.Probe(ctx)
+
+	// Check that sh was probed
+	rt, ok := r.Get("sh")
+	if !ok {
+		t.Skip("sh not available on this system")
+	}
+	if rt.Lang != "sh" {
+		t.Errorf("Get(sh).Lang = %q, want 'sh'", rt.Lang)
+	}
+}
+
+func TestRuntimesGetUnknown(t *testing.T) {
+	r := NewRuntimes()
+
+	_, ok := r.Get("unknown_language_xyz")
+	if ok {
+		t.Error("Get for unknown language should return false")
+	}
+}
+
+func TestRuntimesSetRuntime(t *testing.T) {
+	r := NewRuntimes()
+
+	rt := Runtime{
+		Lang:      "testlang",
+		Executable: "/usr/bin/testlang",
+		Version:   "1.0.0",
+		Available: true,
+	}
+	r.setRuntime(rt)
+
+	got, ok := r.Get("testlang")
+	if !ok {
+		t.Fatal("Get returned false for set runtime")
+	}
+	if got.Lang != "testlang" {
+		t.Errorf("Lang = %q, want 'testlang'", got.Lang)
+	}
+	if got.Version != "1.0.0" {
+		t.Errorf("Version = %q, want '1.0.0'", got.Version)
+	}
+}
+
+func TestDetectRuntimesReturnsResult(t *testing.T) {
+	r, err := DetectRuntimes(context.Background())
+	if err != nil {
+		t.Fatalf("DetectRuntimes failed: %v", err)
+	}
+	if r == nil {
+		t.Fatal("DetectRuntimes returned nil")
+	}
+
+	// Should have at least sh or bash
+	rt, ok := r.Get("sh")
+	if ok && !rt.Available {
+		t.Error("sh should be available if detected")
+	}
+}
+
+func TestGetVersionWithTimeout(t *testing.T) {
+	r := NewRuntimes()
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	// This should complete before timeout
+	version := r.getVersion(ctx, "sh")
+	if version == "" {
+		t.Error("getVersion returned empty string")
+	}
+}
+
+func TestRuntimesProbeContextCancellation(t *testing.T) {
+	r := NewRuntimes()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // Cancel immediately
+
+	err := r.Probe(ctx)
+	// Should not error even with cancelled context
+	if err != nil {
+		t.Errorf("Probe with cancelled context failed: %v", err)
+	}
+}
+
+func TestRuntimesMultipleProbes(t *testing.T) {
+	r := NewRuntimes()
+	ctx := context.Background()
+
+	// Probe multiple times should not panic
+	r.Probe(ctx)
+	r.Probe(ctx)
+
+	// Should still work
+	_, ok := r.Get("sh")
+	if !ok {
+		t.Skip("sh not available")
+	}
+}
+
+func TestRuntimesProbeContinuesOnError(t *testing.T) {
+	r := NewRuntimes()
+	ctx := context.Background()
+
+	// Mock lookPath to return error for some languages
+	originalLookPath := lookPath
+	defer func() { lookPath = originalLookPath }()
+	lookPath = func(name string) (string, error) {
+		if name == "error_lang" {
+			return "", fmt.Errorf("mock error")
+		}
+		return originalLookPath(name)
+	}
+
+	// Probe should continue even when some lookups fail
+	err := r.Probe(ctx)
+	if err != nil {
+		t.Errorf("Probe should not return error even on lookPath failures: %v", err)
 	}
 }

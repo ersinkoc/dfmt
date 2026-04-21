@@ -115,3 +115,77 @@ func TestMatchRulePathGlobInvalidPattern(t *testing.T) {
 		t.Errorf("Non-matching glob should use default P3, got %s", c.Classify(e))
 	}
 }
+
+func TestMatchRulePathGlobMatch(t *testing.T) {
+	c := NewClassifier()
+
+	c.AddRule(Rule{
+		Match:    RuleMatch{PathGlob: "*.go"},
+		Priority: PriP1,
+	})
+
+	e := Event{Type: EvtFileEdit, Data: map[string]any{"path": "main.go"}}
+	if c.Classify(e) != PriP1 {
+		t.Errorf("Matching glob should use P1, got %s", c.Classify(e))
+	}
+}
+
+func TestMatchRuleTypeMismatch(t *testing.T) {
+	c := NewClassifier()
+
+	c.AddRule(Rule{
+		Match:    RuleMatch{Type: EvtFileEdit},
+		Priority: PriP1,
+	})
+
+	e := Event{Type: EvtNote}
+	if c.Classify(e) != PriP4 {
+		t.Errorf("Type mismatch should use default P4, got %s", c.Classify(e))
+	}
+}
+
+func TestMatchRuleTypeMatch(t *testing.T) {
+	c := NewClassifier()
+
+	c.AddRule(Rule{
+		Match:    RuleMatch{Type: EvtNote},
+		Priority: PriP2,
+	})
+
+	e := Event{Type: EvtNote}
+	if c.Classify(e) != PriP2 {
+		t.Errorf("Type match should use rule P2, got %s", c.Classify(e))
+	}
+}
+
+func TestMatchRuleDataNil(t *testing.T) {
+	c := NewClassifier()
+
+	c.AddRule(Rule{
+		Match:    RuleMatch{PathGlob: "*.go"},
+		Priority: PriP1,
+	})
+
+	e := Event{Type: EvtFileEdit, Data: nil}
+	if c.Classify(e) != PriP3 {
+		t.Errorf("Nil Data should use default P3, got %s", c.Classify(e))
+	}
+}
+
+func TestMatchRuleMessageRegexCompileError(t *testing.T) {
+	c := NewClassifier()
+
+	// Test that invalid regex pattern causes matchRule to return false
+	// so classification falls through to default
+	c.AddRule(Rule{
+		Match:    RuleMatch{MessageRegex: "[invalid"},
+		Priority: PriP1,
+	})
+
+	e := Event{Type: EvtNote, Data: map[string]any{"message": "test"}}
+	result := c.Classify(e)
+	// Should not be PriP1 since invalid regex doesn't match
+	if result == PriP1 {
+		t.Error("Invalid regex should not match, expected different priority")
+	}
+}
