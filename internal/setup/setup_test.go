@@ -799,7 +799,14 @@ func TestDetectClaudeCode_DirectoryInsteadOfFile(t *testing.T) {
 	}
 }
 
-func TestDetectClaudeCode_AllPathsChecked(t *testing.T) {
+func TestDetectClaudeCode_DirectoryAtHomePath(t *testing.T) {
+	// This test exercises the code path where .claude directory exists at HOME
+	// but no binary is found at standard paths.
+	// We skip on Windows due to path complexity.
+	if runtime.GOOS == "windows" {
+		t.Skip("Skipping on Windows due to path handling differences")
+	}
+
 	origHome := os.Getenv("HOME")
 	defer func() {
 		os.Setenv("HOME", origHome)
@@ -809,11 +816,18 @@ func TestDetectClaudeCode_AllPathsChecked(t *testing.T) {
 	os.Setenv("HOME", tmpDir)
 	os.Unsetenv("XDG_DATA_HOME")
 
-	// Test that /opt/claude/bin/claude path is checked (doesn't exist on most systems)
-	// This test just ensures the function runs without panicking
+	// Only create .claude directory at HOME path - no binary paths
+	claudeDir := filepath.Join(tmpDir, ".claude")
+	os.MkdirAll(claudeDir, 0755)
+
 	result := detectClaudeCode()
-	// Result may be nil if paths don't exist, but function should complete without error
-	_ = result
+	// Should find the directory and return an agent with Confidence 0.8
+	if result == nil {
+		t.Error("detectClaudeCode() returned nil when .claude directory exists at HOME")
+	}
+	if result != nil && result.Confidence != 0.8 {
+		t.Errorf("Confidence = %f, want 0.8 for .claude directory", result.Confidence)
+	}
 }
 
 func TestDetectCodex_DirectoryInsteadOfFile(t *testing.T) {
