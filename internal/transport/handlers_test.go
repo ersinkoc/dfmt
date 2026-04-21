@@ -154,15 +154,24 @@ func TestCodecWriteError(t *testing.T) {
 }
 
 type mockJournal struct {
-	events []core.Event
+	events        []core.Event
+	failRemember  bool
+	failSearch    bool
+	failRecall    bool
 }
 
 func (m *mockJournal) Append(ctx context.Context, e core.Event) error {
+	if m.failRemember {
+		return fmt.Errorf("mock remember failure")
+	}
 	m.events = append(m.events, e)
 	return nil
 }
 
 func (m *mockJournal) Stream(ctx context.Context, from string) (<-chan core.Event, error) {
+	if m.failSearch || m.failRecall {
+		return nil, fmt.Errorf("mock stream failure")
+	}
 	ch := make(chan core.Event, len(m.events))
 	for _, e := range m.events {
 		ch <- e

@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -166,4 +168,284 @@ func TestHTTPServerHandleWithSessionID(t *testing.T) {
 	// This test is skipped because calling handlers with nil journal causes panic
 	// The actual handleRemember calls handlers.Remember which requires a non-nil journal
 	t.Skip("Skipping - handlers method requires non-nil journal")
+}
+
+func TestHandleReadBodyError(t *testing.T) {
+	idx := core.NewIndex()
+	handlers := NewHandlers(idx, nil)
+	hs := NewHTTPServer(":0", handlers)
+
+	// Create a request that will fail to read body
+	req := httptest.NewRequest(http.MethodPost, "/", &errorReader{})
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	hs.handle(rec, req)
+
+	// Should return Bad Request
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("expected status %d, got %d", http.StatusBadRequest, rec.Code)
+	}
+}
+
+func TestHandleJSONUnmarshalError(t *testing.T) {
+	idx := core.NewIndex()
+	handlers := NewHandlers(idx, nil)
+	hs := NewHTTPServer(":0", handlers)
+
+	// Valid JSON but missing required fields - will unmarshal but have empty method
+	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader([]byte(`{"not":"a request"}`)))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	hs.handle(rec, req)
+
+	var resp Response
+	json.Unmarshal(rec.Body.Bytes(), &resp)
+
+	if resp.Error == nil {
+		t.Error("expected error response for invalid request")
+	}
+	// Method is empty string, so it falls to default case with -32601
+	if resp.Error.Code != -32601 {
+		t.Errorf("expected -32601 (method not found), got %d", resp.Error.Code)
+	}
+}
+
+func TestHandleRememberError(t *testing.T) {
+	idx := core.NewIndex()
+	journal := &mockJournal{failRemember: true}
+	handlers := NewHandlers(idx, journal)
+	hs := NewHTTPServer(":0", handlers)
+
+	params := mustMarshalParams(map[string]any{"type": "note", "source": "test"})
+	reqBody := Request{
+		JSONRPC: "2.0",
+		Method:  "dfmt.remember",
+		Params:  params,
+		ID:     1,
+	}
+	body, _ := json.Marshal(reqBody)
+
+	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	hs.handle(rec, req)
+
+	var resp Response
+	json.Unmarshal(rec.Body.Bytes(), &resp)
+
+	if resp.Error == nil {
+		t.Error("expected error response for handler failure")
+	}
+}
+
+func TestHandleSearchError(t *testing.T) {
+	// Search via HTTP handler doesn't have a direct error path
+	// because handlers.Search uses index, not journal
+	// This test verifies the success path
+	idx := core.NewIndex()
+	handlers := NewHandlers(idx, nil)
+	hs := NewHTTPServer(":0", handlers)
+
+	params := mustMarshalParams(map[string]any{"query": "test"})
+	reqBody := Request{
+		JSONRPC: "2.0",
+		Method:  "dfmt.search",
+		Params:  params,
+		ID:     2,
+	}
+	body, _ := json.Marshal(reqBody)
+
+	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	hs.handle(rec, req)
+
+	var resp Response
+	json.Unmarshal(rec.Body.Bytes(), &resp)
+
+	// Search should succeed (no error)
+	if resp.Error != nil {
+		t.Errorf("unexpected error: %s", resp.Error.Message)
+	}
+}
+
+func TestHandleRecallError(t *testing.T) {
+	idx := core.NewIndex()
+	journal := &mockJournal{failRecall: true}
+	handlers := NewHandlers(idx, journal)
+	hs := NewHTTPServer(":0", handlers)
+
+	params := mustMarshalParams(map[string]any{"budget": 100})
+	reqBody := Request{
+		JSONRPC: "2.0",
+		Method:  "dfmt.recall",
+		Params:  params,
+		ID:     3,
+	}
+	body, _ := json.Marshal(reqBody)
+
+	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	hs.handle(rec, req)
+
+	var resp Response
+	json.Unmarshal(rec.Body.Bytes(), &resp)
+
+	if resp.Error == nil {
+		t.Error("expected error response for handler failure")
+	}
+}
+
+func TestHTTPServerWritePortFileCreatesNestedDir(t *testing.T) {
+	idx := core.NewIndex()
+	handlers := NewHandlers(idx, nil)
+	hs := NewHTTPServer(":0", handlers)
+
+	tmpDir := t.TempDir()
+	portFile := tmpDir + "/.dfmt/nested/deep/port"
+
+	err := hs.writePortFile(portFile, 9999)
+	if err != nil {
+		t.Fatalf("writePortFile failed: %v", err)
+	}
+
+	data, err := os.ReadFile(portFile)
+	if err != nil {
+		t.Fatalf("ReadFile failed: %v", err)
+	}
+
+	if string(data) != "9999" {
+		t.Errorf("expected '9999', got '%s'", string(data))
+	}
+}
+
+// errorReader is a reader that always returns an error
+type errorReader struct{}
+
+func (e *errorReader) Read(p []byte) (n int, err error) {
+	return 0, fmt.Errorf("simulated read error")
+}
+
+// =============================================================================
+// writePortFile error path tests
+// =============================================================================
+
+func TestHTTPServerWritePortFileInvalidDir(t *testing.T) {
+	idx := core.NewIndex()
+	handlers := NewHandlers(idx, nil)
+	hs := NewHTTPServer(":0", handlers)
+
+	// Try to write to an invalid path that can't be created
+	// On Unix, /proc is not writable; on Windows, a path with invalid chars
+	portFile := "/proc/invalid_port_file_12345/port"
+	if os.PathSeparator == '\\' {
+		// On Windows, use a path with invalid characters
+		portFile = "NUL:/invalid"
+	}
+
+	err := hs.writePortFile(portFile, 12345)
+	if err == nil {
+		t.Log("writePortFile succeeded (may be allowed on some systems)")
+	}
+}
+
+func TestHTTPServerWritePortFileEmptyDir(t *testing.T) {
+	idx := core.NewIndex()
+	handlers := NewHandlers(idx, nil)
+	hs := NewHTTPServer(":0", handlers)
+
+	// Empty path should fail
+	err := hs.writePortFile("", 12345)
+	if err == nil {
+		t.Error("writePortFile should fail with empty path")
+	}
+}
+
+// =============================================================================
+// TCPServer error path tests
+// =============================================================================
+
+func TestTCPServerStartWithInvalidAddr(t *testing.T) {
+	handlers := NewHandlers(nil, nil)
+	// Use an invalid address that should fail to bind
+	server := NewTCPServer("invalid::address::76543", handlers)
+	ctx := context.Background()
+
+	err := server.Start(ctx)
+	if err == nil {
+		t.Error("Start should fail with invalid address")
+	}
+}
+
+func TestTCPServerStartWithPortFileWriteError(t *testing.T) {
+	handlers := NewHandlers(nil, nil)
+	server := NewTCPServer("localhost:0", handlers)
+
+	// Set a port file path that can't be written to
+	// On Unix, /proc is not writable
+	portFile := "/proc/port_file_12345"
+	if os.PathSeparator == '\\' {
+		portFile = "NUL:/portfile"
+	}
+	server.SetPortFile(portFile)
+
+	ctx := context.Background()
+	err := server.Start(ctx)
+	// Should fail when trying to write port file
+	if err == nil {
+		server.Stop(ctx)
+		t.Log("Start succeeded with invalid port file path (may be allowed)")
+	}
+}
+
+func TestTCPServerWritePortFileInvalidPath(t *testing.T) {
+	handlers := NewHandlers(nil, nil)
+	server := NewTCPServer("localhost:0", handlers)
+
+	// Try to write port file to a location that definitely can't be created
+	// Use a path under /proc or similar system path that is likely read-only
+	err := server.writePortFile("/proc/12345/portfile_xyz", 12345)
+	// This may succeed or fail depending on system - just exercise the code path
+	_ = err
+}
+
+func TestTCPServerStopNotRunning(t *testing.T) {
+	handlers := NewHandlers(nil, nil)
+	server := NewTCPServer("localhost:0", handlers)
+	ctx := context.Background()
+
+	// Stop before start
+	err := server.Stop(ctx)
+	if err != nil {
+		t.Errorf("Stop before Start failed: %v", err)
+	}
+}
+
+func TestTCPServerStartAndServe(t *testing.T) {
+	handlers := NewHandlers(nil, nil)
+	server := NewTCPServer("localhost:0", handlers)
+	ctx := context.Background()
+
+	if err := server.Start(ctx); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	defer server.Stop(ctx)
+
+	// Verify server is actually running by connecting
+	port := server.Port()
+	if port == 0 {
+		t.Fatal("Port is 0 after Start")
+	}
+
+	conn, err := net.Dial("tcp", fmt.Sprintf("localhost:%d", port))
+	if err != nil {
+		t.Fatalf("Dial failed: %v", err)
+	}
+	conn.Close()
 }

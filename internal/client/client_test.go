@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -358,6 +359,61 @@ func TestDaemonRunningFalse(t *testing.T) {
 	}
 }
 
+func TestDaemonRunningPortFile(t *testing.T) {
+	if os.PathSeparator != '\\' {
+		t.Skip("skipping Windows-only test on Unix")
+	}
+	tmpDir := t.TempDir()
+	dfmtDir := filepath.Join(tmpDir, ".dfmt")
+	if err := os.MkdirAll(dfmtDir, 0755); err != nil {
+		t.Skipf("skipping: could not create .dfmt dir: %v", err)
+	}
+	portFile := filepath.Join(dfmtDir, "port")
+	if err := os.WriteFile(portFile, []byte("12345"), 0644); err != nil {
+		t.Skipf("skipping: could not create port file: %v", err)
+	}
+
+	if !DaemonRunning(tmpDir) {
+		t.Error("DaemonRunning should be true when port file exists")
+	}
+}
+
+func TestDaemonRunningWindowsBothFiles(t *testing.T) {
+	if os.PathSeparator != '\\' {
+		t.Skip("skipping Windows-only test on Unix")
+	}
+	tmpDir := t.TempDir()
+	dfmtDir := filepath.Join(tmpDir, ".dfmt")
+	if err := os.MkdirAll(dfmtDir, 0755); err != nil {
+		t.Skipf("skipping: could not create .dfmt dir: %v", err)
+	}
+	// Create both port file and socket file
+	portFile := filepath.Join(dfmtDir, "port")
+	os.WriteFile(portFile, []byte("12345"), 0644)
+	socketPath := filepath.Join(dfmtDir, "daemon.sock")
+	f, err := os.Create(socketPath)
+	if err != nil {
+		t.Skipf("skipping: could not create socket file: %v", err)
+	}
+	f.Close()
+
+	if !DaemonRunning(tmpDir) {
+		t.Error("DaemonRunning should be true when either file exists")
+	}
+}
+
+func TestDaemonRunningWindowsNeitherFile(t *testing.T) {
+	if os.PathSeparator != '\\' {
+		t.Skip("skipping Windows-only test on Unix")
+	}
+	tmpDir := t.TempDir()
+	// Ensure .dfmt directory doesn't exist
+
+	if DaemonRunning(tmpDir) {
+		t.Error("DaemonRunning should be false when neither file exists")
+	}
+}
+
 // Connect tests
 
 func TestConnectSuccess(t *testing.T) {
@@ -404,6 +460,59 @@ func TestConnectRefused(t *testing.T) {
 	_, err := cl.Connect(ctx)
 	if err == nil {
 		t.Error("Connect should fail when nothing listening")
+	}
+}
+
+func TestConnectTCPConnectionRefused(t *testing.T) {
+	// Create client with a port that's unlikely to have anything listening
+	cl := &Client{
+		network: "tcp",
+		address: "localhost:54321",
+		timeout: 100 * time.Millisecond,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	_, err := cl.Connect(ctx)
+	if err == nil {
+		t.Error("expected connection refused error")
+	}
+	if !strings.Contains(err.Error(), "dial") {
+		t.Errorf("expected dial error, got: %v", err)
+	}
+}
+
+func TestConnectTCPTimeout(t *testing.T) {
+	// Connect to an address that will hang (non-routable IP)
+	cl := &Client{
+		network: "tcp",
+		address: "10.255.255.1:1", // Non-routable, will timeout
+		timeout: 50 * time.Millisecond,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	_, err := cl.Connect(ctx)
+	if err == nil {
+		t.Error("expected timeout error")
+	}
+}
+
+func TestConnectCancelContext(t *testing.T) {
+	cl := &Client{
+		network: "tcp",
+		address: "localhost:54321",
+		timeout: 10 * time.Second,
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // Cancel immediately
+
+	_, err := cl.Connect(ctx)
+	if err == nil {
+		t.Error("expected error from cancelled context")
 	}
 }
 
@@ -656,6 +765,23 @@ func TestNewClient(t *testing.T) {
 	}
 }
 
+func TestNewClientNetworkAddress(t *testing.T) {
+	cl, err := NewClient("/tmp/test")
+	if err != nil {
+		t.Fatalf("NewClient failed: %v", err)
+	}
+	// Verify network and address are set based on OS
+	if runtime.GOOS == "windows" {
+		if cl.network != "tcp" {
+			t.Errorf("network = %s, want tcp on Windows", cl.network)
+		}
+	} else {
+		if cl.network != "unix" {
+			t.Errorf("network = %s, want unix on Unix", cl.network)
+		}
+	}
+}
+
 func TestClientSocketPath(t *testing.T) {
 	cl, _ := NewClient("/some/path")
 	// Socket path should be set correctly
@@ -813,6 +939,38 @@ func TestMustMarshalPanic(t *testing.T) {
 	result := mustMarshal(badStruct{X: func() {}})
 	if len(result) != 0 {
 		t.Errorf("mustMarshal should return empty result for unencodable types, got %d bytes", len(result))
+	}
+}
+
+func TestMustMarshalWithFunc(t *testing.T) {
+	// Function types cannot be JSON marshaled
+	result := mustMarshal(func() {})
+	if len(result) != 0 {
+		t.Errorf("mustMarshal(func) should return empty, got %d bytes", len(result))
+	}
+}
+
+func TestMustMarshalWithChannel(t *testing.T) {
+	ch := make(chan int)
+	result := mustMarshal(ch)
+	if len(result) != 0 {
+		t.Errorf("mustMarshal(channel) should return empty, got %d bytes", len(result))
+	}
+}
+
+func TestMustMarshalWithPointer(t *testing.T) {
+	val := 42
+	result := mustMarshal(&val)
+	if len(result) == 0 {
+		t.Error("mustMarshal(*int) should not be empty")
+	}
+}
+
+func TestMustMarshalWithNilPointer(t *testing.T) {
+	var p *int
+	result := mustMarshal(p)
+	if len(result) == 0 {
+		t.Error("mustMarshal(nil pointer) should not be empty")
 	}
 }
 
@@ -1200,6 +1358,129 @@ func TestNewClientWithEmptyProjectPath(t *testing.T) {
 	}
 	if cl == nil {
 		t.Fatal("NewClient returned nil")
+	}
+}
+
+func TestNewClientNonExistentPath(t *testing.T) {
+	cl, err := NewClient("/nonexistent/path/12345")
+	if err != nil {
+		t.Fatalf("NewClient with nonexistent path failed: %v", err)
+	}
+	if cl == nil {
+		t.Fatal("NewClient returned nil")
+	}
+	// socketPath should still be set correctly
+	if cl.socketPath == "" {
+		t.Error("socketPath should not be empty")
+	}
+}
+
+func TestNewClientWindowsPortFile(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows-only test")
+	}
+	tmpDir := t.TempDir()
+	dfmtDir := filepath.Join(tmpDir, ".dfmt")
+	if err := os.MkdirAll(dfmtDir, 0755); err != nil {
+		t.Skipf("skipping: could not create .dfmt dir: %v", err)
+	}
+	portFile := filepath.Join(dfmtDir, "port")
+	if err := os.WriteFile(portFile, []byte("54321"), 0644); err != nil {
+		t.Skipf("skipping: could not write port file: %v", err)
+	}
+
+	cl, err := NewClient(tmpDir)
+	if err != nil {
+		t.Fatalf("NewClient failed: %v", err)
+	}
+	if cl.address != "localhost:54321" {
+		t.Errorf("address = %s, want localhost:54321", cl.address)
+	}
+}
+
+func TestNewClientWindowsInvalidPort(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows-only test")
+	}
+	tmpDir := t.TempDir()
+	dfmtDir := filepath.Join(tmpDir, ".dfmt")
+	if err := os.MkdirAll(dfmtDir, 0755); err != nil {
+		t.Skipf("skipping: could not create .dfmt dir: %v", err)
+	}
+	portFile := filepath.Join(dfmtDir, "port")
+	// Write invalid port
+	if err := os.WriteFile(portFile, []byte("not-a-port"), 0644); err != nil {
+		t.Skipf("skipping: could not write port file: %v", err)
+	}
+
+	cl, err := NewClient(tmpDir)
+	if err != nil {
+		t.Fatalf("NewClient failed: %v", err)
+	}
+	// Should default to localhost:0 when port is invalid
+	if cl.address != "localhost:0" {
+		t.Errorf("address = %s, want localhost:0 for invalid port", cl.address)
+	}
+}
+
+func TestNewClientWindowsMissingPortFile(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows-only test")
+	}
+	tmpDir := t.TempDir()
+	// Don't create .dfmt/port file
+
+	cl, err := NewClient(tmpDir)
+	if err != nil {
+		t.Fatalf("NewClient failed: %v", err)
+	}
+	// Should default to localhost:0 when no port file
+	if cl.address != "localhost:0" {
+		t.Errorf("address = %s, want localhost:0 when no port file", cl.address)
+	}
+}
+
+func TestNewClientWindowsEmptyPortFile(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows-only test")
+	}
+	tmpDir := t.TempDir()
+	dfmtDir := filepath.Join(tmpDir, ".dfmt")
+	if err := os.MkdirAll(dfmtDir, 0755); err != nil {
+		t.Skipf("skipping: could not create .dfmt dir: %v", err)
+	}
+	portFile := filepath.Join(dfmtDir, "port")
+	// Write empty port file
+	if err := os.WriteFile(portFile, []byte(""), 0644); err != nil {
+		t.Skipf("skipping: could not write port file: %v", err)
+	}
+
+	cl, err := NewClient(tmpDir)
+	if err != nil {
+		t.Fatalf("NewClient failed: %v", err)
+	}
+	// Should default to localhost:0 when port is empty
+	if cl.address != "localhost:0" {
+		t.Errorf("address = %s, want localhost:0 for empty port", cl.address)
+	}
+}
+
+func TestNewClientUnixSocketPath(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix-only test")
+	}
+	tmpDir := t.TempDir()
+
+	cl, err := NewClient(tmpDir)
+	if err != nil {
+		t.Fatalf("NewClient failed: %v", err)
+	}
+	if cl.network != "unix" {
+		t.Errorf("network = %s, want unix", cl.network)
+	}
+	expectedPath := filepath.Join(tmpDir, ".dfmt", "daemon.sock")
+	if cl.address != expectedPath {
+		t.Errorf("address = %s, want %s", cl.address, expectedPath)
 	}
 }
 

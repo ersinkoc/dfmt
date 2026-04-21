@@ -628,6 +628,58 @@ func TestOpenJournalErrors(t *testing.T) {
 		}
 		j.Close()
 	})
+
+	t.Run("scanLastID with error during scan", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		journalPath := filepath.Join(tmpDir, "scan_error.journal")
+
+		// Create a file with valid events followed by corrupted data
+		f, err := os.Create(journalPath)
+		if err != nil {
+			t.Fatalf("failed to create file: %v", err)
+		}
+		// Write valid events
+		for i := range 3 {
+			data, _ := json.Marshal(Event{ID: fmt.Sprintf("01ARZ3NDEKTSV4RRFFQ69G5F%02d", i), Type: EvtNote})
+			f.Write(append(data, '\n'))
+		}
+		// Write corrupted data that will cause scanner issues
+		f.WriteString("{broken")
+		f.Close()
+
+		// OpenJournal should handle this gracefully
+		j, err := OpenJournal(journalPath, JournalOptions{})
+		if err != nil {
+			t.Fatalf("OpenJournal should not fail on malformed data: %v", err)
+		}
+		j.Close()
+	})
+}
+
+func TestStreamNonExistentFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	journalPath := filepath.Join(tmpDir, "nonexistent.journal")
+
+	j, err := OpenJournal(journalPath, JournalOptions{})
+	if err != nil {
+		t.Fatalf("OpenJournal failed: %v", err)
+	}
+	defer j.Close()
+
+	// Stream from a journal that doesn't exist on disk
+	ch, err := j.Stream(context.Background(), "")
+	if err != nil {
+		t.Fatalf("Stream failed: %v", err)
+	}
+
+	// Should return empty channel for non-existent file
+	count := 0
+	for range ch {
+		count++
+	}
+	if count != 0 {
+		t.Errorf("expected 0 events for non-existent file, got %d", count)
+	}
 }
 
 func TestAppendErrors(t *testing.T) {
