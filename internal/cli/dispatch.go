@@ -87,7 +87,7 @@ func printUsage() {
 
 Usage:
   dfmt init                       Initialize a project
-  dfmt remember <type> [flags]   Record an event
+  dfmt remember [flags] <body>    Record an event (use --type for types like llm.response)
   dfmt note <body>               Record a note
   dfmt search <query>            Search events
   dfmt recall                    Build session snapshot
