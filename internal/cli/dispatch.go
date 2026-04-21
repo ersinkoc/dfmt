@@ -197,12 +197,18 @@ func runRemember(args []string) int {
 	var typ, source string
 	var actor string
 	var dataJSON string
+	var inputTokens, outputTokens, cachedTokens int
+	var model string
 
 	fs := flag.NewFlagSet("remember", flag.ContinueOnError)
 	fs.StringVar(&typ, "type", "note", "Event type")
 	fs.StringVar(&source, "source", "cli", "Event source")
 	fs.StringVar(&actor, "actor", "", "Actor")
 	fs.StringVar(&dataJSON, "data", "", "JSON data")
+	fs.IntVar(&inputTokens, "input-tokens", 0, "LLM input tokens")
+	fs.IntVar(&outputTokens, "output-tokens", 0, "LLM output tokens")
+	fs.IntVar(&cachedTokens, "cached-tokens", 0, "Cached tokens (savings)")
+	fs.StringVar(&model, "model", "", "LLM model name")
 	fs.Parse(args)
 
 	proj, err := getProject()
@@ -220,6 +226,25 @@ func runRemember(args []string) int {
 	var data map[string]any
 	if dataJSON != "" {
 		json.Unmarshal([]byte(dataJSON), &data)
+	}
+
+	// Add token data if provided
+	if inputTokens > 0 || outputTokens > 0 || cachedTokens > 0 || model != "" {
+		if data == nil {
+			data = make(map[string]any)
+		}
+		if inputTokens > 0 {
+			data["input_tokens"] = inputTokens
+		}
+		if outputTokens > 0 {
+			data["output_tokens"] = outputTokens
+		}
+		if cachedTokens > 0 {
+			data["cached_tokens"] = cachedTokens
+		}
+		if model != "" {
+			data["model"] = model
+		}
 	}
 
 	params := transport.RememberParams{
