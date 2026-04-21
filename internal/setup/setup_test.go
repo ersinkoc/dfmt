@@ -357,6 +357,33 @@ func TestLoadManifest_FileNotFound(t *testing.T) {
 	}
 }
 
+func TestLoadManifest_FilePermissionDenied(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Cannot test file permission denied on Windows")
+	}
+
+	origHome := os.Getenv("HOME")
+	defer func() {
+		os.Setenv("HOME", origHome)
+	}()
+
+	tmpDir := t.TempDir()
+	os.Setenv("XDG_DATA_HOME", tmpDir)
+
+	dfmtDir := filepath.Join(tmpDir, "dfmt")
+	os.MkdirAll(dfmtDir, 0755)
+	manifestPath := filepath.Join(dfmtDir, "setup-manifest.json")
+	os.WriteFile(manifestPath, []byte(`{}`), 0644)
+
+	// Remove read permission to trigger error on os.ReadFile
+	os.Chmod(manifestPath, 0000)
+
+	_, err := LoadManifest()
+	if err == nil {
+		t.Error("LoadManifest expected error for unreadable file, got nil")
+	}
+}
+
 func TestLoadManifest_InvalidJSON(t *testing.T) {
 	origHome := os.Getenv("HOME")
 	defer func() {
@@ -437,6 +464,31 @@ files: []
 // =============================================================================
 // SaveManifest tests - error paths
 // =============================================================================
+
+func TestSaveManifest_WriteFileError(t *testing.T) {
+	origHome := os.Getenv("HOME")
+	defer func() {
+		os.Setenv("HOME", origHome)
+	}()
+
+	tmpDir := t.TempDir()
+	os.Setenv("XDG_DATA_HOME", tmpDir)
+
+	// Create dfmt directory
+	dfmtDir := filepath.Join(tmpDir, "dfmt")
+	os.MkdirAll(dfmtDir, 0755)
+
+	// Create manifest path as a directory instead of file
+	// This will cause os.WriteFile to fail
+	manifestPath := filepath.Join(dfmtDir, "setup-manifest.json")
+	os.MkdirAll(manifestPath, 0755)
+
+	m := &Manifest{Version: 1, Timestamp: "test"}
+	err := SaveManifest(m)
+	if err == nil {
+		t.Error("SaveManifest expected error when path is a directory, got nil")
+	}
+}
 
 func TestSaveManifest_CannotCreateDirectory(t *testing.T) {
 	origHome := os.Getenv("HOME")
