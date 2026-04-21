@@ -629,6 +629,18 @@ func runStats(args []string) int {
 			fmt.Println()
 		}
 
+		// Token metrics
+		if resp.TotalInputTokens > 0 || resp.TotalOutputTokens > 0 || resp.TokenSavings > 0 {
+			fmt.Println("Token Metrics:")
+			fmt.Printf("  Input Tokens:  %d\n", resp.TotalInputTokens)
+			fmt.Printf("  Output Tokens: %d\n", resp.TotalOutputTokens)
+			fmt.Printf("  Cache Savings: %d\n", resp.TokenSavings)
+			if resp.CacheHitRate > 0 {
+				fmt.Printf("  Cache Hit Rate: %.1f%%\n", resp.CacheHitRate)
+			}
+			fmt.Println()
+		}
+
 		if resp.SessionStart != "" && resp.SessionEnd != "" {
 			fmt.Printf("Session: %s → %s\n", resp.SessionStart, resp.SessionEnd)
 		}
