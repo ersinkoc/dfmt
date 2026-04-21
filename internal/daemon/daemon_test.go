@@ -215,6 +215,56 @@ func TestStartIdleMonitorInvalidDuration(t *testing.T) {
 	}
 }
 
+func TestStartIdleMonitorValidDuration(t *testing.T) {
+	tmpDir := t.TempDir()
+	dfmtDir := filepath.Join(tmpDir, ".dfmt")
+	os.MkdirAll(dfmtDir, 0755)
+
+	cfg := newTestConfig()
+	cfg.Lifecycle.IdleTimeout = "5m"
+
+	d, err := New(tmpDir, cfg)
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+
+	d.startIdleMonitor(context.Background())
+
+	if d.idleTimer == nil {
+		t.Error("idleTimer should be set with valid duration")
+	}
+
+	// Clean up timer
+	if d.idleTimer != nil {
+		d.idleTimer.Stop()
+	}
+}
+
+func TestStartIdleMonitorZeroDuration(t *testing.T) {
+	tmpDir := t.TempDir()
+	dfmtDir := filepath.Join(tmpDir, ".dfmt")
+	os.MkdirAll(dfmtDir, 0755)
+
+	cfg := newTestConfig()
+	cfg.Lifecycle.IdleTimeout = "0"
+
+	d, err := New(tmpDir, cfg)
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+
+	// Zero or invalid duration defaults to 30m
+	d.startIdleMonitor(context.Background())
+
+	if d.idleTimer == nil {
+		t.Error("idleTimer should be set")
+	}
+
+	if d.idleTimer != nil {
+		d.idleTimer.Stop()
+	}
+}
+
 func TestRegister(t *testing.T) {
 	tmpDir := t.TempDir()
 	dfmtDir := filepath.Join(tmpDir, ".dfmt")
