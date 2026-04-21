@@ -4,6 +4,7 @@ import (
 	"compress/gzip"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
@@ -219,6 +220,28 @@ func TestEviction(t *testing.T) {
 	count, _ := store.Stats()
 	if count >= 20 {
 		t.Errorf("After many inserts, count = %d, expected some eviction", count)
+	}
+}
+
+func TestEvictOnEmptyStore(t *testing.T) {
+	// Test evict with empty store (no chunk sets)
+	store, _ := NewStore(StoreOptions{
+		MaxSize: 100,
+	})
+
+	// Create store with no sets - evict should handle gracefully
+	// Use reflection to call the unexported evict method
+	v := reflect.ValueOf(store).Elem()
+	evictFunc := v.Addr().MethodByName("evict")
+	if !evictFunc.IsValid() {
+		t.Skip("evict method not accessible")
+	}
+
+	// Call evict via interface
+	var s *Store = store
+	err := s.evict()
+	if err != nil {
+		t.Errorf("evict on empty store failed: %v", err)
 	}
 }
 

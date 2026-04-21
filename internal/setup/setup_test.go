@@ -461,6 +461,56 @@ files: []
 	}
 }
 
+func TestLoadManifest_ValidJSONFallbackToYAMLNeverHit(t *testing.T) {
+	// JSON succeeds, so the yaml.Unmarshal branch is never hit.
+	// This test documents that the json-only path is covered.
+	origHome := os.Getenv("HOME")
+	defer func() {
+		os.Setenv("HOME", origHome)
+	}()
+
+	tmpDir := t.TempDir()
+	os.Setenv("XDG_DATA_HOME", tmpDir)
+
+	dfmtDir := filepath.Join(tmpDir, "dfmt")
+	os.MkdirAll(dfmtDir, 0755)
+	manifestPath := filepath.Join(dfmtDir, "setup-manifest.json")
+
+	jsonContent := `{"version": 2, "timestamp": "2024-06-01T00:00:00Z", "agents": [], "files": []}`
+	os.WriteFile(manifestPath, []byte(jsonContent), 0644)
+
+	m, err := LoadManifest()
+	if err != nil {
+		t.Fatalf("LoadManifest failed for JSON: %v", err)
+	}
+	if m.Version != 2 {
+		t.Errorf("Version = %d, want 2", m.Version)
+	}
+}
+
+func TestLoadManifest_JSONFailsThenYAMLFails(t *testing.T) {
+	// JSON fails, then yaml.Unmarshal also fails — tests the double-error path.
+	origHome := os.Getenv("HOME")
+	defer func() {
+		os.Setenv("HOME", origHome)
+	}()
+
+	tmpDir := t.TempDir()
+	os.Setenv("XDG_DATA_HOME", tmpDir)
+
+	dfmtDir := filepath.Join(tmpDir, "dfmt")
+	os.MkdirAll(dfmtDir, 0755)
+	manifestPath := filepath.Join(dfmtDir, "setup-manifest.json")
+
+	// Invalid JSON AND invalid YAML — both unmarshals fail.
+	os.WriteFile(manifestPath, []byte("{ invalid json content"), 0644)
+
+	_, err := LoadManifest()
+	if err == nil {
+		t.Error("LoadManifest expected error when both JSON and YAML fail, got nil")
+	}
+}
+
 // =============================================================================
 // SaveManifest tests - error paths
 // =============================================================================
