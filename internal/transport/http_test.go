@@ -2,6 +2,7 @@ package transport
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -18,6 +19,44 @@ func TestHTTPServerStopNotRunning(t *testing.T) {
 
 	if err := hs.Stop(); err != nil {
 		t.Errorf("Stop on not-running server failed: %v", err)
+	}
+}
+
+func TestHTTPServerStartAndStop(t *testing.T) {
+	idx := core.NewIndex()
+	handlers := NewHandlers(idx, nil) // nil journal for testing
+	hs := NewHTTPServer(":0", handlers)
+
+	ctx := context.Background()
+	err := hs.Start(ctx)
+	if err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+
+	if !hs.running {
+		t.Error("server should be running after Start")
+	}
+
+	err = hs.Stop()
+	if err != nil {
+		t.Errorf("Stop failed: %v", err)
+	}
+}
+
+func TestHTTPServerStartTwice(t *testing.T) {
+	idx := core.NewIndex()
+	handlers := NewHandlers(idx, nil)
+	hs := NewHTTPServer(":0", handlers)
+
+	ctx := context.Background()
+	if err := hs.Start(ctx); err != nil {
+		t.Fatalf("First Start failed: %v", err)
+	}
+	defer hs.Stop()
+
+	// Second start should fail
+	if err := hs.Start(ctx); err == nil {
+		t.Error("Second Start should fail")
 	}
 }
 

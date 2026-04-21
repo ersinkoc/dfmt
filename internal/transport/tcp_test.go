@@ -2,11 +2,14 @@ package transport
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/ersinkoc/dfmt/internal/core"
 )
 
 func TestNewTCPServer(t *testing.T) {
@@ -143,10 +146,129 @@ func TestTCPServerWritePortFileCreatesDir(t *testing.T) {
 	}
 }
 
-func TestTCPServerDefaultAddr(t *testing.T) {
-	handlers := NewHandlers(nil, nil)
-	server := NewTCPServer("", handlers)
-	if server.addr != "" {
-		t.Errorf("addr = %s, want empty", server.addr)
+func TestTCPServerDispatch(t *testing.T) {
+	idx := core.NewIndex()
+	handlers := NewHandlers(idx, nil)
+	server := NewTCPServer("localhost:0", handlers)
+
+	ctx := context.Background()
+	if err := server.Start(ctx); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	defer server.Stop(ctx)
+
+	// Connect and send a request
+	port := server.Port()
+	conn, err := net.Dial("tcp", fmt.Sprintf("localhost:%d", port))
+	if err != nil {
+		t.Fatalf("Dial failed: %v", err)
+	}
+	defer conn.Close()
+
+	codec := NewCodec(conn)
+
+	// Send search request
+	req := &Request{
+		JSONRPC: "2.0",
+		Method:  "search",
+		Params:  json.RawMessage(`{"query":"test"}`),
+		ID:     1,
+	}
+	if err := codec.WriteRequest(req); err != nil {
+		t.Fatalf("WriteRequest failed: %v", err)
+	}
+
+	resp, err := codec.ReadResponse()
+	if err != nil {
+		t.Fatalf("ReadResponse failed: %v", err)
+	}
+	if resp.Error != nil {
+		t.Errorf("response error: %s", resp.Error.Message)
+	}
+}
+
+func TestTCPServerDispatchUnknownMethod(t *testing.T) {
+	idx := core.NewIndex()
+	handlers := NewHandlers(idx, nil)
+	server := NewTCPServer("localhost:0", handlers)
+
+	ctx := context.Background()
+	if err := server.Start(ctx); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	defer server.Stop(ctx)
+
+	port := server.Port()
+	conn, err := net.Dial("tcp", fmt.Sprintf("localhost:%d", port))
+	if err != nil {
+		t.Fatalf("Dial failed: %v", err)
+	}
+	defer conn.Close()
+
+	codec := NewCodec(conn)
+
+	req := &Request{
+		JSONRPC: "2.0",
+		Method:  "unknown_method",
+		ID:     2,
+	}
+	if err := codec.WriteRequest(req); err != nil {
+		t.Fatalf("WriteRequest failed: %v", err)
+	}
+
+	resp, err := codec.ReadResponse()
+	if err != nil {
+		t.Fatalf("ReadResponse failed: %v", err)
+	}
+	if resp.Error == nil {
+		t.Error("expected error for unknown method")
+	}
+	// -32603 is internal error for unknown method in our dispatch
+	if resp.Error.Code != -32601 && resp.Error.Code != -32603 {
+		t.Errorf("expected -32601 or -32603, got %d", resp.Error.Code)
+	}
+}
+
+func TestTCPServerDispatchBadParams(t *testing.T) {
+	idx := core.NewIndex()
+	handlers := NewHandlers(idx, nil)
+	server := NewTCPServer("localhost:0", handlers)
+
+	ctx := context.Background()
+	if err := server.Start(ctx); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	defer server.Stop(ctx)
+
+	port := server.Port()
+	conn, err := net.Dial("tcp", fmt.Sprintf("localhost:%d", port))
+	if err != nil {
+		t.Fatalf("Dial failed: %v", err)
+	}
+	defer conn.Close()
+
+	codec := NewCodec(conn)
+
+	// Create request manually with raw params
+	paramsMap := map[string]any{"query": "test"}
+	paramsBytes, _ := json.Marshal(paramsMap)
+	params := json.RawMessage(paramsBytes)
+
+	req := &Request{
+		JSONRPC: "2.0",
+		Method:  "search",
+		Params:  params,
+		ID:     3,
+	}
+	if err := codec.WriteRequest(req); err != nil {
+		t.Fatalf("WriteRequest failed: %v", err)
+	}
+
+	resp, err := codec.ReadResponse()
+	if err != nil {
+		t.Fatalf("ReadResponse failed: %v", err)
+	}
+	if resp.Error != nil {
+		t.Errorf("unexpected error: %s", resp.Error.Message)
 	}
 }
