@@ -33,6 +33,12 @@ type RememberParams struct {
 	Data     map[string]any    `json:"data,omitempty"`
 	Refs     []string          `json:"refs,omitempty"`
 	Tags     []string          `json:"tags,omitempty"`
+	// Direct token fields for MCP tools
+	InputTokens  int    `json:"input_tokens,omitempty"`
+	OutputTokens int    `json:"output_tokens,omitempty"`
+	CachedTokens int    `json:"cached_tokens,omitempty"`
+	Model       string `json:"model,omitempty"`
+	Message     string `json:"message,omitempty"`
 }
 
 // RememberResponse is the response for the Remember method.
@@ -43,6 +49,26 @@ type RememberResponse struct {
 
 // Remember adds an event to the journal and index.
 func (h *Handlers) Remember(ctx context.Context, params RememberParams) (*RememberResponse, error) {
+	// Handle direct token fields - add to Data map
+	data := params.Data
+	if params.InputTokens > 0 || params.OutputTokens > 0 || params.CachedTokens > 0 || params.Model != "" {
+		if data == nil {
+			data = make(map[string]any)
+		}
+		if params.InputTokens > 0 {
+			data[core.KeyInputTokens] = params.InputTokens
+		}
+		if params.OutputTokens > 0 {
+			data[core.KeyOutputTokens] = params.OutputTokens
+		}
+		if params.CachedTokens > 0 {
+			data[core.KeyCachedTokens] = params.CachedTokens
+		}
+		if params.Model != "" {
+			data[core.KeyModel] = params.Model
+		}
+	}
+
 	// Create event
 	e := core.Event{
 		ID:       string(core.NewULID(time.Now())),
@@ -51,7 +77,7 @@ func (h *Handlers) Remember(ctx context.Context, params RememberParams) (*Rememb
 		Priority: core.Priority(params.Priority),
 		Source:   core.Source(params.Source),
 		Actor:    params.Actor,
-		Data:     params.Data,
+		Data:     data,
 		Refs:     params.Refs,
 		Tags:     params.Tags,
 	}

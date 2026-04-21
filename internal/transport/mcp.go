@@ -104,26 +104,52 @@ func (m *MCPProtocol) handleToolsList(req *MCPRequest) (*MCPResponse, error) {
 	tools := []MCPTool{
 		{
 			Name:        "dfmt.remember",
-			Description: "Record an event in the session journal",
+			Description: "Record an LLM interaction with token usage for session tracking",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
 					"type": map[string]interface{}{
 						"type":        "string",
-						"description": "Event type (note, decision, task.create, etc.)",
+						"description": "Event type (use 'llm.response' for LLM calls, 'note' for notes)",
+						"default":     "llm.response",
 					},
-					"data": map[string]interface{}{
-						"type":        "object",
-						"description": "Additional event data",
+					"input_tokens": map[string]interface{}{
+						"type":        "integer",
+						"description": "Number of input tokens sent to LLM",
+					},
+					"output_tokens": map[string]interface{}{
+						"type":        "integer",
+						"description": "Number of output tokens received from LLM",
+					},
+					"cached_tokens": map[string]interface{}{
+						"type":        "integer",
+						"description": "Number of cached tokens (prompt cache savings)",
+					},
+					"model": map[string]interface{}{
+						"type":        "string",
+						"description": "LLM model name (e.g., claude-opus-4-7, gpt-4o)",
+					},
+					"message": map[string]interface{}{
+						"type":        "string",
+						"description": "Description or summary of the interaction",
 					},
 					"tags": map[string]interface{}{
 						"type": "array",
 						"items": map[string]interface{}{
 							"type": "string",
 						},
+						"description": "Tags for categorizing the event",
 					},
 				},
 				"required": []string{"type"},
+			},
+		},
+		{
+			Name:        "dfmt.stats",
+			Description: "Get token savings statistics for the session",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{},
 			},
 		},
 		{
@@ -146,7 +172,7 @@ func (m *MCPProtocol) handleToolsList(req *MCPRequest) (*MCPResponse, error) {
 		},
 		{
 			Name:        "dfmt.recall",
-			Description: "Build a session snapshot",
+			Description: "Build a session snapshot with token budget",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -201,6 +227,21 @@ func (m *MCPProtocol) handleToolsCall(req *MCPRequest) (*MCPResponse, error) {
 			return m.errorResult(req.ID, -32602, err.Error())
 		}
 		result, err := m.handlers.Remember(ctx, args)
+		if err != nil {
+			return m.errorResult(req.ID, -32603, err.Error())
+		}
+		return &MCPResponse{
+			JSONRPC: "2.0",
+			Result:  result,
+			ID:      req.ID,
+		}, nil
+
+	case "dfmt.stats":
+		var args StatsParams
+		if params.Args != nil {
+			json.Unmarshal(params.Args, &args)
+		}
+		result, err := m.handlers.Stats(ctx, args)
 		if err != nil {
 			return m.errorResult(req.ID, -32603, err.Error())
 		}

@@ -561,8 +561,8 @@ func TestMCPProtocolHandleToolsList(t *testing.T) {
 	if !ok {
 		t.Fatal("resp.Result[\"tools\"] is not []MCPTool")
 	}
-	if len(tools) != 3 {
-		t.Errorf("len(tools) = %d, want 3", len(tools))
+	if len(tools) != 4 {
+		t.Errorf("len(tools) = %d, want 4", len(tools))
 	}
 }
 
