@@ -551,22 +551,80 @@ func runConfig(args []string) int {
 }
 
 func runStats(args []string) int {
+	proj, err := getProject()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		return 1
+	}
+
+	if !client.DaemonRunning(proj) {
+		if flagJSON {
+			fmt.Println(`{"events_total": 0, "events_by_type": {}, "events_by_priority": {}, "session_start": null, "session_end": null}`)
+		} else {
+			fmt.Println("DFMT Session Statistics")
+			fmt.Println("========================")
+			fmt.Println("")
+			fmt.Println("No daemon running. Start with: dfmt daemon")
+			fmt.Println("")
+			fmt.Println("Or visit the dashboard:")
+			fmt.Println("  dfmt daemon && start http://localhost:<port>/dashboard")
+		}
+		return 0
+	}
+
+	cl, err := client.NewClient(proj)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		return 1
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	resp, err := cl.Stats(ctx)
+	if err != nil {
+		if flagJSON {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			return 1
+		}
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		fmt.Println("Could not fetch stats from daemon.")
+		return 1
+	}
+
 	if flagJSON {
-		// For JSON output, we need to connect to daemon
-		// This is a placeholder - real implementation would query daemon
-		fmt.Println(`{"events_total": 0, "journal_size": 0}`)
+		fmt.Println(mustMarshalJSON(resp))
 	} else {
 		fmt.Println("DFMT Session Statistics")
 		fmt.Println("========================")
-		fmt.Println("")
-		fmt.Println("Run 'dfmt daemon' first, then visit:")
-		fmt.Println("  http://localhost:<port>/dashboard")
-		fmt.Println("")
-		fmt.Println("Or query stats via API:")
-		fmt.Println("  curl -X POST http://localhost:<port>/api/stats \\")
-		fmt.Println("    -H 'Content-Type: application/json' \\")
-		fmt.Println("    -d '{\"jsonrpc\":\"2.0\",\"method\":\"dfmt.stats\",\"params\":{},\"id\":1}'")
+		fmt.Printf("Total Events: %d\n\n", resp.EventsTotal)
+
+		if len(resp.EventsByType) > 0 {
+			fmt.Println("Events by Type:")
+			for t, c := range resp.EventsByType {
+				fmt.Printf("  %s: %d\n", t, c)
+			}
+			fmt.Println()
+		}
+
+		if len(resp.EventsByPriority) > 0 {
+			fmt.Println("Events by Priority:")
+			for p, c := range resp.EventsByPriority {
+				fmt.Printf("  %s: %d\n", p, c)
+			}
+			fmt.Println()
+		}
+
+		if resp.SessionStart != "" && resp.SessionEnd != "" {
+			fmt.Printf("Session: %s → %s\n", resp.SessionStart, resp.SessionEnd)
+		}
+
+		if resp.EventsTotal == 0 {
+			fmt.Println("")
+			fmt.Println("No events recorded yet. Start using dfmt to record your work.")
+		}
 	}
+
 	return 0
 }
 

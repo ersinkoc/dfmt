@@ -189,10 +189,44 @@ func DaemonRunning(projectPath string) bool {
 	return err == nil
 }
 
+// Stats returns aggregated statistics from the daemon.
+func (c *Client) Stats(ctx context.Context) (*transport.StatsResponse, error) {
+	codec, err := c.Connect(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer codec.ReadResponse()
+
+	req := &transport.Request{
+		Method: "stats",
+		Params: mustMarshal(transport.StatsParams{}),
+		ID:     1,
+	}
+
+	if err := codec.WriteRequest(req); err != nil {
+		return nil, fmt.Errorf("write request: %w", err)
+	}
+
+	resp, err := codec.ReadResponse()
+	if err != nil {
+		return nil, fmt.Errorf("read response: %w", err)
+	}
+
+	if resp.Error != nil {
+		return nil, fmt.Errorf("rpc error: %s", resp.Error.Message)
+	}
+
+	var result transport.StatsResponse
+	if err := json.Unmarshal(mustMarshal(resp.Result), &result); err != nil {
+		return nil, fmt.Errorf("unmarshal result: %w", err)
+	}
+
+	return &result, nil
+}
+
 func mustMarshal(v any) json.RawMessage {
 	data, err := json.Marshal(v)
 	if err != nil {
-		// Return empty RawMessage on error - caller should handle nil checks
 		return json.RawMessage{}
 	}
 	return data
