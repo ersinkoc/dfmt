@@ -60,3 +60,32 @@ func TestMCPProtocol_Handle_ToolsCall_EmptyParams(t *testing.T) {
 		t.Errorf("expected error code -32603, got %d", resp.Error.Code)
 	}
 }
+
+func TestMCPProtocol_Handle_ToolsCall_UnknownTool(t *testing.T) {
+	handlers := &Handlers{}
+	p := NewMCPProtocol(handlers)
+
+	req := &MCPRequest{
+		JSONRPC: "2.0",
+		Method:  "tools/call",
+		Params:  []byte(`{"name":"unknown.tool","arguments":{}}`),
+		ID:     3,
+	}
+
+	resp, err := p.Handle(req)
+	if err != nil {
+		t.Fatalf("Handle returned error: %v", err)
+	}
+
+	if resp == nil {
+		t.Fatal("resp is nil")
+	}
+
+	if resp.Error == nil {
+		t.Error("expected error response for unknown tool")
+	}
+
+	if resp.Error.Code != -32601 {
+		t.Errorf("expected error code -32601, got %d", resp.Error.Code)
+	}
+}
