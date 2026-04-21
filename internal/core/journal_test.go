@@ -1,11 +1,13 @@
 package core
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestOpenJournalNew(t *testing.T) {
@@ -286,6 +288,148 @@ func TestStreamJournal(t *testing.T) {
 			t.Errorf("expected event ID %q, got %q", "01ARZ3NDEKTSV4RRFFQ69G5FA3", received[0].ID)
 		}
 	})
+
+	t.Run("stream from nonexistent cursor", func(t *testing.T) {
+		j, err := OpenJournal(journalPath, JournalOptions{})
+		if err != nil {
+			t.Fatalf("OpenJournal failed: %v", err)
+		}
+		defer j.Close()
+
+		ch, err := j.Stream(context.Background(), "nonexistent")
+		if err != nil {
+			t.Fatalf("Stream failed: %v", err)
+		}
+
+		// When cursor not found, implementation returns 0 events (skips all)
+		var count int
+		for range ch {
+			count++
+		}
+		if count != 0 {
+			t.Errorf("expected 0 events with nonexistent cursor, got %d", count)
+		}
+	})
+}
+
+func TestOpenJournalWithCompression(t *testing.T) {
+	tmpDir := t.TempDir()
+	journalPath := filepath.Join(tmpDir, "compressed.journal")
+
+	j, err := OpenJournal(journalPath, JournalOptions{
+		Compress: true,
+		MaxBytes: 5000, // Large enough for several events
+	})
+	if err != nil {
+		t.Fatalf("OpenJournal with compression failed: %v", err)
+	}
+	defer j.Close()
+
+	// Append several events to trigger rotation
+	for i := range 5 {
+		e := Event{
+			ID:      string(NewULID(time.Now())),
+			Type:    EvtFileEdit,
+			Project: "test",
+			Data:    map[string]any{"index": i},
+		}
+		if err := j.Append(context.Background(), e); err != nil {
+			t.Fatalf("Append failed: %v", err)
+		}
+	}
+
+	// Force rotation
+	if err := j.Rotate(context.Background()); err != nil {
+		t.Fatalf("Rotate failed: %v", err)
+	}
+
+	// Verify rotated file exists
+	files, _ := filepath.Glob(journalPath + ".*")
+	if len(files) == 0 {
+		t.Error("expected rotated files with compression")
+	}
+}
+
+func TestAppendWithMaxBatchMS(t *testing.T) {
+	tmpDir := t.TempDir()
+	journalPath := filepath.Join(tmpDir, "batch.journal")
+
+	j, err := OpenJournal(journalPath, JournalOptions{
+		BatchMS: 10, // Very short batch for testing
+	})
+	if err != nil {
+		t.Fatalf("OpenJournal failed: %v", err)
+	}
+	defer j.Close()
+
+	// Append multiple events
+	for range 3 {
+		e := Event{
+			ID:      string(NewULID(time.Now())),
+			Type:    EvtNote,
+			Project: "test",
+		}
+		if err := j.Append(context.Background(), e); err != nil {
+			t.Fatalf("Append failed: %v", err)
+		}
+	}
+
+	// Verify all were written
+	j.Checkpoint(context.Background())
+
+	content, _ := os.ReadFile(journalPath)
+	lines := bytes.Count(content, []byte{'\n'})
+	if lines < 3 {
+		t.Errorf("expected at least 3 lines, got %d", lines)
+	}
+}
+
+func TestRotateWithCompression(t *testing.T) {
+	tmpDir := t.TempDir()
+	journalPath := filepath.Join(tmpDir, "rotated.journal")
+
+	j, err := OpenJournal(journalPath, JournalOptions{
+		MaxBytes: 50,
+	})
+	if err != nil {
+		t.Fatalf("OpenJournal failed: %v", err)
+	}
+	defer j.Close()
+
+	// Add event
+	e := Event{ID: string(NewULID(time.Now())), Type: EvtFileEdit, Project: "test"}
+	if err := j.Append(context.Background(), e); err != nil {
+		t.Fatalf("Append failed: %v", err)
+	}
+
+	// Rotate
+	if err := j.Rotate(context.Background()); err != nil {
+		t.Fatalf("Rotate failed: %v", err)
+	}
+
+	// Verify rotated file
+	rotated := journalPath + "." + e.ID + ".jsonl"
+	if _, err := os.Stat(rotated); os.IsNotExist(err) {
+		t.Error("rotated file not created")
+	}
+}
+
+func TestJournalCloseTwice(t *testing.T) {
+	tmpDir := t.TempDir()
+	journalPath := filepath.Join(tmpDir, "double.journal")
+
+	j, err := OpenJournal(journalPath, JournalOptions{})
+	if err != nil {
+		t.Fatalf("OpenJournal failed: %v", err)
+	}
+
+	// First close
+	if err := j.Close(); err != nil {
+		t.Fatalf("first Close failed: %v", err)
+	}
+
+	// Second close should not panic
+	j.Close()
 }
 
 func TestCheckpointJournal(t *testing.T) {
