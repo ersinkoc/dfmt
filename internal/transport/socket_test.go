@@ -2,6 +2,7 @@ package transport
 
 import (
 	"context"
+	"encoding/json"
 	"net"
 	"os"
 	"path/filepath"
@@ -598,6 +599,233 @@ func TestSocketServer_WithInvalidPath(t *testing.T) {
 	if err == nil {
 		server.Stop(ctx)
 		t.Log("Start succeeded (may succeed on some systems)")
+	}
+}
+
+func TestSocketServer_HandleConn_ValidRequest(t *testing.T) {
+	if os.PathSeparator == '\\' {
+		t.Skip("skipping Unix socket tests on Windows")
+	}
+
+	tmpDir, err := os.MkdirTemp("", "socket_test")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	socketPath := filepath.Join(tmpDir, "test.sock")
+	handlers := &Handlers{}
+	server := NewSocketServer(socketPath, handlers)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	err = server.Start(ctx)
+	if err != nil {
+		t.Fatalf("server.Start failed: %v", err)
+	}
+	defer server.Stop(ctx)
+
+	conn, err := net.Dial("unix", socketPath)
+	if err != nil {
+		t.Fatalf("dial failed: %v", err)
+	}
+	defer conn.Close()
+
+	// Send a valid JSON-RPC request
+	codec := NewCodec(conn)
+
+	req := &Request{
+		JSONRPC: "2.0",
+		Method:  "search",
+		Params:  json.RawMessage(`{"query":"test"}`),
+		ID:     1,
+	}
+	if err := codec.WriteRequest(req); err != nil {
+		t.Fatalf("WriteRequest failed: %v", err)
+	}
+
+	resp, err := codec.ReadResponse()
+	if err != nil {
+		t.Fatalf("ReadResponse failed: %v", err)
+	}
+	// Should get a response (may be error if handlers are nil)
+	t.Logf("Got response: %+v", resp)
+}
+
+func TestSocketServer_HandleConn_UnknownMethod(t *testing.T) {
+	if os.PathSeparator == '\\' {
+		t.Skip("skipping Unix socket tests on Windows")
+	}
+
+	tmpDir, err := os.MkdirTemp("", "socket_test")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	socketPath := filepath.Join(tmpDir, "test.sock")
+	handlers := &Handlers{}
+	server := NewSocketServer(socketPath, handlers)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	err = server.Start(ctx)
+	if err != nil {
+		t.Fatalf("server.Start failed: %v", err)
+	}
+	defer server.Stop(ctx)
+
+	conn, err := net.Dial("unix", socketPath)
+	if err != nil {
+		t.Fatalf("dial failed: %v", err)
+	}
+	defer conn.Close()
+
+	codec := NewCodec(conn)
+
+	req := &Request{
+		JSONRPC: "2.0",
+		Method:  "unknown_method_xyz",
+		ID:     2,
+	}
+	if err := codec.WriteRequest(req); err != nil {
+		t.Fatalf("WriteRequest failed: %v", err)
+	}
+
+	resp, err := codec.ReadResponse()
+	if err != nil {
+		t.Fatalf("ReadResponse failed: %v", err)
+	}
+	if resp.Error == nil {
+		t.Error("expected error for unknown method")
+	}
+}
+
+func TestSocketServer_HandleConn_BadParams(t *testing.T) {
+	if os.PathSeparator == '\\' {
+		t.Skip("skipping Unix socket tests on Windows")
+	}
+
+	tmpDir, err := os.MkdirTemp("", "socket_test")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	socketPath := filepath.Join(tmpDir, "test.sock")
+	handlers := &Handlers{}
+	server := NewSocketServer(socketPath, handlers)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	err = server.Start(ctx)
+	if err != nil {
+		t.Fatalf("server.Start failed: %v", err)
+	}
+	defer server.Stop(ctx)
+
+	conn, err := net.Dial("unix", socketPath)
+	if err != nil {
+		t.Fatalf("dial failed: %v", err)
+	}
+	defer conn.Close()
+
+	codec := NewCodec(conn)
+
+	// Bad params for search
+	req := &Request{
+		JSONRPC: "2.0",
+		Method:  "search",
+		Params:  json.RawMessage(`{"query": 123}`), // query should be string
+		ID:     3,
+	}
+	if err := codec.WriteRequest(req); err != nil {
+		t.Fatalf("WriteRequest failed: %v", err)
+	}
+
+	// Should get a response (error or success depending on codec behavior)
+	_, _ = codec.ReadResponse()
+}
+
+func TestSocketServerDispatch_RecallMethod_BadParams(t *testing.T) {
+	handlers := &Handlers{}
+	server := NewSocketServer("/tmp/test.sock", handlers)
+
+	params := []byte(`{"budget": "not a number"}`)
+	req := &Request{
+		ID:     3,
+		Method: "recall",
+		Params: params,
+	}
+
+	ctx := context.Background()
+	_, err := server.dispatch(ctx, req)
+	if err == nil {
+		t.Error("expected error for invalid recall params")
+	}
+}
+
+func TestSocketServer_Stop_DoubleStop(t *testing.T) {
+	if os.PathSeparator == '\\' {
+		t.Skip("skipping Unix socket tests on Windows")
+	}
+
+	tmpDir, err := os.MkdirTemp("", "socket_test")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	socketPath := filepath.Join(tmpDir, "test.sock")
+	handlers := &Handlers{}
+	server := NewSocketServer(socketPath, handlers)
+
+	ctx := context.Background()
+
+	err = server.Start(ctx)
+	if err != nil {
+		t.Fatalf("server.Start failed: %v", err)
+	}
+
+	// Stop first time
+	err = server.Stop(ctx)
+	if err != nil {
+		t.Errorf("first Stop failed: %v", err)
+	}
+
+	// Stop second time - should be idempotent
+	err = server.Stop(ctx)
+	if err != nil {
+		t.Errorf("second Stop failed: %v", err)
+	}
+}
+
+func TestSocketServer_Start_Errors(t *testing.T) {
+	if os.PathSeparator == '\\' {
+		t.Skip("skipping Unix socket tests on Windows")
+	}
+
+	handlers := &Handlers{}
+
+	// Test 1: Invalid socket path
+	server := NewSocketServer("", handlers)
+	ctx := context.Background()
+	err := server.Start(ctx)
+	if err == nil {
+		server.Stop(ctx)
+	}
+
+	// Test 2: Path that causes Listen error
+	server = NewSocketServer("/dev/null/test.sock", handlers)
+	err = server.Start(ctx)
+	if err == nil {
+		server.Stop(ctx)
+		t.Log("Start succeeded on /dev/null (unexpected)")
+	} else {
+		t.Logf("Start failed as expected: %v", err)
 	}
 }
 
