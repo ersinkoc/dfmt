@@ -184,6 +184,11 @@ func TestDaemonStopWhenNotRunning(t *testing.T) {
 		t.Fatalf("New failed: %v", err)
 	}
 
+	// Ensure journal is closed even though we never started
+	if d.journal != nil {
+		d.journal.Close()
+	}
+
 	ctx := context.Background()
 
 	if err := d.Stop(ctx); err != nil {
@@ -216,6 +221,11 @@ func TestStartIdleMonitorInvalidDuration(t *testing.T) {
 	if d.idleTimer != nil {
 		d.idleTimer.Stop()
 	}
+
+	// Clean up journal
+	if d.journal != nil {
+		d.journal.Close()
+	}
 }
 
 func TestStartIdleMonitorValidDuration(t *testing.T) {
@@ -240,6 +250,11 @@ func TestStartIdleMonitorValidDuration(t *testing.T) {
 	// Clean up timer
 	if d.idleTimer != nil {
 		d.idleTimer.Stop()
+	}
+
+	// Clean up journal
+	if d.journal != nil {
+		d.journal.Close()
 	}
 }
 
@@ -266,6 +281,11 @@ func TestStartIdleMonitorZeroDuration(t *testing.T) {
 	if d.idleTimer != nil {
 		d.idleTimer.Stop()
 	}
+
+	// Clean up journal
+	if d.journal != nil {
+		d.journal.Close()
+	}
 }
 
 func TestRegister(t *testing.T) {
@@ -282,6 +302,11 @@ func TestRegister(t *testing.T) {
 
 	// register() is a no-op, just verify it doesn't panic
 	d.register()
+
+	// Clean up journal
+	if d.journal != nil {
+		d.journal.Close()
+	}
 }
 
 func TestUnregister(t *testing.T) {
@@ -298,6 +323,11 @@ func TestUnregister(t *testing.T) {
 
 	// unregister() is a no-op, just verify it doesn't panic
 	d.unregister()
+
+	// Clean up journal
+	if d.journal != nil {
+		d.journal.Close()
+	}
 }
 
 func TestDaemonStartAlreadyRunning(t *testing.T) {
@@ -372,9 +402,13 @@ func TestNewWithInvalidIdleTimeout(t *testing.T) {
 
 	cfg := newTestConfig()
 	// Invalid timeout should be handled gracefully (defaults to 30m)
-	_, err := New(tmpDir, cfg)
+	d, err := New(tmpDir, cfg)
 	if err != nil {
 		t.Fatalf("New with invalid config should still succeed: %v", err)
+	}
+	// Clean up journal if created
+	if d.journal != nil {
+		d.journal.Close()
 	}
 }
 
@@ -387,9 +421,13 @@ func TestNewJournalCreationFailure(t *testing.T) {
 	cfg := newTestConfig()
 	// Create journal path that will fail - simulate by making parent unreadable
 	// Actually just verify that journal creation at valid path works
-	_, err := New(tmpDir, cfg)
+	d, err := New(tmpDir, cfg)
 	if err != nil {
 		t.Fatalf("New should succeed with valid path: %v", err)
+	}
+	// Clean up journal
+	if d.journal != nil {
+		d.journal.Close()
 	}
 }
 
@@ -409,6 +447,11 @@ func TestNewIndexLoadFailure(t *testing.T) {
 	// Write corrupted index file to trigger LoadIndex failure
 	indexPath := filepath.Join(d.projectPath, ".dfmt", "index.gob")
 	os.WriteFile(indexPath, []byte("corrupted data"), 0644)
+
+	// Close the first daemon's journal before creating second one
+	if d.journal != nil {
+		d.journal.Close()
+	}
 
 	// Create new daemon with corrupted index - should rebuild
 	d2, err := New(tmpDir, cfg)
