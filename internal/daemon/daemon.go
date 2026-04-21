@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -84,18 +85,23 @@ func New(projectPath string, cfg *config.Config) (*Daemon, error) {
 	// Create handlers
 	handlers := transport.NewHandlers(index, journal)
 
-	// Create server based on platform
+	// Create server based on platform - use HTTPServer for HTTP support (dashboard, API)
 	var server Server
 	if runtime.GOOS == "windows" {
-		// On Windows, use TCP server and write port file
-		tcpServer := transport.NewTCPServer("localhost:0", handlers)
+		// On Windows, use TCP with HTTPServer for full HTTP support
+		httpServer := transport.NewHTTPServer("localhost:0", handlers)
 		portFile := filepath.Join(dfmtDir, "port")
-		tcpServer.SetPortFile(portFile)
-		server = tcpServer
+		httpServer.SetPortFile(portFile)
+		server = httpServer
 	} else {
-		// On Unix, use Unix socket
+		// On Unix, use Unix socket with HTTPServer for full HTTP support
 		socketPath := project.SocketPath(projectPath)
-		server = transport.NewSocketServer(socketPath, handlers)
+		ln, err := net.Listen("unix", socketPath)
+		if err != nil {
+			return nil, fmt.Errorf("create socket listener: %w", err)
+		}
+		os.Chmod(socketPath, 0700)
+		server = transport.NewHTTPServerWithListener(ln, handlers, socketPath)
 	}
 
 	d := &Daemon{

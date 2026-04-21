@@ -1661,7 +1661,7 @@ func TestHTTPServerStop(t *testing.T) {
 	hs := NewHTTPServer(":8080", nil)
 
 	// Stop without starting should be fine
-	err := hs.Stop()
+	err := hs.Stop(context.Background())
 	if err != nil {
 		t.Errorf("Stop failed: %v", err)
 	}

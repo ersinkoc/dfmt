@@ -16,19 +16,31 @@ import (
 
 // HTTPServer is an HTTP server for the transport layer.
 type HTTPServer struct {
-	bind     string
-	portFile string
-	handlers *Handlers
-	server   *http.Server
-	mu       sync.Mutex
-	running  bool
+	bind       string
+	portFile   string
+	socketPath string // For Unix socket cleanup
+	listener   net.Listener
+	handlers   *Handlers
+	server     *http.Server
+	mu         sync.Mutex
+	running    bool
 }
 
-// NewHTTPServer creates a new HTTP server.
+// NewHTTPServer creates a new HTTP server with TCP listener.
 func NewHTTPServer(bind string, handlers *Handlers) *HTTPServer {
 	return &HTTPServer{
 		bind:     bind,
 		handlers: handlers,
+	}
+}
+
+// NewHTTPServerWithListener creates a new HTTP server with a custom listener.
+// For Unix sockets, also provide socketPath for proper cleanup on stop.
+func NewHTTPServerWithListener(listener net.Listener, handlers *Handlers, socketPath string) *HTTPServer {
+	return &HTTPServer{
+		listener:   listener,
+		handlers:   handlers,
+		socketPath: socketPath,
 	}
 }
 
@@ -47,28 +59,34 @@ func (s *HTTPServer) Start(ctx context.Context) error {
 	mux.HandleFunc("/api/stats", s.handleAPIStats)
 
 	s.server = &http.Server{
-		Addr:         s.bind,
 		Handler:      mux,
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 30 * time.Second,
 		IdleTimeout:  60 * time.Second,
 	}
 
-	// Listen
-	ln, err := net.Listen("tcp", s.bind)
-	if err != nil {
-		s.mu.Unlock()
-		return fmt.Errorf("listen: %w", err)
-	}
+	var ln net.Listener
+	var err error
+	var actualPort int
 
-	// Check actual port
-	addr := ln.Addr().(*net.TCPAddr)
-	actualPort := addr.Port
+	if s.listener != nil {
+		// Use custom listener (e.g., Unix socket)
+		ln = s.listener
+	} else {
+		// Create TCP listener
+		ln, err = net.Listen("tcp", s.bind)
+		if err != nil {
+			s.mu.Unlock()
+			return fmt.Errorf("listen: %w", err)
+		}
+		addr := ln.Addr().(*net.TCPAddr)
+		actualPort = addr.Port
+	}
 
 	s.mu.Unlock()
 
-	// Write port file if configured
-	if s.portFile != "" {
+	// Write port file if configured and we have a TCP port
+	if s.portFile != "" && actualPort > 0 {
 		if err := s.writePortFile(s.portFile, actualPort); err != nil {
 			ln.Close()
 			return fmt.Errorf("write port file: %w", err)
@@ -91,7 +109,7 @@ func (s *HTTPServer) Start(ctx context.Context) error {
 }
 
 // Stop stops the HTTP server.
-func (s *HTTPServer) Stop() error {
+func (s *HTTPServer) Stop(ctx context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -99,11 +117,17 @@ func (s *HTTPServer) Stop() error {
 		return nil
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	shutdownCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
-	err := s.server.Shutdown(ctx)
+	err := s.server.Shutdown(shutdownCtx)
 	s.running = false
+
+	// Clean up Unix socket file if applicable
+	if s.socketPath != "" {
+		os.Remove(s.socketPath)
+	}
+
 	return err
 }
 

@@ -19,7 +19,7 @@ func TestHTTPServerStopNotRunning(t *testing.T) {
 	handlers := NewHandlers(idx, nil)
 	hs := NewHTTPServer(":0", handlers)
 
-	if err := hs.Stop(); err != nil {
+	if err := hs.Stop(context.Background()); err != nil {
 		t.Errorf("Stop on not-running server failed: %v", err)
 	}
 }
@@ -39,7 +39,7 @@ func TestHTTPServerStartAndStop(t *testing.T) {
 		t.Error("server should be running after Start")
 	}
 
-	err = hs.Stop()
+	err = hs.Stop(context.Background())
 	if err != nil {
 		t.Errorf("Stop failed: %v", err)
 	}
@@ -54,7 +54,7 @@ func TestHTTPServerStartTwice(t *testing.T) {
 	if err := hs.Start(ctx); err != nil {
 		t.Fatalf("First Start failed: %v", err)
 	}
-	defer hs.Stop()
+	defer hs.Stop(context.Background())
 
 	// Second start should fail
 	if err := hs.Start(ctx); err == nil {
@@ -82,7 +82,7 @@ func TestHTTPServerStartPortFileWriteError(t *testing.T) {
 	if err != nil {
 		t.Logf("HTTPServer.Start failed as expected for port file write: %v", err)
 	} else {
-		hs.Stop()
+		hs.Stop(context.Background())
 	}
 }
 
