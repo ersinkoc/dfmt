@@ -790,3 +790,88 @@ func TestMustMarshalPanic(t *testing.T) {
 	}
 	_ = mustMarshal(badStruct{X: func() {}})
 }
+
+func TestMustMarshalWithComplexTypes(t *testing.T) {
+	// Test with various types that could cause issues
+	tests := []struct {
+		name  string
+		input interface{}
+	}{
+		{"nil", nil},
+		{"bool", true},
+		{"int", 42},
+		{"float", 3.14},
+		{"string", "hello"},
+		{"slice", []string{"a", "b"}},
+		{"map", map[string]int{"key": 1}},
+		{"struct", struct{ A, B string }{A: "x", B: "y"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := mustMarshal(tt.input)
+			if len(result) == 0 {
+				t.Errorf("mustMarshal(%T) returned empty", tt.input)
+			}
+		})
+	}
+}
+
+func TestDaemonRunningWithFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	// Create socket path
+	socketPath := filepath.Join(tmpDir, ".dfmt", "daemon.sock")
+
+	// Should return false when socket doesn't exist
+	if DaemonRunning(tmpDir) {
+		t.Error("DaemonRunning should be false when socket doesn't exist")
+	}
+
+	// Create socket file
+	dir := filepath.Dir(socketPath)
+	os.MkdirAll(dir, 0755)
+	f, err := os.Create(socketPath)
+	if err != nil {
+		t.Skipf("skipping: could not create socket file: %v", err)
+	}
+	f.Close()
+
+	// Should return true now
+	if !DaemonRunning(tmpDir) {
+		t.Error("DaemonRunning should be true when socket exists")
+	}
+}
+
+func TestNewClientWithRealPath(t *testing.T) {
+	tmpDir := t.TempDir()
+	cl, err := NewClient(tmpDir)
+	if err != nil {
+		t.Fatalf("NewClient failed: %v", err)
+	}
+	if cl == nil {
+		t.Fatal("NewClient returned nil")
+	}
+	expected := filepath.Join(tmpDir, ".dfmt", "daemon.sock")
+	if cl.socketPath != expected {
+		t.Errorf("socketPath = %s, want %s", cl.socketPath, expected)
+	}
+}
+
+func TestClientTimeoutDefaults(t *testing.T) {
+	cl, err := NewClient("/tmp")
+	if err != nil {
+		t.Fatalf("NewClient failed: %v", err)
+	}
+	if cl.timeout != 5*time.Second {
+		t.Errorf("timeout = %v, want 5s", cl.timeout)
+	}
+}
+
+func TestClientTimeoutCustom(t *testing.T) {
+	cl, _ := NewClient("/tmp")
+	customTimeout := 10 * time.Millisecond
+	cl.timeout = customTimeout
+	if cl.timeout != customTimeout {
+		t.Errorf("timeout = %v, want %v", cl.timeout, customTimeout)
+	}
+}
