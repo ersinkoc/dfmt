@@ -552,11 +552,20 @@ func runConfig(args []string) int {
 
 func runStats(args []string) int {
 	if flagJSON {
+		// For JSON output, we need to connect to daemon
+		// This is a placeholder - real implementation would query daemon
 		fmt.Println(`{"events_total": 0, "journal_size": 0}`)
 	} else {
-		fmt.Println("Session Statistics:")
-		fmt.Println("  Events: 0")
-		fmt.Println("  Journal size: 0 bytes")
+		fmt.Println("DFMT Session Statistics")
+		fmt.Println("========================")
+		fmt.Println("")
+		fmt.Println("Run 'dfmt daemon' first, then visit:")
+		fmt.Println("  http://localhost:<port>/dashboard")
+		fmt.Println("")
+		fmt.Println("Or query stats via API:")
+		fmt.Println("  curl -X POST http://localhost:<port>/api/stats \\")
+		fmt.Println("    -H 'Content-Type: application/json' \\")
+		fmt.Println("    -d '{\"jsonrpc\":\"2.0\",\"method\":\"dfmt.stats\",\"params\":{},\"id\":1}'")
 	}
 	return 0
 }

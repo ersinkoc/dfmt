@@ -43,6 +43,8 @@ func (s *HTTPServer) Start(ctx context.Context) error {
 	// Create HTTP handler
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.handle)
+	mux.HandleFunc("/dashboard", s.handleDashboard)
+	mux.HandleFunc("/api/stats", s.handleAPIStats)
 
 	s.server = &http.Server{
 		Addr:         s.bind,
@@ -140,6 +142,8 @@ func (s *HTTPServer) handle(w http.ResponseWriter, r *http.Request) {
 		resp = s.handleSearch(ctx, req)
 	case "dfmt.recall":
 		resp = s.handleRecall(ctx, req)
+	case "dfmt.stats":
+		resp = s.handleStats(ctx, req)
 	default:
 		resp = Response{
 			JSONRPC: "2.0",
@@ -205,6 +209,24 @@ func (s *HTTPServer) handleRecall(ctx context.Context, req Request) Response {
 	return Response{JSONRPC: "2.0", ID: req.ID, Result: resp}
 }
 
+func (s *HTTPServer) handleStats(ctx context.Context, req Request) Response {
+	var params StatsParams
+	if req.Params != nil {
+		data, _ := json.Marshal(req.Params)
+		json.Unmarshal(data, &params)
+	}
+
+	resp, err := s.handlers.Stats(ctx, params)
+	if err != nil {
+		return Response{
+			JSONRPC: "2.0",
+			ID:      req.ID,
+			Error:   &RPCError{Code: -32603, Message: err.Error()},
+		}
+	}
+	return Response{JSONRPC: "2.0", ID: req.ID, Result: resp}
+}
+
 func (s *HTTPServer) writePortFile(path string, port int) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0755); err != nil {
@@ -216,4 +238,56 @@ func (s *HTTPServer) writePortFile(path string, port int) error {
 // SetPortFile sets the path to write the chosen port.
 func (s *HTTPServer) SetPortFile(path string) {
 	s.portFile = path
+}
+
+func (s *HTTPServer) handleDashboard(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Write([]byte(DashboardHTML))
+}
+
+func (s *HTTPServer) handleAPIStats(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, "Bad request", http.StatusBadRequest)
+		return
+	}
+	defer r.Body.Close()
+
+	var req Request
+	if err := json.Unmarshal(body, &req); err != nil {
+		resp := Response{
+			JSONRPC: "2.0",
+			Error:   &RPCError{Code: -32700, Message: "Parse error"},
+		}
+		json.NewEncoder(w).Encode(resp)
+		return
+	}
+
+	var params StatsParams
+	if req.Params != nil {
+		json.Unmarshal(req.Params, &params)
+	}
+
+	resp, err := s.handlers.Stats(r.Context(), params)
+	if err != nil {
+		json.NewEncoder(w).Encode(Response{
+			JSONRPC: "2.0",
+			ID:      req.ID,
+			Error:   &RPCError{Code: -32603, Message: err.Error()},
+		})
+		return
+	}
+
+	json.NewEncoder(w).Encode(Response{
+		JSONRPC: "2.0",
+		ID:      req.ID,
+		Result:  resp,
+	})
 }

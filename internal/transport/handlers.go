@@ -216,6 +216,60 @@ func (h *Handlers) Recall(ctx context.Context, params RecallParams) (*RecallResp
 	}, nil
 }
 
+// StatsParams are the parameters for the Stats method.
+type StatsParams struct{}
+
+// StatsResponse is the response for the Stats method.
+type StatsResponse struct {
+	EventsTotal      int            `json:"events_total"`
+	EventsByType     map[string]int `json:"events_by_type"`
+	EventsByPriority map[string]int `json:"events_by_priority"`
+	SessionStart    string         `json:"session_start"`
+	SessionEnd      string         `json:"session_end"`
+}
+
+// Stats returns aggregated statistics from the journal.
+func (h *Handlers) Stats(ctx context.Context, params StatsParams) (*StatsResponse, error) {
+	var events []core.Event
+	stream, err := h.journal.Stream(ctx, "")
+	if err != nil {
+		return nil, fmt.Errorf("stream journal: %w", err)
+	}
+	for e := range stream {
+		events = append(events, e)
+	}
+
+	resp := &StatsResponse{
+		EventsTotal:      len(events),
+		EventsByType:     make(map[string]int),
+		EventsByPriority: make(map[string]int),
+	}
+
+	classifier := core.NewClassifier()
+	var earliest, latest time.Time
+
+	for _, e := range events {
+		resp.EventsByType[string(e.Type)]++
+		resp.EventsByPriority[string(classifier.Classify(e))]++
+
+		if earliest.IsZero() || e.TS.Before(earliest) {
+			earliest = e.TS
+		}
+		if latest.IsZero() || e.TS.After(latest) {
+			latest = e.TS
+		}
+	}
+
+	if !earliest.IsZero() {
+		resp.SessionStart = earliest.Format(time.RFC3339)
+	}
+	if !latest.IsZero() {
+		resp.SessionEnd = latest.Format(time.RFC3339)
+	}
+
+	return resp, nil
+}
+
 // StreamParams are the parameters for the Stream method.
 type StreamParams struct {
 	From string `json:"from,omitempty"`
