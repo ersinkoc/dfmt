@@ -424,6 +424,25 @@ func TestRemoveWithReadAllError(t *testing.T) {
 	}
 }
 
+func TestRemoveWithWriteAllError(t *testing.T) {
+	tmpDir := t.TempDir()
+	reg, _ := NewRegistry(tmpDir)
+
+	// First add an entry
+	reg.Add(RegistryEntry{ID: "id1", Path: "/path1", LastSeen: 1000})
+
+	// Now set path to a directory to cause writeAll error
+	originalPath := reg.path
+	reg.path = tmpDir // tmpDir is a directory, not a file path
+
+	err := reg.Remove("id1")
+	if err == nil {
+		t.Error("Remove should fail when writeAll fails")
+	}
+
+	reg.path = originalPath // restore
+}
+
 func TestAddWithReadAllError(t *testing.T) {
 	tmpDir := t.TempDir()
 	reg, _ := NewRegistry(tmpDir)
