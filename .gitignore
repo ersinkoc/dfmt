@@ -43,6 +43,7 @@ logs/
 
 # === Coverage reports ===
 coverage.out
+coverage.html
 *.out
 
 # === Private/Internal docs (uncomment if needed) ===
