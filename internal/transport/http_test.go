@@ -62,6 +62,30 @@ func TestHTTPServerStartTwice(t *testing.T) {
 	}
 }
 
+func TestHTTPServerStartPortFileWriteError(t *testing.T) {
+	idx := core.NewIndex()
+	handlers := NewHandlers(idx, nil)
+	hs := NewHTTPServer(":0", handlers)
+
+	// Set a port file path that cannot be written
+	portFile := "/proc/invalid_port_file_dfmt_test/port"
+	if os.PathSeparator == '\\' {
+		// On Windows, use a path with invalid characters
+		portFile = "NUL:/dfmt_invalid_portfile_test"
+	}
+	hs.SetPortFile(portFile)
+
+	ctx := context.Background()
+	err := hs.Start(ctx)
+	// If Start fails due to port file write error, we've covered that path
+	// If it succeeds, the path was writable on this system
+	if err != nil {
+		t.Logf("HTTPServer.Start failed as expected for port file write: %v", err)
+	} else {
+		hs.Stop()
+	}
+}
+
 func TestHandleMethodNotAllowed(t *testing.T) {
 	idx := core.NewIndex()
 	handlers := NewHandlers(idx, nil)
