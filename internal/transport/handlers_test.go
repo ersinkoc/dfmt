@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -1654,5 +1655,307 @@ func TestHTTPServerStop(t *testing.T) {
 	err := hs.Stop()
 	if err != nil {
 		t.Errorf("Stop failed: %v", err)
+	}
+}
+
+// handleToolsCall error path tests
+
+func TestMCPProtocolHandleToolsCallNilHandlers(t *testing.T) {
+	// Test the nil handlers branch: "daemon not connected"
+	mcp := NewMCPProtocol(nil)
+
+	req := &MCPRequest{
+		JSONRPC: "2.0",
+		Method:  "tools/call",
+		Params:  json.RawMessage(`{"name":"dfmt.remember","arguments":{"type":"note"}}`),
+		ID:      1,
+	}
+
+	resp, err := mcp.Handle(req)
+	if err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+	if resp.Error == nil {
+		t.Fatal("resp.Error is nil for nil handlers")
+	}
+	if resp.Error.Code != -32603 {
+		t.Errorf("resp.Error.Code = %d, want -32603", resp.Error.Code)
+	}
+	if resp.Error.Message != "daemon not connected" {
+		t.Errorf("resp.Error.Message = %s, want 'daemon not connected'", resp.Error.Message)
+	}
+}
+
+func TestMCPProtocolHandleToolsCallEmptyName(t *testing.T) {
+	// Test empty tool name (default case in switch)
+	handlers := &Handlers{}
+	mcp := NewMCPProtocol(handlers)
+
+	req := &MCPRequest{
+		JSONRPC: "2.0",
+		Method:  "tools/call",
+		Params:  json.RawMessage(`{"name":"","arguments":{}}`),
+		ID:      1,
+	}
+
+	resp, err := mcp.Handle(req)
+	if err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+	if resp.Error == nil {
+		t.Fatal("resp.Error is nil for empty tool name")
+	}
+	if resp.Error.Code != -32601 {
+		t.Errorf("resp.Error.Code = %d, want -32601", resp.Error.Code)
+	}
+	if resp.Error.Message != "unknown tool: " {
+		t.Errorf("resp.Error.Message = %s, want 'unknown tool: '", resp.Error.Message)
+	}
+}
+
+func TestMCPProtocolHandleToolsCallRememberArgsInvalid(t *testing.T) {
+	// Test Remember with malformed arguments JSON
+	idx := core.NewIndex()
+	journal := &mockJournal{}
+	handlers := NewHandlers(idx, journal)
+	mcp := NewMCPProtocol(handlers)
+
+	req := &MCPRequest{
+		JSONRPC: "2.0",
+		Method:  "tools/call",
+		// arguments is a string instead of an object - should fail unmarshal
+		Params: json.RawMessage(`{"name":"dfmt.remember","arguments":"not an object"}`),
+		ID:     1,
+	}
+
+	resp, err := mcp.Handle(req)
+	if err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+	if resp.Error == nil {
+		t.Fatal("resp.Error is nil for invalid remember args")
+	}
+	if resp.Error.Code != -32602 {
+		t.Errorf("resp.Error.Code = %d, want -32602", resp.Error.Code)
+	}
+}
+
+func TestMCPProtocolHandleToolsCallSearchArgsInvalid(t *testing.T) {
+	// Test Search with malformed arguments JSON
+	idx := core.NewIndex()
+	handlers := NewHandlers(idx, nil)
+	mcp := NewMCPProtocol(handlers)
+
+	req := &MCPRequest{
+		JSONRPC: "2.0",
+		Method:  "tools/call",
+		Params:  json.RawMessage(`{"name":"dfmt.search","arguments":{"query":123}}`),
+		ID:      1,
+	}
+
+	resp, err := mcp.Handle(req)
+	if err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+	if resp.Error == nil {
+		t.Fatal("resp.Error is nil for invalid search args")
+	}
+	if resp.Error.Code != -32602 {
+		t.Errorf("resp.Error.Code = %d, want -32602", resp.Error.Code)
+	}
+}
+
+func TestMCPProtocolHandleToolsCallRecallArgsInvalid(t *testing.T) {
+	// Test Recall with malformed arguments JSON
+	idx := core.NewIndex()
+	journal := &mockJournal{}
+	handlers := NewHandlers(idx, journal)
+	mcp := NewMCPProtocol(handlers)
+
+	req := &MCPRequest{
+		JSONRPC: "2.0",
+		Method:  "tools/call",
+		Params:  json.RawMessage(`{"name":"dfmt.recall","arguments":{"budget":"not a number"}}`),
+		ID:      1,
+	}
+
+	resp, err := mcp.Handle(req)
+	if err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+	if resp.Error == nil {
+		t.Fatal("resp.Error is nil for invalid recall args")
+	}
+	if resp.Error.Code != -32602 {
+		t.Errorf("resp.Error.Code = %d, want -32602", resp.Error.Code)
+	}
+}
+
+// errorReturningJournal is a mock journal that returns errors
+type errorReturningJournal struct {
+	err error
+}
+
+func (m *errorReturningJournal) Append(ctx context.Context, e core.Event) error {
+	return m.err
+}
+
+func (m *errorReturningJournal) Stream(ctx context.Context, from string) (<-chan core.Event, error) {
+	return nil, m.err
+}
+
+func (m *errorReturningJournal) Checkpoint(ctx context.Context) (string, error) {
+	return "", nil
+}
+
+func (m *errorReturningJournal) Rotate(ctx context.Context) error {
+	return m.err
+}
+
+func (m *errorReturningJournal) Close() error {
+	return nil
+}
+
+func TestMCPProtocolHandleToolsCallRememberHandlerError(t *testing.T) {
+	// Test Remember handler returning an error
+	idx := core.NewIndex()
+	journal := &errorReturningJournal{err: fmt.Errorf("journal append failed")}
+	handlers := NewHandlers(idx, journal)
+	mcp := NewMCPProtocol(handlers)
+
+	req := &MCPRequest{
+		JSONRPC: "2.0",
+		Method:  "tools/call",
+		Params:  json.RawMessage(`{"name":"dfmt.remember","arguments":{"type":"note","source":"test"}}`),
+		ID:      1,
+	}
+
+	resp, err := mcp.Handle(req)
+	if err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+	if resp.Error == nil {
+		t.Fatal("resp.Error is nil for handler error")
+	}
+	if resp.Error.Code != -32603 {
+		t.Errorf("resp.Error.Code = %d, want -32603", resp.Error.Code)
+	}
+	if !strings.Contains(resp.Error.Message, "journal append") {
+		t.Errorf("resp.Error.Message = %s, want to contain 'journal append'", resp.Error.Message)
+	}
+}
+
+func TestMCPProtocolHandleToolsCallRecallHandlerError(t *testing.T) {
+	// Test Recall handler returning an error (stream failure)
+	idx := core.NewIndex()
+	journal := &errorReturningJournal{err: fmt.Errorf("stream journal failed")}
+	handlers := NewHandlers(idx, journal)
+	mcp := NewMCPProtocol(handlers)
+
+	req := &MCPRequest{
+		JSONRPC: "2.0",
+		Method:  "tools/call",
+		Params:  json.RawMessage(`{"name":"dfmt.recall","arguments":{"budget":1024}}`),
+		ID:      1,
+	}
+
+	resp, err := mcp.Handle(req)
+	if err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+	if resp.Error == nil {
+		t.Fatal("resp.Error is nil for handler error")
+	}
+	if resp.Error.Code != -32603 {
+		t.Errorf("resp.Error.Code = %d, want -32603", resp.Error.Code)
+	}
+	if !strings.Contains(resp.Error.Message, "stream journal") {
+		t.Errorf("resp.Error.Message = %s, want to contain 'stream journal'", resp.Error.Message)
+	}
+}
+
+func TestMCPProtocolHandleToolsCallMissingArguments(t *testing.T) {
+	// Test calling tool with no arguments field at all
+	// When arguments is missing, params.Args is nil and unmarshaling into struct fails
+	handlers := &Handlers{}
+	mcp := NewMCPProtocol(handlers)
+
+	req := &MCPRequest{
+		JSONRPC: "2.0",
+		Method:  "tools/call",
+		Params:  json.RawMessage(`{"name":"dfmt.remember"}`),
+		ID:      1,
+	}
+
+	resp, err := mcp.Handle(req)
+	if err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+	// nil arguments fails to unmarshal into RememberParams (expects object)
+	if resp.Error == nil {
+		t.Fatal("resp.Error is nil for missing arguments")
+	}
+	if resp.Error.Code != -32602 {
+		t.Errorf("resp.Error.Code = %d, want -32602", resp.Error.Code)
+	}
+}
+
+func TestMCPProtocolHandleToolsCallSearchNoArgs(t *testing.T) {
+	// Test calling dfmt.search with no arguments
+	idx := core.NewIndex()
+	handlers := NewHandlers(idx, nil)
+	mcp := NewMCPProtocol(handlers)
+
+	req := &MCPRequest{
+		JSONRPC: "2.0",
+		Method:  "tools/call",
+		Params:  json.RawMessage(`{"name":"dfmt.search"}`),
+		ID:      1,
+	}
+
+	resp, err := mcp.Handle(req)
+	if err != nil {
+		t.Fatalf("Handle failed: %v", err)
+	}
+	// Empty query should fail validation
+	if resp.Error == nil {
+		t.Fatal("resp.Error is nil for search with no query")
+	}
+	if resp.Error.Code != -32602 {
+		t.Errorf("resp.Error.Code = %d, want -32602", resp.Error.Code)
+	}
+}
+
+func TestMCPProtocolHandleToolsCallVariousUnknownTools(t *testing.T) {
+	// Test various unknown tool names
+	handlers := &Handlers{}
+	mcp := NewMCPProtocol(handlers)
+
+	testCases := []string{
+		"unknown.tool",
+		"dfmt.",
+		"dfmt.unknown",
+		"invalid",
+		"../../../etc/passwd",
+	}
+
+	for _, name := range testCases {
+		req := &MCPRequest{
+			JSONRPC: "2.0",
+			Method:  "tools/call",
+			Params:  json.RawMessage(`{"name":"` + name + `","arguments":{}}`),
+			ID:      1,
+		}
+
+		resp, err := mcp.Handle(req)
+		if err != nil {
+			t.Fatalf("Handle failed for tool %q: %v", name, err)
+		}
+		if resp.Error == nil {
+			t.Errorf("resp.Error is nil for unknown tool %q", name)
+		}
+		if resp.Error.Code != -32601 {
+			t.Errorf("resp.Error.Code = %d for tool %q, want -32601", resp.Error.Code, name)
+		}
 	}
 }
