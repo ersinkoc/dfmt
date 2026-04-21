@@ -267,6 +267,21 @@ func hasShellChainOperators(cmd string) bool {
 			return true
 		}
 	}
+
+	// Check for command substitution patterns
+	// Backticks: `command`
+	if strings.Contains(cmd, "`") {
+		return true
+	}
+	// $(command) substitution
+	if strings.Contains(cmd, "$(") {
+		return true
+	}
+	// Here-documents: <<EOF ... EOF (simplified check for <<)
+	if strings.Contains(cmd, "<<") {
+		return true
+	}
+
 	return false
 }
 
