@@ -875,3 +875,85 @@ func TestClientTimeoutCustom(t *testing.T) {
 		t.Errorf("timeout = %v, want %v", cl.timeout, customTimeout)
 	}
 }
+
+func TestClientConnectRefused(t *testing.T) {
+	if os.PathSeparator == '\\' {
+		t.Skip("skipping Unix socket test on Windows")
+	}
+	tmpDir := t.TempDir()
+	cl, _ := NewClient(tmpDir)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	_, err := cl.Connect(ctx)
+	if err == nil {
+		t.Error("Connect should fail when nothing listening")
+	}
+}
+
+func TestClientRememberConnectError(t *testing.T) {
+	cl, _ := NewClient("/tmp/nonexistent")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	_, err := cl.Remember(ctx, transport.RememberParams{Type: "test"})
+	if err == nil {
+		t.Error("Remember should fail when daemon not running")
+	}
+}
+
+func TestClientSearchConnectError(t *testing.T) {
+	cl, _ := NewClient("/tmp/nonexistent")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	_, err := cl.Search(ctx, transport.SearchParams{Query: "test"})
+	if err == nil {
+		t.Error("Search should fail when daemon not running")
+	}
+}
+
+func TestClientRecallConnectError(t *testing.T) {
+	cl, _ := NewClient("/tmp/nonexistent")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	_, err := cl.Recall(ctx, transport.RecallParams{})
+	if err == nil {
+		t.Error("Recall should fail when daemon not running")
+	}
+}
+
+func TestNewClientWithEmptyProjectPath(t *testing.T) {
+	cl, err := NewClient("")
+	if err != nil {
+		t.Fatalf("NewClient with empty path failed: %v", err)
+	}
+	if cl == nil {
+		t.Fatal("NewClient returned nil")
+	}
+}
+
+func TestClientSocketPathEnvVarPattern(t *testing.T) {
+	// Test that socket path follows expected format
+	tmpDir := t.TempDir()
+	cl, _ := NewClient(tmpDir)
+	expected := filepath.Join(tmpDir, ".dfmt", "daemon.sock")
+	if cl.socketPath != expected {
+		t.Errorf("socketPath = %s, want %s", cl.socketPath, expected)
+	}
+}
+
+func TestClientDefaultTimeout(t *testing.T) {
+	cl, err := NewClient("/tmp")
+	if err != nil {
+		t.Fatalf("NewClient failed: %v", err)
+	}
+	if cl.timeout != 5*time.Second {
+		t.Errorf("default timeout = %v, want 5s", cl.timeout)
+	}
+}
