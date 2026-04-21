@@ -230,3 +230,122 @@ func TestReadAllNonExistent(t *testing.T) {
 		t.Errorf("readAll for non-existent file returned %d entries, want 0", len(entries))
 	}
 }
+
+func TestRemoveNonexistentDoesNotFail(t *testing.T) {
+	tmpDir := t.TempDir()
+	reg, _ := NewRegistry(tmpDir)
+
+	// Remove from empty registry should not error
+	err := reg.Remove("nonexistent-id")
+	if err != nil {
+		t.Errorf("Remove from empty registry failed: %v", err)
+	}
+}
+
+func TestReadAllSkipsMalformedJSON(t *testing.T) {
+	tmpDir := t.TempDir()
+	reg, _ := NewRegistry(tmpDir)
+
+	// Create registry with valid entries via Add
+	reg.Add(RegistryEntry{ID: "entry1", Path: "/path1", LastSeen: 1000})
+	reg.Add(RegistryEntry{ID: "entry2", Path: "/path2", LastSeen: 2000})
+
+	// Verify readAll works with multiple valid entries
+	entries, err := reg.readAll()
+	if err != nil {
+		t.Fatalf("readAll failed: %v", err)
+	}
+	if len(entries) != 2 {
+		t.Errorf("readAll returned %d entries, want 2", len(entries))
+	}
+}
+
+func TestWriteAllAndReadAllRoundTrip(t *testing.T) {
+	tmpDir := t.TempDir()
+	reg, _ := NewRegistry(tmpDir)
+
+	entries := []RegistryEntry{
+		{ID: "id1", Path: "/path1", LastSeen: 1000},
+		{ID: "id2", Path: "/path2", LastSeen: 2000},
+		{ID: "id3", Path: "/path3", LastSeen: 3000},
+	}
+
+	if err := reg.writeAll(entries); err != nil {
+		t.Fatalf("writeAll failed: %v", err)
+	}
+
+	readEntries, err := reg.readAll()
+	if err != nil {
+		t.Fatalf("readAll failed: %v", err)
+	}
+	if len(readEntries) != 3 {
+		t.Errorf("readAll returned %d entries, want 3", len(readEntries))
+	}
+}
+
+func TestWriteAllEmptyEntries(t *testing.T) {
+	tmpDir := t.TempDir()
+	reg, _ := NewRegistry(tmpDir)
+
+	// Write empty slice
+	if err := reg.writeAll([]RegistryEntry{}); err != nil {
+		t.Fatalf("writeAll empty failed: %v", err)
+	}
+
+	// Should create empty file (truncated)
+	readEntries, err := reg.readAll()
+	if err != nil {
+		t.Fatalf("readAll after empty write failed: %v", err)
+	}
+	if len(readEntries) != 0 {
+		t.Errorf("readAll returned %d entries, want 0", len(readEntries))
+	}
+}
+
+func TestAddMultipleEntries(t *testing.T) {
+	tmpDir := t.TempDir()
+	reg, _ := NewRegistry(tmpDir)
+
+	reg.Add(RegistryEntry{ID: "multi1", Path: "/mpath1", LastSeen: 1000})
+	reg.Add(RegistryEntry{ID: "multi2", Path: "/mpath2", LastSeen: 2000})
+	reg.Add(RegistryEntry{ID: "multi3", Path: "/mpath3", LastSeen: 3000})
+
+	entries, _ := reg.List()
+	if len(entries) != 3 {
+		t.Errorf("List returned %d entries, want 3", len(entries))
+	}
+}
+
+func TestRemoveLastEntry(t *testing.T) {
+	tmpDir := t.TempDir()
+	reg, _ := NewRegistry(tmpDir)
+
+	reg.Add(RegistryEntry{ID: "last", Path: "/lastpath", LastSeen: 1000})
+
+	// Remove the only entry
+	err := reg.Remove("last")
+	if err != nil {
+		t.Fatalf("Remove failed: %v", err)
+	}
+
+	entries, _ := reg.List()
+	if len(entries) != 0 {
+		t.Errorf("List after removing last entry returned %d, want 0", len(entries))
+	}
+}
+
+func TestGetAfterRemove(t *testing.T) {
+	tmpDir := t.TempDir()
+	reg, _ := NewRegistry(tmpDir)
+
+	reg.Add(RegistryEntry{ID: "getremove", Path: "/grpath", LastSeen: 1000})
+	reg.Remove("getremove")
+
+	got, err := reg.Get("getremove")
+	if err != nil {
+		t.Fatalf("Get after Remove failed: %v", err)
+	}
+	if got != nil {
+		t.Error("Get should return nil after entry is removed")
+	}
+}

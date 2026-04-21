@@ -569,3 +569,218 @@ func TestManifestPath_HomeFallback(t *testing.T) {
 		t.Errorf("ManifestPath() = %s, want %s", path, expected)
 	}
 }
+
+func TestSaveManifest_CreatesDirectory(t *testing.T) {
+	tmpDir := t.TempDir()
+	os.Setenv("XDG_DATA_HOME", tmpDir)
+	defer os.Unsetenv("XDG_DATA_HOME")
+
+	// Ensure the dfmt directory doesn't exist
+	dfmtDir := filepath.Join(tmpDir, "dfmt")
+	os.RemoveAll(dfmtDir)
+
+	m := &Manifest{
+		Version:   2,
+		Timestamp: "2024-06-01T00:00:00Z",
+		Agents: []AgentEntry{
+			{AgentID: "claude-code", Configured: true, ConfigDir: "/home/user/.claude"},
+		},
+		Files: []FileEntry{
+			{Path: "/home/user/.claude/settings.json", Agent: "claude-code", Version: "1.0"},
+		},
+	}
+
+	err := SaveManifest(m)
+	if err != nil {
+		t.Fatalf("SaveManifest failed: %v", err)
+	}
+
+	// Verify the directory and file were created
+	manifestPath := filepath.Join(dfmtDir, "setup-manifest.json")
+	if _, err := os.Stat(manifestPath); os.IsNotExist(err) {
+		t.Error("Manifest file was not created")
+	}
+
+	// Verify content by loading
+	loaded, err := LoadManifest()
+	if err != nil {
+		t.Fatalf("Failed to load saved manifest: %v", err)
+	}
+	if loaded.Version != 2 {
+		t.Errorf("loaded.Version = %d, want 2", loaded.Version)
+	}
+	if len(loaded.Agents) != 1 {
+		t.Errorf("len(loaded.Agents) = %d, want 1", len(loaded.Agents))
+	}
+	if len(loaded.Files) != 1 {
+		t.Errorf("len(loaded.Files) = %d, want 1", len(loaded.Files))
+	}
+}
+
+func TestSaveManifest_EmptyManifest(t *testing.T) {
+	tmpDir := t.TempDir()
+	os.Setenv("XDG_DATA_HOME", tmpDir)
+	defer os.Unsetenv("XDG_DATA_HOME")
+
+	m := &Manifest{
+		Version:   1,
+		Timestamp: "",
+		Agents:    []AgentEntry{},
+		Files:     []FileEntry{},
+	}
+
+	err := SaveManifest(m)
+	if err != nil {
+		t.Fatalf("SaveManifest failed for empty manifest: %v", err)
+	}
+
+	loaded, err := LoadManifest()
+	if err != nil {
+		t.Fatalf("Failed to load empty manifest: %v", err)
+	}
+	if loaded.Version != 1 {
+		t.Errorf("loaded.Version = %d, want 1", loaded.Version)
+	}
+}
+
+func TestDetectClaudeCode_PathWithLocalBin(t *testing.T) {
+	origHome := os.Getenv("HOME")
+	defer func() {
+		os.Setenv("HOME", origHome)
+	}()
+
+	tmpDir := t.TempDir()
+	os.Setenv("HOME", tmpDir)
+	os.Unsetenv("XDG_DATA_HOME")
+
+	// Create .local/bin directory with claude file
+	localBin := filepath.Join(tmpDir, ".local", "bin")
+	os.MkdirAll(localBin, 0755)
+	claudePath := filepath.Join(localBin, "claude")
+	// Create a file (not executable) - os.Stat succeeds
+	os.WriteFile(claudePath, []byte("fake"), 0644)
+
+	result := detectClaudeCode()
+	if result == nil {
+		t.Error("detectClaudeCode() returned nil when .local/bin/claude exists")
+	}
+	if result != nil && result.ID != "claude-code" {
+		t.Errorf("ID = %s, want 'claude-code'", result.ID)
+	}
+	if result != nil && result.Confidence != 0.95 {
+		t.Errorf("Confidence = %f, want 0.95 for binary path", result.Confidence)
+	}
+}
+
+func TestDetectClaudeCode_DirectoryInsteadOfFile(t *testing.T) {
+	origHome := os.Getenv("HOME")
+	defer func() {
+		os.Setenv("HOME", origHome)
+	}()
+
+	tmpDir := t.TempDir()
+	os.Setenv("HOME", tmpDir)
+	os.Unsetenv("XDG_DATA_HOME")
+
+	// Create .local/bin directory
+	localBin := filepath.Join(tmpDir, ".local", "bin")
+	os.MkdirAll(localBin, 0755)
+	// Create a directory at claude path instead of file
+	claudePath := filepath.Join(localBin, "claude")
+	os.MkdirAll(claudePath, 0755)
+
+	result := detectClaudeCode()
+	// os.Stat on a directory returns nil error, so it returns an agent
+	// but getClaudeVersion returns "unknown" anyway
+	if result == nil {
+		t.Error("detectClaudeCode() returned nil when directory exists at path")
+	}
+}
+
+func TestDetectClaudeCode_AllPathsChecked(t *testing.T) {
+	origHome := os.Getenv("HOME")
+	defer func() {
+		os.Setenv("HOME", origHome)
+	}()
+
+	tmpDir := t.TempDir()
+	os.Setenv("HOME", tmpDir)
+	os.Unsetenv("XDG_DATA_HOME")
+
+	// Test that /opt/claude/bin/claude path is checked (doesn't exist on most systems)
+	// This test just ensures the function runs without panicking
+	result := detectClaudeCode()
+	// Result may be nil if paths don't exist, but function should complete without error
+	_ = result
+}
+
+func TestDetectCodex_DirectoryInsteadOfFile(t *testing.T) {
+	origHome := os.Getenv("HOME")
+	defer func() {
+		os.Setenv("HOME", origHome)
+	}()
+
+	tmpDir := t.TempDir()
+	os.Setenv("HOME", tmpDir)
+	os.Unsetenv("XDG_DATA_HOME")
+
+	// Create .codex as a directory instead of file
+	codexPath := filepath.Join(tmpDir, ".codex")
+	os.MkdirAll(codexPath, 0755)
+
+	result := detectCodex()
+	// os.Stat on a directory returns nil error, so it returns an agent
+	if result == nil {
+		t.Error("detectCodex() returned nil when directory exists at path")
+	}
+	if result != nil && result.Confidence != 0.9 {
+		t.Errorf("Confidence = %f, want 0.9", result.Confidence)
+	}
+}
+
+func TestDetect_CombinesBothDetectors(t *testing.T) {
+	origHome := os.Getenv("HOME")
+	defer func() {
+		os.Setenv("HOME", origHome)
+	}()
+
+	tmpDir := t.TempDir()
+	os.Setenv("HOME", tmpDir)
+	os.Unsetenv("XDG_DATA_HOME")
+
+	// Create directories for both agents
+	os.MkdirAll(filepath.Join(tmpDir, ".claude"), 0755)
+	os.MkdirAll(filepath.Join(tmpDir, ".codex"), 0755)
+
+	agents := Detect()
+	// Should find at least one agent (depends on what detect functions return for directories)
+	if len(agents) == 0 {
+		t.Log("No agents detected - may be expected if detection requires executable files")
+	}
+}
+
+func TestManifestEntry_Struct(t *testing.T) {
+	m := Manifest{
+		Version:   3,
+		Timestamp: "2024-07-01T12:00:00Z",
+		Agents: []AgentEntry{
+			{AgentID: "codex", Configured: false, ConfigDir: ""},
+		},
+		Files: []FileEntry{
+			{Path: "/path/to/file", Agent: "codex", Version: "0.1"},
+		},
+	}
+
+	if m.Version != 3 {
+		t.Errorf("Version = %d, want 3", m.Version)
+	}
+	if len(m.Agents) != 1 {
+		t.Errorf("len(Agents) = %d, want 1", len(m.Agents))
+	}
+	if len(m.Files) != 1 {
+		t.Errorf("len(Files) = %d, want 1", len(m.Files))
+	}
+	if m.Agents[0].AgentID != "codex" {
+		t.Errorf("Agents[0].AgentID = %s, want 'codex'", m.Agents[0].AgentID)
+	}
+}

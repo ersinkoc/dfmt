@@ -1,5 +1,3 @@
-//go:build unix
-
 package transport
 
 import (
@@ -12,10 +10,6 @@ import (
 )
 
 func TestSocketServerCreation(t *testing.T) {
-	if os.PathSeparator == '\\' {
-		t.Skip("skipping Unix socket tests on Windows")
-	}
-
 	handlers := &Handlers{}
 	server := NewSocketServer("/tmp/test.sock", handlers)
 
@@ -27,6 +21,9 @@ func TestSocketServerCreation(t *testing.T) {
 	}
 	if server.running {
 		t.Error("server should not be running initially")
+	}
+	if server.listener != nil {
+		t.Error("listener should be nil initially")
 	}
 }
 
@@ -100,10 +97,6 @@ func TestSocketServer_Start_DoubleStart(t *testing.T) {
 }
 
 func TestDecodeParams_Empty(t *testing.T) {
-	if os.PathSeparator == '\\' {
-		t.Skip("skipping Unix socket tests on Windows")
-	}
-
 	var v map[string]interface{}
 	err := decodeParams(nil, &v)
 	if err != nil {
@@ -117,10 +110,6 @@ func TestDecodeParams_Empty(t *testing.T) {
 }
 
 func TestDecodeParams_ValidJSON(t *testing.T) {
-	if os.PathSeparator == '\\' {
-		t.Skip("skipping Unix socket tests on Windows")
-	}
-
 	data := []byte(`{"key": "value", "num": 123}`)
 	var v map[string]interface{}
 	err := decodeParams(data, &v)
@@ -137,10 +126,6 @@ func TestDecodeParams_ValidJSON(t *testing.T) {
 }
 
 func TestDecodeParams_InvalidJSON(t *testing.T) {
-	if os.PathSeparator == '\\' {
-		t.Skip("skipping Unix socket tests on Windows")
-	}
-
 	data := []byte(`invalid json`)
 	var v map[string]interface{}
 	err := decodeParams(data, &v)
@@ -150,19 +135,8 @@ func TestDecodeParams_InvalidJSON(t *testing.T) {
 }
 
 func TestSocketServer_Dispatch_UnknownMethod(t *testing.T) {
-	if os.PathSeparator == '\\' {
-		t.Skip("skipping Unix socket tests on Windows")
-	}
-
-	tmpDir, err := os.MkdirTemp("", "socket_test")
-	if err != nil {
-		t.Fatalf("failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmpDir)
-
-	socketPath := filepath.Join(tmpDir, "test.sock")
 	handlers := &Handlers{}
-	server := NewSocketServer(socketPath, handlers)
+	server := NewSocketServer("/tmp/test.sock", handlers)
 
 	req := &Request{
 		ID:     1,
@@ -171,9 +145,75 @@ func TestSocketServer_Dispatch_UnknownMethod(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	_, err = server.dispatch(ctx, req)
+	_, err := server.dispatch(ctx, req)
 	if err == nil {
 		t.Error("expected error for unknown method, got nil")
+	}
+}
+
+func TestSocketServer_Dispatch_RememberMethod_BadParams(t *testing.T) {
+	handlers := &Handlers{}
+	server := NewSocketServer("/tmp/test.sock", handlers)
+
+	params := []byte(`invalid json`)
+	req := &Request{
+		ID:     1,
+		Method: "remember",
+		Params: params,
+	}
+
+	ctx := context.Background()
+	_, err := server.dispatch(ctx, req)
+	if err == nil {
+		t.Error("expected error for invalid params, got nil")
+	}
+}
+
+func TestSocketServer_Dispatch_SearchMethod_BadParams(t *testing.T) {
+	handlers := &Handlers{}
+	server := NewSocketServer("/tmp/test.sock", handlers)
+
+	params := []byte(`invalid json`)
+	req := &Request{
+		ID:     2,
+		Method: "search",
+		Params: params,
+	}
+
+	ctx := context.Background()
+	_, err := server.dispatch(ctx, req)
+	if err == nil {
+		t.Error("expected error for invalid params, got nil")
+	}
+}
+
+func TestSocketServer_Dispatch_RecallMethod_BadParams(t *testing.T) {
+	handlers := &Handlers{}
+	server := NewSocketServer("/tmp/test.sock", handlers)
+
+	params := []byte(`invalid json`)
+	req := &Request{
+		ID:     3,
+		Method: "recall",
+		Params: params,
+	}
+
+	ctx := context.Background()
+	_, err := server.dispatch(ctx, req)
+	if err == nil {
+		t.Error("expected error for invalid params, got nil")
+	}
+}
+
+func TestSocketServer_Stop_NotRunning(t *testing.T) {
+	handlers := &Handlers{}
+	server := NewSocketServer("/tmp/test.sock", handlers)
+
+	ctx := context.Background()
+
+	err := server.Stop(ctx)
+	if err != nil {
+		t.Errorf("server.Stop on not-running server failed: %v", err)
 	}
 }
 
@@ -244,29 +284,6 @@ func TestSocketServer_Serve_ContextCancellation(t *testing.T) {
 	}
 }
 
-func TestSocketServer_Stop_NotRunning(t *testing.T) {
-	if os.PathSeparator == '\\' {
-		t.Skip("skipping Unix socket tests on Windows")
-	}
-
-	tmpDir, err := os.MkdirTemp("", "socket_test")
-	if err != nil {
-		t.Fatalf("failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmpDir)
-
-	socketPath := filepath.Join(tmpDir, "test.sock")
-	handlers := &Handlers{}
-	server := NewSocketServer(socketPath, handlers)
-
-	ctx := context.Background()
-
-	err = server.Stop(ctx)
-	if err != nil {
-		t.Errorf("server.Stop on not-running server failed: %v", err)
-	}
-}
-
 func TestSocketServer_Start_AlreadyRunning(t *testing.T) {
 	if os.PathSeparator == '\\' {
 		t.Skip("skipping Unix socket tests on Windows")
@@ -296,89 +313,3 @@ func TestSocketServer_Start_AlreadyRunning(t *testing.T) {
 	}
 }
 
-func TestSocketServer_Dispatch_RememberMethod_BadParams(t *testing.T) {
-	if os.PathSeparator == '\\' {
-		t.Skip("skipping Unix socket tests on Windows")
-	}
-
-	tmpDir, err := os.MkdirTemp("", "socket_test")
-	if err != nil {
-		t.Fatalf("failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmpDir)
-
-	socketPath := filepath.Join(tmpDir, "test.sock")
-	handlers := &Handlers{}
-	server := NewSocketServer(socketPath, handlers)
-
-	params := []byte(`invalid json`)
-	req := &Request{
-		ID:     1,
-		Method: "remember",
-		Params: params,
-	}
-
-	ctx := context.Background()
-	_, err = server.dispatch(ctx, req)
-	if err == nil {
-		t.Error("expected error for invalid params, got nil")
-	}
-}
-
-func TestSocketServer_Dispatch_SearchMethod_BadParams(t *testing.T) {
-	if os.PathSeparator == '\\' {
-		t.Skip("skipping Unix socket tests on Windows")
-	}
-
-	tmpDir, err := os.MkdirTemp("", "socket_test")
-	if err != nil {
-		t.Fatalf("failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmpDir)
-
-	socketPath := filepath.Join(tmpDir, "test.sock")
-	handlers := &Handlers{}
-	server := NewSocketServer(socketPath, handlers)
-
-	params := []byte(`invalid json`)
-	req := &Request{
-		ID:     2,
-		Method: "search",
-		Params: params,
-	}
-
-	ctx := context.Background()
-	_, err = server.dispatch(ctx, req)
-	if err == nil {
-		t.Error("expected error for invalid params, got nil")
-	}
-}
-
-func TestSocketServer_Dispatch_RecallMethod_BadParams(t *testing.T) {
-	if os.PathSeparator == '\\' {
-		t.Skip("skipping Unix socket tests on Windows")
-	}
-
-	tmpDir, err := os.MkdirTemp("", "socket_test")
-	if err != nil {
-		t.Fatalf("failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tmpDir)
-
-	socketPath := filepath.Join(tmpDir, "test.sock")
-	handlers := &Handlers{}
-	server := NewSocketServer(socketPath, handlers)
-
-	params := []byte(`invalid json`)
-	req := &Request{
-		ID:     3,
-		Method: "recall",
-		Params: params,
-	}
-
-	ctx := context.Background()
-	_, err = server.dispatch(ctx, req)
-	if err == nil {
-		t.Error("expected error for invalid params, got nil")
-	}
-}

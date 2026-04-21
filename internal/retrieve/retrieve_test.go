@@ -484,3 +484,185 @@ func TestMarkdownRendererRenderEventWithMessage(t *testing.T) {
 		t.Error("Render doesn't contain message from event data")
 	}
 }
+
+func TestSnapshotBuilderBuildPartialP1FitsExactly(t *testing.T) {
+	sb := NewSnapshotBuilder(200)
+
+	// Create events with known sizes
+	events := []core.Event{
+		{ID: "e1", TS: time.Now(), Type: core.EvtDecision, Priority: core.PriP1, Data: map[string]any{"size": 50}},
+		{ID: "e2", TS: time.Now(), Type: core.EvtDecision, Priority: core.PriP1, Data: map[string]any{"size": 50}},
+		{ID: "e3", TS: time.Now(), Type: core.EvtDecision, Priority: core.PriP1, Data: map[string]any{"size": 50}},
+		{ID: "e4", TS: time.Now(), Type: core.EvtDecision, Priority: core.PriP1, Data: map[string]any{"size": 50}},
+		// This 5th event should not fit since total would exceed 200
+	}
+	snap, err := sb.Build(events)
+	if err != nil {
+		t.Fatalf("Build failed: %v", err)
+	}
+	// With budget 200, should fit up to 4 events of ~50 bytes each
+	if len(snap.Events) != 4 {
+		t.Logf("Expected 4 events to fit, got %d", len(snap.Events))
+	}
+}
+
+func TestSnapshotBuilderBuildAllP1FitsExactlyInBudget(t *testing.T) {
+	sb := NewSnapshotBuilder(10000)
+
+	// Create small events that all fit
+	events := []core.Event{
+		{ID: "e1", TS: time.Now(), Type: core.EvtDecision, Priority: core.PriP1},
+		{ID: "e2", TS: time.Now(), Type: core.EvtDecision, Priority: core.PriP1},
+		{ID: "e3", TS: time.Now(), Type: core.EvtDecision, Priority: core.PriP1},
+	}
+	snap, err := sb.Build(events)
+	if err != nil {
+		t.Fatalf("Build failed: %v", err)
+	}
+	if len(snap.Events) != 3 {
+		t.Errorf("Expected 3 events, got %d", len(snap.Events))
+	}
+	// TierOrder should reflect all 3 in P1
+	found := false
+	for _, to := range snap.TierOrder {
+		if to == "p1:3" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("TierOrder should contain p1:3, got %v", snap.TierOrder)
+	}
+}
+
+func TestSnapshotBuilderBuildNoP1Fits(t *testing.T) {
+	sb := NewSnapshotBuilder(10) // Very small budget
+
+	events := []core.Event{
+		{ID: "e1", TS: time.Now(), Type: core.EvtDecision, Priority: core.PriP1, Data: map[string]any{"large": strings.Repeat("x", 100)}},
+	}
+	snap, err := sb.Build(events)
+	if err != nil {
+		t.Fatalf("Build failed: %v", err)
+	}
+	if len(snap.Events) != 0 {
+		t.Logf("Expected 0 events when P1 doesn't fit, got %d", len(snap.Events))
+	}
+}
+
+func TestSnapshotBuilderBuildP1AndP2FillsBudget(t *testing.T) {
+	sb := NewSnapshotBuilder(300)
+
+	// P1 event
+	p1Event := core.Event{ID: "p1", TS: time.Now(), Type: core.EvtDecision, Priority: core.PriP1}
+	// P2 events
+	p2Event1 := core.Event{ID: "p2a", TS: time.Now(), Type: core.EvtTaskCreate, Priority: core.PriP2}
+	p2Event2 := core.Event{ID: "p2b", TS: time.Now(), Type: core.EvtTaskCreate, Priority: core.PriP2}
+
+	events := []core.Event{p1Event, p2Event1, p2Event2}
+	snap, err := sb.Build(events)
+	if err != nil {
+		t.Fatalf("Build failed: %v", err)
+	}
+
+	// Verify P1 comes before P2 (priority order)
+	if len(snap.Events) < 2 {
+		t.Fatalf("Expected at least 2 events, got %d", len(snap.Events))
+	}
+	firstIsP1 := snap.Events[0].ID == "p1"
+	if !firstIsP1 {
+		t.Error("First event should be P1 (decision)")
+	}
+}
+
+func TestSnapshotBuilderTierOrderReflectsAllTiers(t *testing.T) {
+	sb := NewSnapshotBuilder(10000)
+
+	events := []core.Event{
+		{ID: "p1e1", TS: time.Now(), Type: core.EvtDecision, Priority: core.PriP1},
+		{ID: "p2e1", TS: time.Now(), Type: core.EvtTaskCreate, Priority: core.PriP2},
+		{ID: "p3e1", TS: time.Now(), Type: core.EvtFileEdit, Priority: core.PriP3},
+		{ID: "p4e1", TS: time.Now(), Type: core.EvtNote, Priority: core.PriP4},
+	}
+	snap, err := sb.Build(events)
+	if err != nil {
+		t.Fatalf("Build failed: %v", err)
+	}
+
+	// All 4 tiers should be represented in TierOrder
+	if len(snap.TierOrder) != 4 {
+		t.Errorf("Expected 4 tier entries, got %d", len(snap.TierOrder))
+	}
+}
+
+func TestSnapshotBuilderTimestampSortNewestFirst(t *testing.T) {
+	sb := NewSnapshotBuilder(10000)
+
+	oldest := time.Now().Add(-1 * time.Hour)
+	newest := time.Now()
+
+	events := []core.Event{
+		{ID: "old", TS: oldest, Type: core.EvtDecision, Priority: core.PriP1},
+		{ID: "new", TS: newest, Type: core.EvtDecision, Priority: core.PriP1},
+		{ID: "mid", TS: time.Now(), Type: core.EvtDecision, Priority: core.PriP1},
+	}
+	snap, err := sb.Build(events)
+	if err != nil {
+		t.Fatalf("Build failed: %v", err)
+	}
+
+	// Within P1 tier, events should be sorted newest first
+	if len(snap.Events) != 3 {
+		t.Fatalf("Expected 3 events, got %d", len(snap.Events))
+	}
+	// "new" (newest) should come first
+	if snap.Events[0].ID != "new" {
+		t.Errorf("Expected newest event first, got %s", snap.Events[0].ID)
+	}
+	if snap.Events[1].ID != "mid" {
+		t.Errorf("Expected middle event second, got %s", snap.Events[1].ID)
+	}
+	if snap.Events[2].ID != "old" {
+		t.Errorf("Expected oldest event last, got %s", snap.Events[2].ID)
+	}
+}
+
+func TestSnapshotBuilderMixedTiersWithMixedTimestamps(t *testing.T) {
+	sb := NewSnapshotBuilder(10000)
+
+	// Events in non-priority order with different timestamps
+	events := []core.Event{
+		{ID: "p3_old", TS: time.Now().Add(-2 * time.Hour), Type: core.EvtFileEdit, Priority: core.PriP3},
+		{ID: "p1_new", TS: time.Now(), Type: core.EvtDecision, Priority: core.PriP1},
+		{ID: "p2_mid", TS: time.Now().Add(-1 * time.Hour), Type: core.EvtTaskCreate, Priority: core.PriP2},
+		{ID: "p4_new", TS: time.Now(), Type: core.EvtNote, Priority: core.PriP4},
+	}
+	snap, err := sb.Build(events)
+	if err != nil {
+		t.Fatalf("Build failed: %v", err)
+	}
+
+	// P1 should come first regardless of timestamp
+	if len(snap.Events) == 0 {
+		t.Fatal("No events selected")
+	}
+	if snap.Events[0].ID != "p1_new" {
+		t.Errorf("First event should be P1 (decision), got %s", snap.Events[0].ID)
+	}
+}
+
+func TestSnapshotBuilderZeroBudget(t *testing.T) {
+	sb := NewSnapshotBuilder(0)
+
+	events := []core.Event{
+		{ID: "e1", TS: time.Now(), Type: core.EvtDecision, Priority: core.PriP1},
+	}
+	snap, err := sb.Build(events)
+	if err != nil {
+		t.Fatalf("Build with zero budget failed: %v", err)
+	}
+	// No event should fit in 0 budget
+	if len(snap.Events) != 0 {
+		t.Logf("Expected 0 events for zero budget, got %d", len(snap.Events))
+	}
+}

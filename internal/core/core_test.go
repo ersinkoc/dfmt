@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -550,6 +551,138 @@ func TestEventSigDifferentForDifferentEvents(t *testing.T) {
 
 	if sig1 == sig2 {
 		t.Error("Different events should have different signatures")
+	}
+}
+
+func TestCanonicalJSONWithOptionalFields(t *testing.T) {
+	e := Event{
+		ID:       "test123",
+		TS:       time.Date(2026, 4, 20, 10, 0, 0, 0, time.UTC),
+		Project:  "test-project",
+		Type:     EvtNote,
+		Priority: PriP4,
+		Source:   SrcCLI,
+		Actor:    "tester",
+		Data:     map[string]any{"key": "value"},
+		Refs:     []string{"ref1", "ref2"},
+		Tags:     []string{"tag1"},
+	}
+
+	data, err := CanonicalJSON(e)
+	if err != nil {
+		t.Fatalf("CanonicalJSON failed: %v", err)
+	}
+	if len(data) == 0 {
+		t.Error("CanonicalJSON returned empty")
+	}
+
+	// Verify it's valid JSON
+	var result map[string]any
+	if err := json.Unmarshal(data, &result); err != nil {
+		t.Fatalf("CanonicalJSON output is not valid JSON: %v", err)
+	}
+
+	// Check all fields are present
+	if result["id"] != "test123" {
+		t.Errorf("expected id=test123, got %v", result["id"])
+	}
+	if result["actor"] != "tester" {
+		t.Errorf("expected actor=tester, got %v", result["actor"])
+	}
+	if result["data"] == nil {
+		t.Error("expected data field to be present")
+	}
+}
+
+func TestCanonicalJSONWithEmptyOptionalFields(t *testing.T) {
+	// Test with no optional fields
+	e := Event{
+		ID:       "test123",
+		TS:       time.Date(2026, 4, 20, 10, 0, 0, 0, time.UTC),
+		Project:  "test-project",
+		Type:     EvtNote,
+		Priority: PriP4,
+		Source:   SrcCLI,
+	}
+
+	data, err := CanonicalJSON(e)
+	if err != nil {
+		t.Fatalf("CanonicalJSON failed: %v", err)
+	}
+
+	var result map[string]any
+	if err := json.Unmarshal(data, &result); err != nil {
+		t.Fatalf("CanonicalJSON output is not valid JSON: %v", err)
+	}
+
+	// Verify no extra fields
+	if _, hasActor := result["actor"]; hasActor {
+		t.Error("actor should not be present when empty")
+	}
+	if _, hasData := result["data"]; hasData {
+		t.Error("data should not be present when nil")
+	}
+	if _, hasRefs := result["refs"]; hasRefs {
+		t.Error("refs should not be present when empty")
+	}
+	if _, hasTags := result["tags"]; hasTags {
+		t.Error("tags should not be present when empty")
+	}
+}
+
+func TestCanonicalJSONDataKeySorting(t *testing.T) {
+	// Test that Data keys are sorted
+	e := Event{
+		ID:       "test123",
+		TS:       time.Date(2026, 4, 20, 10, 0, 0, 0, time.UTC),
+		Project:  "test-project",
+		Type:     EvtNote,
+		Priority: PriP4,
+		Source:   SrcCLI,
+		Data:     map[string]any{"z_key": "z_value", "a_key": "a_value", "m_key": "m_value"},
+	}
+
+	data, err := CanonicalJSON(e)
+	if err != nil {
+		t.Fatalf("CanonicalJSON failed: %v", err)
+	}
+
+	jsonStr := string(data)
+	// a_key should appear before m_key, which should appear before z_key
+	aIdx := strings.Index(jsonStr, "a_key")
+	mIdx := strings.Index(jsonStr, "m_key")
+	zIdx := strings.Index(jsonStr, "z_key")
+
+	if aIdx == -1 || mIdx == -1 || zIdx == -1 {
+		t.Fatal("expected all keys to be present in output")
+	}
+	if aIdx > mIdx || mIdx > zIdx {
+		t.Error("Data keys should be sorted alphabetically in canonical JSON")
+	}
+}
+
+func TestCanonicalJSONTimestampFormat(t *testing.T) {
+	e := Event{
+		ID:       "test123",
+		TS:       time.Date(2026, 4, 20, 10, 30, 45, 123456789, time.UTC),
+		Project:  "test-project",
+		Type:     EvtNote,
+		Priority: PriP4,
+		Source:   SrcCLI,
+	}
+
+	data, _ := CanonicalJSON(e)
+	var result map[string]any
+	json.Unmarshal(data, &result)
+
+	// RFC3339Nano format includes nanoseconds
+	ts, ok := result["ts"].(string)
+	if !ok {
+		t.Fatal("ts should be a string")
+	}
+	// Should contain the time with nanoseconds
+	if ts != "2026-04-20T10:30:45.123456789Z" {
+		t.Errorf("expected RFC3339Nano timestamp, got %s", ts)
 	}
 }
 

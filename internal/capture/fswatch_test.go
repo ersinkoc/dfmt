@@ -243,3 +243,152 @@ func TestFSWatcherEmitEventUnknown(t *testing.T) {
 		// Expected
 	}
 }
+
+func TestFSWatcherStartWithNonExistentPath(t *testing.T) {
+	w := &FSWatcher{
+		path:       "/nonexistent/path/that/does/not/exist",
+		ignore:     []string{},
+		debounceMs: 0,
+		events:     make(chan core.Event, 100),
+		stopCh:     make(chan struct{}),
+	}
+
+	ctx := context.Background()
+	err := w.Start(ctx)
+	// Start should not error even if path doesn't exist (filepath.Walk handles this)
+	if err != nil {
+		t.Fatalf("Start failed for non-existent path: %v", err)
+	}
+}
+
+func TestFSWatcherStartWithEmptyDir(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	w := &FSWatcher{
+		path:       tmpDir,
+		ignore:     []string{},
+		debounceMs: 0,
+		events:     make(chan core.Event, 100),
+		stopCh:     make(chan struct{}),
+	}
+
+	ctx := context.Background()
+	err := w.Start(ctx)
+	if err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+}
+
+func TestFSWatcherStartWithNestedDirs(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create nested directory structure
+	subDir := filepath.Join(tmpDir, "sub1", "sub2", "sub3")
+	if err := os.MkdirAll(subDir, 0755); err != nil {
+		t.Fatalf("Failed to create nested dirs: %v", err)
+	}
+
+	w := &FSWatcher{
+		path:       tmpDir,
+		ignore:     []string{},
+		debounceMs: 0,
+		events:     make(chan core.Event, 100),
+		stopCh:     make(chan struct{}),
+	}
+
+	ctx := context.Background()
+	err := w.Start(ctx)
+	if err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+}
+
+func TestFSWatcherShouldIgnoreExactMatch(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	w := &FSWatcher{
+		path:   tmpDir,
+		ignore: []string{"node_modules", ".git"},
+	}
+
+	// Test exact match of ignored directory
+	if !w.shouldIgnore(filepath.Join(tmpDir, "node_modules")) {
+		t.Error("shouldIgnore returned false for node_modules")
+	}
+	if !w.shouldIgnore(filepath.Join(tmpDir, ".git")) {
+		t.Error("shouldIgnore returned false for .git")
+	}
+}
+
+func TestFSWatcherShouldIgnorePartialMatch(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	w := &FSWatcher{
+		path:   tmpDir,
+		ignore: []string{"*.tmp"},
+	}
+
+	// test.tmp should be ignored
+	if !w.shouldIgnore(filepath.Join(tmpDir, "test.tmp")) {
+		t.Error("shouldIgnore returned false for test.tmp")
+	}
+}
+
+func TestFSWatcherShouldIgnoreNoMatch(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	w := &FSWatcher{
+		path:   tmpDir,
+		ignore: []string{"*.tmp"},
+	}
+
+	// main.go should not be ignored
+	if w.shouldIgnore(filepath.Join(tmpDir, "main.go")) {
+		t.Error("shouldIgnore returned true for main.go")
+	}
+}
+
+func TestFSWatcherShouldIgnoreDeepNestedMatch(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	w := &FSWatcher{
+		path:   tmpDir,
+		ignore: []string{"node_modules"},
+	}
+
+	// Deep nested node_modules should be ignored
+	nestedPath := filepath.Join(tmpDir, "a", "b", "node_modules", "c")
+	if !w.shouldIgnore(nestedPath) {
+		t.Error("shouldIgnore returned false for deep nested node_modules")
+	}
+}
+
+func TestFSWatcherStopTwice(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	w := &FSWatcher{
+		path:   tmpDir,
+		ignore: []string{},
+		events: make(chan core.Event, 100),
+		stopCh: make(chan struct{}),
+	}
+
+	ctx := context.Background()
+
+	// First stop
+	if err := w.Stop(ctx); err != nil {
+		t.Fatalf("First Stop failed: %v", err)
+	}
+
+	// Second stop with fresh watcher (can't call twice on same watcher due to close)
+	w2 := &FSWatcher{
+		path:   tmpDir,
+		ignore: []string{},
+		events: make(chan core.Event, 100),
+		stopCh: make(chan struct{}),
+	}
+
+	if err := w2.Stop(ctx); err != nil {
+		t.Fatalf("Second Stop failed: %v", err)
+	}
+}

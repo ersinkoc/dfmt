@@ -194,3 +194,67 @@ func TestScanLastID(t *testing.T) {
 		t.Errorf("expected last ID %q, got %q", "01ARZ3NDEKTSV4RRFFQ69G5FA3", cursor)
 	}
 }
+func TestLoadIndexInvalidData(t *testing.T) {
+	tmpDir := t.TempDir()
+	indexPath := filepath.Join(tmpDir, "index.gob")
+
+	// Write invalid gob data
+	f, err := os.Create(indexPath)
+	if err != nil {
+		t.Fatalf("failed to create file: %v", err)
+	}
+	f.Write([]byte("not gob encoded data"))
+	f.Close()
+
+	_, err = LoadIndex(indexPath)
+	if err == nil {
+		t.Error("LoadIndex should fail for invalid gob data")
+	}
+}
+
+func TestLoadIndexCorruptedGob(t *testing.T) {
+	tmpDir := t.TempDir()
+	indexPath := filepath.Join(tmpDir, "index.gob")
+
+	// Write partial/short gob data
+	f, err := os.Create(indexPath)
+	if err != nil {
+		t.Fatalf("failed to create file: %v", err)
+	}
+	// Write a minimal gob header that is incomplete
+	f.Write([]byte{0x00, 0x01, 0xfe})
+	f.Close()
+
+	_, err = LoadIndex(indexPath)
+	if err == nil {
+		t.Error("LoadIndex should fail for corrupted gob data")
+	}
+}
+
+func TestPersistIndexGobEncodeError(t *testing.T) {
+	ix := NewIndex()
+	e := Event{
+		ID:      "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+		Type:    EvtFileEdit,
+		Project: "test",
+	}
+	ix.Add(e)
+
+	tmpDir := t.TempDir()
+	indexPath := filepath.Join(tmpDir, "index.gob")
+
+	// PersistIndex uses gob encoding which requires exported fields
+	// This will fail because Index has no exported fields
+	err := PersistIndex(ix, indexPath, "01ARZ3NDEKTSV4RRFFQ69G5FAV")
+	if err == nil {
+		t.Error("PersistIndex should fail due to gob encoding of unexported fields")
+	}
+}
+
+func TestLoadCursorInvalidPath(t *testing.T) {
+	// Test that loadCursor fails for non-existent path
+	_, err := loadCursor("/nonexistent/path/cursor.gob")
+	if err == nil {
+		t.Error("loadCursor should fail for non-existent path")
+	}
+}

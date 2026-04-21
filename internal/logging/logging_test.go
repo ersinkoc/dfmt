@@ -252,6 +252,59 @@ func TestInitWithInvalidFormat(t *testing.T) {
 	}
 }
 
+func TestFromContextWithNilLoggerInContext(t *testing.T) {
+	// Save original Logger and restore after test
+	origLogger := Logger
+	Logger = nil
+	defer func() { Logger = origLogger }()
+
+	// Create context with nil stored for keyLogger (not possible through NewContext,
+	// but tests the type assertion failure path)
+	ctx := context.WithValue(context.Background(), keyLogger{}, "not a logger")
+
+	logger := FromContext(ctx)
+	// Should fall through to InitDefault and return a valid logger
+	if logger == nil {
+		t.Fatal("FromContext returned nil after fallback to InitDefault")
+	}
+}
+
+func TestInitWithStderrOutput(t *testing.T) {
+	cfg := Config{
+		Level:  "info",
+		Format: "text",
+		Output: "stderr",
+	}
+
+	err := Init(cfg)
+	if err != nil {
+		t.Fatalf("Init with stderr failed: %v", err)
+	}
+	if Logger == nil {
+		t.Fatal("Logger is nil after Init with stderr")
+	}
+}
+
+func TestFromContextInitializedLogger(t *testing.T) {
+	// Ensure Logger is nil first
+	Logger = nil
+
+	ctx := context.Background()
+	logger := FromContext(ctx)
+
+	// Logger should be initialized by FromContext
+	if Logger == nil {
+		t.Error("Logger should be initialized after FromContext call")
+	}
+	if logger == nil {
+		t.Fatal("FromContext returned nil when Logger was nil")
+	}
+}
+
+// Note: File output tests are skipped on Windows because the file handle
+// remains open and prevents temp directory cleanup. This is a known issue
+// with testing file-based logging on Windows.
+
 func TestMultiWriterMultipleWriters(t *testing.T) {
 	w1 := &testWriter{}
 	w2 := &testWriter{}

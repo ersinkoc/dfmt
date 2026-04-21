@@ -151,7 +151,13 @@ func (d *Daemon) Stop(ctx context.Context) error {
 	d.running = false
 	d.mu.Unlock()
 
-	close(d.shutdownCh)
+	// Close shutdown channel only once
+	select {
+	case <-d.shutdownCh:
+		// Already closed
+	default:
+		close(d.shutdownCh)
+	}
 
 	// Stop idle timer if running
 	if d.idleTimer != nil {

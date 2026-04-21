@@ -272,3 +272,283 @@ func TestTCPServerDispatchBadParams(t *testing.T) {
 		t.Errorf("unexpected error: %s", resp.Error.Message)
 	}
 }
+
+// TestTCPServerDispatchBadParamsRemember tests bad params type for remember method
+func TestTCPServerDispatchBadParamsRemember(t *testing.T) {
+	idx := core.NewIndex()
+	journal := &mockJournal{}
+	handlers := NewHandlers(idx, journal)
+	server := NewTCPServer("localhost:0", handlers)
+
+	ctx := context.Background()
+	if err := server.Start(ctx); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	defer server.Stop(ctx)
+
+	port := server.Port()
+	conn, err := net.Dial("tcp", fmt.Sprintf("localhost:%d", port))
+	if err != nil {
+		t.Fatalf("Dial failed: %v", err)
+	}
+	defer conn.Close()
+
+	codec := NewCodec(conn)
+
+	// Invalid params - type field should be string not int
+	req := &Request{
+		JSONRPC: "2.0",
+		Method:  "remember",
+		Params:  json.RawMessage(`{"type":123,"source":"test"}`),
+		ID:     4,
+	}
+	if err := codec.WriteRequest(req); err != nil {
+		t.Fatalf("WriteRequest failed: %v", err)
+	}
+
+	resp, err := codec.ReadResponse()
+	if err != nil {
+		t.Fatalf("ReadResponse failed: %v", err)
+	}
+	if resp.Error == nil {
+		t.Error("expected error for bad params remember")
+	}
+}
+
+// TestTCPServerDispatchBadParamsRecall tests bad params for recall method
+func TestTCPServerDispatchBadParamsRecall(t *testing.T) {
+	idx := core.NewIndex()
+	journal := &mockJournal{}
+	handlers := NewHandlers(idx, journal)
+	server := NewTCPServer("localhost:0", handlers)
+
+	ctx := context.Background()
+	if err := server.Start(ctx); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	defer server.Stop(ctx)
+
+	port := server.Port()
+	conn, err := net.Dial("tcp", fmt.Sprintf("localhost:%d", port))
+	if err != nil {
+		t.Fatalf("Dial failed: %v", err)
+	}
+	defer conn.Close()
+
+	codec := NewCodec(conn)
+
+	// Invalid params - budget should be int not string
+	req := &Request{
+		JSONRPC: "2.0",
+		Method:  "recall",
+		Params:  json.RawMessage(`{"budget":"not a number"}`),
+		ID:     5,
+	}
+	if err := codec.WriteRequest(req); err != nil {
+		t.Fatalf("WriteRequest failed: %v", err)
+	}
+
+	resp, err := codec.ReadResponse()
+	if err != nil {
+		t.Fatalf("ReadResponse failed: %v", err)
+	}
+	if resp.Error == nil {
+		t.Error("expected error for bad params recall")
+	}
+}
+
+// TestTCPServerDispatchRemember tests the remember handler path
+func TestTCPServerDispatchRemember(t *testing.T) {
+	idx := core.NewIndex()
+	journal := &mockJournal{}
+	handlers := NewHandlers(idx, journal)
+	server := NewTCPServer("localhost:0", handlers)
+
+	ctx := context.Background()
+	if err := server.Start(ctx); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	defer server.Stop(ctx)
+
+	port := server.Port()
+	conn, err := net.Dial("tcp", fmt.Sprintf("localhost:%d", port))
+	if err != nil {
+		t.Fatalf("Dial failed: %v", err)
+	}
+	defer conn.Close()
+
+	codec := NewCodec(conn)
+
+	req := &Request{
+		JSONRPC: "2.0",
+		Method:  "remember",
+		Params:  json.RawMessage(`{"type":"note","source":"test","priority":"P2"}`),
+		ID:     6,
+	}
+	if err := codec.WriteRequest(req); err != nil {
+		t.Fatalf("WriteRequest failed: %v", err)
+	}
+
+	resp, err := codec.ReadResponse()
+	if err != nil {
+		t.Fatalf("ReadResponse failed: %v", err)
+	}
+	if resp.Error != nil {
+		t.Errorf("unexpected error: %s", resp.Error.Message)
+	}
+	if resp.Result == nil {
+		t.Error("expected result")
+	}
+}
+
+// TestTCPServerDispatchRecall tests the recall handler path
+func TestTCPServerDispatchRecall(t *testing.T) {
+	idx := core.NewIndex()
+	journal := &mockJournal{}
+	handlers := NewHandlers(idx, journal)
+	server := NewTCPServer("localhost:0", handlers)
+
+	ctx := context.Background()
+	if err := server.Start(ctx); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	defer server.Stop(ctx)
+
+	port := server.Port()
+	conn, err := net.Dial("tcp", fmt.Sprintf("localhost:%d", port))
+	if err != nil {
+		t.Fatalf("Dial failed: %v", err)
+	}
+	defer conn.Close()
+
+	codec := NewCodec(conn)
+
+	req := &Request{
+		JSONRPC: "2.0",
+		Method:  "recall",
+		Params:  json.RawMessage(`{"budget":1024,"format":"md"}`),
+		ID:     7,
+	}
+	if err := codec.WriteRequest(req); err != nil {
+		t.Fatalf("WriteRequest failed: %v", err)
+	}
+
+	resp, err := codec.ReadResponse()
+	if err != nil {
+		t.Fatalf("ReadResponse failed: %v", err)
+	}
+	if resp.Error != nil {
+		t.Errorf("unexpected error: %s", resp.Error.Message)
+	}
+	if resp.Result == nil {
+		t.Error("expected result")
+	}
+}
+
+// TestTCPServerHandleConnReadError tests handleConn when ReadRequest returns a non-EOF error
+func TestTCPServerHandleConnReadError(t *testing.T) {
+	idx := core.NewIndex()
+	handlers := NewHandlers(idx, nil)
+	server := NewTCPServer("localhost:0", handlers)
+
+	ctx := context.Background()
+	if err := server.Start(ctx); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	defer server.Stop(ctx)
+
+	port := server.Port()
+	conn, err := net.Dial("tcp", fmt.Sprintf("localhost:%d", port))
+	if err != nil {
+		t.Fatalf("Dial failed: %v", err)
+	}
+
+	// Write a malformed request that will cause ReadRequest to return an error
+	// (partial JSON that can't be unmarshaled into a Request)
+	conn.Write([]byte(`{"jsonrpc":"2.0","method":"`))
+
+	// Close write side - now ReadRequest will get EOF
+	conn.Close()
+
+	// The server should handle this gracefully (no panic, connection closes)
+}
+
+// TestTCPServerHandleConnDispatchError tests handleConn when dispatch returns an error
+func TestTCPServerHandleConnDispatchError(t *testing.T) {
+	idx := core.NewIndex()
+	handlers := NewHandlers(idx, nil)
+	server := NewTCPServer("localhost:0", handlers)
+
+	ctx := context.Background()
+	if err := server.Start(ctx); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	defer server.Stop(ctx)
+
+	port := server.Port()
+	conn, err := net.Dial("tcp", fmt.Sprintf("localhost:%d", port))
+	if err != nil {
+		t.Fatalf("Dial failed: %v", err)
+	}
+	defer conn.Close()
+
+	codec := NewCodec(conn)
+
+	// Unknown method - dispatch will return error
+	req := &Request{
+		JSONRPC: "2.0",
+		Method:  "totally_unknown_method_xyz",
+		ID:     8,
+	}
+	if err := codec.WriteRequest(req); err != nil {
+		t.Fatalf("WriteRequest failed: %v", err)
+	}
+
+	resp, err := codec.ReadResponse()
+	if err != nil {
+		t.Fatalf("ReadResponse failed: %v", err)
+	}
+	if resp.Error == nil {
+		t.Error("expected error response for unknown method")
+	}
+}
+
+// TestTCPServerUnknownMethodDispatch tests dispatch returning error for unknown method
+func TestTCPServerUnknownMethodDispatch(t *testing.T) {
+	idx := core.NewIndex()
+	handlers := NewHandlers(idx, nil)
+	server := NewTCPServer("localhost:0", handlers)
+
+	ctx := context.Background()
+	if err := server.Start(ctx); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	defer server.Stop(ctx)
+
+	port := server.Port()
+	conn, err := net.Dial("tcp", fmt.Sprintf("localhost:%d", port))
+	if err != nil {
+		t.Fatalf("Dial failed: %v", err)
+	}
+	defer conn.Close()
+
+	codec := NewCodec(conn)
+
+	// Test another unknown method to ensure all unknown methods are caught
+	req := &Request{
+		JSONRPC: "2.0",
+		Method:  "invalid.method.name",
+		ID:     9,
+	}
+	if err := codec.WriteRequest(req); err != nil {
+		t.Fatalf("WriteRequest failed: %v", err)
+	}
+
+	resp, err := codec.ReadResponse()
+	if err != nil {
+		t.Fatalf("ReadResponse failed: %v", err)
+	}
+	if resp.Error == nil {
+		t.Error("expected error for unknown method")
+	}
+}
