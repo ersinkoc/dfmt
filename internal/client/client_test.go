@@ -842,6 +842,246 @@ func TestMustMarshalWithComplexTypes(t *testing.T) {
 	}
 }
 
+func TestClientErrorResponseHandling(t *testing.T) {
+	// Test that error responses are properly parsed
+	respJSON := `{"jsonrpc":"2.0","error":{"code":-32603,"message":"internal error"},"id":1}`
+	var resp transport.Response
+	if err := json.Unmarshal([]byte(respJSON), &resp); err != nil {
+		t.Fatalf("unmarshal failed: %v", err)
+	}
+	if resp.Error == nil {
+		t.Fatal("expected error in response")
+	}
+	if resp.Error.Code != -32603 {
+		t.Errorf("error code = %d, want -32603", resp.Error.Code)
+	}
+	if resp.Error.Message != "internal error" {
+		t.Errorf("error message = %s, want 'internal error'", resp.Error.Message)
+	}
+}
+
+func TestClientRememberParamsMarshaling(t *testing.T) {
+	params := transport.RememberParams{
+		Type:     "coding",
+		Priority: "high",
+		Source:   "test",
+		Actor:    "user1",
+		Data:     map[string]any{"file": "test.go", "action": "edit"},
+		Refs:     []string{"ref1", "ref2"},
+		Tags:     []string{"go", "test"},
+	}
+
+	data := mustMarshal(params)
+	if len(data) == 0 {
+		t.Fatal("mustMarshal returned empty")
+	}
+
+	// Verify it can be unmarshaled back
+	var parsed transport.RememberParams
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("unmarshal failed: %v", err)
+	}
+
+	if parsed.Type != "coding" {
+		t.Errorf("Type = %s, want coding", parsed.Type)
+	}
+	if parsed.Priority != "high" {
+		t.Errorf("Priority = %s, want high", parsed.Priority)
+	}
+	if len(parsed.Refs) != 2 {
+		t.Errorf("len(Refs) = %d, want 2", len(parsed.Refs))
+	}
+}
+
+func TestClientSearchParamsMarshaling(t *testing.T) {
+	params := transport.SearchParams{
+		Query: "test query",
+		Limit: 10,
+		Layer: "bm25",
+	}
+
+	data := mustMarshal(params)
+	if len(data) == 0 {
+		t.Fatal("mustMarshal returned empty")
+	}
+
+	var parsed transport.SearchParams
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("unmarshal failed: %v", err)
+	}
+
+	if parsed.Query != "test query" {
+		t.Errorf("Query = %s, want 'test query'", parsed.Query)
+	}
+	if parsed.Limit != 10 {
+		t.Errorf("Limit = %d, want 10", parsed.Limit)
+	}
+	if parsed.Layer != "bm25" {
+		t.Errorf("Layer = %s, want bm25", parsed.Layer)
+	}
+}
+
+func TestClientRecallParamsMarshaling(t *testing.T) {
+	params := transport.RecallParams{
+		Budget: 4096,
+		Format: "md",
+	}
+
+	data := mustMarshal(params)
+	if len(data) == 0 {
+		t.Fatal("mustMarshal returned empty")
+	}
+
+	var parsed transport.RecallParams
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("unmarshal failed: %v", err)
+	}
+
+	if parsed.Budget != 4096 {
+		t.Errorf("Budget = %d, want 4096", parsed.Budget)
+	}
+	if parsed.Format != "md" {
+		t.Errorf("Format = %s, want 'md'", parsed.Format)
+	}
+}
+
+func TestClientRememberResultUnmarshal(t *testing.T) {
+	// Test various RememberResponse formats
+	tests := []struct {
+		name    string
+		json    string
+		wantID  string
+		wantTS  string
+		wantErr bool
+	}{
+		{"basic", `{"id":"abc123","ts":"2024-01-01T00:00:00Z"}`, "abc123", "2024-01-01T00:00:00Z", false},
+		{"with nanoseconds", `{"id":"def456","ts":"2024-01-01T00:00:00.123456789Z"}`, "def456", "", false},
+		{"empty id", `{"id":"","ts":"2024-01-01T00:00:00Z"}`, "", "2024-01-01T00:00:00Z", false},
+		{"missing ts", `{"id":"ghi789"}`, "ghi789", "", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var result transport.RememberResponse
+			err := json.Unmarshal([]byte(tt.json), &result)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("unmarshal error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if result.ID != tt.wantID {
+				t.Errorf("ID = %s, want %s", result.ID, tt.wantID)
+			}
+		})
+	}
+}
+
+func TestClientSearchResultUnmarshal(t *testing.T) {
+	tests := []struct {
+		name      string
+		json      string
+		wantCount int
+		wantLayer string
+		wantErr   bool
+	}{
+		{"basic", `{"results":[{"id":"1","score":0.9}],"layer":"bm25"}`, 1, "bm25", false},
+		{"multiple", `{"results":[{"id":"1","score":0.9},{"id":"2","score":0.8}],"layer":"hybrid"}`, 2, "hybrid", false},
+		{"empty", `{"results":[],"layer":"bm25"}`, 0, "bm25", false},
+		{"no layer", `{"results":[{"id":"1","score":0.9}]}`, 1, "", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var result transport.SearchResponse
+			err := json.Unmarshal([]byte(tt.json), &result)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("unmarshal error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if len(result.Results) != tt.wantCount {
+				t.Errorf("len(Results) = %d, want %d", len(result.Results), tt.wantCount)
+			}
+			if result.Layer != tt.wantLayer {
+				t.Errorf("Layer = %s, want %s", result.Layer, tt.wantLayer)
+			}
+		})
+	}
+}
+
+func TestClientRecallResultUnmarshal(t *testing.T) {
+	tests := []struct {
+		name      string
+		json      string
+		wantSnap  string
+		wantFmt   string
+		wantErr   bool
+	}{
+		{"markdown", `{"snapshot":"# Session\n- item 1","format":"md"}`, "# Session\n- item 1", "md", false},
+		{"json", `{"snapshot":"{\"key\":\"value\"}","format":"json"}`, `{"key":"value"}`, "json", false},
+		{"plain", `{"snapshot":"simple text","format":"txt"}`, "simple text", "txt", false},
+		{"empty", `{"snapshot":"","format":"md"}`, "", "md", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var result transport.RecallResponse
+			err := json.Unmarshal([]byte(tt.json), &result)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("unmarshal error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if result.Snapshot != tt.wantSnap {
+				t.Errorf("Snapshot = %q, want %q", result.Snapshot, tt.wantSnap)
+			}
+			if result.Format != tt.wantFmt {
+				t.Errorf("Format = %s, want %s", result.Format, tt.wantFmt)
+			}
+		})
+	}
+}
+
+func TestClientConnectTimeout(t *testing.T) {
+	// Create client with very short timeout to localhost:9 (null port - refused)
+	cl := &Client{
+		network: "tcp",
+		address: "localhost:9",
+		timeout: 10 * time.Millisecond,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	_, err := cl.Connect(ctx)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Error("expected connection error")
+	}
+
+	// Should fail reasonably quickly (within timeout)
+	if elapsed > 50*time.Millisecond {
+		t.Logf("connect took %v (may be slow)", elapsed)
+	}
+}
+
+func TestClientNewClientWithSpecialChars(t *testing.T) {
+	// Test NewClient with paths containing special characters
+	paths := []string{
+		"/tmp/dfmt-test",
+		"C:\\Users\\test\\projects",
+		"/home/user/Documents/Projects/my-project",
+	}
+
+	for _, path := range paths {
+		t.Run(path, func(t *testing.T) {
+			cl, err := NewClient(path)
+			if err != nil {
+				t.Errorf("NewClient(%q) failed: %v", path, err)
+			}
+			if cl == nil {
+				t.Errorf("NewClient(%q) returned nil", path)
+			}
+		})
+	}
+}
+
 func TestDaemonRunningWithFile(t *testing.T) {
 	tmpDir := t.TempDir()
 	// Create socket path
