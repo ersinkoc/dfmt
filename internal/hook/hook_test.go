@@ -166,6 +166,77 @@ func TestDriftDetectorGetNudgeLevelThird(t *testing.T) {
 	}
 }
 
+func TestDriftDetectorGetNudgeLevelSilencePeriod(t *testing.T) {
+	d := NewDriftDetector()
+	// Small silence threshold for testing
+	d.nudgeSilence = 5
+
+	// Record calls to get to NudgeThird level
+	calls := []ToolCall{
+		{Time: time.Now(), Type: "native", Tool: "Bash", Size: 20000},
+		{Time: time.Now(), Type: "native", Tool: "Bash", Size: 20000},
+		{Time: time.Now(), Type: "native", Tool: "Bash", Size: 20000},
+		{Time: time.Now(), Type: "dfmt", Tool: "read", Size: 1000},
+	}
+	for _, c := range calls {
+		d.RecordCall("session1", c)
+	}
+
+	// Get to NudgeThird
+	level := d.GetNudgeLevel("session1")
+	if level != NudgeThird {
+		t.Fatalf("Expected NudgeThird, got %d", level)
+	}
+
+	// Manually set LastNudgeLevel and NudgeCount to simulate having already
+	// sent 3 nudges and being in the silence period
+	d.sessions["session1"].LastNudgeLevel = NudgeThird
+	d.sessions["session1"].NudgeCount = 3
+
+	// Within silence period (not enough new calls since last nudge), should return NudgeNone
+	level = d.GetNudgeLevel("session1")
+	if level != NudgeNone {
+		t.Errorf("GetNudgeLevel in silence period = %d, want NudgeNone", level)
+	}
+}
+
+func TestDriftDetectorGetNudgeLevelSilenceEnds(t *testing.T) {
+	d := NewDriftDetector()
+	// Small silence threshold for testing
+	d.nudgeSilence = 3
+
+	// Record calls to get to NudgeThird level
+	calls := []ToolCall{
+		{Time: time.Now(), Type: "native", Tool: "Bash", Size: 20000},
+		{Time: time.Now(), Type: "native", Tool: "Bash", Size: 20000},
+		{Time: time.Now(), Type: "native", Tool: "Bash", Size: 20000},
+		{Time: time.Now(), Type: "dfmt", Tool: "read", Size: 1000},
+	}
+	for _, c := range calls {
+		d.RecordCall("session1", c)
+	}
+
+	// Acknowledge the nudge to set LastNudgeTime to now
+	d.AcknowledgeNudge("session1", NudgeThird)
+
+	// Add enough new calls to exceed silence threshold
+	for i := 0; i < 5; i++ {
+		d.RecordCall("session1", ToolCall{
+			Time: time.Now(),
+			Type: "native",
+			Tool: "Bash",
+			Size: 20000,
+		})
+	}
+
+	// Silence period should be over now
+	level := d.GetNudgeLevel("session1")
+	// Should calculate new drift based on accumulated calls
+	if level != NudgeThird {
+		t.Errorf("GetNudgeLevel after silence = %d, want NudgeThird", level)
+	}
+}
+
 func TestDriftDetectorCountDriftSignals(t *testing.T) {
 	d := NewDriftDetector()
 
@@ -419,5 +490,33 @@ func TestToolCall(t *testing.T) {
 	}
 	if !call.HasIntent {
 		t.Error("HasIntent should be true")
+	}
+}
+
+func TestDriftDetectorAcknowledgeNudgeNonExistentSession(t *testing.T) {
+	d := NewDriftDetector()
+
+	// Acknowledge for nonexistent session should not panic
+	d.AcknowledgeNudge("nonexistent", NudgeSecond)
+}
+
+func TestDriftDetectorNoIntentSuboptimal(t *testing.T) {
+	d := NewDriftDetector()
+
+	// Large dfmt call without intent should count as suboptimal
+	calls := []ToolCall{
+		{Time: time.Now(), Type: "dfmt", Tool: "read", Size: 70000, HasIntent: false},
+		{Time: time.Now(), Type: "dfmt", Tool: "read", Size: 70000, HasIntent: false},
+		{Time: time.Now(), Type: "dfmt", Tool: "read", Size: 70000, HasIntent: false},
+		{Time: time.Now(), Type: "dfmt", Tool: "read", Size: 70000, HasIntent: false},
+	}
+	for _, c := range calls {
+		d.RecordCall("session1", c)
+	}
+
+	// Should get some drift signals due to suboptimal intent usage
+	level := d.GetNudgeLevel("session1")
+	if level < NudgeFirst {
+		t.Errorf("GetNudgeLevel = %d, want at least NudgeFirst for noIntentSuboptimal", level)
 	}
 }

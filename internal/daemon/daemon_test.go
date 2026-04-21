@@ -187,3 +187,90 @@ func TestDaemonStopWhenNotRunning(t *testing.T) {
 		t.Errorf("Stop when not running failed: %v", err)
 	}
 }
+
+func TestStartIdleMonitorInvalidDuration(t *testing.T) {
+	tmpDir := t.TempDir()
+	dfmtDir := filepath.Join(tmpDir, ".dfmt")
+	os.MkdirAll(dfmtDir, 0755)
+
+	cfg := newTestConfig()
+	cfg.Lifecycle.IdleTimeout = "invalid"
+
+	d, err := New(tmpDir, cfg)
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+
+	// startIdleMonitor with invalid duration should use default 30m
+	d.startIdleMonitor(context.Background())
+
+	// Just verify it doesn't panic
+	if d.idleTimer == nil {
+		t.Error("idleTimer should be set")
+	}
+
+	// Clean up timer to avoid lingering goroutines
+	if d.idleTimer != nil {
+		d.idleTimer.Stop()
+	}
+}
+
+func TestRegister(t *testing.T) {
+	tmpDir := t.TempDir()
+	dfmtDir := filepath.Join(tmpDir, ".dfmt")
+	os.MkdirAll(dfmtDir, 0755)
+
+	cfg := newTestConfig()
+
+	d, err := New(tmpDir, cfg)
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+
+	// register() is a no-op, just verify it doesn't panic
+	d.register()
+}
+
+func TestUnregister(t *testing.T) {
+	tmpDir := t.TempDir()
+	dfmtDir := filepath.Join(tmpDir, ".dfmt")
+	os.MkdirAll(dfmtDir, 0755)
+
+	cfg := newTestConfig()
+
+	d, err := New(tmpDir, cfg)
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+
+	// unregister() is a no-op, just verify it doesn't panic
+	d.unregister()
+}
+
+func TestDaemonStartAlreadyRunning(t *testing.T) {
+	tmpDir := t.TempDir()
+	dfmtDir := filepath.Join(tmpDir, ".dfmt")
+	os.MkdirAll(dfmtDir, 0755)
+
+	cfg := newTestConfig()
+
+	d, err := New(tmpDir, cfg)
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+
+	ctx := context.Background()
+
+	// First start
+	if err := d.Start(ctx); err != nil {
+		t.Fatalf("First Start failed: %v", err)
+	}
+
+	// Second start should fail
+	err = d.Start(ctx)
+	if err == nil {
+		t.Error("Second Start should fail for already running daemon")
+	}
+
+	d.Stop(ctx)
+}

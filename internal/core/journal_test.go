@@ -1,0 +1,322 @@
+package core
+
+import (
+	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+func TestOpenJournalNew(t *testing.T) {
+	tmpDir := t.TempDir()
+	journalPath := filepath.Join(tmpDir, "test.journal")
+
+	t.Run("opens new journal when file does not exist", func(t *testing.T) {
+		j, err := OpenJournal(journalPath, JournalOptions{})
+		if err != nil {
+			t.Fatalf("OpenJournal failed: %v", err)
+		}
+		if j == nil {
+			t.Fatal("journal should not be nil")
+		}
+		defer j.Close()
+
+		cursor, err := j.Checkpoint(context.Background())
+		if err != nil {
+			t.Fatalf("Checkpoint failed: %v", err)
+		}
+		if cursor != "" {
+			t.Errorf("expected empty cursor for new journal, got %q", cursor)
+		}
+	})
+
+	t.Run("opens existing journal and scans last ID", func(t *testing.T) {
+		f, err := os.Create(journalPath)
+		if err != nil {
+			t.Fatalf("failed to create journal file: %v", err)
+		}
+		events := []Event{
+			{ID: "01ARZ3NDEKTSV4RRFFQ69G5FA1", Type: EvtFileEdit, Project: "test"},
+			{ID: "01ARZ3NDEKTSV4RRFFQ69G5FA2", Type: EvtFileRead, Project: "test"},
+		}
+		for _, e := range events {
+			data, err := json.Marshal(e)
+			if err != nil {
+				t.Fatalf("json.Marshal failed: %v", err)
+			}
+			f.Write(append(data, '\n'))
+		}
+		f.Close()
+
+		j, err := OpenJournal(journalPath, JournalOptions{})
+		if err != nil {
+			t.Fatalf("OpenJournal failed: %v", err)
+		}
+		defer j.Close()
+
+		cursor, err := j.Checkpoint(context.Background())
+		if err != nil {
+			t.Fatalf("Checkpoint failed: %v", err)
+		}
+		if cursor != "01ARZ3NDEKTSV4RRFFQ69G5FA2" {
+			t.Errorf("expected cursor %q, got %q", "01ARZ3NDEKTSV4RRFFQ69G5FA2", cursor)
+		}
+	})
+
+	t.Run("durable mode writes and syncs each append", func(t *testing.T) {
+		journalPath := filepath.Join(tmpDir, "durable.journal")
+		j, err := OpenJournal(journalPath, JournalOptions{Durable: true})
+		if err != nil {
+			t.Fatalf("OpenJournal failed: %v", err)
+		}
+		defer j.Close()
+
+		e := Event{ID: "01ARZ3NDEKTSV4RRFFQ69G5FAV", Type: EvtFileEdit, Project: "test"}
+		err = j.Append(context.Background(), e)
+		if err != nil {
+			t.Fatalf("Append failed: %v", err)
+		}
+
+		cursor, err := j.Checkpoint(context.Background())
+		if err != nil {
+			t.Fatalf("Checkpoint failed: %v", err)
+		}
+		if cursor != e.ID {
+			t.Errorf("expected cursor %q, got %q", e.ID, cursor)
+		}
+	})
+
+	t.Run("creates directory if not exists", func(t *testing.T) {
+		journalPath := filepath.Join(tmpDir, "subdir", "nested", "test.journal")
+		j, err := OpenJournal(journalPath, JournalOptions{})
+		if err != nil {
+			t.Fatalf("OpenJournal failed: %v", err)
+		}
+		defer j.Close()
+	})
+}
+
+func TestAppendJournal(t *testing.T) {
+	tmpDir := t.TempDir()
+	journalPath := filepath.Join(tmpDir, "test.journal")
+
+	t.Run("appends event to journal", func(t *testing.T) {
+		j, err := OpenJournal(journalPath, JournalOptions{})
+		if err != nil {
+			t.Fatalf("OpenJournal failed: %v", err)
+		}
+		defer j.Close()
+
+		e := Event{ID: "01ARZ3NDEKTSV4RRFFQ69G5FA1", Type: EvtFileEdit, Project: "test"}
+		err = j.Append(context.Background(), e)
+		if err != nil {
+			t.Fatalf("Append failed: %v", err)
+		}
+
+		cursor, err := j.Checkpoint(context.Background())
+		if err != nil {
+			t.Fatalf("Checkpoint failed: %v", err)
+		}
+		if cursor != e.ID {
+			t.Errorf("expected cursor %q, got %q", e.ID, cursor)
+		}
+	})
+
+	t.Run("returns ErrJournalFull when file exceeds max bytes", func(t *testing.T) {
+		journalPath := filepath.Join(tmpDir, "full.journal")
+
+		// Pre-create a file that's already at the limit
+		f, err := os.Create(journalPath)
+		if err != nil {
+			t.Fatalf("failed to create file: %v", err)
+		}
+		// Write exactly 50 bytes
+		f.Write(make([]byte, 50))
+		f.Close()
+
+		j, err := OpenJournal(journalPath, JournalOptions{MaxBytes: 50})
+		if err != nil {
+			t.Fatalf("OpenJournal failed: %v", err)
+		}
+		defer j.Close()
+
+		// This should fail because file is already at maxBytes
+		e := Event{ID: "01ARZ3NDEKTSV4RRFFQ69G5FA1", Type: EvtFileEdit, Project: "test"}
+		err = j.Append(context.Background(), e)
+		if err != ErrJournalFull {
+			t.Errorf("expected ErrJournalFull, got %v", err)
+		}
+	})
+
+	t.Run("returns error when journal is closed", func(t *testing.T) {
+		j, err := OpenJournal(journalPath, JournalOptions{})
+		if err != nil {
+			t.Fatalf("OpenJournal failed: %v", err)
+		}
+
+		err = j.Close()
+		if err != nil {
+			t.Fatalf("Close failed: %v", err)
+		}
+
+		e := Event{ID: "01ARZ3NDEKTSV4RRFFQ69G5FAV", Type: EvtFileEdit, Project: "test"}
+		err = j.Append(context.Background(), e)
+		if err == nil {
+			t.Error("expected error when appending to closed journal")
+		}
+	})
+}
+
+func TestRotateJournal(t *testing.T) {
+	tmpDir := t.TempDir()
+	journalPath := filepath.Join(tmpDir, "test.journal")
+
+	t.Run("rotates journal when threshold reached", func(t *testing.T) {
+		j, err := OpenJournal(journalPath, JournalOptions{MaxBytes: 100})
+		if err != nil {
+			t.Fatalf("OpenJournal failed: %v", err)
+		}
+		defer j.Close()
+
+		e1 := Event{ID: "01ARZ3NDEKTSV4RRFFQ69G5FA1", Type: EvtFileEdit, Project: "test"}
+		err = j.Append(context.Background(), e1)
+		if err != nil {
+			t.Fatalf("Append failed: %v", err)
+		}
+
+		err = j.Rotate(context.Background())
+		if err != nil {
+			t.Fatalf("Rotate failed: %v", err)
+		}
+
+		cursor, err := j.Checkpoint(context.Background())
+		if err != nil {
+			t.Fatalf("Checkpoint failed: %v", err)
+		}
+		if cursor != "" {
+			t.Errorf("expected empty cursor after rotate, got %q", cursor)
+		}
+
+		rotatedPath := journalPath + ".01ARZ3NDEKTSV4RRFFQ69G5FA1.jsonl"
+		if _, err := os.Stat(rotatedPath); os.IsNotExist(err) {
+			t.Errorf("rotated file %s was not created", rotatedPath)
+		}
+	})
+
+	t.Run("rotate with empty hiCursor does nothing", func(t *testing.T) {
+		j, err := OpenJournal(journalPath, JournalOptions{})
+		if err != nil {
+			t.Fatalf("OpenJournal failed: %v", err)
+		}
+		defer j.Close()
+
+		err = j.Rotate(context.Background())
+		if err != nil {
+			t.Fatalf("Rotate failed: %v", err)
+		}
+	})
+}
+
+func TestStreamJournal(t *testing.T) {
+	tmpDir := t.TempDir()
+	journalPath := filepath.Join(tmpDir, "test.journal")
+
+	j, err := OpenJournal(journalPath, JournalOptions{Durable: true})
+	if err != nil {
+		t.Fatalf("OpenJournal failed: %v", err)
+	}
+
+	events := []Event{
+		{ID: "01ARZ3NDEKTSV4RRFFQ69G5FA1", Type: EvtFileEdit, Project: "test"},
+		{ID: "01ARZ3NDEKTSV4RRFFQ69G5FA2", Type: EvtFileRead, Project: "test"},
+		{ID: "01ARZ3NDEKTSV4RRFFQ69G5FA3", Type: EvtFileCreate, Project: "test"},
+	}
+	for _, e := range events {
+		if err := j.Append(context.Background(), e); err != nil {
+			t.Fatalf("Append failed: %v", err)
+		}
+	}
+	j.Close()
+
+	t.Run("streams from beginning", func(t *testing.T) {
+		j, err := OpenJournal(journalPath, JournalOptions{})
+		if err != nil {
+			t.Fatalf("OpenJournal failed: %v", err)
+		}
+		defer j.Close()
+
+		ch, err := j.Stream(context.Background(), "")
+		if err != nil {
+			t.Fatalf("Stream failed: %v", err)
+		}
+
+		var received []Event
+		for e := range ch {
+			received = append(received, e)
+		}
+		if len(received) != 3 {
+			t.Errorf("expected 3 events, got %d", len(received))
+		}
+		if received[0].ID != "01ARZ3NDEKTSV4RRFFQ69G5FA1" {
+			t.Errorf("expected first event ID %q, got %q", "01ARZ3NDEKTSV4RRFFQ69G5FA1", received[0].ID)
+		}
+	})
+
+	t.Run("streams from specific cursor", func(t *testing.T) {
+		j, err := OpenJournal(journalPath, JournalOptions{})
+		if err != nil {
+			t.Fatalf("OpenJournal failed: %v", err)
+		}
+		defer j.Close()
+
+		ch, err := j.Stream(context.Background(), "01ARZ3NDEKTSV4RRFFQ69G5FA2")
+		if err != nil {
+			t.Fatalf("Stream failed: %v", err)
+		}
+
+		var received []Event
+		for e := range ch {
+			received = append(received, e)
+		}
+		if len(received) != 1 {
+			t.Errorf("expected 1 event, got %d", len(received))
+		}
+		if received[0].ID != "01ARZ3NDEKTSV4RRFFQ69G5FA3" {
+			t.Errorf("expected event ID %q, got %q", "01ARZ3NDEKTSV4RRFFQ69G5FA3", received[0].ID)
+		}
+	})
+}
+
+func TestCheckpointJournal(t *testing.T) {
+	tmpDir := t.TempDir()
+	journalPath := filepath.Join(tmpDir, "test.journal")
+
+	j, err := OpenJournal(journalPath, JournalOptions{})
+	if err != nil {
+		t.Fatalf("OpenJournal failed: %v", err)
+	}
+	defer j.Close()
+
+	cursor, err := j.Checkpoint(context.Background())
+	if err != nil {
+		t.Fatalf("Checkpoint failed: %v", err)
+	}
+	if cursor != "" {
+		t.Errorf("expected empty cursor for new journal, got %q", cursor)
+	}
+
+	e := Event{ID: "01ARZ3NDEKTSV4RRFFQ69G5FAV", Type: EvtFileEdit, Project: "test"}
+	err = j.Append(context.Background(), e)
+	if err != nil {
+		t.Fatalf("Append failed: %v", err)
+	}
+
+	cursor, err = j.Checkpoint(context.Background())
+	if err != nil {
+		t.Fatalf("Checkpoint failed: %v", err)
+	}
+	if cursor != e.ID {
+		t.Errorf("expected cursor %q, got %q", e.ID, cursor)
+	}
+}

@@ -204,6 +204,15 @@ func NewSandboxWithPolicy(wd string, policy Policy) *SandboxImpl {
 	}
 }
 
+// NewSandboxWithPolicyAndRuntimes creates a sandbox with custom policy and runtimes.
+func NewSandboxWithPolicyAndRuntimes(wd string, policy Policy, runtimes *Runtimes) *SandboxImpl {
+	return &SandboxImpl{
+		runtimes: runtimes,
+		policy:   policy,
+		wd:       wd,
+	}
+}
+
 // SetWorkingDir sets the working directory for exec operations.
 func (s *SandboxImpl) SetWorkingDir(wd string) {
 	s.wd = wd

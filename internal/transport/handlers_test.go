@@ -859,7 +859,7 @@ func TestMCPProtocolErrorResult(t *testing.T) {
 	}
 }
 
-func TestNewSocketServer(t *testing.T) {
+func TestSocketServerCreation_FromHandlers(t *testing.T) {
 	handlers := &Handlers{}
 	ss := NewSocketServer("/tmp/test.sock", handlers)
 
