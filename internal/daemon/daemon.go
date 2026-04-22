@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/ersinkoc/dfmt/internal/client"
 	"github.com/ersinkoc/dfmt/internal/config"
 	"github.com/ersinkoc/dfmt/internal/core"
 	"github.com/ersinkoc/dfmt/internal/project"
@@ -222,10 +223,10 @@ func (d *Daemon) startIdleMonitor(ctx context.Context) {
 }
 
 func (d *Daemon) register() {
-	// Register project in global registry
-	// This would use the registry to track running daemons
+	entry := client.NewDaemonEntry(d.projectPath, os.Getpid())
+	client.GetRegistry().Register(entry)
 }
 
 func (d *Daemon) unregister() {
-	// Remove from global registry
+	client.GetRegistry().Unregister(d.projectPath)
 }

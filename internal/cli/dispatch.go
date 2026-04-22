@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -536,10 +537,48 @@ func runStop(_ []string) int {
 }
 
 func runList(_ []string) int {
+	daemons := client.GetRegistry().List()
+
+	if len(daemons) == 0 {
+		if flagJSON {
+			fmt.Println("[]")
+		} else {
+			fmt.Println("No running daemons")
+			fmt.Println("\nStart a daemon with: dfmt daemon")
+			fmt.Println("Or use any dfmt command - it will auto-start the daemon")
+		}
+		return 0
+	}
+
 	if flagJSON {
-		fmt.Println("[]")
+		// JSON output
+		fmt.Println("[")
+		for i, d := range daemons {
+			comma := ","
+			if i == len(daemons)-1 {
+				comma = ""
+			}
+			if runtime.GOOS == "windows" {
+				fmt.Printf(`  {"project": %q, "pid": %d, "port": %d}%s`+"\n",
+					d.ProjectPath, d.PID, d.Port, comma)
+			} else {
+				fmt.Printf(`  {"project": %q, "pid": %d, "socket": %q}%s`+"\n",
+					d.ProjectPath, d.PID, d.SocketPath, comma)
+			}
+		}
+		fmt.Println("]")
 	} else {
-		fmt.Println("No running daemons")
+		fmt.Println("Running DFMT daemons:")
+		fmt.Println("")
+		for _, d := range daemons {
+			uptime := time.Since(d.StartedAt).Round(time.Second)
+			if runtime.GOOS == "windows" {
+				fmt.Printf("  [%d] %s (port %d, uptime %s)\n", d.PID, d.ProjectPath, d.Port, uptime)
+			} else {
+				fmt.Printf("  [%d] %s (socket, uptime %s)\n", d.PID, d.ProjectPath, uptime)
+			}
+		}
+		fmt.Printf("\n%d daemon(s) running\n", len(daemons))
 	}
 	return 0
 }
