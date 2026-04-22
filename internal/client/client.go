@@ -34,8 +34,14 @@ const (
 )
 
 // NewClient creates a new client for the given project.
+// If the project is not initialized, it auto-initializes.
 // If the daemon is not running, it automatically starts it.
 func NewClient(projectPath string) (*Client, error) {
+	// Auto-init project if not initialized
+	if err := autoInitProject(projectPath); err != nil {
+		return nil, fmt.Errorf("auto-init project: %w", err)
+	}
+
 	socketPath := project.SocketPath(projectPath)
 	portFile := filepath.Join(projectPath, ".dfmt", "port")
 
@@ -66,26 +72,126 @@ func NewClient(projectPath string) (*Client, error) {
 	}
 
 	// Try to connect; if fails, auto-start daemon and retry
+	if err := c.ensureDaemon(projectPath); err != nil {
+		return nil, fmt.Errorf("start daemon: %w", err)
+	}
+
+	return c, nil
+}
+
+// ensureDaemon ensures the daemon is running, starting it if needed.
+func (c *Client) ensureDaemon(projectPath string) error {
+	portFile := filepath.Join(projectPath, ".dfmt", "port")
+
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	if _, err := c.Connect(ctx); err != nil {
-		// Daemon not running - try to start it
-		if startErr := startDaemon(projectPath); startErr == nil {
-			// Give daemon time to start
-			time.Sleep(500 * time.Millisecond)
-			// Update address from port file on Windows
-			if runtime.GOOS == goosWindows {
-				if data, err := os.ReadFile(portFile); err == nil {
-					if port, err := strconv.Atoi(string(data)); err == nil {
-						c.address = fmt.Sprintf("localhost:%d", port)
-					}
-				}
+	// Try to connect
+	if _, err := c.Connect(ctx); err == nil {
+		return nil // Already running
+	}
+
+	// Daemon not running - try to start it
+	if startErr := startDaemon(projectPath); startErr != nil {
+		return fmt.Errorf("start daemon: %w", startErr)
+	}
+
+	// Give daemon time to start
+	time.Sleep(500 * time.Millisecond)
+
+	// Update address from port file on Windows
+	if runtime.GOOS == goosWindows {
+		if data, err := os.ReadFile(portFile); err == nil {
+			if port, err := strconv.Atoi(string(data)); err == nil {
+				c.address = fmt.Sprintf("localhost:%d", port)
 			}
 		}
 	}
 
-	return c, nil
+	// Retry connection once
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel2()
+
+	if _, err := c.Connect(ctx2); err != nil {
+		return fmt.Errorf("connect to daemon after start: %w", err)
+	}
+
+	return nil
+}
+
+// autoInitProject initializes the project if .dfmt/ doesn't exist.
+func autoInitProject(projectPath string) error {
+	dfmtDir := filepath.Join(projectPath, ".dfmt")
+	configPath := filepath.Join(dfmtDir, "config.yaml")
+
+	// Check if already initialized
+	if _, err := os.Stat(configPath); err == nil {
+		return nil // Already initialized
+	}
+
+	// Create .dfmt/ directory
+	if err := os.MkdirAll(dfmtDir, 0755); err != nil {
+		return fmt.Errorf("create .dfmt dir: %w", err)
+	}
+
+	// Write default config
+	defaultConfig := `version: 1
+
+capture:
+  mcp:
+    enabled: true
+  fs:
+    enabled: true
+    watch:
+      - "**"
+    ignore:
+      - ".git/**"
+      - "node_modules/**"
+
+storage:
+  durability: batched
+  journal_max_bytes: 10485760
+
+lifecycle:
+  idle_timeout: 30m
+`
+
+	if err := os.WriteFile(configPath, []byte(defaultConfig), 0644); err != nil {
+		return fmt.Errorf("write config: %w", err)
+	}
+
+	// Add .dfmt/ to .gitignore if exists
+	gitignorePath := filepath.Join(projectPath, ".gitignore")
+	if content, err := os.ReadFile(gitignorePath); err == nil {
+		if !bytes.Contains(content, []byte(".dfmt/")) {
+			f, _ := os.OpenFile(gitignorePath, os.O_APPEND|os.O_WRONLY, 0644)
+			f.WriteString("\n.dfmt/\n")
+			f.Close()
+		}
+	}
+
+	// Write project-level Claude Code settings to enforce DFMT tools
+	claudeDir := filepath.Join(projectPath, ".claude")
+	os.MkdirAll(claudeDir, 0755)
+	settingsPath := filepath.Join(claudeDir, "settings.json")
+	settingsData := `{
+  "permissions": {
+    "deny": ["Bash", "Read", "WebFetch"],
+    "allow": [
+      "mcp__dfmt__dfmt.read",
+      "mcp__dfmt__dfmt.exec",
+      "mcp__dfmt__dfmt.fetch",
+      "mcp__dfmt__dfmt.remember",
+      "mcp__dfmt__dfmt.search",
+      "mcp__dfmt__dfmt.recall",
+      "mcp__dfmt__dfmt.stats"
+    ]
+  }
+}
+`
+	os.WriteFile(settingsPath, []byte(settingsData), 0644)
+
+	return nil
 }
 
 // startDaemon starts the dfmt daemon for the given project.
@@ -203,22 +309,40 @@ func (c *Client) Recall(ctx context.Context, params transport.RecallParams) (*tr
 }
 
 // DaemonRunning checks if a daemon is running for the project.
+// It actually tries to connect to verify the daemon is responsive.
 func DaemonRunning(projectPath string) bool {
-	if runtime.GOOS == goosWindows {
-		// On Windows, check for port file first
-		portFile := filepath.Join(projectPath, ".dfmt", "port")
-		if _, err := os.Stat(portFile); err == nil {
-			return true
-		}
-		// Also check for socket file (for testing/compatibility)
-		socketPath := project.SocketPath(projectPath)
-		_, err := os.Stat(socketPath)
-		return err == nil
-	}
-	// On Unix, check for socket file
+	portFile := filepath.Join(projectPath, ".dfmt", "port")
 	socketPath := project.SocketPath(projectPath)
-	_, err := os.Stat(socketPath)
-	return err == nil
+
+	var network, address string
+
+	if runtime.GOOS == goosWindows {
+		network = "tcp"
+		if data, err := os.ReadFile(portFile); err == nil {
+			if port, err := strconv.Atoi(string(data)); err == nil {
+				address = fmt.Sprintf("localhost:%d", port)
+			}
+		}
+	} else {
+		network = netUnix
+		address = socketPath
+	}
+
+	if address == "" || (runtime.GOOS == goosWindows && address == addrLocalhost0) {
+		return false
+	}
+
+	// Actually try to connect
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
+	dialer := net.Dialer{Timeout: 500 * time.Millisecond}
+	conn, err := dialer.DialContext(ctx, network, address)
+	if err != nil {
+		return false
+	}
+	conn.Close()
+	return true
 }
 
 // Stats returns aggregated statistics from the daemon.

@@ -9,8 +9,10 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/ersinkoc/dfmt/internal/client"
@@ -457,11 +459,12 @@ func runDaemonForeground(proj string, cfg *config.Config) int {
 		return 1
 	}
 
-	// Wait for interrupt
+	// Wait for interrupt signals
 	sigCh := make(chan os.Signal, 1)
-	// signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM) // signal package not imported
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 	<-sigCh
 
+	fmt.Println("\nShutting down...")
 	d.Stop(ctx)
 	return 0
 }
@@ -625,22 +628,7 @@ func runStats(args []string) int {
 		return 1
 	}
 
-	if !client.DaemonRunning(proj) {
-		if flagJSON {
-			fmt.Println(`{"events_total": 0, "events_by_type": {},` +
-				` "events_by_priority": {}, "session_start": null, "session_end": null}`)
-		} else {
-			fmt.Println("DFMT Session Statistics")
-			fmt.Println("========================")
-			fmt.Println("")
-			fmt.Println("No daemon running. Start with: dfmt daemon")
-			fmt.Println("")
-			fmt.Println("Or visit the dashboard:")
-			fmt.Println("  dfmt daemon && start http://localhost:<port>/dashboard")
-		}
-		return 0
-	}
-
+	// NewClient auto-starts daemon if needed
 	cl, err := client.NewClient(proj)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
