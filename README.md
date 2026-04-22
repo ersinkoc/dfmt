@@ -44,13 +44,6 @@ curl -fsSL https://dfmt.dev/install.sh | sh
 brew install ersinkoc/tap/dfmt
 ```
 
-### Windows (Scoop)
-
-```powershell
-scoop bucket add ersinkoc https://github.com/ersinkoc/scoop-bucket
-scoop install dfmt
-```
-
 ### From source
 
 ```bash
@@ -142,7 +135,7 @@ Even with no agent at all — just a developer editing files and making commits 
 
 "Sandbox routing" is the percentage of native tool calls redirected to DFMT's sandbox when the agent is using DFMT. Agents with hook support can enforce routing programmatically; agents without hooks rely on instruction files (CLAUDE.md, AGENTS.md, etc.) which are persuasive but not binding.
 
-See [AGENT-INTEGRATION.md](AGENT-INTEGRATION.md) for per-agent setup, config paths, restart requirements, and troubleshooting.
+Run `dfmt setup --agent <name> --dry-run` to preview per-agent configuration changes without applying them.
 
 ## Commands
 
@@ -278,7 +271,7 @@ DFMT is opinionated. A few positions that matter:
 - **Inspectable storage.** The journal is append-only JSONL. `cat`, `grep`, `jq` work. No SQLite to attach, no opaque binary format.
 - **One-command setup across every agent.** You run `dfmt setup` once. Every installed AI coding agent on your machine picks up DFMT's tools. No per-agent manual configuration.
 
-Full architecture and the reasoning behind each decision: [SPECIFICATION.md](SPECIFICATION.md). The nine Architecture Decision Records in [docs/adr/](docs/adr/) capture why DFMT is shaped the way it is, with the alternatives considered and rejected.
+The nine Architecture Decision Records in [docs/adr/](docs/adr/) capture why DFMT is shaped the way it is, with the alternatives considered and rejected.
 
 ## Privacy
 

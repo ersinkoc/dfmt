@@ -112,9 +112,8 @@ Do **not** write an ADR for:
 
 ### Cross-linking
 
-- The `SPECIFICATION.md` references ADRs by number in sections where the ADR is load-bearing (e.g., "§7.5 Sandbox Layer — see ADR-0006").
-- ADRs reference back to relevant spec sections in their `Related` field.
-- The `docs/adr/README.md` index lists every ADR with status and one-line description, ordered by number; superseded ADRs are visually grouped at the end.
+- ADRs reference related ADRs in their `Related` field.
+- The `docs/adr/ADR-INDEX.md` index lists every ADR with status and one-line description, ordered by number; superseded ADRs are visually grouped at the end.
 
 ## Alternatives Considered
 

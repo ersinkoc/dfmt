@@ -6,7 +6,7 @@
 | Date | 2026-04-20 |
 | Deciders | Ersin Koç |
 | Supersedes | — |
-| Related | SPECIFICATION.md §6.6, §10 |
+| Related | — |
 
 ## Context
 

@@ -5,8 +5,8 @@
 | Status | Accepted |
 | Date | 2026-04-20 |
 | Deciders | Ersin Koç |
-| Supersedes | Implicit "sandbox is out of scope" position in earlier SPEC drafts (NG4 in v0.3) |
-| Related | SPECIFICATION.md §7.5, §8.1.8–8.1.14, ADR-0007 |
+| Supersedes | — |
+| Related | ADR-0007 |
 
 ## Context
 
@@ -96,7 +96,7 @@ Rejected because:
 - The inline / medium / large thresholds are the primary knobs for balancing latency against context savings. Defaults (4 KB / 64 KB) are conservative; high-volume users can tune down, agents that produce very small outputs can disable medium-tier indexing entirely.
 - The content store uses the same `Index` type as the event journal but is a separate instance with its own posting lists, its own LRU eviction, and its own persistence path. See ADR-0007.
 - Credential-passthrough rules are opt-in per CLI. A user who has never run `gh` on this machine gets no `GH_TOKEN` passed through, regardless of config.
-- The `dfmt setup` command's responsibility for multi-agent configuration is specified separately in `AGENT-INTEGRATION.md`, because operational detail (exact paths, exact config formats) changes more often than architectural decisions.
+- The `dfmt setup` command handles multi-agent configuration; operational details (exact paths, config formats) are maintained in the setup package rather than architecture docs, because they change more often than architectural decisions.
 
 ## Revisit
 

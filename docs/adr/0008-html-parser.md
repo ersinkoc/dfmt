@@ -6,7 +6,7 @@
 | Date | 2026-04-20 |
 | Deciders | Ersin Koç |
 | Supersedes | — |
-| Related | ADR-0004 (stdlib-only deps), IMPLEMENTATION.md §11.4, SPECIFICATION.md §7.5.3 |
+| Related | ADR-0004 (stdlib-only deps) |
 
 ## Context
 

@@ -48,8 +48,7 @@ dfmt/
 ├── docs/
 │   ├── adr/           # Architecture Decision Records
 │   └── hooks/         # Hook integration guides
-├── SPECIFICATION.md   # Full system specification
-└── IMPLEMENTATION.md  # Implementation details
+└── README.md          # Project documentation
 ```
 
 ### Making Changes

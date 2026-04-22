@@ -6,7 +6,7 @@
 | Date | 2026-04-20 |
 | Deciders | Ersin Koç |
 | Supersedes | — |
-| Related | SPECIFICATION.md §6.4, §6.7, §7.5, ADR-0003, ADR-0006 |
+| Related | ADR-0003, ADR-0006 |
 
 ## Context
 
@@ -84,7 +84,7 @@ Rejected because:
 
 ## Implementation Notes
 
-- The `Index` type is the same struct used by events. The content store wraps it with LRU eviction and a size tracker that the event index does not have. See `internal/content/store.go` in IMPLEMENTATION.md.
+- The `Index` type is the same struct used by events. The content store wraps it with LRU eviction and a size tracker that the event index does not have. See `internal/content/store.go`.
 - Content chunks are written to the store with a `ParentID` grouping them into chunk sets, so eviction evicts the whole set atomically. Partial eviction would leave dangling chunks visible through `dfmt.search_content` — worse than not returning them at all.
 - Optional persistence uses a per-set file (`content/<set-id>.jsonl.gz`) rather than a global file. This matches the "evict set atomically" model and allows cheap deletion of one set without touching others.
 - The boundary between "inline return" (< 4 KB) and "chunked in content store" is governed by `sandbox.exec.inline_threshold`. Output below this threshold never enters the content store at all — it goes directly into the caller's response. This keeps small-output latency and memory overhead minimal.
