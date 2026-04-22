@@ -13,6 +13,11 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-
 h1 { color: #00d4ff; margin-bottom: 20px; font-size: 1.5rem; }
 h2 { color: #aaa; margin: 20px 0 10px; font-size: 1rem; text-transform: uppercase; letter-spacing: 1px; }
 .container { max-width: 900px; margin: 0 auto; }
+.header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; flex-wrap: wrap; gap: 10px; }
+.header-left { display: flex; align-items: center; gap: 15px; }
+.header-right { display: flex; align-items: center; gap: 10px; }
+select { background: #16213e; color: #eee; border: 1px solid #0f3460; border-radius: 6px; padding: 8px 12px; font-size: 0.9rem; min-width: 200px; cursor: pointer; }
+select:focus { outline: none; border-color: #00d4ff; }
 .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 15px; margin-bottom: 20px; }
 .card { background: #16213e; border-radius: 8px; padding: 15px; border: 1px solid #0f3460; }
 .card-value { font-size: 2rem; font-weight: bold; color: #00d4ff; }
@@ -24,19 +29,31 @@ h2 { color: #aaa; margin: 20px 0 10px; font-size: 1rem; text-transform: uppercas
 .bar-container { flex: 1; height: 20px; background: #0f3460; border-radius: 4px; overflow: hidden; }
 .bar-fill { height: 100%; background: linear-gradient(90deg, #00d4ff, #00ff88); border-radius: 4px; transition: width 0.3s; min-width: 2px; }
 .bar-value { width: 60px; font-size: 0.8rem; color: #888; text-align: right; }
-.refresh-btn { background: #0f3460; color: #00d4ff; border: 1px solid #00d4ff; border-radius: 6px; padding: 10px 20px; cursor: pointer; font-size: 0.9rem; }
-.refresh-btn:hover { background: #00d4ff; color: #1a1a2e; }
+.btn { background: #0f3460; color: #00d4ff; border: 1px solid #00d4ff; border-radius: 6px; padding: 10px 20px; cursor: pointer; font-size: 0.9rem; }
+.btn:hover { background: #00d4ff; color: #1a1a2e; }
 .session { background: #16213e; border-radius: 8px; padding: 15px; border: 1px solid #0f3460; font-size: 0.9rem; }
 .session-row { display: flex; justify-content: space-between; padding: 5px 0; border-bottom: 1px solid #0f3460; }
 .session-row:last-child { border-bottom: none; }
 .loading { text-align: center; padding: 40px; color: #888; }
 .error { background: #ff4444; color: white; padding: 15px; border-radius: 8px; margin-bottom: 20px; display: none; }
+.daemon-badge { background: #00ff88; color: #1a1a2e; padding: 4px 8px; border-radius: 4px; font-size: 0.75rem; font-weight: bold; }
+.daemon-badge.dead { background: #ff4444; color: white; }
 </style>
 </head>
 <body>
 <div class="container">
+<div class="header">
+<div class="header-left">
 <h1>DFMT Dashboard</h1>
-<button class="refresh-btn" id="refreshBtn">Refresh</button>
+<span class="daemon-badge" id="daemonBadge">Local</span>
+</div>
+<div class="header-right">
+<select id="projectSelect">
+<option value="">Loading projects...</option>
+</select>
+<button class="btn" id="refreshBtn">Refresh</button>
+</div>
+</div>
 <div id="error" class="error"></div>
 <div id="loading" class="loading">Loading stats...</div>
 <div id="stats" style="display:none">
@@ -64,7 +81,8 @@ h2 { color: #aaa; margin: 20px 0 10px; font-size: 1rem; text-transform: uppercas
 </div>
 <script>
 (function() {
-var errorEl, loadingEl, statsEl, refreshBtn;
+var errorEl, loadingEl, statsEl, refreshBtn, projectSelect, daemonBadge;
+var currentPort = window.location.port;
 
 function showError(msg) {
 errorEl.textContent = msg;
@@ -81,12 +99,6 @@ statsEl.style.display = 'none';
 function showStats() {
 loadingEl.style.display = 'none';
 statsEl.style.display = 'block';
-}
-
-function escapeHtml(text) {
-var div = document.createElement('div');
-div.textContent = text;
-return div.innerHTML;
 }
 
 function formatDuration(ms) {
@@ -148,10 +160,48 @@ container.appendChild(row);
 });
 }
 
-async function loadStats() {
-showLoading();
+async function loadDaemons() {
 try {
-var resp = await fetch('/api/stats', {
+var resp = await fetch('/api/daemons');
+var daemons = await resp.json();
+
+projectSelect.innerHTML = '';
+
+if (daemons.length === 0) {
+var opt = document.createElement('option');
+opt.value = '';
+opt.textContent = 'No running daemons';
+projectSelect.appendChild(opt);
+return;
+}
+
+daemons.forEach(function(d) {
+var opt = document.createElement('option');
+opt.value = d.port || '';
+opt.textContent = d.project_path.split(/[/\\\\]/).pop() + ' (' + d.project_path + ')';
+if (d.port == currentPort) {
+opt.selected = true;
+}
+projectSelect.appendChild(opt);
+});
+
+// Add "This Daemon" option at top
+var thisOpt = document.createElement('option');
+thisOpt.value = currentPort;
+thisOpt.textContent = 'This Daemon';
+projectSelect.insertBefore(thisOpt, projectSelect.firstChild);
+thisOpt.selected = true;
+
+} catch (err) {
+console.error('Failed to load daemons:', err);
+}
+}
+
+async function loadStats(port) {
+showLoading();
+var baseUrl = port ? 'http://localhost:' + port : window.location.origin;
+try {
+var resp = await fetch(baseUrl + '/api/stats', {
 method: 'POST',
 headers: {'Content-Type': 'application/json'},
 body: JSON.stringify({jsonrpc: '2.0', method: 'dfmt.stats', params: {}, id: 1})
@@ -192,9 +242,24 @@ errorEl = document.getElementById('error');
 loadingEl = document.getElementById('loading');
 statsEl = document.getElementById('stats');
 refreshBtn = document.getElementById('refreshBtn');
+projectSelect = document.getElementById('projectSelect');
+daemonBadge = document.getElementById('daemonBadge');
 
-refreshBtn.addEventListener('click', loadStats);
-loadStats();
+refreshBtn.addEventListener('click', function() {
+loadStats(projectSelect.value);
+});
+
+projectSelect.addEventListener('change', function() {
+if (this.value && this.value !== currentPort) {
+loadStats(this.value);
+} else {
+loadStats(null);
+}
+});
+
+// Load daemons and current stats
+loadDaemons();
+loadStats(null);
 }
 
 document.addEventListener('DOMContentLoaded', init);

@@ -75,6 +75,7 @@ func (s *HTTPServer) Start(ctx context.Context) error {
 	mux.HandleFunc("/", s.handle)
 	mux.HandleFunc("/dashboard", s.handleDashboard)
 	mux.HandleFunc("/api/stats", s.handleAPIStats)
+	mux.HandleFunc("/api/daemons", s.handleAPIDaemons)
 	mux.HandleFunc("/healthz", s.handleHealth)
 	mux.HandleFunc("/readyz", s.handleHealth)
 
@@ -376,6 +377,33 @@ func (s *HTTPServer) handleHealth(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/plain")
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte("ok"))
+}
+
+func (s *HTTPServer) handleAPIDaemons(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	// Read registry file directly (avoid circular import)
+	home, _ := os.UserHomeDir()
+	if home == "" {
+		home = os.TempDir()
+	}
+	registryPath := filepath.Join(home, ".dfmt", "daemons.json")
+
+	data, err := os.ReadFile(registryPath)
+	if err != nil {
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode([]any{})
+		return
+	}
+
+	var daemons []map[string]any
+	if err := json.Unmarshal(data, &daemons); err != nil {
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode([]any{})
+		return
+	}
+
+	json.NewEncoder(w).Encode(daemons)
 }
 
 func (s *HTTPServer) handleExec(ctx context.Context, req Request) Response {
