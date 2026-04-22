@@ -2,76 +2,234 @@ package setup
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 )
 
-func detectClaudeCode() *Agent {
-	paths := []string{
-		filepath.Join(os.Getenv("HOME"), ".claude"),
-		filepath.Join(os.Getenv("HOME"), ".local", "bin", "claude"),
-		"/usr/local/bin/claude",
-		"/opt/claude/bin/claude",
-	}
+// Agent IDs used across the codebase.
+const (
+	AgentClaudeCode = "claude-code"
+	AgentCursor     = "cursor"
+	AgentVSCode     = "vscode"
+	AgentCodex      = "codex"
+	AgentGemini     = "gemini"
+	AgentWindsurf   = "windsurf"
+	AgentZed        = "zed"
+	AgentContinue   = "continue"
+	AgentOpenCode   = "opencode"
+)
 
-	for _, p := range paths {
+const goosWindows = "windows"
+
+func lookPath(name string) string {
+	if path, err := exec.LookPath(name); err == nil {
+		return path
+	}
+	if runtime.GOOS != goosWindows {
+		return ""
+	}
+	for _, ext := range []string{".exe", ".cmd", ".bat"} {
+		if path, err := exec.LookPath(name + ext); err == nil {
+			return path
+		}
+	}
+	return ""
+}
+
+type agentSpec struct {
+	id               string
+	name             string
+	paths            []string
+	binary           string
+	confidencePath   float64
+	confidenceBinary float64
+	skipOnWindows    bool
+}
+
+func detectAgent(spec agentSpec) *Agent {
+	for _, p := range spec.paths {
 		if _, err := os.Stat(p); err == nil {
-			version := getClaudeVersion(p)
 			return &Agent{
-				ID:         "claude-code",
-				Name:       "Claude Code",
-				Version:    version,
+				ID:         spec.id,
+				Name:       spec.name,
+				Version:    "detected",
 				InstallDir: filepath.Dir(p),
 				Detected:   true,
-				Confidence: 0.95,
+				Confidence: spec.confidencePath,
 			}
 		}
 	}
 
-	// Check for .claude directory
-	home, _ := os.UserHomeDir()
-	claudeDir := filepath.Join(home, ".claude")
-	if info, err := os.Stat(claudeDir); err == nil && info.IsDir() {
-		return &Agent{
-			ID:         "claude-code",
-			Name:       "Claude Code",
-			Version:    "detected",
-			InstallDir: claudeDir,
-			Detected:   true,
-			Confidence: 0.8,
+	if spec.skipOnWindows && runtime.GOOS == goosWindows {
+		return nil
+	}
+
+	if spec.binary != "" {
+		if lp := lookPath(spec.binary); lp != "" {
+			return &Agent{
+				ID:         spec.id,
+				Name:       spec.name,
+				Version:    "detected",
+				InstallDir: filepath.Dir(lp),
+				Detected:   true,
+				Confidence: spec.confidenceBinary,
+			}
 		}
 	}
 
 	return nil
+}
+
+func detectClaudeCode() *Agent {
+	home := HomeDir()
+	return detectAgent(agentSpec{
+		id:   AgentClaudeCode,
+		name: "Claude Code",
+		paths: []string{
+			filepath.Join(home, ".claude"),
+			filepath.Join(home, ".local", "bin", "claude"),
+			filepath.Join(home, "AppData", "Roaming", "Claude"),
+			"/usr/local/bin/claude",
+			"/opt/claude/bin/claude",
+		},
+		binary:           "claude",
+		confidencePath:   0.95,
+		confidenceBinary: 0.85,
+	})
+}
+
+func detectCursor() *Agent {
+	home := HomeDir()
+	return detectAgent(agentSpec{
+		id:   AgentCursor,
+		name: "Cursor",
+		paths: []string{
+			filepath.Join(home, ".cursor"),
+			filepath.Join(home, "AppData", "Local", "Programs", "Cursor"),
+			filepath.Join(home, "Applications", "Cursor.app"),
+			"/Applications/Cursor.app",
+			"/usr/local/bin/cursor",
+		},
+		binary:           "cursor",
+		confidencePath:   0.9,
+		confidenceBinary: 0.8,
+	})
+}
+
+func detectVSCode() *Agent {
+	home := HomeDir()
+	return detectAgent(agentSpec{
+		id:   AgentVSCode,
+		name: "VS Code Copilot",
+		paths: []string{
+			filepath.Join(home, "AppData", "Local", "Programs", "Microsoft VS Code", "Code.exe"),
+			filepath.Join(home, "AppData", "Local", "Programs", "Microsoft VS Code"),
+			filepath.Join(home, "Applications", "Visual Studio Code.app"),
+			"/Applications/Visual Studio Code.app",
+			"/usr/local/bin/code",
+			filepath.Join(home, ".vscode"),
+		},
+		binary:           "code",
+		confidencePath:   0.85,
+		confidenceBinary: 0.8,
+	})
 }
 
 func detectCodex() *Agent {
-	paths := []string{
-		filepath.Join(os.Getenv("HOME"), ".codex"),
-		filepath.Join(os.Getenv("HOME"), ".local", "bin", "codex"),
-		"/usr/local/bin/codex",
-	}
-
-	for _, p := range paths {
-		if _, err := os.Stat(p); err == nil {
-			version := getCodexVersion(p)
-			return &Agent{
-				ID:         "codex",
-				Name:       "Codex CLI",
-				Version:    version,
-				InstallDir: filepath.Dir(p),
-				Detected:   true,
-				Confidence: 0.9,
-			}
-		}
-	}
-
-	return nil
+	home := HomeDir()
+	return detectAgent(agentSpec{
+		id:   AgentCodex,
+		name: "Codex CLI",
+		paths: []string{
+			filepath.Join(home, ".codex"),
+			filepath.Join(home, ".local", "bin", "codex"),
+			filepath.Join(home, "AppData", "Roaming", "Codex"),
+			"/usr/local/bin/codex",
+		},
+		binary:           "codex",
+		confidencePath:   0.9,
+		confidenceBinary: 0.8,
+	})
 }
 
-func getClaudeVersion(path string) string {
-	return "unknown"
+func detectGemini() *Agent {
+	home := HomeDir()
+	return detectAgent(agentSpec{
+		id:   AgentGemini,
+		name: "Gemini CLI",
+		paths: []string{
+			filepath.Join(home, ".gemini"),
+			filepath.Join(home, "AppData", "Roaming", "Gemini"),
+			"/usr/local/bin/gemini",
+		},
+		binary:           "gemini",
+		confidencePath:   0.85,
+		confidenceBinary: 0.8,
+	})
 }
 
-func getCodexVersion(path string) string {
-	return "unknown"
+func detectWindsurf() *Agent {
+	home := HomeDir()
+	return detectAgent(agentSpec{
+		id:   AgentWindsurf,
+		name: "Windsurf",
+		paths: []string{
+			filepath.Join(home, ".windsurf"),
+			filepath.Join(home, "AppData", "Local", "Programs", "Windsurf"),
+			filepath.Join(home, "Applications", "Windsurf.app"),
+			"/Applications/Windsurf.app",
+		},
+		binary:           "windsurf",
+		confidencePath:   0.85,
+		confidenceBinary: 0.8,
+	})
+}
+
+func detectZed() *Agent {
+	home := HomeDir()
+	return detectAgent(agentSpec{
+		id:   AgentZed,
+		name: "Zed",
+		paths: []string{
+			filepath.Join(home, ".config", "zed"),
+			"/Applications/Zed.app",
+			filepath.Join(home, "Applications", "Zed.app"),
+		},
+		binary:           "zed",
+		confidencePath:   0.85,
+		confidenceBinary: 0.8,
+		skipOnWindows:    true,
+	})
+}
+
+func detectContinue() *Agent {
+	home := HomeDir()
+	return detectAgent(agentSpec{
+		id:   AgentContinue,
+		name: "Continue.dev",
+		paths: []string{
+			filepath.Join(home, ".config", "continue"),
+			filepath.Join(home, "AppData", "Roaming", "Continue"),
+			filepath.Join(home, ".continue"),
+		},
+		confidencePath: 0.8,
+	})
+}
+
+func detectOpenCode() *Agent {
+	home := HomeDir()
+	return detectAgent(agentSpec{
+		id:   AgentOpenCode,
+		name: "OpenCode",
+		paths: []string{
+			filepath.Join(home, ".config", "opencode"),
+			filepath.Join(home, "AppData", "Roaming", "OpenCode"),
+			filepath.Join(home, ".opencode"),
+			"/usr/local/bin/opencode",
+		},
+		binary:           "opencode",
+		confidencePath:   0.8,
+		confidenceBinary: 0.75,
+	})
 }

@@ -65,11 +65,11 @@ const (
 
 // Token data keys for LLM event tracking.
 const (
-	KeyInputTokens   = "input_tokens"    // int - LLM input token count
-	KeyOutputTokens  = "output_tokens"   // int - LLM output token count
-	KeyCachedTokens  = "cached_tokens"   // int - prompt cache savings
-	KeyModel         = "model"           // string - model name
-	KeyCacheHit      = "cache_hit"       // bool - cache hit occurred
+	KeyInputTokens  = "input_tokens"  // int - LLM input token count
+	KeyOutputTokens = "output_tokens" // int - LLM output token count
+	KeyCachedTokens = "cached_tokens" // int - prompt cache savings
+	KeyModel        = "model"         // string - model name
+	KeyCacheHit     = "cache_hit"     // bool - cache hit occurred
 )
 
 // Event represents a single event in the journal.

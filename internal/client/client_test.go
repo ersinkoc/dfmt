@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
-	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -15,120 +14,6 @@ import (
 
 	"github.com/ersinkoc/dfmt/internal/transport"
 )
-
-// mockListener creates a Unix socket listener for testing
-func mockListener(t *testing.T, tmpDir string) string {
-	socketPath := filepath.Join(tmpDir, "daemon.sock")
-	ln, err := net.Listen("unix", socketPath)
-	if err != nil {
-		t.Skipf("skipping: could not create socket: %v", err)
-	}
-	// Don't close listener - keep it alive for tests
-	t.Cleanup(func() { ln.Close() })
-	return socketPath
-}
-
-// mockServer handles JSON-RPC requests for testing
-type mockServer struct {
-	t       *testing.T
-	listener net.Listener
-	requests chan *transport.Request
-	done     chan struct{}
-}
-
-func newMockServer(t *testing.T, socketPath string) *mockServer {
-	ln, err := net.Listen("unix", socketPath)
-	if err != nil {
-		t.Skipf("skipping: could not create socket: %v", err)
-	}
-
-	return &mockServer{
-		t:       t,
-		listener: ln,
-		requests: make(chan *transport.Request, 10),
-		done:     make(chan struct{}),
-	}
-}
-
-func (s *mockServer) Start() {
-	go func() {
-		for {
-			conn, err := s.listener.Accept()
-			if err != nil {
-				select {
-				case <-s.done:
-					return
-				default:
-					return
-				}
-			}
-			go s.handleConn(conn)
-		}
-	}()
-}
-
-func (s *mockServer) handleConn(conn net.Conn) {
-	defer conn.Close()
-	reader := bufio.NewReader(conn)
-
-	for {
-		line, err := reader.ReadBytes('\n')
-		if err != nil {
-			if err != io.EOF {
-				s.t.Logf("read error: %v", err)
-			}
-			return
-		}
-
-		var req transport.Request
-		if err := json.Unmarshal(line, &req); err != nil {
-			s.t.Logf("unmarshal error: %v", err)
-			return
-		}
-
-		s.requests <- &req
-
-		// Send response based on method
-		var resp transport.Response
-		resp.JSONRPC = "2.0"
-		resp.ID = req.ID
-
-		switch req.Method {
-		case "remember":
-			resp.Result = map[string]interface{}{
-				"id": "test-id-" + time.Now().Format("150405"),
-				"ts": time.Now().Format(time.RFC3339Nano),
-			}
-		case "search":
-			resp.Result = map[string]interface{}{
-				"results": []map[string]interface{}{
-					{"id": "doc1", "score": 0.95},
-				},
-				"layer": "bm25",
-			}
-		case "recall":
-			resp.Result = map[string]interface{}{
-				"snapshot": "# Session Snapshot\n- [P1] test event",
-				"format":   "md",
-			}
-		default:
-			resp.Error = &transport.RPCError{
-				Code:    -32601,
-				Message: "method not found",
-			}
-		}
-
-		data, _ := json.Marshal(resp)
-		conn.Write(append(data, '\n'))
-	}
-}
-
-func (s *mockServer) Stop() {
-	close(s.done)
-	s.listener.Close()
-}
-
-// Tests with mock socket
 
 func TestRememberWithMockSocket(t *testing.T) {
 	if os.PathSeparator == '\\' {
@@ -153,28 +38,26 @@ func TestRememberWithMockSocket(t *testing.T) {
 		defer conn.Close()
 
 		reader := bufio.NewReader(conn)
-		for {
-			line, err := reader.ReadBytes('\n')
-			if err != nil {
-				return
-			}
-			var req transport.Request
-			if json.Unmarshal(line, &req) != nil {
-				return
-			}
-
-			// Send response
-			resp := transport.Response{
-				JSONRPC: "2.0",
-				ID:      req.ID,
-				Result: map[string]interface{}{
-					"id": "mock-id",
-					"ts": time.Now().Format(time.RFC3339Nano),
-				},
-			}
-			data, _ := json.Marshal(resp)
-			conn.Write(append(data, '\n'))
+		line, err := reader.ReadBytes('\n')
+		if err != nil {
+			return
 		}
+		var req transport.Request
+		if json.Unmarshal(line, &req) != nil {
+			return
+		}
+
+		// Send response
+		resp := transport.Response{
+			JSONRPC: "2.0",
+			ID:      req.ID,
+			Result: map[string]interface{}{
+				"id": "mock-id",
+				"ts": time.Now().Format(time.RFC3339Nano),
+			},
+		}
+		data, _ := json.Marshal(resp)
+		conn.Write(append(data, '\n'))
 	}()
 	defer close(serverDone)
 
@@ -221,30 +104,28 @@ func TestSearchWithMockSocket(t *testing.T) {
 		defer conn.Close()
 
 		reader := bufio.NewReader(conn)
-		for {
-			line, err := reader.ReadBytes('\n')
-			if err != nil {
-				return
-			}
-			var req transport.Request
-			if json.Unmarshal(line, &req) != nil {
-				return
-			}
-
-			resp := transport.Response{
-				JSONRPC: "2.0",
-				ID:      req.ID,
-				Result: map[string]interface{}{
-					"results": []map[string]interface{}{
-						{"id": "doc1", "score": 0.95, "layer": 1},
-						{"id": "doc2", "score": 0.85, "layer": 1},
-					},
-					"layer": "bm25",
-				},
-			}
-			data, _ := json.Marshal(resp)
-			conn.Write(append(data, '\n'))
+		line, err := reader.ReadBytes('\n')
+		if err != nil {
+			return
 		}
+		var req transport.Request
+		if json.Unmarshal(line, &req) != nil {
+			return
+		}
+
+		resp := transport.Response{
+			JSONRPC: "2.0",
+			ID:      req.ID,
+			Result: map[string]interface{}{
+				"results": []map[string]interface{}{
+					{"id": "doc1", "score": 0.95, "layer": 1},
+					{"id": "doc2", "score": 0.85, "layer": 1},
+				},
+				"layer": "bm25",
+			},
+		}
+		data, _ := json.Marshal(resp)
+		conn.Write(append(data, '\n'))
 	}()
 	defer close(serverDone)
 
@@ -288,27 +169,25 @@ func TestRecallWithMockSocket(t *testing.T) {
 		defer conn.Close()
 
 		reader := bufio.NewReader(conn)
-		for {
-			line, err := reader.ReadBytes('\n')
-			if err != nil {
-				return
-			}
-			var req transport.Request
-			if json.Unmarshal(line, &req) != nil {
-				return
-			}
-
-			resp := transport.Response{
-				JSONRPC: "2.0",
-				ID:      req.ID,
-				Result: map[string]interface{}{
-					"snapshot": "# Session\n- test event",
-					"format":   "md",
-				},
-			}
-			data, _ := json.Marshal(resp)
-			conn.Write(append(data, '\n'))
+		line, err := reader.ReadBytes('\n')
+		if err != nil {
+			return
 		}
+		var req transport.Request
+		if json.Unmarshal(line, &req) != nil {
+			return
+		}
+
+		resp := transport.Response{
+			JSONRPC: "2.0",
+			ID:      req.ID,
+			Result: map[string]interface{}{
+				"snapshot": "# Session\n- test event",
+				"format":   "md",
+			},
+		}
+		data, _ := json.Marshal(resp)
+		conn.Write(append(data, '\n'))
 	}()
 	defer close(serverDone)
 
@@ -540,27 +419,25 @@ func TestRememberErrorResponse(t *testing.T) {
 		defer conn.Close()
 
 		reader := bufio.NewReader(conn)
-		for {
-			line, err := reader.ReadBytes('\n')
-			if err != nil {
-				return
-			}
-			var req transport.Request
-			if json.Unmarshal(line, &req) != nil {
-				return
-			}
-
-			resp := transport.Response{
-				JSONRPC: "2.0",
-				ID:      req.ID,
-				Error: &transport.RPCError{
-					Code:    -32603,
-					Message: "internal error",
-				},
-			}
-			data, _ := json.Marshal(resp)
-			conn.Write(append(data, '\n'))
+		line, err := reader.ReadBytes('\n')
+		if err != nil {
+			return
 		}
+		var req transport.Request
+		if json.Unmarshal(line, &req) != nil {
+			return
+		}
+
+		resp := transport.Response{
+			JSONRPC: "2.0",
+			ID:      req.ID,
+			Error: &transport.RPCError{
+				Code:    -32603,
+				Message: "internal error",
+			},
+		}
+		data, _ := json.Marshal(resp)
+		conn.Write(append(data, '\n'))
 	}()
 
 	cl, _ := NewClient(tmpDir)
@@ -598,27 +475,25 @@ func TestSearchErrorResponse(t *testing.T) {
 		defer conn.Close()
 
 		reader := bufio.NewReader(conn)
-		for {
-			line, err := reader.ReadBytes('\n')
-			if err != nil {
-				return
-			}
-			var req transport.Request
-			if json.Unmarshal(line, &req) != nil {
-				return
-			}
-
-			resp := transport.Response{
-				JSONRPC: "2.0",
-				ID:      req.ID,
-				Error: &transport.RPCError{
-					Code:    -32603,
-					Message: "search failed",
-				},
-			}
-			data, _ := json.Marshal(resp)
-			conn.Write(append(data, '\n'))
+		line, err := reader.ReadBytes('\n')
+		if err != nil {
+			return
 		}
+		var req transport.Request
+		if json.Unmarshal(line, &req) != nil {
+			return
+		}
+
+		resp := transport.Response{
+			JSONRPC: "2.0",
+			ID:      req.ID,
+			Error: &transport.RPCError{
+				Code:    -32603,
+				Message: "search failed",
+			},
+		}
+		data, _ := json.Marshal(resp)
+		conn.Write(append(data, '\n'))
 	}()
 
 	cl, _ := NewClient(tmpDir)
@@ -653,27 +528,25 @@ func TestRecallErrorResponse(t *testing.T) {
 		defer conn.Close()
 
 		reader := bufio.NewReader(conn)
-		for {
-			line, err := reader.ReadBytes('\n')
-			if err != nil {
-				return
-			}
-			var req transport.Request
-			if json.Unmarshal(line, &req) != nil {
-				return
-			}
-
-			resp := transport.Response{
-				JSONRPC: "2.0",
-				ID:      req.ID,
-				Error: &transport.RPCError{
-					Code:    -32603,
-					Message: "recall failed",
-				},
-			}
-			data, _ := json.Marshal(resp)
-			conn.Write(append(data, '\n'))
+		line, err := reader.ReadBytes('\n')
+		if err != nil {
+			return
 		}
+		var req transport.Request
+		if json.Unmarshal(line, &req) != nil {
+			return
+		}
+
+		resp := transport.Response{
+			JSONRPC: "2.0",
+			ID:      req.ID,
+			Error: &transport.RPCError{
+				Code:    -32603,
+				Message: "recall failed",
+			},
+		}
+		data, _ := json.Marshal(resp)
+		conn.Write(append(data, '\n'))
 	}()
 
 	cl, _ := NewClient(tmpDir)
@@ -771,12 +644,12 @@ func TestNewClientNetworkAddress(t *testing.T) {
 		t.Fatalf("NewClient failed: %v", err)
 	}
 	// Verify network and address are set based on OS
-	if runtime.GOOS == "windows" {
+	if runtime.GOOS == goosWindows {
 		if cl.network != "tcp" {
 			t.Errorf("network = %s, want tcp on Windows", cl.network)
 		}
 	} else {
-		if cl.network != "unix" {
+		if cl.network != netUnix {
 			t.Errorf("network = %s, want unix on Unix", cl.network)
 		}
 	}
@@ -1165,11 +1038,11 @@ func TestClientSearchResultUnmarshal(t *testing.T) {
 
 func TestClientRecallResultUnmarshal(t *testing.T) {
 	tests := []struct {
-		name      string
-		json      string
-		wantSnap  string
-		wantFmt   string
-		wantErr   bool
+		name     string
+		json     string
+		wantSnap string
+		wantFmt  string
+		wantErr  bool
 	}{
 		{"markdown", `{"snapshot":"# Session\n- item 1","format":"md"}`, "# Session\n- item 1", "md", false},
 		{"json", `{"snapshot":"{\"key\":\"value\"}","format":"json"}`, `{"key":"value"}`, "json", false},
@@ -1376,7 +1249,7 @@ func TestNewClientNonExistentPath(t *testing.T) {
 }
 
 func TestNewClientWindowsPortFile(t *testing.T) {
-	if runtime.GOOS != "windows" {
+	if runtime.GOOS != goosWindows {
 		t.Skip("Windows-only test")
 	}
 	tmpDir := t.TempDir()
@@ -1399,7 +1272,7 @@ func TestNewClientWindowsPortFile(t *testing.T) {
 }
 
 func TestNewClientWindowsInvalidPort(t *testing.T) {
-	if runtime.GOOS != "windows" {
+	if runtime.GOOS != goosWindows {
 		t.Skip("Windows-only test")
 	}
 	tmpDir := t.TempDir()
@@ -1418,13 +1291,13 @@ func TestNewClientWindowsInvalidPort(t *testing.T) {
 		t.Fatalf("NewClient failed: %v", err)
 	}
 	// Should default to localhost:0 when port is invalid
-	if cl.address != "localhost:0" {
+	if cl.address != addrLocalhost0 {
 		t.Errorf("address = %s, want localhost:0 for invalid port", cl.address)
 	}
 }
 
 func TestNewClientWindowsMissingPortFile(t *testing.T) {
-	if runtime.GOOS != "windows" {
+	if runtime.GOOS != goosWindows {
 		t.Skip("Windows-only test")
 	}
 	tmpDir := t.TempDir()
@@ -1435,13 +1308,13 @@ func TestNewClientWindowsMissingPortFile(t *testing.T) {
 		t.Fatalf("NewClient failed: %v", err)
 	}
 	// Should default to localhost:0 when no port file
-	if cl.address != "localhost:0" {
+	if cl.address != addrLocalhost0 {
 		t.Errorf("address = %s, want localhost:0 when no port file", cl.address)
 	}
 }
 
 func TestNewClientWindowsEmptyPortFile(t *testing.T) {
-	if runtime.GOOS != "windows" {
+	if runtime.GOOS != goosWindows {
 		t.Skip("Windows-only test")
 	}
 	tmpDir := t.TempDir()
@@ -1460,13 +1333,13 @@ func TestNewClientWindowsEmptyPortFile(t *testing.T) {
 		t.Fatalf("NewClient failed: %v", err)
 	}
 	// Should default to localhost:0 when port is empty
-	if cl.address != "localhost:0" {
+	if cl.address != addrLocalhost0 {
 		t.Errorf("address = %s, want localhost:0 for empty port", cl.address)
 	}
 }
 
 func TestNewClientUnixSocketPath(t *testing.T) {
-	if runtime.GOOS == "windows" {
+	if runtime.GOOS == goosWindows {
 		t.Skip("Unix-only test")
 	}
 	tmpDir := t.TempDir()
@@ -1579,15 +1452,13 @@ func TestRememberWithReadResponseError(t *testing.T) {
 		if conn != nil {
 			defer conn.Close()
 			reader := bufio.NewReader(conn)
-			for {
-				_, err := reader.ReadBytes('\n')
-				if err != nil {
-					return
-				}
-				// Send malformed response
-				conn.Write([]byte("not valid json\n"))
+			_, err := reader.ReadBytes('\n')
+			if err != nil {
 				return
 			}
+			// Send malformed response
+			conn.Write([]byte("not valid json\n"))
+			return
 		}
 	}()
 
@@ -1621,28 +1492,26 @@ func TestRememberWithRPCErrorResponse(t *testing.T) {
 		if conn != nil {
 			defer conn.Close()
 			reader := bufio.NewReader(conn)
-			for {
-				line, err := reader.ReadBytes('\n')
-				if err != nil {
-					return
-				}
-				var req transport.Request
-				if json.Unmarshal(line, &req) != nil {
-					return
-				}
-
-				resp := transport.Response{
-					JSONRPC: "2.0",
-					ID:      req.ID,
-					Error: &transport.RPCError{
-						Code:    -32603,
-						Message: "internal error",
-					},
-				}
-				data, _ := json.Marshal(resp)
-				conn.Write(append(data, '\n'))
+			line, err := reader.ReadBytes('\n')
+			if err != nil {
 				return
 			}
+			var req transport.Request
+			if json.Unmarshal(line, &req) != nil {
+				return
+			}
+
+			resp := transport.Response{
+				JSONRPC: "2.0",
+				ID:      req.ID,
+				Error: &transport.RPCError{
+					Code:    -32603,
+					Message: "internal error",
+				},
+			}
+			data, _ := json.Marshal(resp)
+			conn.Write(append(data, '\n'))
+			return
 		}
 	}()
 
@@ -1679,25 +1548,23 @@ func TestRememberWithResultUnmarshalError(t *testing.T) {
 		if conn != nil {
 			defer conn.Close()
 			reader := bufio.NewReader(conn)
-			for {
-				line, err := reader.ReadBytes('\n')
-				if err != nil {
-					return
-				}
-				var req transport.Request
-				if json.Unmarshal(line, &req) != nil {
-					return
-				}
-
-				resp := transport.Response{
-					JSONRPC: "2.0",
-					ID:      req.ID,
-					Result: "not an object", // Invalid result type
-				}
-				data, _ := json.Marshal(resp)
-				conn.Write(append(data, '\n'))
+			line, err := reader.ReadBytes('\n')
+			if err != nil {
 				return
 			}
+			var req transport.Request
+			if json.Unmarshal(line, &req) != nil {
+				return
+			}
+
+			resp := transport.Response{
+				JSONRPC: "2.0",
+				ID:      req.ID,
+				Result:  "not an object", // Invalid result type
+			}
+			data, _ := json.Marshal(resp)
+			conn.Write(append(data, '\n'))
+			return
 		}
 	}()
 
@@ -1782,28 +1649,26 @@ func TestSearchWithRPCError(t *testing.T) {
 		if conn != nil {
 			defer conn.Close()
 			reader := bufio.NewReader(conn)
-			for {
-				line, err := reader.ReadBytes('\n')
-				if err != nil {
-					return
-				}
-				var req transport.Request
-				if json.Unmarshal(line, &req) != nil {
-					return
-				}
-
-				resp := transport.Response{
-					JSONRPC: "2.0",
-					ID:      req.ID,
-					Error: &transport.RPCError{
-						Code:    -32603,
-						Message: "search failed",
-					},
-				}
-				data, _ := json.Marshal(resp)
-				conn.Write(append(data, '\n'))
+			line, err := reader.ReadBytes('\n')
+			if err != nil {
 				return
 			}
+			var req transport.Request
+			if json.Unmarshal(line, &req) != nil {
+				return
+			}
+
+			resp := transport.Response{
+				JSONRPC: "2.0",
+				ID:      req.ID,
+				Error: &transport.RPCError{
+					Code:    -32603,
+					Message: "search failed",
+				},
+			}
+			data, _ := json.Marshal(resp)
+			conn.Write(append(data, '\n'))
+			return
 		}
 	}()
 
@@ -1836,25 +1701,23 @@ func TestSearchWithResultUnmarshalError(t *testing.T) {
 		if conn != nil {
 			defer conn.Close()
 			reader := bufio.NewReader(conn)
-			for {
-				line, err := reader.ReadBytes('\n')
-				if err != nil {
-					return
-				}
-				var req transport.Request
-				if json.Unmarshal(line, &req) != nil {
-					return
-				}
-
-				resp := transport.Response{
-					JSONRPC: "2.0",
-					ID:      req.ID,
-					Result: 123, // Invalid - should be object
-				}
-				data, _ := json.Marshal(resp)
-				conn.Write(append(data, '\n'))
+			line, err := reader.ReadBytes('\n')
+			if err != nil {
 				return
 			}
+			var req transport.Request
+			if json.Unmarshal(line, &req) != nil {
+				return
+			}
+
+			resp := transport.Response{
+				JSONRPC: "2.0",
+				ID:      req.ID,
+				Result:  123, // Invalid - should be object
+			}
+			data, _ := json.Marshal(resp)
+			conn.Write(append(data, '\n'))
+			return
 		}
 	}()
 
@@ -1939,28 +1802,26 @@ func TestRecallWithRPCError(t *testing.T) {
 		if conn != nil {
 			defer conn.Close()
 			reader := bufio.NewReader(conn)
-			for {
-				line, err := reader.ReadBytes('\n')
-				if err != nil {
-					return
-				}
-				var req transport.Request
-				if json.Unmarshal(line, &req) != nil {
-					return
-				}
-
-				resp := transport.Response{
-					JSONRPC: "2.0",
-					ID:      req.ID,
-					Error: &transport.RPCError{
-						Code:    -32603,
-						Message: "recall failed",
-					},
-				}
-				data, _ := json.Marshal(resp)
-				conn.Write(append(data, '\n'))
+			line, err := reader.ReadBytes('\n')
+			if err != nil {
 				return
 			}
+			var req transport.Request
+			if json.Unmarshal(line, &req) != nil {
+				return
+			}
+
+			resp := transport.Response{
+				JSONRPC: "2.0",
+				ID:      req.ID,
+				Error: &transport.RPCError{
+					Code:    -32603,
+					Message: "recall failed",
+				},
+			}
+			data, _ := json.Marshal(resp)
+			conn.Write(append(data, '\n'))
+			return
 		}
 	}()
 
@@ -1993,25 +1854,23 @@ func TestRecallWithResultUnmarshalError(t *testing.T) {
 		if conn != nil {
 			defer conn.Close()
 			reader := bufio.NewReader(conn)
-			for {
-				line, err := reader.ReadBytes('\n')
-				if err != nil {
-					return
-				}
-				var req transport.Request
-				if json.Unmarshal(line, &req) != nil {
-					return
-				}
-
-				resp := transport.Response{
-					JSONRPC: "2.0",
-					ID:      req.ID,
-					Result: 123, // Invalid - should be object
-				}
-				data, _ := json.Marshal(resp)
-				conn.Write(append(data, '\n'))
+			line, err := reader.ReadBytes('\n')
+			if err != nil {
 				return
 			}
+			var req transport.Request
+			if json.Unmarshal(line, &req) != nil {
+				return
+			}
+
+			resp := transport.Response{
+				JSONRPC: "2.0",
+				ID:      req.ID,
+				Result:  123, // Invalid - should be object
+			}
+			data, _ := json.Marshal(resp)
+			conn.Write(append(data, '\n'))
+			return
 		}
 	}()
 

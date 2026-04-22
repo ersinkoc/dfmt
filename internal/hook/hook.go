@@ -28,7 +28,7 @@ type DriftDetector struct {
 }
 
 type SessionState struct {
-	Calls         []ToolCall
+	Calls          []ToolCall
 	LastNudgeLevel NudgeLevel
 	LastNudgeTime  time.Time
 	NudgeCount     int // How many times we've nudged
@@ -36,11 +36,11 @@ type SessionState struct {
 
 // ToolCall represents a single tool call from an agent.
 type ToolCall struct {
-	Time     time.Time
-	Type    string // "native" or "dfmt"
-	Tool    string // "Bash", "Read", "WebFetch", "exec", "read", "fetch"
-	Size    int64  // Approximate output size
-	HasIntent bool // Whether intent was provided
+	Time      time.Time
+	Type      string // "native" or "dfmt"
+	Tool      string // "Bash", "Read", "WebFetch", "exec", "read", "fetch"
+	Size      int64  // Approximate output size
+	HasIntent bool   // Whether intent was provided
 }
 
 // NewDriftDetector creates a new drift detector.
@@ -106,15 +106,16 @@ func (d *DriftDetector) GetNudgeLevel(sessionID string) NudgeLevel {
 	// Calculate drift signals
 	driftSignals := d.countDriftSignals(state.Calls)
 
-	if driftSignals >= 3 {
+	switch {
+	case driftSignals >= 3:
 		return NudgeThird
-	} else if driftSignals >= 2 {
+	case driftSignals >= 2:
 		return NudgeSecond
-	} else if driftSignals >= 1 {
+	case driftSignals >= 1:
 		return NudgeFirst
+	default:
+		return NudgeNone
 	}
-
-	return NudgeNone
 }
 
 // countDriftSignals counts the number of drift signals in recent calls.
@@ -129,7 +130,8 @@ func (d *DriftDetector) countDriftSignals(calls []ToolCall) int {
 	var noIntentSuboptimal int
 
 	for _, c := range calls {
-		if c.Type == "native" {
+		const typeNative = "native"
+		if c.Type == typeNative {
 			nativeCount++
 			if c.Size > 16*1024 {
 				largeNativeCount++
@@ -223,7 +225,8 @@ func (d *DriftDetector) SessionStats(sessionID string) (nativeCalls, dfmtCalls, 
 	}
 
 	for _, c := range state.Calls {
-		if c.Type == "native" {
+		const typeNative = "native"
+		if c.Type == typeNative {
 			nativeCalls++
 		} else {
 			dfmtCalls++

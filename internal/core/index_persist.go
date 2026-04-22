@@ -11,10 +11,10 @@ const TokenizerVersion = 1
 
 // IndexCursor tracks the state needed to resume indexing.
 type IndexCursor struct {
-	HiULID      string `json:"hi_ulid"`
-	TokenVer    int    `json:"token_ver"`
-	TotalDocs   int    `json:"total_docs"`
-	AvgDocLen   float64 `json:"avg_doc_len"`
+	HiULID    string  `json:"hi_ulid"`
+	TokenVer  int     `json:"token_ver"`
+	TotalDocs int     `json:"total_docs"`
+	AvgDocLen float64 `json:"avg_doc_len"`
 }
 
 // PersistIndex saves the index and cursor to disk.

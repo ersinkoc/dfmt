@@ -12,8 +12,8 @@ import (
 )
 
 var (
-	modkernel32     = windows.NewLazySystemDLL("kernel32.dll")
-	procLockFileEx  = modkernel32.NewProc("LockFileEx")
+	modkernel32      = windows.NewLazySystemDLL("kernel32.dll")
+	procLockFileEx   = modkernel32.NewProc("LockFileEx")
 	procUnlockFileEx = modkernel32.NewProc("UnlockFileEx")
 )
 

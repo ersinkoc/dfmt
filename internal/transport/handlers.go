@@ -8,43 +8,46 @@ import (
 	"time"
 
 	"github.com/ersinkoc/dfmt/internal/core"
+	"github.com/ersinkoc/dfmt/internal/sandbox"
 )
 
 // Handlers implements the business logic for all transport layers.
 type Handlers struct {
-	index  *core.Index
+	index   *core.Index
 	journal core.Journal
+	sandbox sandbox.Sandbox
 }
 
 // NewHandlers creates a new Handlers instance.
-func NewHandlers(index *core.Index, journal core.Journal) *Handlers {
+func NewHandlers(index *core.Index, journal core.Journal, sb sandbox.Sandbox) *Handlers {
 	return &Handlers{
 		index:   index,
 		journal: journal,
+		sandbox: sb,
 	}
 }
 
 // RememberParams are the parameters for the Remember method.
 type RememberParams struct {
-	Type     string            `json:"type"`
-	Priority string            `json:"priority"`
-	Source   string            `json:"source"`
-	Actor    string            `json:"actor,omitempty"`
-	Data     map[string]any    `json:"data,omitempty"`
-	Refs     []string          `json:"refs,omitempty"`
-	Tags     []string          `json:"tags,omitempty"`
+	Type     string         `json:"type"`
+	Priority string         `json:"priority"`
+	Source   string         `json:"source"`
+	Actor    string         `json:"actor,omitempty"`
+	Data     map[string]any `json:"data,omitempty"`
+	Refs     []string       `json:"refs,omitempty"`
+	Tags     []string       `json:"tags,omitempty"`
 	// Direct token fields for MCP tools
 	InputTokens  int    `json:"input_tokens,omitempty"`
 	OutputTokens int    `json:"output_tokens,omitempty"`
 	CachedTokens int    `json:"cached_tokens,omitempty"`
-	Model       string `json:"model,omitempty"`
-	Message     string `json:"message,omitempty"`
+	Model        string `json:"model,omitempty"`
+	Message      string `json:"message,omitempty"`
 }
 
 // RememberResponse is the response for the Remember method.
 type RememberResponse struct {
-	ID  string `json:"id"`
-	TS  string `json:"ts"`
+	ID string `json:"id"`
+	TS string `json:"ts"`
 }
 
 // Remember adds an event to the journal and index.
@@ -99,9 +102,9 @@ func (h *Handlers) Remember(ctx context.Context, params RememberParams) (*Rememb
 
 // SearchParams are the parameters for the Search method.
 type SearchParams struct {
-	Query  string `json:"query"`
-	Limit  int    `json:"limit,omitempty"`
-	Layer  string `json:"layer,omitempty"` // "bm25", "trigram", "fuzzy"
+	Query string `json:"query"`
+	Limit int    `json:"limit,omitempty"`
+	Layer string `json:"layer,omitempty"` // "bm25", "trigram", "fuzzy"
 }
 
 // SearchResponse is the response for the Search method.
@@ -250,8 +253,8 @@ type StatsResponse struct {
 	EventsTotal      int            `json:"events_total"`
 	EventsByType     map[string]int `json:"events_by_type"`
 	EventsByPriority map[string]int `json:"events_by_priority"`
-	SessionStart    string         `json:"session_start"`
-	SessionEnd      string         `json:"session_end"`
+	SessionStart     string         `json:"session_start"`
+	SessionEnd       string         `json:"session_end"`
 	// Token metrics
 	TotalInputTokens  int     `json:"total_input_tokens"`
 	TotalOutputTokens int     `json:"total_output_tokens"`
@@ -401,4 +404,162 @@ type StreamParams struct {
 // Stream streams events from the journal.
 func (h *Handlers) Stream(ctx context.Context, params StreamParams) (<-chan core.Event, error) {
 	return h.journal.Stream(ctx, params.From)
+}
+
+// ── Sandbox wrappers ───────────────────────────────────────────────
+
+// ExecParams are the parameters for sandbox execution.
+type ExecParams struct {
+	Code    string            `json:"code"`
+	Lang    string            `json:"lang,omitempty"`
+	Intent  string            `json:"intent,omitempty"`
+	Timeout int               `json:"timeout,omitempty"` // seconds
+	Return  string            `json:"return,omitempty"`
+	Env     map[string]string `json:"env,omitempty"`
+}
+
+// ExecResponse is the response from sandbox execution.
+type ExecResponse struct {
+	Exit       int                    `json:"exit"`
+	Stdout     string                 `json:"stdout,omitempty"`
+	Stderr     string                 `json:"stderr,omitempty"`
+	Summary    string                 `json:"summary,omitempty"`
+	Matches    []sandbox.ContentMatch `json:"matches,omitempty"`
+	Vocabulary []string               `json:"vocabulary,omitempty"`
+	DurationMs int                    `json:"duration_ms"`
+	TimedOut   bool                   `json:"timed_out"`
+}
+
+// Exec executes code via the sandbox.
+func (h *Handlers) Exec(ctx context.Context, params ExecParams) (*ExecResponse, error) {
+	var timeout time.Duration
+	if params.Timeout > 0 {
+		timeout = time.Duration(params.Timeout) * time.Second
+	} else {
+		timeout = sandbox.DefaultExecTimeout
+	}
+
+	req := sandbox.ExecReq{
+		Code:    params.Code,
+		Lang:    params.Lang,
+		Intent:  params.Intent,
+		Timeout: timeout,
+		Return:  params.Return,
+		Env:     params.Env,
+	}
+
+	resp, err := h.sandbox.Exec(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+
+	return &ExecResponse{
+		Exit:       resp.Exit,
+		Stdout:     resp.Stdout,
+		Stderr:     resp.Stderr,
+		Summary:    resp.Summary,
+		Matches:    resp.Matches,
+		Vocabulary: resp.Vocabulary,
+		DurationMs: resp.DurationMs,
+		TimedOut:   resp.TimedOut,
+	}, nil
+}
+
+// ReadParams are the parameters for sandbox file reading.
+type ReadParams struct {
+	Path   string `json:"path"`
+	Intent string `json:"intent,omitempty"`
+	Offset int64  `json:"offset,omitempty"`
+	Limit  int64  `json:"limit,omitempty"`
+	Return string `json:"return,omitempty"`
+}
+
+// ReadResponse is the response from sandbox file reading.
+type ReadResponse struct {
+	Content   string                 `json:"content,omitempty"`
+	Summary   string                 `json:"summary,omitempty"`
+	Matches   []sandbox.ContentMatch `json:"matches,omitempty"`
+	Size      int64                  `json:"size"`
+	ReadBytes int64                  `json:"read_bytes"`
+}
+
+// Read reads a file via the sandbox.
+func (h *Handlers) Read(ctx context.Context, params ReadParams) (*ReadResponse, error) {
+	req := sandbox.ReadReq{
+		Path:   params.Path,
+		Intent: params.Intent,
+		Offset: params.Offset,
+		Limit:  params.Limit,
+		Return: params.Return,
+	}
+
+	resp, err := h.sandbox.Read(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+
+	return &ReadResponse{
+		Content:   resp.Content,
+		Summary:   resp.Summary,
+		Matches:   resp.Matches,
+		Size:      resp.Size,
+		ReadBytes: resp.ReadBytes,
+	}, nil
+}
+
+// FetchParams are the parameters for sandbox HTTP fetching.
+type FetchParams struct {
+	URL     string            `json:"url"`
+	Intent  string            `json:"intent,omitempty"`
+	Method  string            `json:"method,omitempty"`
+	Headers map[string]string `json:"headers,omitempty"`
+	Body    string            `json:"body,omitempty"`
+	Return  string            `json:"return,omitempty"`
+	Timeout int               `json:"timeout,omitempty"` // seconds
+}
+
+// FetchResponse is the response from sandbox HTTP fetching.
+type FetchResponse struct {
+	Status     int                    `json:"status"`
+	Headers    map[string]string      `json:"headers,omitempty"`
+	Body       string                 `json:"body,omitempty"`
+	Summary    string                 `json:"summary,omitempty"`
+	Matches    []sandbox.ContentMatch `json:"matches,omitempty"`
+	Vocabulary []string               `json:"vocabulary,omitempty"`
+	TimedOut   bool                   `json:"timed_out"`
+}
+
+// Fetch fetches a URL via the sandbox.
+func (h *Handlers) Fetch(ctx context.Context, params FetchParams) (*FetchResponse, error) {
+	var timeout time.Duration
+	if params.Timeout > 0 {
+		timeout = time.Duration(params.Timeout) * time.Second
+	} else {
+		timeout = 30 * time.Second
+	}
+
+	req := sandbox.FetchReq{
+		URL:     params.URL,
+		Intent:  params.Intent,
+		Method:  params.Method,
+		Headers: params.Headers,
+		Body:    params.Body,
+		Return:  params.Return,
+		Timeout: timeout,
+	}
+
+	resp, err := h.sandbox.Fetch(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+
+	return &FetchResponse{
+		Status:     resp.Status,
+		Headers:    resp.Headers,
+		Body:       resp.Body,
+		Summary:    resp.Summary,
+		Matches:    resp.Matches,
+		Vocabulary: resp.Vocabulary,
+		TimedOut:   resp.TimedOut,
+	}, nil
 }

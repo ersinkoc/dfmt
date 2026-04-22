@@ -9,6 +9,8 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+const durabilityBatched = "batched"
+
 // Config represents the DFMT configuration.
 type Config struct {
 	Version int `yaml:"version"`
@@ -23,8 +25,12 @@ type Config struct {
 			Ignore     []string `yaml:"ignore"`
 			DebounceMS int      `yaml:"debounce_ms"`
 		} `yaml:"fs"`
-		Git   struct{ Enabled bool `yaml:"enabled"` } `yaml:"git"`
-		Shell struct{ Enabled bool `yaml:"enabled"` } `yaml:"shell"`
+		Git struct {
+			Enabled bool `yaml:"enabled"`
+		} `yaml:"git"`
+		Shell struct {
+			Enabled bool `yaml:"enabled"`
+		} `yaml:"shell"`
 	} `yaml:"capture"`
 
 	Storage struct {
@@ -54,12 +60,16 @@ type Config struct {
 	} `yaml:"index"`
 
 	Transport struct {
-		MCP  struct{ Enabled bool `yaml:"enabled"` } `yaml:"mcp"`
+		MCP struct {
+			Enabled bool `yaml:"enabled"`
+		} `yaml:"mcp"`
 		HTTP struct {
 			Enabled bool   `yaml:"enabled"`
 			Bind    string `yaml:"bind"`
 		} `yaml:"http"`
-		Socket struct{ Enabled bool `yaml:"enabled"` } `yaml:"socket"`
+		Socket struct {
+			Enabled bool `yaml:"enabled"`
+		} `yaml:"socket"`
 	} `yaml:"transport"`
 
 	Lifecycle struct {
@@ -95,7 +105,7 @@ func Default() *Config {
 	c.Capture.Shell.Enabled = true
 
 	// Storage defaults
-	c.Storage.Durability = "batched"
+	c.Storage.Durability = durabilityBatched
 	c.Storage.MaxBatchMS = 100
 	c.Storage.JournalMaxBytes = 10 * 1024 * 1024 // 10MB
 	c.Storage.CompressRotated = true

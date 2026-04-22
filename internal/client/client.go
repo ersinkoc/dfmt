@@ -21,10 +21,16 @@ import (
 // Client is a DFMT daemon client.
 type Client struct {
 	socketPath string // For debugging/testing only
-	network   string
-	address   string
-	timeout   time.Duration
+	network    string
+	address    string
+	timeout    time.Duration
 }
+
+const (
+	goosWindows    = "windows"
+	netUnix        = "unix"
+	addrLocalhost0 = "localhost:0"
+)
 
 // NewClient creates a new client for the given project.
 func NewClient(projectPath string) (*Client, error) {
@@ -33,10 +39,10 @@ func NewClient(projectPath string) (*Client, error) {
 
 	var network, address string
 
-	if runtime.GOOS == "windows" {
+	if runtime.GOOS == goosWindows {
 		// On Windows, use TCP with port from port file
 		network = "tcp"
-		address = "localhost:0" // Will be overridden by port file
+		address = addrLocalhost0 // Will be overridden by port file
 
 		// Try to read port file
 		if data, err := os.ReadFile(portFile); err == nil {
@@ -46,15 +52,15 @@ func NewClient(projectPath string) (*Client, error) {
 		}
 	} else {
 		// On Unix, use Unix socket
-		network = "unix"
+		network = netUnix
 		address = socketPath
 	}
 
 	return &Client{
 		socketPath: socketPath, // For debugging
-		network:   network,
-		address:   address,
-		timeout:   5 * time.Second,
+		network:    network,
+		address:    address,
+		timeout:    5 * time.Second,
 	}, nil
 }
 
@@ -154,7 +160,7 @@ func (c *Client) Recall(ctx context.Context, params transport.RecallParams) (*tr
 
 // DaemonRunning checks if a daemon is running for the project.
 func DaemonRunning(projectPath string) bool {
-	if runtime.GOOS == "windows" {
+	if runtime.GOOS == goosWindows {
 		// On Windows, check for port file first
 		portFile := filepath.Join(projectPath, ".dfmt", "port")
 		if _, err := os.Stat(portFile); err == nil {

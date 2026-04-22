@@ -241,8 +241,8 @@ func TestDriftDetectorCountDriftSignals(t *testing.T) {
 	d := NewDriftDetector()
 
 	tests := []struct {
-		name       string
-		calls      []ToolCall
+		name           string
+		calls          []ToolCall
 		wantMinSignals int
 	}{
 		{

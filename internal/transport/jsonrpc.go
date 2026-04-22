@@ -18,10 +18,10 @@ type Request struct {
 
 // Response represents a JSON-RPC 2.0 response.
 type Response struct {
-	JSONRPC string      `json:"jsonrpc"`
-	Result  any         `json:"result,omitempty"`
-	Error   *RPCError   `json:"error,omitempty"`
-	ID      any         `json:"id,omitempty"`
+	JSONRPC string    `json:"jsonrpc"`
+	Result  any       `json:"result,omitempty"`
+	Error   *RPCError `json:"error,omitempty"`
+	ID      any       `json:"id,omitempty"`
 }
 
 // RPCError represents a JSON-RPC error.
@@ -33,9 +33,9 @@ type RPCError struct {
 
 // Codec handles JSON-RPC 2.0 encoding/decoding over an io.ReadWriter.
 type Codec struct {
-	rw     io.ReadWriter
-	enc   *json.Encoder
-	mu    sync.Mutex
+	rw  io.ReadWriter
+	enc *json.Encoder
+	mu  sync.Mutex
 }
 
 // NewCodec creates a new JSON-RPC codec.
@@ -63,7 +63,7 @@ func (c *Codec) ReadRequest() (*Request, error) {
 		return nil, fmt.Errorf("unmarshal request: %w", err)
 	}
 
-	if req.JSONRPC != "2.0" {
+	if req.JSONRPC != jsonRPCVersion {
 		return nil, fmt.Errorf("unsupported JSON-RPC version: %s", req.JSONRPC)
 	}
 
@@ -94,7 +94,7 @@ func (c *Codec) WriteRequest(req *Request) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	req.JSONRPC = "2.0"
+	req.JSONRPC = jsonRPCVersion
 	if err := c.enc.Encode(req); err != nil {
 		return fmt.Errorf("encode request: %w", err)
 	}
@@ -108,7 +108,7 @@ func (c *Codec) WriteResponse(resp *Response) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	resp.JSONRPC = "2.0"
+	resp.JSONRPC = jsonRPCVersion
 	if err := c.enc.Encode(resp); err != nil {
 		return fmt.Errorf("encode response: %w", err)
 	}

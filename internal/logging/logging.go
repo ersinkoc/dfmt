@@ -19,11 +19,16 @@ type Config struct {
 	Output string // path to log file, or "stdout" or "stderr"
 }
 
+const (
+	levelDebug = "debug"
+	formatJSON = "json"
+)
+
 // Init initializes the global logger.
 func Init(cfg Config) error {
 	var level slog.Level
 	switch cfg.Level {
-	case "debug":
+	case levelDebug:
 		level = slog.LevelDebug
 	case "warn", "warning":
 		level = slog.LevelWarn
@@ -37,7 +42,7 @@ func Init(cfg Config) error {
 	opts := &slog.HandlerOptions{Level: level}
 
 	switch cfg.Format {
-	case "json":
+	case formatJSON:
 		handler = slog.NewJSONHandler(os.Stdout, opts)
 	default:
 		handler = slog.NewTextHandler(os.Stdout, opts)
@@ -56,7 +61,7 @@ func Init(cfg Config) error {
 		}
 
 		switch cfg.Format {
-		case "json":
+		case formatJSON:
 			handler = slog.NewJSONHandler(f, opts)
 		default:
 			handler = slog.NewTextHandler(f, opts)

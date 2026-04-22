@@ -10,7 +10,7 @@ func TestMCPProtocol_Handle_ToolsCall_NilHandlers(t *testing.T) {
 		JSONRPC: "2.0",
 		Method:  "tools/call",
 		Params:  []byte(`{"name":"dfmt.remember","arguments":{"type":"note"}}`),
-		ID:     1,
+		ID:      1,
 	}
 
 	resp, err := p.Handle(req)
@@ -40,7 +40,7 @@ func TestMCPProtocol_Handle_ToolsCall_EmptyParams(t *testing.T) {
 		JSONRPC: "2.0",
 		Method:  "tools/call",
 		Params:  []byte(`{}`),
-		ID:     2,
+		ID:      2,
 	}
 
 	resp, err := p.Handle(req)
@@ -69,7 +69,7 @@ func TestMCPProtocol_Handle_ToolsCall_UnknownTool(t *testing.T) {
 		JSONRPC: "2.0",
 		Method:  "tools/call",
 		Params:  []byte(`{"name":"unknown.tool","arguments":{}}`),
-		ID:     3,
+		ID:      3,
 	}
 
 	resp, err := p.Handle(req)

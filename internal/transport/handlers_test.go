@@ -39,12 +39,12 @@ func TestRPCErrorWithData(t *testing.T) {
 
 func TestRequest(t *testing.T) {
 	req := &Request{
-		JSONRPC: "2.0",
+		JSONRPC: jsonRPCVersion,
 		Method:  "remember",
-		Params: json.RawMessage(`{"type":"note"}`),
-		ID:     1,
+		Params:  json.RawMessage(`{"type":"note"}`),
+		ID:      1,
 	}
-	if req.JSONRPC != "2.0" {
+	if req.JSONRPC != jsonRPCVersion {
 		t.Errorf("Request.JSONRPC = %s, want '2.0'", req.JSONRPC)
 	}
 	if req.Method != "remember" {
@@ -54,11 +54,11 @@ func TestRequest(t *testing.T) {
 
 func TestResponse(t *testing.T) {
 	resp := &Response{
-		JSONRPC: "2.0",
+		JSONRPC: jsonRPCVersion,
 		Result:  map[string]any{"id": "test"},
 		ID:      1,
 	}
-	if resp.JSONRPC != "2.0" {
+	if resp.JSONRPC != jsonRPCVersion {
 		t.Errorf("Response.JSONRPC = %s, want '2.0'", resp.JSONRPC)
 	}
 	if resp.Result == nil {
@@ -83,10 +83,10 @@ func TestCodecWriteReadRequest(t *testing.T) {
 	codec := NewCodec(buf)
 
 	req := &Request{
-		JSONRPC: "2.0",
+		JSONRPC: jsonRPCVersion,
 		Method:  "remember",
 		Params:  json.RawMessage(`{"type":"note"}`),
-		ID:     1,
+		ID:      1,
 	}
 
 	if err := codec.WriteRequest(req); err != nil {
@@ -109,7 +109,7 @@ func TestCodecWriteReadResponse(t *testing.T) {
 	codec := NewCodec(buf)
 
 	resp := &Response{
-		JSONRPC: "2.0",
+		JSONRPC: jsonRPCVersion,
 		Result:  map[string]any{"id": "test-id"},
 		ID:      1,
 	}
@@ -124,7 +124,7 @@ func TestCodecWriteReadResponse(t *testing.T) {
 		t.Fatalf("ReadResponse failed: %v", err)
 	}
 
-	if readResp.JSONRPC != "2.0" {
+	if readResp.JSONRPC != jsonRPCVersion {
 		t.Errorf("readResp.JSONRPC = %s, want '2.0'", readResp.JSONRPC)
 	}
 }
@@ -154,10 +154,10 @@ func TestCodecWriteError(t *testing.T) {
 }
 
 type mockJournal struct {
-	events        []core.Event
-	failRemember  bool
-	failSearch    bool
-	failRecall    bool
+	events       []core.Event
+	failRemember bool
+	failSearch   bool
+	failRecall   bool
 }
 
 func (m *mockJournal) Append(ctx context.Context, e core.Event) error {
@@ -195,7 +195,7 @@ func (m *mockJournal) Close() error {
 func TestHandlersSearch(t *testing.T) {
 	idx := core.NewIndex()
 	journal := &mockJournal{}
-	h := NewHandlers(idx, journal)
+	h := NewHandlers(idx, journal, nil)
 
 	// Add some events to index
 	idx.Add(core.Event{
@@ -220,7 +220,7 @@ func TestHandlersSearch(t *testing.T) {
 
 func TestHandlersSearchTrigram(t *testing.T) {
 	idx := core.NewIndex()
-	h := NewHandlers(idx, nil)
+	h := NewHandlers(idx, nil, nil)
 
 	resp, err := h.Search(context.Background(), SearchParams{Query: "test", Layer: "trigram"})
 	if err != nil {
@@ -233,7 +233,7 @@ func TestHandlersSearchTrigram(t *testing.T) {
 
 func TestHandlersSearchFuzzy(t *testing.T) {
 	idx := core.NewIndex()
-	h := NewHandlers(idx, nil)
+	h := NewHandlers(idx, nil, nil)
 
 	resp, err := h.Search(context.Background(), SearchParams{Query: "test", Layer: "fuzzy"})
 	if err != nil {
@@ -247,7 +247,7 @@ func TestHandlersSearchFuzzy(t *testing.T) {
 func TestHandlersRecall(t *testing.T) {
 	idx := core.NewIndex()
 	journal := &mockJournal{}
-	h := NewHandlers(idx, journal)
+	h := NewHandlers(idx, journal, nil)
 
 	resp, err := h.Recall(context.Background(), RecallParams{Budget: 1024, Format: "md"})
 	if err != nil {
@@ -264,7 +264,7 @@ func TestHandlersRecall(t *testing.T) {
 func TestHandlersRecallJSONFormat(t *testing.T) {
 	idx := core.NewIndex()
 	journal := &mockJournal{}
-	h := NewHandlers(idx, journal)
+	h := NewHandlers(idx, journal, nil)
 
 	resp, err := h.Recall(context.Background(), RecallParams{Format: "json"})
 	if err != nil {
@@ -278,7 +278,7 @@ func TestHandlersRecallJSONFormat(t *testing.T) {
 func TestHandlersRecallDefaultBudget(t *testing.T) {
 	idx := core.NewIndex()
 	journal := &mockJournal{}
-	h := NewHandlers(idx, journal)
+	h := NewHandlers(idx, journal, nil)
 
 	resp, err := h.Recall(context.Background(), RecallParams{})
 	if err != nil {
@@ -292,7 +292,7 @@ func TestHandlersRecallDefaultBudget(t *testing.T) {
 func TestHandlersRecallDefaultFormat(t *testing.T) {
 	idx := core.NewIndex()
 	journal := &mockJournal{}
-	h := NewHandlers(idx, journal)
+	h := NewHandlers(idx, journal, nil)
 
 	resp, err := h.Recall(context.Background(), RecallParams{Budget: 1024})
 	if err != nil {
@@ -307,7 +307,7 @@ func TestHandlersRecallDefaultFormat(t *testing.T) {
 func TestHandlersRecallNoEvents(t *testing.T) {
 	idx := core.NewIndex()
 	journal := &mockJournal{events: []core.Event{}}
-	h := NewHandlers(idx, journal)
+	h := NewHandlers(idx, journal, nil)
 
 	resp, err := h.Recall(context.Background(), RecallParams{Budget: 1024})
 	if err != nil {
@@ -342,7 +342,7 @@ func TestHandlersRecallWithEvents(t *testing.T) {
 			Actor:    "user@test.com",
 		},
 	}}
-	h := NewHandlers(idx, journal)
+	h := NewHandlers(idx, journal, nil)
 
 	resp, err := h.Recall(context.Background(), RecallParams{Budget: 4096, Format: "md"})
 	if err != nil {
@@ -375,7 +375,7 @@ func TestHandlersRecallBudgetExceeded(t *testing.T) {
 			Source:   core.Source("test"),
 		},
 	}}
-	h := NewHandlers(idx, journal)
+	h := NewHandlers(idx, journal, nil)
 
 	// Very small budget should trigger budget exceeded logic
 	resp, err := h.Recall(context.Background(), RecallParams{Budget: 10})
@@ -400,7 +400,7 @@ func TestHandlersRecallWithActor(t *testing.T) {
 			Actor:    "user@example.com",
 		},
 	}}
-	h := NewHandlers(idx, journal)
+	h := NewHandlers(idx, journal, nil)
 
 	resp, err := h.Recall(context.Background(), RecallParams{Budget: 4096})
 	if err != nil {
@@ -423,7 +423,7 @@ func TestHandlersRecallWithTags(t *testing.T) {
 			Tags:     []string{"important", "bugfix"},
 		},
 	}}
-	h := NewHandlers(idx, journal)
+	h := NewHandlers(idx, journal, nil)
 
 	resp, err := h.Recall(context.Background(), RecallParams{Budget: 4096})
 	if err != nil {
@@ -437,7 +437,7 @@ func TestHandlersRecallWithTags(t *testing.T) {
 func TestHandlersRecallXMLFormat(t *testing.T) {
 	idx := core.NewIndex()
 	journal := &mockJournal{}
-	h := NewHandlers(idx, journal)
+	h := NewHandlers(idx, journal, nil)
 
 	resp, err := h.Recall(context.Background(), RecallParams{Format: "xml"})
 	if err != nil {
@@ -474,7 +474,7 @@ func TestHandlersRecallMultipleEventsSorted(t *testing.T) {
 			Source:   core.Source("test"),
 		},
 	}}
-	h := NewHandlers(idx, journal)
+	h := NewHandlers(idx, journal, nil)
 
 	resp, err := h.Recall(context.Background(), RecallParams{Budget: 10000})
 	if err != nil {
@@ -495,7 +495,7 @@ func TestMCPProtocolHandle(t *testing.T) {
 	mcp := NewMCPProtocol(handlers)
 
 	req := &MCPRequest{
-		JSONRPC: "2.0",
+		JSONRPC: jsonRPCVersion,
 		Method:  "ping",
 		ID:      1,
 	}
@@ -504,7 +504,7 @@ func TestMCPProtocolHandle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Handle failed: %v", err)
 	}
-	if resp.JSONRPC != "2.0" {
+	if resp.JSONRPC != jsonRPCVersion {
 		t.Errorf("resp.JSONRPC = %s, want '2.0'", resp.JSONRPC)
 	}
 	if resp.Error != nil {
@@ -516,7 +516,7 @@ func TestMCPProtocolHandleInitialize(t *testing.T) {
 	mcp := NewMCPProtocol(nil)
 
 	req := &MCPRequest{
-		JSONRPC: "2.0",
+		JSONRPC: jsonRPCVersion,
 		Method:  "initialize",
 		ID:      1,
 	}
@@ -541,7 +541,7 @@ func TestMCPProtocolHandleToolsList(t *testing.T) {
 	mcp := NewMCPProtocol(nil)
 
 	req := &MCPRequest{
-		JSONRPC: "2.0",
+		JSONRPC: jsonRPCVersion,
 		Method:  "tools/list",
 		ID:      1,
 	}
@@ -561,8 +561,8 @@ func TestMCPProtocolHandleToolsList(t *testing.T) {
 	if !ok {
 		t.Fatal("resp.Result[\"tools\"] is not []MCPTool")
 	}
-	if len(tools) != 4 {
-		t.Errorf("len(tools) = %d, want 4", len(tools))
+	if len(tools) != 7 {
+		t.Errorf("len(tools) = %d, want 7", len(tools))
 	}
 }
 
@@ -570,7 +570,7 @@ func TestMCPProtocolHandleUnknownMethod(t *testing.T) {
 	mcp := NewMCPProtocol(nil)
 
 	req := &MCPRequest{
-		JSONRPC: "2.0",
+		JSONRPC: jsonRPCVersion,
 		Method:  "unknown/method",
 		ID:      1,
 	}
@@ -592,7 +592,7 @@ func TestMCPProtocolHandleToolsCallUnknown(t *testing.T) {
 	mcp := NewMCPProtocol(handlers)
 
 	req := &MCPRequest{
-		JSONRPC: "2.0",
+		JSONRPC: jsonRPCVersion,
 		Method:  "tools/call",
 		Params:  json.RawMessage(`{"name":"dfmt.unknown","arguments":{}}`),
 		ID:      1,
@@ -742,7 +742,7 @@ func TestSearchHit(t *testing.T) {
 
 func TestNewHandlers(t *testing.T) {
 	idx := core.NewIndex()
-	h := NewHandlers(idx, nil)
+	h := NewHandlers(idx, nil, nil)
 
 	if h.index != idx {
 		t.Error("h.index != idx")
@@ -755,11 +755,11 @@ func TestNewHandlers(t *testing.T) {
 func TestMCPProtocolHandleToolsCallRemember(t *testing.T) {
 	idx := core.NewIndex()
 	journal := &mockJournal{}
-	handlers := NewHandlers(idx, journal)
+	handlers := NewHandlers(idx, journal, nil)
 	mcp := NewMCPProtocol(handlers)
 
 	req := &MCPRequest{
-		JSONRPC: "2.0",
+		JSONRPC: jsonRPCVersion,
 		Method:  "tools/call",
 		Params:  json.RawMessage(`{"name":"dfmt.remember","arguments":{"type":"note","source":"test"}}`),
 		ID:      1,
@@ -779,11 +779,11 @@ func TestMCPProtocolHandleToolsCallRemember(t *testing.T) {
 
 func TestMCPProtocolHandleToolsCallSearch(t *testing.T) {
 	idx := core.NewIndex()
-	handlers := NewHandlers(idx, nil)
+	handlers := NewHandlers(idx, nil, nil)
 	mcp := NewMCPProtocol(handlers)
 
 	req := &MCPRequest{
-		JSONRPC: "2.0",
+		JSONRPC: jsonRPCVersion,
 		Method:  "tools/call",
 		Params:  json.RawMessage(`{"name":"dfmt.search","arguments":{"query":"test"}}`),
 		ID:      1,
@@ -804,11 +804,11 @@ func TestMCPProtocolHandleToolsCallSearch(t *testing.T) {
 func TestMCPProtocolHandleToolsCallRecall(t *testing.T) {
 	idx := core.NewIndex()
 	journal := &mockJournal{}
-	handlers := NewHandlers(idx, journal)
+	handlers := NewHandlers(idx, journal, nil)
 	mcp := NewMCPProtocol(handlers)
 
 	req := &MCPRequest{
-		JSONRPC: "2.0",
+		JSONRPC: jsonRPCVersion,
 		Method:  "tools/call",
 		Params:  json.RawMessage(`{"name":"dfmt.recall","arguments":{"budget":1024}}`),
 		ID:      1,
@@ -831,7 +831,7 @@ func TestMCPProtocolHandleToolsCallInvalidParams(t *testing.T) {
 	mcp := NewMCPProtocol(handlers)
 
 	req := &MCPRequest{
-		JSONRPC: "2.0",
+		JSONRPC: jsonRPCVersion,
 		Method:  "tools/call",
 		Params:  json.RawMessage(`{"name":"dfmt.remember","arguments":"invalid json"}}`),
 		ID:      1,
@@ -869,11 +869,13 @@ func TestMCPProtocolErrorResult(t *testing.T) {
 	}
 }
 
+const testSocketPath = "/tmp/test.sock"
+
 func TestSocketServerCreation_FromHandlers(t *testing.T) {
 	handlers := &Handlers{}
-	ss := NewSocketServer("/tmp/test.sock", handlers)
+	ss := NewSocketServer(testSocketPath, handlers)
 
-	if ss.path != "/tmp/test.sock" {
+	if ss.path != testSocketPath {
 		t.Errorf("path = %s, want '/tmp/test.sock'", ss.path)
 	}
 	if ss.handlers != handlers {
@@ -947,12 +949,12 @@ func TestDecodeParamsInvalid(t *testing.T) {
 func TestSocketServerDispatch(t *testing.T) {
 	idx := core.NewIndex()
 	journal := &mockJournal{}
-	handlers := NewHandlers(idx, journal)
+	handlers := NewHandlers(idx, journal, nil)
 	ss := NewSocketServer("/tmp/test.sock", handlers)
 
 	// Test dispatch with remember
 	req := &Request{
-		JSONRPC: "2.0",
+		JSONRPC: jsonRPCVersion,
 		Method:  "remember",
 		Params:  json.RawMessage(`{"type":"note","source":"test"}`),
 		ID:      1,
@@ -975,11 +977,11 @@ func TestSocketServerDispatchSearch(t *testing.T) {
 		Type:     core.EventType("note"),
 		Priority: core.Priority("P2"),
 	})
-	handlers := NewHandlers(idx, nil)
+	handlers := NewHandlers(idx, nil, nil)
 	ss := NewSocketServer("/tmp/test.sock", handlers)
 
 	req := &Request{
-		JSONRPC: "2.0",
+		JSONRPC: jsonRPCVersion,
 		Method:  "search",
 		Params:  json.RawMessage(`{"query":"test"}`),
 		ID:      1,
@@ -997,11 +999,11 @@ func TestSocketServerDispatchSearch(t *testing.T) {
 func TestSocketServerDispatchRecall(t *testing.T) {
 	idx := core.NewIndex()
 	journal := &mockJournal{}
-	handlers := NewHandlers(idx, journal)
+	handlers := NewHandlers(idx, journal, nil)
 	ss := NewSocketServer("/tmp/test.sock", handlers)
 
 	req := &Request{
-		JSONRPC: "2.0",
+		JSONRPC: jsonRPCVersion,
 		Method:  "recall",
 		Params:  json.RawMessage(`{"budget":1024}`),
 		ID:      1,
@@ -1021,7 +1023,7 @@ func TestSocketServerDispatchUnknown(t *testing.T) {
 	ss := NewSocketServer("/tmp/test.sock", handlers)
 
 	req := &Request{
-		JSONRPC: "2.0",
+		JSONRPC: jsonRPCVersion,
 		Method:  "unknown",
 		ID:      1,
 	}
@@ -1037,7 +1039,7 @@ func TestSocketServerDispatchInvalidParams(t *testing.T) {
 	ss := NewSocketServer("/tmp/test.sock", handlers)
 
 	req := &Request{
-		JSONRPC: "2.0",
+		JSONRPC: jsonRPCVersion,
 		Method:  "remember",
 		Params:  json.RawMessage(`{invalid}`),
 		ID:      1,
@@ -1165,7 +1167,7 @@ func TestMCPServerInfo(t *testing.T) {
 
 func TestMCPRequest(t *testing.T) {
 	req := MCPRequest{
-		JSONRPC: "2.0",
+		JSONRPC: jsonRPCVersion,
 		Method:  "initialize",
 		Params:  json.RawMessage(`{}`),
 		ID:      1,
@@ -1188,7 +1190,7 @@ func TestMCPRequest(t *testing.T) {
 
 func TestMCPResponse(t *testing.T) {
 	resp := MCPResponse{
-		JSONRPC: "2.0",
+		JSONRPC: jsonRPCVersion,
 		Result:  map[string]any{"key": "value"},
 		ID:      1,
 	}
@@ -1203,7 +1205,7 @@ func TestMCPResponse(t *testing.T) {
 		t.Fatalf("Unmarshal failed: %v", err)
 	}
 
-	if decoded.JSONRPC != "2.0" {
+	if decoded.JSONRPC != jsonRPCVersion {
 		t.Errorf("JSONRPC = %s, want '2.0'", decoded.JSONRPC)
 	}
 }
@@ -1231,8 +1233,8 @@ func TestRecallResponse(t *testing.T) {
 
 func TestRememberResponse(t *testing.T) {
 	resp := RememberResponse{
-		ID:  "test123",
-		TS:  "2024-01-01T00:00:00Z",
+		ID: "test123",
+		TS: "2024-01-01T00:00:00Z",
 	}
 
 	data, err := json.Marshal(resp)
@@ -1374,7 +1376,7 @@ func TestCodecWriteRequestSetVersion(t *testing.T) {
 	req := &Request{
 		JSONRPC: "", // Should be set to 2.0
 		Method:  "test",
-		ID:     1,
+		ID:      1,
 	}
 	codec.WriteRequest(req)
 
@@ -1383,7 +1385,7 @@ func TestCodecWriteRequestSetVersion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadRequest failed: %v", err)
 	}
-	if readReq.JSONRPC != "2.0" {
+	if readReq.JSONRPC != jsonRPCVersion {
 		t.Errorf("JSONRPC = %s, want '2.0'", readReq.JSONRPC)
 	}
 }
@@ -1403,7 +1405,7 @@ func TestCodecWriteResponseSetVersion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadResponse failed: %v", err)
 	}
-	if readResp.JSONRPC != "2.0" {
+	if readResp.JSONRPC != jsonRPCVersion {
 		t.Errorf("JSONRPC = %s, want '2.0'", readResp.JSONRPC)
 	}
 }
@@ -1461,7 +1463,7 @@ func TestHandlersStream(t *testing.T) {
 			},
 		},
 	}
-	h := NewHandlers(idx, journal)
+	h := NewHandlers(idx, journal, nil)
 
 	events, err := h.Stream(context.Background(), StreamParams{})
 	if err != nil {
@@ -1482,7 +1484,7 @@ func TestHandlersStream(t *testing.T) {
 func TestHandlersRememberWithTags(t *testing.T) {
 	idx := core.NewIndex()
 	journal := &mockJournal{}
-	h := NewHandlers(idx, journal)
+	h := NewHandlers(idx, journal, nil)
 
 	resp, err := h.Remember(context.Background(), RememberParams{
 		Type:     "note",
@@ -1501,7 +1503,7 @@ func TestHandlersRememberWithTags(t *testing.T) {
 func TestHandlersRememberWithRefs(t *testing.T) {
 	idx := core.NewIndex()
 	journal := &mockJournal{}
-	h := NewHandlers(idx, journal)
+	h := NewHandlers(idx, journal, nil)
 
 	resp, err := h.Remember(context.Background(), RememberParams{
 		Type:   "note",
@@ -1519,7 +1521,7 @@ func TestHandlersRememberWithRefs(t *testing.T) {
 func TestHandlersRememberWithActor(t *testing.T) {
 	idx := core.NewIndex()
 	journal := &mockJournal{}
-	h := NewHandlers(idx, journal)
+	h := NewHandlers(idx, journal, nil)
 
 	resp, err := h.Remember(context.Background(), RememberParams{
 		Type:   "note",
@@ -1536,7 +1538,7 @@ func TestHandlersRememberWithActor(t *testing.T) {
 
 func TestHandlersSearchDefaultLimit(t *testing.T) {
 	idx := core.NewIndex()
-	h := NewHandlers(idx, nil)
+	h := NewHandlers(idx, nil, nil)
 
 	resp, err := h.Search(context.Background(), SearchParams{Query: "test"})
 	if err != nil {
@@ -1551,11 +1553,11 @@ func TestHandlersSearchDefaultLimit(t *testing.T) {
 func TestSocketServerDispatchRemember(t *testing.T) {
 	idx := core.NewIndex()
 	journal := &mockJournal{}
-	handlers := NewHandlers(idx, journal)
+	handlers := NewHandlers(idx, journal, nil)
 	ss := NewSocketServer("/tmp/test.sock", handlers)
 
 	req := &Request{
-		JSONRPC: "2.0",
+		JSONRPC: jsonRPCVersion,
 		Method:  "remember",
 		Params:  json.RawMessage(`{"type":"note","source":"test"}`),
 		ID:      1,
@@ -1572,11 +1574,11 @@ func TestSocketServerDispatchRemember(t *testing.T) {
 
 func TestSocketServerDispatchSearchNoResults(t *testing.T) {
 	idx := core.NewIndex()
-	handlers := NewHandlers(idx, nil)
+	handlers := NewHandlers(idx, nil, nil)
 	ss := NewSocketServer("/tmp/test.sock", handlers)
 
 	req := &Request{
-		JSONRPC: "2.0",
+		JSONRPC: jsonRPCVersion,
 		Method:  "search",
 		Params:  json.RawMessage(`{"query":"nonexistent"}`),
 		ID:      1,
@@ -1594,19 +1596,19 @@ func TestSocketServerDispatchSearchNoResults(t *testing.T) {
 func TestHTTPServerHandleRemember(t *testing.T) {
 	idx := core.NewIndex()
 	journal := &mockJournal{}
-	handlers := NewHandlers(idx, journal)
+	handlers := NewHandlers(idx, journal, nil)
 	hs := NewHTTPServer(":8080", handlers)
 
 	// Params can be any type in http.go's Request
 	req := Request{
-		JSONRPC: "2.0",
+		JSONRPC: jsonRPCVersion,
 		Method:  "dfmt.remember",
 		Params:  mustMarshalParams(RememberParams{Type: "note", Source: "test"}),
 		ID:      1,
 	}
 
 	resp := hs.handleRemember(context.Background(), req)
-	if resp.JSONRPC != "2.0" {
+	if resp.JSONRPC != jsonRPCVersion {
 		t.Errorf("JSONRPC = %s, want '2.0'", resp.JSONRPC)
 	}
 	if resp.Error != nil {
@@ -1616,18 +1618,18 @@ func TestHTTPServerHandleRemember(t *testing.T) {
 
 func TestHTTPServerHandleSearch(t *testing.T) {
 	idx := core.NewIndex()
-	handlers := NewHandlers(idx, nil)
+	handlers := NewHandlers(idx, nil, nil)
 	hs := NewHTTPServer(":8080", handlers)
 
 	req := Request{
-		JSONRPC: "2.0",
+		JSONRPC: jsonRPCVersion,
 		Method:  "dfmt.search",
 		Params:  mustMarshalParams(SearchParams{Query: "test"}),
 		ID:      1,
 	}
 
 	resp := hs.handleSearch(context.Background(), req)
-	if resp.JSONRPC != "2.0" {
+	if resp.JSONRPC != jsonRPCVersion {
 		t.Errorf("JSONRPC = %s, want '2.0'", resp.JSONRPC)
 	}
 }
@@ -1635,18 +1637,18 @@ func TestHTTPServerHandleSearch(t *testing.T) {
 func TestHTTPServerHandleRecall(t *testing.T) {
 	idx := core.NewIndex()
 	journal := &mockJournal{}
-	handlers := NewHandlers(idx, journal)
+	handlers := NewHandlers(idx, journal, nil)
 	hs := NewHTTPServer(":8080", handlers)
 
 	req := Request{
-		JSONRPC: "2.0",
+		JSONRPC: jsonRPCVersion,
 		Method:  "dfmt.recall",
 		Params:  mustMarshalParams(RecallParams{Budget: 1024}),
 		ID:      1,
 	}
 
 	resp := hs.handleRecall(context.Background(), req)
-	if resp.JSONRPC != "2.0" {
+	if resp.JSONRPC != jsonRPCVersion {
 		t.Errorf("JSONRPC = %s, want '2.0'", resp.JSONRPC)
 	}
 }
@@ -1674,7 +1676,7 @@ func TestMCPProtocolHandleToolsCallNilHandlers(t *testing.T) {
 	mcp := NewMCPProtocol(nil)
 
 	req := &MCPRequest{
-		JSONRPC: "2.0",
+		JSONRPC: jsonRPCVersion,
 		Method:  "tools/call",
 		Params:  json.RawMessage(`{"name":"dfmt.remember","arguments":{"type":"note"}}`),
 		ID:      1,
@@ -1701,7 +1703,7 @@ func TestMCPProtocolHandleToolsCallEmptyName(t *testing.T) {
 	mcp := NewMCPProtocol(handlers)
 
 	req := &MCPRequest{
-		JSONRPC: "2.0",
+		JSONRPC: jsonRPCVersion,
 		Method:  "tools/call",
 		Params:  json.RawMessage(`{"name":"","arguments":{}}`),
 		ID:      1,
@@ -1726,11 +1728,11 @@ func TestMCPProtocolHandleToolsCallRememberArgsInvalid(t *testing.T) {
 	// Test Remember with malformed arguments JSON
 	idx := core.NewIndex()
 	journal := &mockJournal{}
-	handlers := NewHandlers(idx, journal)
+	handlers := NewHandlers(idx, journal, nil)
 	mcp := NewMCPProtocol(handlers)
 
 	req := &MCPRequest{
-		JSONRPC: "2.0",
+		JSONRPC: jsonRPCVersion,
 		Method:  "tools/call",
 		// arguments is a string instead of an object - should fail unmarshal
 		Params: json.RawMessage(`{"name":"dfmt.remember","arguments":"not an object"}`),
@@ -1752,11 +1754,11 @@ func TestMCPProtocolHandleToolsCallRememberArgsInvalid(t *testing.T) {
 func TestMCPProtocolHandleToolsCallSearchArgsInvalid(t *testing.T) {
 	// Test Search with malformed arguments JSON
 	idx := core.NewIndex()
-	handlers := NewHandlers(idx, nil)
+	handlers := NewHandlers(idx, nil, nil)
 	mcp := NewMCPProtocol(handlers)
 
 	req := &MCPRequest{
-		JSONRPC: "2.0",
+		JSONRPC: jsonRPCVersion,
 		Method:  "tools/call",
 		Params:  json.RawMessage(`{"name":"dfmt.search","arguments":{"query":123}}`),
 		ID:      1,
@@ -1778,11 +1780,11 @@ func TestMCPProtocolHandleToolsCallRecallArgsInvalid(t *testing.T) {
 	// Test Recall with malformed arguments JSON
 	idx := core.NewIndex()
 	journal := &mockJournal{}
-	handlers := NewHandlers(idx, journal)
+	handlers := NewHandlers(idx, journal, nil)
 	mcp := NewMCPProtocol(handlers)
 
 	req := &MCPRequest{
-		JSONRPC: "2.0",
+		JSONRPC: jsonRPCVersion,
 		Method:  "tools/call",
 		Params:  json.RawMessage(`{"name":"dfmt.recall","arguments":{"budget":"not a number"}}`),
 		ID:      1,
@@ -1829,11 +1831,11 @@ func TestMCPProtocolHandleToolsCallRememberHandlerError(t *testing.T) {
 	// Test Remember handler returning an error
 	idx := core.NewIndex()
 	journal := &errorReturningJournal{err: fmt.Errorf("journal append failed")}
-	handlers := NewHandlers(idx, journal)
+	handlers := NewHandlers(idx, journal, nil)
 	mcp := NewMCPProtocol(handlers)
 
 	req := &MCPRequest{
-		JSONRPC: "2.0",
+		JSONRPC: jsonRPCVersion,
 		Method:  "tools/call",
 		Params:  json.RawMessage(`{"name":"dfmt.remember","arguments":{"type":"note","source":"test"}}`),
 		ID:      1,
@@ -1858,11 +1860,11 @@ func TestMCPProtocolHandleToolsCallRecallHandlerError(t *testing.T) {
 	// Test Recall handler returning an error (stream failure)
 	idx := core.NewIndex()
 	journal := &errorReturningJournal{err: fmt.Errorf("stream journal failed")}
-	handlers := NewHandlers(idx, journal)
+	handlers := NewHandlers(idx, journal, nil)
 	mcp := NewMCPProtocol(handlers)
 
 	req := &MCPRequest{
-		JSONRPC: "2.0",
+		JSONRPC: jsonRPCVersion,
 		Method:  "tools/call",
 		Params:  json.RawMessage(`{"name":"dfmt.recall","arguments":{"budget":1024}}`),
 		ID:      1,
@@ -1890,7 +1892,7 @@ func TestMCPProtocolHandleToolsCallMissingArguments(t *testing.T) {
 	mcp := NewMCPProtocol(handlers)
 
 	req := &MCPRequest{
-		JSONRPC: "2.0",
+		JSONRPC: jsonRPCVersion,
 		Method:  "tools/call",
 		Params:  json.RawMessage(`{"name":"dfmt.remember"}`),
 		ID:      1,
@@ -1912,11 +1914,11 @@ func TestMCPProtocolHandleToolsCallMissingArguments(t *testing.T) {
 func TestMCPProtocolHandleToolsCallSearchNoArgs(t *testing.T) {
 	// Test calling dfmt.search with no arguments
 	idx := core.NewIndex()
-	handlers := NewHandlers(idx, nil)
+	handlers := NewHandlers(idx, nil, nil)
 	mcp := NewMCPProtocol(handlers)
 
 	req := &MCPRequest{
-		JSONRPC: "2.0",
+		JSONRPC: jsonRPCVersion,
 		Method:  "tools/call",
 		Params:  json.RawMessage(`{"name":"dfmt.search"}`),
 		ID:      1,
@@ -1950,7 +1952,7 @@ func TestMCPProtocolHandleToolsCallVariousUnknownTools(t *testing.T) {
 
 	for _, name := range testCases {
 		req := &MCPRequest{
-			JSONRPC: "2.0",
+			JSONRPC: jsonRPCVersion,
 			Method:  "tools/call",
 			Params:  json.RawMessage(`{"name":"` + name + `","arguments":{}}`),
 			ID:      1,

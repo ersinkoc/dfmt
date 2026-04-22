@@ -44,9 +44,9 @@ const (
 
 // Default index constants.
 const (
-	DefaultBM25K1        = 1.2
-	DefaultBM25B         = 0.75
-	DefaultHeadingBoost  = 5.0
+	DefaultBM25K1       = 1.2
+	DefaultBM25B        = 0.75
+	DefaultHeadingBoost = 5.0
 )
 
 // Default stopwords for English.

@@ -10,19 +10,18 @@ import (
 
 // PostingList holds the document IDs and term frequencies for a term.
 type PostingList struct {
-	IDs []string  // ULIDs, sorted
-	TFs []uint16  // term frequencies, parallel to IDs
+	IDs []string // ULIDs, sorted
+	TFs []uint16 // term frequencies, parallel to IDs
 }
 
 // Index implements an in-memory inverted index with BM25 scoring.
 type Index struct {
-	mu         sync.RWMutex
-	stemPL     map[string]*PostingList // stemmed term -> posting list
-	trigramPL  map[string]*PostingList // trigram -> posting list
-	docLen     map[string]int          // document ID -> token count
-	avgDocLen  float64
-	totalDocs  int
-	tokenVer   int // bumped on tokenizer change, forces rebuild
+	mu        sync.RWMutex
+	stemPL    map[string]*PostingList // stemmed term -> posting list
+	trigramPL map[string]*PostingList // trigram -> posting list
+	docLen    map[string]int          // document ID -> token count
+	avgDocLen float64
+	totalDocs int
 }
 
 // NewIndex creates a new Index.

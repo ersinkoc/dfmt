@@ -9,12 +9,14 @@ import (
 	"time"
 )
 
+const versionUnknown = "unknown"
+
 // Runtime represents a detected language runtime.
 type Runtime struct {
-	Lang      string // Language name (bash, node, python, etc.)
+	Lang       string // Language name (bash, node, python, etc.)
 	Executable string // Resolved path to the executable
-	Version   string // Detected version string
-	Available bool   // Whether the runtime is available
+	Version    string // Detected version string
+	Available  bool   // Whether the runtime is available
 }
 
 // Runtimes manages detected language runtimes.
@@ -46,10 +48,10 @@ func (r *Runtimes) Probe(ctx context.Context) error {
 
 		version := r.getVersion(ctx, path)
 		r.setRuntime(Runtime{
-			Lang:      lang,
+			Lang:       lang,
 			Executable: path,
-			Version:   version,
-			Available: true,
+			Version:    version,
+			Available:  true,
 		})
 	}
 
@@ -79,14 +81,14 @@ func (r *Runtimes) getVersion(ctx context.Context, path string) string {
 
 	out, err := cmd.Output()
 	if err != nil {
-		return "unknown"
+		return versionUnknown
 	}
 
 	lines := strings.Split(string(out), "\n")
 	if len(lines) > 0 {
 		return strings.TrimSpace(lines[0])
 	}
-	return "unknown"
+	return versionUnknown
 }
 
 // lookPath is a testable wrapper around exec.LookPath.

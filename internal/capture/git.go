@@ -49,7 +49,7 @@ func (gc *GitCapture) SubmitCheckout(ctx context.Context, ref string, isBranch b
 		Priority: core.PriP2,
 		Source:   core.SrcGitHook,
 		Data: map[string]any{
-			"ref":     ref,
+			"ref":       ref,
 			"is_branch": isBranch,
 		},
 	}
@@ -68,8 +68,8 @@ func (gc *GitCapture) SubmitPush(ctx context.Context, remote string, branch stri
 		Priority: core.PriP2,
 		Source:   core.SrcGitHook,
 		Data: map[string]any{
-			"remote":  remote,
-			"branch":  branch,
+			"remote": remote,
+			"branch": branch,
 		},
 	}
 	e.Sig = e.ComputeSig()

@@ -19,11 +19,11 @@ var (
 
 // JournalOptions configures the journal.
 type JournalOptions struct {
-	Path       string
-	MaxBytes   int64
-	Durable    bool
-	BatchMS    int
-	Compress   bool
+	Path     string
+	MaxBytes int64
+	Durable  bool
+	BatchMS  int
+	Compress bool
 }
 
 // Journal appends events to an append-only JSONL file.

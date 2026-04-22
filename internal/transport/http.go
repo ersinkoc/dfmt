@@ -14,6 +14,24 @@ import (
 	"time"
 )
 
+const (
+	jsonRPCVersion = "2.0"
+	methodRemember = "dfmt.remember"
+	methodSearch   = "dfmt.search"
+	methodRecall   = "dfmt.recall"
+	methodStats    = "dfmt.stats"
+	methodExec     = "dfmt.exec"
+	methodRead     = "dfmt.read"
+	methodFetch    = "dfmt.fetch"
+	aliasRemember  = "remember"
+	aliasSearch    = "search"
+	aliasRecall    = "recall"
+	aliasStats     = "stats"
+	aliasExec      = "exec"
+	aliasRead      = "read"
+	aliasFetch     = "fetch"
+)
+
 // HTTPServer is an HTTP server for the transport layer.
 type HTTPServer struct {
 	bind       string
@@ -167,7 +185,7 @@ func (s *HTTPServer) handle(w http.ResponseWriter, r *http.Request) {
 	var req Request
 	if err := json.Unmarshal(body, &req); err != nil {
 		resp := Response{
-			JSONRPC: "2.0",
+			JSONRPC: jsonRPCVersion,
 			Error:   &RPCError{Code: -32700, Message: "Parse error"},
 		}
 		json.NewEncoder(w).Encode(resp)
@@ -176,17 +194,23 @@ func (s *HTTPServer) handle(w http.ResponseWriter, r *http.Request) {
 
 	var resp any
 	switch req.Method {
-	case "dfmt.remember", "remember":
+	case methodRemember, aliasRemember:
 		resp = s.handleRemember(ctx, req)
-	case "dfmt.search", "search":
+	case methodSearch, aliasSearch:
 		resp = s.handleSearch(ctx, req)
-	case "dfmt.recall", "recall":
+	case methodRecall, aliasRecall:
 		resp = s.handleRecall(ctx, req)
-	case "dfmt.stats", "stats":
+	case methodStats, aliasStats:
 		resp = s.handleStats(ctx, req)
+	case methodExec, aliasExec:
+		resp = s.handleExec(ctx, req)
+	case methodRead, aliasRead:
+		resp = s.handleRead(ctx, req)
+	case methodFetch, aliasFetch:
+		resp = s.handleFetch(ctx, req)
 	default:
 		resp = Response{
-			JSONRPC: "2.0",
+			JSONRPC: jsonRPCVersion,
 			ID:      req.ID,
 			Error:   &RPCError{Code: -32601, Message: "Method not found: " + req.Method},
 		}
@@ -205,12 +229,12 @@ func (s *HTTPServer) handleRemember(ctx context.Context, req Request) Response {
 	resp, err := s.handlers.Remember(ctx, params)
 	if err != nil {
 		return Response{
-			JSONRPC: "2.0",
+			JSONRPC: jsonRPCVersion,
 			ID:      req.ID,
 			Error:   &RPCError{Code: -32603, Message: err.Error()},
 		}
 	}
-	return Response{JSONRPC: "2.0", ID: req.ID, Result: resp}
+	return Response{JSONRPC: jsonRPCVersion, ID: req.ID, Result: resp}
 }
 
 func (s *HTTPServer) handleSearch(ctx context.Context, req Request) Response {
@@ -223,12 +247,12 @@ func (s *HTTPServer) handleSearch(ctx context.Context, req Request) Response {
 	resp, err := s.handlers.Search(ctx, params)
 	if err != nil {
 		return Response{
-			JSONRPC: "2.0",
+			JSONRPC: jsonRPCVersion,
 			ID:      req.ID,
 			Error:   &RPCError{Code: -32603, Message: err.Error()},
 		}
 	}
-	return Response{JSONRPC: "2.0", ID: req.ID, Result: resp}
+	return Response{JSONRPC: jsonRPCVersion, ID: req.ID, Result: resp}
 }
 
 func (s *HTTPServer) handleRecall(ctx context.Context, req Request) Response {
@@ -241,12 +265,12 @@ func (s *HTTPServer) handleRecall(ctx context.Context, req Request) Response {
 	resp, err := s.handlers.Recall(ctx, params)
 	if err != nil {
 		return Response{
-			JSONRPC: "2.0",
+			JSONRPC: jsonRPCVersion,
 			ID:      req.ID,
 			Error:   &RPCError{Code: -32603, Message: err.Error()},
 		}
 	}
-	return Response{JSONRPC: "2.0", ID: req.ID, Result: resp}
+	return Response{JSONRPC: jsonRPCVersion, ID: req.ID, Result: resp}
 }
 
 func (s *HTTPServer) handleStats(ctx context.Context, req Request) Response {
@@ -259,12 +283,12 @@ func (s *HTTPServer) handleStats(ctx context.Context, req Request) Response {
 	resp, err := s.handlers.Stats(ctx, params)
 	if err != nil {
 		return Response{
-			JSONRPC: "2.0",
+			JSONRPC: jsonRPCVersion,
 			ID:      req.ID,
 			Error:   &RPCError{Code: -32603, Message: err.Error()},
 		}
 	}
-	return Response{JSONRPC: "2.0", ID: req.ID, Result: resp}
+	return Response{JSONRPC: jsonRPCVersion, ID: req.ID, Result: resp}
 }
 
 func (s *HTTPServer) writePortFile(path string, port int) error {
@@ -306,7 +330,7 @@ func (s *HTTPServer) handleAPIStats(w http.ResponseWriter, r *http.Request) {
 	var req Request
 	if err := json.Unmarshal(body, &req); err != nil {
 		resp := Response{
-			JSONRPC: "2.0",
+			JSONRPC: jsonRPCVersion,
 			Error:   &RPCError{Code: -32700, Message: "Parse error"},
 		}
 		json.NewEncoder(w).Encode(resp)
@@ -321,7 +345,7 @@ func (s *HTTPServer) handleAPIStats(w http.ResponseWriter, r *http.Request) {
 	resp, err := s.handlers.Stats(r.Context(), params)
 	if err != nil {
 		json.NewEncoder(w).Encode(Response{
-			JSONRPC: "2.0",
+			JSONRPC: jsonRPCVersion,
 			ID:      req.ID,
 			Error:   &RPCError{Code: -32603, Message: err.Error()},
 		})
@@ -329,7 +353,7 @@ func (s *HTTPServer) handleAPIStats(w http.ResponseWriter, r *http.Request) {
 	}
 
 	json.NewEncoder(w).Encode(Response{
-		JSONRPC: "2.0",
+		JSONRPC: jsonRPCVersion,
 		ID:      req.ID,
 		Result:  resp,
 	})
@@ -339,4 +363,58 @@ func (s *HTTPServer) handleHealth(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/plain")
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte("ok"))
+}
+
+func (s *HTTPServer) handleExec(ctx context.Context, req Request) Response {
+	var params ExecParams
+	if req.Params != nil {
+		data, _ := json.Marshal(req.Params)
+		json.Unmarshal(data, &params)
+	}
+
+	resp, err := s.handlers.Exec(ctx, params)
+	if err != nil {
+		return Response{
+			JSONRPC: jsonRPCVersion,
+			ID:      req.ID,
+			Error:   &RPCError{Code: -32603, Message: err.Error()},
+		}
+	}
+	return Response{JSONRPC: jsonRPCVersion, ID: req.ID, Result: resp}
+}
+
+func (s *HTTPServer) handleRead(ctx context.Context, req Request) Response {
+	var params ReadParams
+	if req.Params != nil {
+		data, _ := json.Marshal(req.Params)
+		json.Unmarshal(data, &params)
+	}
+
+	resp, err := s.handlers.Read(ctx, params)
+	if err != nil {
+		return Response{
+			JSONRPC: jsonRPCVersion,
+			ID:      req.ID,
+			Error:   &RPCError{Code: -32603, Message: err.Error()},
+		}
+	}
+	return Response{JSONRPC: jsonRPCVersion, ID: req.ID, Result: resp}
+}
+
+func (s *HTTPServer) handleFetch(ctx context.Context, req Request) Response {
+	var params FetchParams
+	if req.Params != nil {
+		data, _ := json.Marshal(req.Params)
+		json.Unmarshal(data, &params)
+	}
+
+	resp, err := s.handlers.Fetch(ctx, params)
+	if err != nil {
+		return Response{
+			JSONRPC: jsonRPCVersion,
+			ID:      req.ID,
+			Error:   &RPCError{Code: -32603, Message: err.Error()},
+		}
+	}
+	return Response{JSONRPC: jsonRPCVersion, ID: req.ID, Result: resp}
 }

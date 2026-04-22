@@ -3,14 +3,19 @@ package sandbox
 import (
 	"context"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
 )
+
+const langBash = "bash"
 
 // Policy represents a security policy for sandbox operations.
 type Policy struct {
@@ -68,6 +73,12 @@ func DefaultPolicy() Policy {
 			{Op: "exec", Text: "pytest *"},
 			{Op: "exec", Text: "cargo *"},
 			{Op: "exec", Text: "go *"},
+			{Op: "exec", Text: "echo *"},
+			{Op: "exec", Text: "ls *"},
+			{Op: "exec", Text: "cat *"},
+			{Op: "exec", Text: "find *"},
+			{Op: "exec", Text: "grep *"},
+			{Op: "exec", Text: "dir *"},
 			{Op: "read", Text: "**"},
 			{Op: "fetch", Text: "https://*"},
 			{Op: "fetch", Text: "http://*"},
@@ -202,7 +213,7 @@ func NewSandbox(wd string) *SandboxImpl {
 	return &SandboxImpl{
 		runtimes: NewRuntimes(),
 		policy:   DefaultPolicy(),
-		wd:      wd,
+		wd:       wd,
 	}
 }
 
@@ -211,7 +222,7 @@ func NewSandboxWithPolicy(wd string, policy Policy) *SandboxImpl {
 	return &SandboxImpl{
 		runtimes: NewRuntimes(),
 		policy:   policy,
-		wd:      wd,
+		wd:       wd,
 	}
 }
 
@@ -289,7 +300,7 @@ func hasShellChainOperators(cmd string) bool {
 func (s *SandboxImpl) Exec(ctx context.Context, req ExecReq) (ExecResp, error) {
 	// Policy check - for shell commands, check each chained command
 	cmd := req.Code
-	isLangPrefix := req.Lang != "" && req.Lang != "sh" && req.Lang != "bash"
+	isLangPrefix := req.Lang != "" && req.Lang != "sh" && req.Lang != langBash
 	if isLangPrefix {
 		cmd = req.Lang + " " + cmd
 	}
@@ -315,17 +326,20 @@ func (s *SandboxImpl) Exec(ctx context.Context, req ExecReq) (ExecResp, error) {
 			return ExecResp{}, err
 		}
 	} else {
-		// For shell single commands, extract base and check
-		baseCmd := extractBaseCommand(cmd)
-		if err := s.PolicyCheck("exec", baseCmd); err != nil {
+		// For shell single commands, check the full command
+		if err := s.PolicyCheck("exec", cmd); err != nil {
 			return ExecResp{}, err
 		}
 	}
 
-	// Get runtime
+	// Get runtime (probe if not cached)
 	rt, ok := s.runtimes.Get(req.Lang)
 	if !ok || !rt.Available {
-		return ExecResp{}, fmt.Errorf("runtime not available: %s", req.Lang)
+		_ = s.runtimes.Probe(ctx)
+		rt, ok = s.runtimes.Get(req.Lang)
+		if !ok || !rt.Available {
+			return ExecResp{}, fmt.Errorf("runtime not available: %s", req.Lang)
+		}
 	}
 
 	// Execute
@@ -431,6 +445,26 @@ func (s *SandboxImpl) Read(ctx context.Context, req ReadReq) (ReadResp, error) {
 		content = content[:req.Limit]
 	}
 
+	// Intent-based filtering
+	keywords := ExtractKeywords(req.Intent)
+	if len(keywords) > 0 {
+		matches := MatchContent(content, keywords, 10)
+		if len(matches) > 0 {
+			return ReadResp{
+				Matches:   matches,
+				Summary:   GenerateSummary(content, keywords),
+				Size:      int64(len(data)),
+				ReadBytes: int64(len(content)),
+			}, nil
+		}
+		return ReadResp{
+			Content:   content,
+			Summary:   GenerateSummary(content, keywords),
+			Size:      int64(len(data)),
+			ReadBytes: int64(len(content)),
+		}, nil
+	}
+
 	return ReadResp{
 		Content:   content,
 		Size:      int64(len(data)),
@@ -445,11 +479,73 @@ func (s *SandboxImpl) Fetch(ctx context.Context, req FetchReq) (FetchResp, error
 		return FetchResp{}, err
 	}
 
-	// Stub - full implementation would do HTTP request
+	// Basic HTTP fetch
+	method := req.Method
+	if method == "" {
+		method = "GET"
+	}
+
+	var bodyReader io.Reader
+	if req.Body != "" {
+		bodyReader = strings.NewReader(req.Body)
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, method, req.URL, bodyReader)
+	if err != nil {
+		return FetchResp{}, fmt.Errorf("create request: %w", err)
+	}
+
+	for k, v := range req.Headers {
+		httpReq.Header.Set(k, v)
+	}
+
+	client := &http.Client{Timeout: req.Timeout}
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		return FetchResp{}, fmt.Errorf("fetch: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return FetchResp{}, fmt.Errorf("read body: %w", err)
+	}
+
+	headers := make(map[string]string)
+	for k, vv := range resp.Header {
+		if len(vv) > 0 {
+			headers[k] = vv[0]
+		}
+	}
+
+	content := string(body)
+
+	// Intent-based filtering
+	keywords := ExtractKeywords(req.Intent)
+	if len(keywords) > 0 {
+		matches := MatchContent(content, keywords, 10)
+		if len(matches) > 0 {
+			return FetchResp{
+				Status:     resp.StatusCode,
+				Headers:    headers,
+				Matches:    matches,
+				Summary:    GenerateSummary(content, keywords),
+				Vocabulary: ExtractVocabulary(content),
+			}, nil
+		}
+		return FetchResp{
+			Status:     resp.StatusCode,
+			Headers:    headers,
+			Body:       content,
+			Summary:    GenerateSummary(content, keywords),
+			Vocabulary: ExtractVocabulary(content),
+		}, nil
+	}
+
 	return FetchResp{
-		Status:  200,
-		Body:    "",
-		Summary: "fetch not yet implemented",
+		Status:  resp.StatusCode,
+		Headers: headers,
+		Body:    content,
 	}, nil
 }
 
@@ -476,7 +572,7 @@ func (s *SandboxImpl) execImpl(ctx context.Context, req ExecReq, rt Runtime) (Ex
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	if rt.Lang == "bash" || rt.Lang == "sh" {
+	if rt.Lang == langBash || rt.Lang == "sh" {
 		cmd = exec.CommandContext(ctx, rt.Executable, "-c", req.Code)
 	} else {
 		// Write code to temp file and execute
@@ -502,9 +598,32 @@ func (s *SandboxImpl) execImpl(ctx context.Context, req ExecReq, rt Runtime) (Ex
 		}
 	}
 
-	output := string(out)
+	// Windows Git Bash outputs UTF-16LE with null bytes; convert to UTF-8
+	output := convertUTF16LEToUTF8(out)
 	if len(output) > MaxRawBytes {
 		output = output[:MaxRawBytes]
+	}
+
+	// Intent-based filtering
+	keywords := ExtractKeywords(req.Intent)
+	if len(keywords) > 0 {
+		matches := MatchContent(output, keywords, 10)
+		if len(matches) > 0 {
+			return ExecResp{
+				Exit:       exitCode,
+				Matches:    matches,
+				Summary:    GenerateSummary(output, keywords),
+				Vocabulary: ExtractVocabulary(output),
+				DurationMs: int(time.Since(start).Milliseconds()),
+			}, nil
+		}
+		return ExecResp{
+			Exit:       exitCode,
+			Stdout:     output,
+			Summary:    GenerateSummary(output, keywords),
+			Vocabulary: ExtractVocabulary(output),
+			DurationMs: int(time.Since(start).Milliseconds()),
+		}, nil
 	}
 
 	return ExecResp{
@@ -555,13 +674,28 @@ func writeTempFile(lang, code string) (string, error) {
 
 // buildEnv builds the environment for a subprocess.
 func buildEnv(extra map[string]string) []string {
-	// Start with a minimal environment
-	env := []string{
-		"HOME=" + os.Getenv("HOME"),
-		"USER=" + os.Getenv("USER"),
-		"PATH=/usr/local/bin:/usr/bin:/bin:/usr/local/sbin:/usr/sbin:/sbin",
-		"LANG=en_US.UTF-8",
-		"TERM=xterm",
+	var env []string
+
+	if runtime.GOOS == "windows" {
+		// Windows: use system PATH so cmd, powershell, git, go, node etc. are found
+		env = []string{
+			"PATH=" + os.Getenv("PATH"),
+		}
+		if home := os.Getenv("USERPROFILE"); home != "" {
+			env = append(env, "HOME="+home)
+		}
+		if user := os.Getenv("USERNAME"); user != "" {
+			env = append(env, "USER="+user)
+		}
+	} else {
+		// Unix: minimal environment for reproducibility and security
+		env = []string{
+			"HOME=" + os.Getenv("HOME"),
+			"USER=" + os.Getenv("USER"),
+			"PATH=" + os.Getenv("PATH"),
+			"LANG=en_US.UTF-8",
+			"TERM=xterm",
+		}
 	}
 
 	// Add DFMT_EXEC_* prefixed vars
@@ -577,4 +711,54 @@ func buildEnv(extra map[string]string) []string {
 	}
 
 	return env
+}
+
+// convertUTF16LEToUTF8 converts UTF-16LE encoded bytes to UTF-8 string.
+// Windows Git Bash outputs UTF-16LE with null bytes between ASCII chars.
+func convertUTF16LEToUTF8(data []byte) string {
+	// Check if it looks like UTF-16LE (null bytes alternating with ASCII)
+	isUTF16 := len(data) >= 4
+	if isUTF16 {
+		nullCount := 0
+		for i := 0; i < len(data) && i < 100; i += 2 {
+			if data[i] == 0 {
+				nullCount++
+			}
+		}
+		// If more than 30% of even-position bytes are null, treat as UTF-16LE
+		if nullCount > 15 {
+			isUTF16 = true
+		} else {
+			isUTF16 = false
+		}
+	}
+
+	if !isUTF16 {
+		return string(data)
+	}
+
+	// Convert UTF-16LE to UTF-8
+	var result strings.Builder
+	for i := 0; i+1 < len(data); i += 2 {
+		lo := data[i]
+		hi := data[i+1]
+		if hi == 0 {
+			// ASCII
+			result.WriteByte(lo)
+		} else {
+			// UTF-16 code point - convert to UTF-8
+			r := uint16(hi)<<8 | uint16(lo)
+			if r < 0x80 {
+				result.WriteByte(byte(r))
+			} else if r < 0x800 {
+				result.WriteByte(0xC0 | byte(r>>6))
+				result.WriteByte(0x80 | byte(r&0x3F))
+			} else {
+				result.WriteByte(0xE0 | byte(r>>12))
+				result.WriteByte(0x80 | byte((r>>6)&0x3F))
+				result.WriteByte(0x80 | byte(r&0x3F))
+			}
+		}
+	}
+	return result.String()
 }

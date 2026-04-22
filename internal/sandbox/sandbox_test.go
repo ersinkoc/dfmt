@@ -56,7 +56,7 @@ func TestPolicyEvaluate(t *testing.T) {
 func TestGlobMatch(t *testing.T) {
 	tests := []struct {
 		pattern string
-		text   string
+		text    string
 		match   bool
 	}{
 		{"git *", "git commit", true},
@@ -64,7 +64,7 @@ func TestGlobMatch(t *testing.T) {
 		{"git *", "gitk", false},
 		{"npm *", "npm install", true},
 		{"rm -rf *", "rm -rf /", false}, // star doesn't match slash
-		{"rm -rf /*", "rm -rf /", true},  // root only
+		{"rm -rf /*", "rm -rf /", true}, // root only
 		{"rm -rf /*", "rm -rf /home", false},
 		{"**", "anything", true},
 	}
@@ -136,7 +136,7 @@ func TestSandboxRead(t *testing.T) {
 
 	// Try reading the test file itself
 	resp, err := sb.Read(ctx, ReadReq{
-		Path: "sandbox_test.go",
+		Path:  "sandbox_test.go",
 		Limit: 100,
 	})
 	if err != nil {
@@ -177,10 +177,10 @@ func TestRuntimesGet(t *testing.T) {
 
 func TestRuntime(t *testing.T) {
 	rt := Runtime{
-		Lang:      "bash",
+		Lang:       "bash",
 		Executable: "/bin/bash",
-		Version:   "5.1",
-		Available: true,
+		Version:    "5.1",
+		Available:  true,
 	}
 
 	if rt.Lang != "bash" {
@@ -201,10 +201,10 @@ func TestRuntimesSetAndGet(t *testing.T) {
 	r := NewRuntimes()
 
 	r.setRuntime(Runtime{
-		Lang:      "test",
+		Lang:       "test",
 		Executable: "/usr/bin/test",
-		Version:   "1.0",
-		Available: true,
+		Version:    "1.0",
+		Available:  true,
 	})
 
 	rt, ok := r.Get("test")
@@ -410,14 +410,14 @@ func TestFetchReq(t *testing.T) {
 
 func TestFetchResp(t *testing.T) {
 	resp := FetchResp{
-		Status:    200,
-		Headers:  map[string]string{"Content-Type": "text/html"},
-		Body:     "<html></html>",
-		ChunkSet: "",
-		Summary:  "fetched successfully",
-		Matches:  []ContentMatch{},
+		Status:     200,
+		Headers:    map[string]string{"Content-Type": "text/html"},
+		Body:       "<html></html>",
+		ChunkSet:   "",
+		Summary:    "fetched successfully",
+		Matches:    []ContentMatch{},
 		Vocabulary: []string{"html"},
-		TimedOut: false,
+		TimedOut:   false,
 	}
 
 	if resp.Status != 200 {
@@ -1126,10 +1126,10 @@ func TestRuntimesSetRuntime(t *testing.T) {
 	r := NewRuntimes()
 
 	rt := Runtime{
-		Lang:      "testlang",
+		Lang:       "testlang",
 		Executable: "/usr/bin/testlang",
-		Version:   "1.0.0",
-		Available: true,
+		Version:    "1.0.0",
+		Available:  true,
 	}
 	r.setRuntime(rt)
 

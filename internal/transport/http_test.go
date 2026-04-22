@@ -16,7 +16,7 @@ import (
 
 func TestHTTPServerStopNotRunning(t *testing.T) {
 	idx := core.NewIndex()
-	handlers := NewHandlers(idx, nil)
+	handlers := NewHandlers(idx, nil, nil)
 	hs := NewHTTPServer(":0", handlers)
 
 	if err := hs.Stop(context.Background()); err != nil {
@@ -26,7 +26,7 @@ func TestHTTPServerStopNotRunning(t *testing.T) {
 
 func TestHTTPServerStartAndStop(t *testing.T) {
 	idx := core.NewIndex()
-	handlers := NewHandlers(idx, nil) // nil journal for testing
+	handlers := NewHandlers(idx, nil, nil) // nil journal for testing
 	hs := NewHTTPServer(":0", handlers)
 
 	ctx := context.Background()
@@ -47,7 +47,7 @@ func TestHTTPServerStartAndStop(t *testing.T) {
 
 func TestHTTPServerStartTwice(t *testing.T) {
 	idx := core.NewIndex()
-	handlers := NewHandlers(idx, nil)
+	handlers := NewHandlers(idx, nil, nil)
 	hs := NewHTTPServer(":0", handlers)
 
 	ctx := context.Background()
@@ -64,7 +64,7 @@ func TestHTTPServerStartTwice(t *testing.T) {
 
 func TestHTTPServerStartPortFileWriteError(t *testing.T) {
 	idx := core.NewIndex()
-	handlers := NewHandlers(idx, nil)
+	handlers := NewHandlers(idx, nil, nil)
 	hs := NewHTTPServer(":0", handlers)
 
 	// Set a port file path that cannot be written
@@ -88,7 +88,7 @@ func TestHTTPServerStartPortFileWriteError(t *testing.T) {
 
 func TestHandleMethodNotAllowed(t *testing.T) {
 	idx := core.NewIndex()
-	handlers := NewHandlers(idx, nil)
+	handlers := NewHandlers(idx, nil, nil)
 	hs := NewHTTPServer(":0", handlers)
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -103,7 +103,7 @@ func TestHandleMethodNotAllowed(t *testing.T) {
 
 func TestHandleParseError(t *testing.T) {
 	idx := core.NewIndex()
-	handlers := NewHandlers(idx, nil)
+	handlers := NewHandlers(idx, nil, nil)
 	hs := NewHTTPServer(":0", handlers)
 
 	// Invalid JSON should return parse error
@@ -126,13 +126,13 @@ func TestHandleParseError(t *testing.T) {
 
 func TestHandleUnknownMethod(t *testing.T) {
 	idx := core.NewIndex()
-	handlers := NewHandlers(idx, nil)
+	handlers := NewHandlers(idx, nil, nil)
 	hs := NewHTTPServer(":0", handlers)
 
 	reqBody := Request{
 		JSONRPC: "2.0",
 		Method:  "unknown.method",
-		ID:     1,
+		ID:      1,
 	}
 	body, _ := json.Marshal(reqBody)
 
@@ -155,7 +155,7 @@ func TestHandleUnknownMethod(t *testing.T) {
 
 func TestWritePortFile(t *testing.T) {
 	idx := core.NewIndex()
-	handlers := NewHandlers(idx, nil)
+	handlers := NewHandlers(idx, nil, nil)
 	hs := NewHTTPServer(":0", handlers)
 
 	tmpDir := t.TempDir()
@@ -178,7 +178,7 @@ func TestWritePortFile(t *testing.T) {
 
 func TestSetPortFile(t *testing.T) {
 	idx := core.NewIndex()
-	handlers := NewHandlers(idx, nil)
+	handlers := NewHandlers(idx, nil, nil)
 	hs := NewHTTPServer(":0", handlers)
 
 	hs.SetPortFile("/test/portfile")
@@ -196,7 +196,7 @@ func TestHTTPServerHandleWithSessionID(t *testing.T) {
 
 func TestHandleReadBodyError(t *testing.T) {
 	idx := core.NewIndex()
-	handlers := NewHandlers(idx, nil)
+	handlers := NewHandlers(idx, nil, nil)
 	hs := NewHTTPServer(":0", handlers)
 
 	// Create a request that will fail to read body
@@ -215,7 +215,7 @@ func TestHandleReadBodyError(t *testing.T) {
 
 func TestHandleJSONUnmarshalError(t *testing.T) {
 	idx := core.NewIndex()
-	handlers := NewHandlers(idx, nil)
+	handlers := NewHandlers(idx, nil, nil)
 	hs := NewHTTPServer(":0", handlers)
 
 	// Valid JSON but missing required fields - will unmarshal but have empty method
@@ -240,7 +240,7 @@ func TestHandleJSONUnmarshalError(t *testing.T) {
 func TestHandleRememberError(t *testing.T) {
 	idx := core.NewIndex()
 	journal := &mockJournal{failRemember: true}
-	handlers := NewHandlers(idx, journal)
+	handlers := NewHandlers(idx, journal, nil)
 	hs := NewHTTPServer(":0", handlers)
 
 	params := mustMarshalParams(map[string]any{"type": "note", "source": "test"})
@@ -248,7 +248,7 @@ func TestHandleRememberError(t *testing.T) {
 		JSONRPC: "2.0",
 		Method:  "dfmt.remember",
 		Params:  params,
-		ID:     1,
+		ID:      1,
 	}
 	body, _ := json.Marshal(reqBody)
 
@@ -271,7 +271,7 @@ func TestHandleSearchError(t *testing.T) {
 	// because handlers.Search uses index, not journal
 	// This test verifies the success path
 	idx := core.NewIndex()
-	handlers := NewHandlers(idx, nil)
+	handlers := NewHandlers(idx, nil, nil)
 	hs := NewHTTPServer(":0", handlers)
 
 	params := mustMarshalParams(map[string]any{"query": "test"})
@@ -279,7 +279,7 @@ func TestHandleSearchError(t *testing.T) {
 		JSONRPC: "2.0",
 		Method:  "dfmt.search",
 		Params:  params,
-		ID:     2,
+		ID:      2,
 	}
 	body, _ := json.Marshal(reqBody)
 
@@ -301,7 +301,7 @@ func TestHandleSearchError(t *testing.T) {
 func TestHandleRecallError(t *testing.T) {
 	idx := core.NewIndex()
 	journal := &mockJournal{failRecall: true}
-	handlers := NewHandlers(idx, journal)
+	handlers := NewHandlers(idx, journal, nil)
 	hs := NewHTTPServer(":0", handlers)
 
 	params := mustMarshalParams(map[string]any{"budget": 100})
@@ -309,7 +309,7 @@ func TestHandleRecallError(t *testing.T) {
 		JSONRPC: "2.0",
 		Method:  "dfmt.recall",
 		Params:  params,
-		ID:     3,
+		ID:      3,
 	}
 	body, _ := json.Marshal(reqBody)
 
@@ -329,7 +329,7 @@ func TestHandleRecallError(t *testing.T) {
 
 func TestHTTPServerWritePortFileCreatesNestedDir(t *testing.T) {
 	idx := core.NewIndex()
-	handlers := NewHandlers(idx, nil)
+	handlers := NewHandlers(idx, nil, nil)
 	hs := NewHTTPServer(":0", handlers)
 
 	tmpDir := t.TempDir()
@@ -363,7 +363,7 @@ func (e *errorReader) Read(p []byte) (n int, err error) {
 
 func TestHTTPServerWritePortFileInvalidDir(t *testing.T) {
 	idx := core.NewIndex()
-	handlers := NewHandlers(idx, nil)
+	handlers := NewHandlers(idx, nil, nil)
 	hs := NewHTTPServer(":0", handlers)
 
 	// Try to write to an invalid path that can't be created
@@ -382,7 +382,7 @@ func TestHTTPServerWritePortFileInvalidDir(t *testing.T) {
 
 func TestHTTPServerWritePortFileEmptyDir(t *testing.T) {
 	idx := core.NewIndex()
-	handlers := NewHandlers(idx, nil)
+	handlers := NewHandlers(idx, nil, nil)
 	hs := NewHTTPServer(":0", handlers)
 
 	// Empty path should fail
@@ -397,7 +397,7 @@ func TestHTTPServerWritePortFileEmptyDir(t *testing.T) {
 // =============================================================================
 
 func TestTCPServerStartWithInvalidAddr(t *testing.T) {
-	handlers := NewHandlers(nil, nil)
+	handlers := NewHandlers(nil, nil, nil)
 	// Use an invalid address that should fail to bind
 	server := NewTCPServer("invalid::address::76543", handlers)
 	ctx := context.Background()
@@ -409,7 +409,7 @@ func TestTCPServerStartWithInvalidAddr(t *testing.T) {
 }
 
 func TestTCPServerStartWithPortFileWriteError(t *testing.T) {
-	handlers := NewHandlers(nil, nil)
+	handlers := NewHandlers(nil, nil, nil)
 	server := NewTCPServer("localhost:0", handlers)
 
 	// Set a port file path that can't be written to
@@ -430,7 +430,7 @@ func TestTCPServerStartWithPortFileWriteError(t *testing.T) {
 }
 
 func TestTCPServerWritePortFileInvalidPath(t *testing.T) {
-	handlers := NewHandlers(nil, nil)
+	handlers := NewHandlers(nil, nil, nil)
 	server := NewTCPServer("localhost:0", handlers)
 
 	// Try to write port file to a location that definitely can't be created
@@ -441,7 +441,7 @@ func TestTCPServerWritePortFileInvalidPath(t *testing.T) {
 }
 
 func TestTCPServerStopNotRunning(t *testing.T) {
-	handlers := NewHandlers(nil, nil)
+	handlers := NewHandlers(nil, nil, nil)
 	server := NewTCPServer("localhost:0", handlers)
 	ctx := context.Background()
 
@@ -453,7 +453,7 @@ func TestTCPServerStopNotRunning(t *testing.T) {
 }
 
 func TestTCPServerStartAndServe(t *testing.T) {
-	handlers := NewHandlers(nil, nil)
+	handlers := NewHandlers(nil, nil, nil)
 	server := NewTCPServer("localhost:0", handlers)
 	ctx := context.Background()
 

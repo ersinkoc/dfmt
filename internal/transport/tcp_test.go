@@ -13,7 +13,7 @@ import (
 )
 
 func TestNewTCPServer(t *testing.T) {
-	handlers := NewHandlers(nil, nil)
+	handlers := NewHandlers(nil, nil, nil)
 	server := NewTCPServer("localhost:0", handlers)
 	if server == nil {
 		t.Fatal("NewTCPServer returned nil")
@@ -24,7 +24,7 @@ func TestNewTCPServer(t *testing.T) {
 }
 
 func TestTCPServerPortFile(t *testing.T) {
-	handlers := NewHandlers(nil, nil)
+	handlers := NewHandlers(nil, nil, nil)
 	server := NewTCPServer("localhost:0", handlers)
 
 	tmpDir := t.TempDir()
@@ -37,7 +37,7 @@ func TestTCPServerPortFile(t *testing.T) {
 }
 
 func TestTCPServerPort(t *testing.T) {
-	handlers := NewHandlers(nil, nil)
+	handlers := NewHandlers(nil, nil, nil)
 	server := NewTCPServer("localhost:0", handlers)
 
 	// Port should be 0 before start
@@ -70,7 +70,7 @@ func TestTCPServerPort(t *testing.T) {
 }
 
 func TestTCPServerStartTwice(t *testing.T) {
-	handlers := NewHandlers(nil, nil)
+	handlers := NewHandlers(nil, nil, nil)
 	server := NewTCPServer("localhost:0", handlers)
 	ctx := context.Background()
 
@@ -86,7 +86,7 @@ func TestTCPServerStartTwice(t *testing.T) {
 }
 
 func TestTCPServerStop(t *testing.T) {
-	handlers := NewHandlers(nil, nil)
+	handlers := NewHandlers(nil, nil, nil)
 	server := NewTCPServer("localhost:0", handlers)
 	ctx := context.Background()
 
@@ -105,7 +105,7 @@ func TestTCPServerStop(t *testing.T) {
 }
 
 func TestTCPServerWritePortFile(t *testing.T) {
-	handlers := NewHandlers(nil, nil)
+	handlers := NewHandlers(nil, nil, nil)
 	server := NewTCPServer("localhost:0", handlers)
 
 	tmpDir := t.TempDir()
@@ -126,7 +126,7 @@ func TestTCPServerWritePortFile(t *testing.T) {
 }
 
 func TestTCPServerWritePortFileCreatesDir(t *testing.T) {
-	handlers := NewHandlers(nil, nil)
+	handlers := NewHandlers(nil, nil, nil)
 	server := NewTCPServer("localhost:0", handlers)
 
 	tmpDir := t.TempDir()
@@ -148,7 +148,7 @@ func TestTCPServerWritePortFileCreatesDir(t *testing.T) {
 
 func TestTCPServerDispatch(t *testing.T) {
 	idx := core.NewIndex()
-	handlers := NewHandlers(idx, nil)
+	handlers := NewHandlers(idx, nil, nil)
 	server := NewTCPServer("localhost:0", handlers)
 
 	ctx := context.Background()
@@ -172,7 +172,7 @@ func TestTCPServerDispatch(t *testing.T) {
 		JSONRPC: "2.0",
 		Method:  "search",
 		Params:  json.RawMessage(`{"query":"test"}`),
-		ID:     1,
+		ID:      1,
 	}
 	if err := codec.WriteRequest(req); err != nil {
 		t.Fatalf("WriteRequest failed: %v", err)
@@ -189,7 +189,7 @@ func TestTCPServerDispatch(t *testing.T) {
 
 func TestTCPServerDispatchUnknownMethod(t *testing.T) {
 	idx := core.NewIndex()
-	handlers := NewHandlers(idx, nil)
+	handlers := NewHandlers(idx, nil, nil)
 	server := NewTCPServer("localhost:0", handlers)
 
 	ctx := context.Background()
@@ -210,7 +210,7 @@ func TestTCPServerDispatchUnknownMethod(t *testing.T) {
 	req := &Request{
 		JSONRPC: "2.0",
 		Method:  "unknown_method",
-		ID:     2,
+		ID:      2,
 	}
 	if err := codec.WriteRequest(req); err != nil {
 		t.Fatalf("WriteRequest failed: %v", err)
@@ -231,7 +231,7 @@ func TestTCPServerDispatchUnknownMethod(t *testing.T) {
 
 func TestTCPServerDispatchBadParams(t *testing.T) {
 	idx := core.NewIndex()
-	handlers := NewHandlers(idx, nil)
+	handlers := NewHandlers(idx, nil, nil)
 	server := NewTCPServer("localhost:0", handlers)
 
 	ctx := context.Background()
@@ -258,7 +258,7 @@ func TestTCPServerDispatchBadParams(t *testing.T) {
 		JSONRPC: "2.0",
 		Method:  "search",
 		Params:  params,
-		ID:     3,
+		ID:      3,
 	}
 	if err := codec.WriteRequest(req); err != nil {
 		t.Fatalf("WriteRequest failed: %v", err)
@@ -277,7 +277,7 @@ func TestTCPServerDispatchBadParams(t *testing.T) {
 func TestTCPServerDispatchBadParamsRemember(t *testing.T) {
 	idx := core.NewIndex()
 	journal := &mockJournal{}
-	handlers := NewHandlers(idx, journal)
+	handlers := NewHandlers(idx, journal, nil)
 	server := NewTCPServer("localhost:0", handlers)
 
 	ctx := context.Background()
@@ -300,7 +300,7 @@ func TestTCPServerDispatchBadParamsRemember(t *testing.T) {
 		JSONRPC: "2.0",
 		Method:  "remember",
 		Params:  json.RawMessage(`{"type":123,"source":"test"}`),
-		ID:     4,
+		ID:      4,
 	}
 	if err := codec.WriteRequest(req); err != nil {
 		t.Fatalf("WriteRequest failed: %v", err)
@@ -319,7 +319,7 @@ func TestTCPServerDispatchBadParamsRemember(t *testing.T) {
 func TestTCPServerDispatchBadParamsRecall(t *testing.T) {
 	idx := core.NewIndex()
 	journal := &mockJournal{}
-	handlers := NewHandlers(idx, journal)
+	handlers := NewHandlers(idx, journal, nil)
 	server := NewTCPServer("localhost:0", handlers)
 
 	ctx := context.Background()
@@ -342,7 +342,7 @@ func TestTCPServerDispatchBadParamsRecall(t *testing.T) {
 		JSONRPC: "2.0",
 		Method:  "recall",
 		Params:  json.RawMessage(`{"budget":"not a number"}`),
-		ID:     5,
+		ID:      5,
 	}
 	if err := codec.WriteRequest(req); err != nil {
 		t.Fatalf("WriteRequest failed: %v", err)
@@ -361,7 +361,7 @@ func TestTCPServerDispatchBadParamsRecall(t *testing.T) {
 func TestTCPServerDispatchRemember(t *testing.T) {
 	idx := core.NewIndex()
 	journal := &mockJournal{}
-	handlers := NewHandlers(idx, journal)
+	handlers := NewHandlers(idx, journal, nil)
 	server := NewTCPServer("localhost:0", handlers)
 
 	ctx := context.Background()
@@ -383,7 +383,7 @@ func TestTCPServerDispatchRemember(t *testing.T) {
 		JSONRPC: "2.0",
 		Method:  "remember",
 		Params:  json.RawMessage(`{"type":"note","source":"test","priority":"P2"}`),
-		ID:     6,
+		ID:      6,
 	}
 	if err := codec.WriteRequest(req); err != nil {
 		t.Fatalf("WriteRequest failed: %v", err)
@@ -405,7 +405,7 @@ func TestTCPServerDispatchRemember(t *testing.T) {
 func TestTCPServerDispatchRecall(t *testing.T) {
 	idx := core.NewIndex()
 	journal := &mockJournal{}
-	handlers := NewHandlers(idx, journal)
+	handlers := NewHandlers(idx, journal, nil)
 	server := NewTCPServer("localhost:0", handlers)
 
 	ctx := context.Background()
@@ -427,7 +427,7 @@ func TestTCPServerDispatchRecall(t *testing.T) {
 		JSONRPC: "2.0",
 		Method:  "recall",
 		Params:  json.RawMessage(`{"budget":1024,"format":"md"}`),
-		ID:     7,
+		ID:      7,
 	}
 	if err := codec.WriteRequest(req); err != nil {
 		t.Fatalf("WriteRequest failed: %v", err)
@@ -448,7 +448,7 @@ func TestTCPServerDispatchRecall(t *testing.T) {
 // TestTCPServerHandleConnReadError tests handleConn when ReadRequest returns a non-EOF error
 func TestTCPServerHandleConnReadError(t *testing.T) {
 	idx := core.NewIndex()
-	handlers := NewHandlers(idx, nil)
+	handlers := NewHandlers(idx, nil, nil)
 	server := NewTCPServer("localhost:0", handlers)
 
 	ctx := context.Background()
@@ -476,7 +476,7 @@ func TestTCPServerHandleConnReadError(t *testing.T) {
 // TestTCPServerHandleConnDispatchError tests handleConn when dispatch returns an error
 func TestTCPServerHandleConnDispatchError(t *testing.T) {
 	idx := core.NewIndex()
-	handlers := NewHandlers(idx, nil)
+	handlers := NewHandlers(idx, nil, nil)
 	server := NewTCPServer("localhost:0", handlers)
 
 	ctx := context.Background()
@@ -498,7 +498,7 @@ func TestTCPServerHandleConnDispatchError(t *testing.T) {
 	req := &Request{
 		JSONRPC: "2.0",
 		Method:  "totally_unknown_method_xyz",
-		ID:     8,
+		ID:      8,
 	}
 	if err := codec.WriteRequest(req); err != nil {
 		t.Fatalf("WriteRequest failed: %v", err)
@@ -516,7 +516,7 @@ func TestTCPServerHandleConnDispatchError(t *testing.T) {
 // TestTCPServerUnknownMethodDispatch tests dispatch returning error for unknown method
 func TestTCPServerUnknownMethodDispatch(t *testing.T) {
 	idx := core.NewIndex()
-	handlers := NewHandlers(idx, nil)
+	handlers := NewHandlers(idx, nil, nil)
 	server := NewTCPServer("localhost:0", handlers)
 
 	ctx := context.Background()
@@ -538,7 +538,7 @@ func TestTCPServerUnknownMethodDispatch(t *testing.T) {
 	req := &Request{
 		JSONRPC: "2.0",
 		Method:  "invalid.method.name",
-		ID:     9,
+		ID:      9,
 	}
 	if err := codec.WriteRequest(req); err != nil {
 		t.Fatalf("WriteRequest failed: %v", err)

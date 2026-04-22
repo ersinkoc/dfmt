@@ -117,7 +117,7 @@ func TestRedactWithStats(t *testing.T) {
 
 func TestIsSensitiveKey(t *testing.T) {
 	tests := []struct {
-		key      string
+		key       string
 		sensitive bool
 	}{
 		{"password", true},

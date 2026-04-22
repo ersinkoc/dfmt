@@ -9,6 +9,18 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// HomeDir returns the user's home directory, respecting HOME env var for testability.
+func HomeDir() string {
+	if home := os.Getenv("HOME"); home != "" {
+		return home
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return home
+}
+
 // Agent represents a detected AI coding agent.
 type Agent struct {
 	ID         string // "claude-code", "codex", etc.
@@ -22,7 +34,7 @@ type Agent struct {
 // Manifest tracks files written by dfmt setup.
 type Manifest struct {
 	Version   int          `yaml:"version"`
-	Timestamp string      `yaml:"timestamp"`
+	Timestamp string       `yaml:"timestamp"`
 	Agents    []AgentEntry `yaml:"agents"`
 	Files     []FileEntry  `yaml:"files"`
 }
@@ -48,7 +60,28 @@ func Detect() []Agent {
 	if a := detectClaudeCode(); a != nil {
 		agents = append(agents, *a)
 	}
+	if a := detectCursor(); a != nil {
+		agents = append(agents, *a)
+	}
+	if a := detectVSCode(); a != nil {
+		agents = append(agents, *a)
+	}
 	if a := detectCodex(); a != nil {
+		agents = append(agents, *a)
+	}
+	if a := detectGemini(); a != nil {
+		agents = append(agents, *a)
+	}
+	if a := detectWindsurf(); a != nil {
+		agents = append(agents, *a)
+	}
+	if a := detectZed(); a != nil {
+		agents = append(agents, *a)
+	}
+	if a := detectContinue(); a != nil {
+		agents = append(agents, *a)
+	}
+	if a := detectOpenCode(); a != nil {
 		agents = append(agents, *a)
 	}
 

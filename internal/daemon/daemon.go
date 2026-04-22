@@ -7,13 +7,13 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/ersinkoc/dfmt/internal/config"
 	"github.com/ersinkoc/dfmt/internal/core"
 	"github.com/ersinkoc/dfmt/internal/project"
+	"github.com/ersinkoc/dfmt/internal/sandbox"
 	"github.com/ersinkoc/dfmt/internal/transport"
 )
 
@@ -26,16 +26,15 @@ type Server interface {
 // Daemon is the main DFMT daemon process.
 type Daemon struct {
 	projectPath string
-	config     *config.Config
-	index      *core.Index
-	journal    core.Journal
-	server     Server
-	handlers   *transport.Handlers
+	config      *config.Config
+	index       *core.Index
+	journal     core.Journal
+	server      Server
+	handlers    *transport.Handlers
 
-	mu          sync.Mutex
-	running     atomic.Bool // Use atomic for race-free access
-	idleTimer   *time.Timer
-	shutdownCh  chan struct{}
+	running    atomic.Bool // Use atomic for race-free access
+	idleTimer  *time.Timer
+	shutdownCh chan struct{}
 }
 
 // New creates a new daemon instance.
@@ -62,11 +61,11 @@ func New(projectPath string, cfg *config.Config) (*Daemon, error) {
 	// Create journal
 	journalPath := filepath.Join(dfmtDir, "journal.jsonl")
 	journalOpts := core.JournalOptions{
-		Path:       journalPath,
-		MaxBytes:   cfg.Storage.JournalMaxBytes,
-		Durable:    cfg.Storage.Durability == "durable",
-		BatchMS:    cfg.Storage.MaxBatchMS,
-		Compress:   cfg.Storage.CompressRotated,
+		Path:     journalPath,
+		MaxBytes: cfg.Storage.JournalMaxBytes,
+		Durable:  cfg.Storage.Durability == "durable",
+		BatchMS:  cfg.Storage.MaxBatchMS,
+		Compress: cfg.Storage.CompressRotated,
 	}
 
 	journal, err := core.OpenJournal(journalPath, journalOpts)
@@ -83,8 +82,11 @@ func New(projectPath string, cfg *config.Config) (*Daemon, error) {
 		index = core.NewIndex()
 	}
 
+	// Create sandbox
+	sb := sandbox.NewSandbox(projectPath)
+
 	// Create handlers
-	handlers := transport.NewHandlers(index, journal)
+	handlers := transport.NewHandlers(index, journal, sb)
 
 	// Create server based on platform - use HTTPServer for HTTP support (dashboard, API)
 	var server Server
@@ -107,12 +109,12 @@ func New(projectPath string, cfg *config.Config) (*Daemon, error) {
 
 	d := &Daemon{
 		projectPath: projectPath,
-		config:     cfg,
-		index:      index,
-		journal:    journal,
-		server:     server,
-		handlers:   handlers,
-		shutdownCh: make(chan struct{}),
+		config:      cfg,
+		index:       index,
+		journal:     journal,
+		server:      server,
+		handlers:    handlers,
+		shutdownCh:  make(chan struct{}),
 	}
 
 	return d, nil

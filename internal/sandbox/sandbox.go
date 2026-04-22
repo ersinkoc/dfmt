@@ -18,31 +18,31 @@ type ExecReq struct {
 	Code    string            // Code to execute
 	Lang    string            // "bash" | "sh" | "node" | "python" | "go" | ...
 	Intent  string            // Intent for content filtering
-	Timeout time.Duration      // Execution timeout
+	Timeout time.Duration     // Execution timeout
 	Env     map[string]string // Additional environment variables
 	Return  string            // "auto" | "raw" | "summary" | "search"
 }
 
 // ExecResp is the response from an exec operation.
 type ExecResp struct {
-	Exit       int              // Exit code
-	Stdout     string           // Inline output if small
-	Stderr     string           // Inline error output if small
-	ChunkSet   string           // Chunk set ID if output was chunked
-	Summary    string           // Human-readable summary
-	Matches    []ContentMatch   // Intent-matched excerpts
-	Vocabulary []string         // Distinctive terms
-	DurationMs int              // Execution duration in milliseconds
-	TimedOut   bool             // True if execution timed out
+	Exit       int            // Exit code
+	Stdout     string         // Inline output if small
+	Stderr     string         // Inline error output if small
+	ChunkSet   string         // Chunk set ID if output was chunked
+	Summary    string         // Human-readable summary
+	Matches    []ContentMatch // Intent-matched excerpts
+	Vocabulary []string       // Distinctive terms
+	DurationMs int            // Execution duration in milliseconds
+	TimedOut   bool           // True if execution timed out
 }
 
 // ReadReq is a request to read a file.
 type ReadReq struct {
-	Path    string // File path
-	Intent  string // Intent for content filtering
-	Offset  int64  // Byte offset to start reading
-	Limit   int64  // Maximum bytes to read
-	Return  string // "auto" | "raw" | "summary" | "search"
+	Path   string // File path
+	Intent string // Intent for content filtering
+	Offset int64  // Byte offset to start reading
+	Limit  int64  // Maximum bytes to read
+	Return string // "auto" | "raw" | "summary" | "search"
 }
 
 // ReadResp is the response from a read operation.
@@ -57,18 +57,18 @@ type ReadResp struct {
 
 // FetchReq is a request to fetch a URL.
 type FetchReq struct {
-	URL         string // URL to fetch
-	Intent      string // Intent for content filtering
-	Method      string // HTTP method
-	Headers     map[string]string
-	Body        string
-	Return      string // "auto" | "raw" | "summary" | "search"
-	Timeout     time.Duration
+	URL     string // URL to fetch
+	Intent  string // Intent for content filtering
+	Method  string // HTTP method
+	Headers map[string]string
+	Body    string
+	Return  string // "auto" | "raw" | "summary" | "search"
+	Timeout time.Duration
 }
 
 // FetchResp is the response from a fetch operation.
 type FetchResp struct {
-	Status     int            // HTTP status code
+	Status     int // HTTP status code
 	Headers    map[string]string
 	Body       string         // Inline body if small
 	ChunkSet   string         // Chunk set ID if body was chunked
@@ -80,10 +80,10 @@ type FetchResp struct {
 
 // ContentMatch represents an intent-matched excerpt.
 type ContentMatch struct {
-	Text   string // Matched text excerpt
+	Text   string  // Matched text excerpt
 	Score  float64 // Relevance score
 	Source string  // Source file or URL
-	Line   int    // Line number (for files)
+	Line   int     // Line number (for files)
 }
 
 // DefaultExecTimeout is the default execution timeout.

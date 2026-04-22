@@ -51,7 +51,7 @@ func TestIndexAdd(t *testing.T) {
 func TestIndexAddMultiple(t *testing.T) {
 	ix := NewIndex()
 
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		e := Event{
 			ID:       string(NewULID(time.Now())),
 			TS:       time.Now(),
@@ -104,10 +104,10 @@ func TestIndexSearchBM25NoMatch(t *testing.T) {
 	ix := NewIndex()
 
 	e := Event{
-		ID:       "test1",
-		TS:       time.Now(),
-		Type:     EvtNote,
-		Data:     map[string]any{"message": "hello world"},
+		ID:   "test1",
+		TS:   time.Now(),
+		Type: EvtNote,
+		Data: map[string]any{"message": "hello world"},
 	}
 	e.Sig = e.ComputeSig()
 	ix.Add(e)
@@ -122,9 +122,9 @@ func TestIndexRemove(t *testing.T) {
 	ix := NewIndex()
 
 	e := Event{
-		ID:       "test1",
-		TS:       time.Now(),
-		Type:     EvtNote,
+		ID:   "test1",
+		TS:   time.Now(),
+		Type: EvtNote,
 	}
 	e.Sig = e.ComputeSig()
 	ix.Add(e)
@@ -181,9 +181,7 @@ func TestTokenizerVersion(t *testing.T) {
 func TestIndexCursor(t *testing.T) {
 	c := IndexCursor{
 		HiULID:    "test-ulid",
-		TokenVer:  1,
 		TotalDocs: 100,
-		AvgDocLen: 50.5,
 	}
 
 	if c.HiULID != "test-ulid" {
@@ -257,9 +255,10 @@ func TestLoadIndexWithCursorVersionMismatch(t *testing.T) {
 	f, _ := os.Create(cursorPath)
 	enc := gob.NewEncoder(f)
 	wrongCursor := IndexCursor{TokenVer: 999}
-	enc.Encode(wrongCursor)
+	_ = enc.Encode(wrongCursor)
 	f.Close()
 
+	//nolint:dogsled
 	_, _, needsRebuild, _ := LoadIndexWithCursor("/nonexistent", cursorPath)
 	if !needsRebuild {
 		t.Error("needsRebuild should be true when tokenizer version mismatch")
@@ -278,9 +277,9 @@ func TestPersistIndexOpenError(t *testing.T) {
 func TestIndexPersistErrorPath(t *testing.T) {
 	ix := NewIndex()
 	e := Event{
-		ID:       "test1",
-		TS:       time.Now(),
-		Type:     EvtNote,
+		ID:   "test1",
+		TS:   time.Now(),
+		Type: EvtNote,
 	}
 	e.Sig = e.ComputeSig()
 	ix.Add(e)
@@ -295,10 +294,10 @@ func TestIndexPersistErrorPath(t *testing.T) {
 func TestIndexPersistAndLoad(t *testing.T) {
 	ix := NewIndex()
 	e := Event{
-		ID:       "test1",
-		TS:       time.Now(),
-		Type:     EvtNote,
-		Tags:     []string{"test"},
+		ID:   "test1",
+		TS:   time.Now(),
+		Type: EvtNote,
+		Tags: []string{"test"},
 	}
 	e.Sig = e.ComputeSig()
 	ix.Add(e)
@@ -323,7 +322,7 @@ func TestLoadIndexWithCorruptFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create file: %v", err)
 	}
-	f.WriteString("this is not gob data")
+	_, _ = f.WriteString("this is not gob data")
 	f.Close()
 
 	_, err = LoadIndex(indexPath)
@@ -341,7 +340,7 @@ func TestLoadIndexCursorWithCorruptGob(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create file: %v", err)
 	}
-	f.WriteString("not gob encoded")
+	_, _ = f.WriteString("not gob encoded")
 	f.Close()
 
 	_, err = loadCursor(cursorPath)
@@ -370,9 +369,9 @@ func TestLoadIndexCursorEmptyFile(t *testing.T) {
 func TestPersistIndexReadOnlyDir(t *testing.T) {
 	ix := NewIndex()
 	e := Event{
-		ID:       "test1",
-		TS:       time.Now(),
-		Type:     EvtNote,
+		ID:   "test1",
+		TS:   time.Now(),
+		Type: EvtNote,
 	}
 	e.Sig = e.ComputeSig()
 	ix.Add(e)
@@ -397,9 +396,9 @@ func TestIndexRemoveUpdatesTotalDocs(t *testing.T) {
 	ix := NewIndex()
 
 	e := Event{
-		ID:       "test1",
-		TS:       time.Now(),
-		Type:     EvtNote,
+		ID:   "test1",
+		TS:   time.Now(),
+		Type: EvtNote,
 	}
 	e.Sig = e.ComputeSig()
 	ix.Add(e)
@@ -423,11 +422,11 @@ func TestIndexSearchBM25MultipleDocs(t *testing.T) {
 	// Add multiple documents
 	for i := range 5 {
 		e := Event{
-			ID:       string(rune('a' + i)),
-			TS:       time.Now(),
-			Type:     EvtFileEdit,
-			Data:     map[string]any{"message": "test file edit content"},
-			Tags:     []string{"file", "edit"},
+			ID:   string(rune('a' + i)),
+			TS:   time.Now(),
+			Type: EvtFileEdit,
+			Data: map[string]any{"message": "test file edit content"},
+			Tags: []string{"file", "edit"},
 		}
 		e.Sig = e.ComputeSig()
 		ix.Add(e)
@@ -445,10 +444,10 @@ func TestIndexSearchBM25SingleToken(t *testing.T) {
 	ix := NewIndex()
 
 	e := Event{
-		ID:       "test1",
-		TS:       time.Now(),
-		Type:     EvtNote,
-		Data:     map[string]any{"message": "hello world"},
+		ID:   "test1",
+		TS:   time.Now(),
+		Type: EvtNote,
+		Data: map[string]any{"message": "hello world"},
 	}
 	e.Sig = e.ComputeSig()
 	ix.Add(e)
@@ -462,9 +461,9 @@ func TestIndexSearchBM25SingleToken(t *testing.T) {
 func TestIndexPersistLockError(t *testing.T) {
 	ix := NewIndex()
 	e := Event{
-		ID:       "test1",
-		TS:       time.Now(),
-		Type:     EvtNote,
+		ID:   "test1",
+		TS:   time.Now(),
+		Type: EvtNote,
 	}
 	e.Sig = e.ComputeSig()
 	ix.Add(e)

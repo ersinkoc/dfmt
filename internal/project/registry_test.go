@@ -171,7 +171,7 @@ func TestRegistryListEmpty(t *testing.T) {
 	if err != nil {
 		t.Fatalf("List failed: %v", err)
 	}
-	if entries != nil && len(entries) != 0 {
+	if len(entries) != 0 {
 		t.Errorf("List for empty registry returned %d entries, want 0", len(entries))
 	}
 }
@@ -226,7 +226,7 @@ func TestReadAllNonExistent(t *testing.T) {
 		t.Fatalf("readAll failed: %v", err)
 	}
 	// Non-existent file should return nil entries
-	if entries != nil && len(entries) != 0 {
+	if len(entries) != 0 {
 		t.Errorf("readAll for non-existent file returned %d entries, want 0", len(entries))
 	}
 }

@@ -409,8 +409,8 @@ func TestClassifierMatchRuleNoData(t *testing.T) {
 
 func TestEventTypes(t *testing.T) {
 	tests := []struct {
-		evt     EventType
-		want    string
+		evt  EventType
+		want string
 	}{
 		{EvtFileRead, "file.read"},
 		{EvtFileEdit, "file.edit"},
@@ -455,7 +455,7 @@ func TestTokenizeDirect(t *testing.T) {
 		{"hello world", []string{"hello", "world"}},
 		{"foo-bar_baz", []string{"foo", "bar_baz"}},
 		{"short x", []string{"short"}}, // x is too short
-		{"a b c d", []string{}},       // all stopwords
+		{"a b c d", []string{}},        // all stopwords
 		{"hello123", []string{"hello123"}},
 		{"hello_world", []string{"hello_world"}},
 		{"test.file.go", []string{"test", "file", "go"}},
@@ -673,7 +673,7 @@ func TestCanonicalJSONTimestampFormat(t *testing.T) {
 
 	data, _ := CanonicalJSON(e)
 	var result map[string]any
-	json.Unmarshal(data, &result)
+	_ = json.Unmarshal(data, &result)
 
 	// RFC3339Nano format includes nanoseconds
 	ts, ok := result["ts"].(string)
@@ -708,9 +708,9 @@ func TestNGrams(t *testing.T) {
 		want   []string
 	}{
 		{[]string{"hello"}, 2, []string{"he", "el", "ll", "lo"}},
-		{[]string{"hi"}, 2, []string{"hi"}},                         // length 2 >= n
+		{[]string{"hi"}, 2, []string{"hi"}}, // length 2 >= n
 		{[]string{"hello", "world"}, 3, []string{"hel", "ell", "llo", "wor", "orl", "rld"}},
-		{[]string{}, 2, []string{}},                                // empty
+		{[]string{}, 2, []string{}}, // empty
 	}
 
 	for _, tt := range tests {
@@ -727,9 +727,9 @@ func TestUnique(t *testing.T) {
 		want  []string
 	}{
 		{[]string{"a", "b", "a", "c", "b"}, []string{"a", "b", "c"}},
-		{[]string{"a", "b", "c"}, []string{"a", "b", "c"}},       // already unique
-		{[]string{}, []string{}},                                 // empty
-		{[]string{"only"}, []string{"only"}},                    // single element
+		{[]string{"a", "b", "c"}, []string{"a", "b", "c"}}, // already unique
+		{[]string{}, []string{}},                           // empty
+		{[]string{"only"}, []string{"only"}},               // single element
 	}
 
 	for _, tt := range tests {
@@ -802,16 +802,16 @@ func TestTrigramIndexSearchNoMatch(t *testing.T) {
 
 	// No matching docs
 	results := ti.Search("xyz123")
-	if results != nil && len(results) > 0 {
+	if len(results) > 0 {
 		t.Errorf("Search for nonexistent got %v, want empty or nil", results)
 	}
 }
 
 func TestIntersection(t *testing.T) {
 	tests := []struct {
-		a     []string
-		b     []string
-		want  []string
+		a    []string
+		b    []string
+		want []string
 	}{
 		{[]string{"a", "b", "c"}, []string{"b", "c", "d"}, []string{"b", "c"}},
 		{[]string{"a", "c"}, []string{"b", "d"}, []string{}},
@@ -891,11 +891,11 @@ func TestIsDoubleConsonant(t *testing.T) {
 		s    string
 		want bool
 	}{
-		{"add", true},     // dd
-		{"box", false},   // x is not double
-		{"a", false},      // too short
-		{"at", false},     // t is consonant but not double
-		{"egg", true},     // gg
+		{"add", true},  // dd
+		{"box", false}, // x is not double
+		{"a", false},   // too short
+		{"at", false},  // t is consonant but not double
+		{"egg", true},  // gg
 	}
 
 	for _, tt := range tests {
@@ -938,8 +938,6 @@ func TestJournalOptions(t *testing.T) {
 		Path:     "/tmp/journal",
 		MaxBytes: 1024,
 		Durable:  true,
-		BatchMS:   100,
-		Compress: true,
 	}
 
 	if opt.Path != "/tmp/journal" {
@@ -1052,14 +1050,14 @@ func TestJournalCheckpoint(t *testing.T) {
 	j, _ := OpenJournal(journalPath, JournalOptions{MaxBytes: 1024 * 1024})
 
 	e := Event{
-		ID:       "01ARYZ6S41TVGZPZ9J5QSBC4GT",
-		TS:       time.Now(),
-		Type:     EvtNote,
+		ID:   "01ARYZ6S41TVGZPZ9J5QSBC4GT",
+		TS:   time.Now(),
+		Type: EvtNote,
 	}
 	e.Sig = e.ComputeSig()
 
 	ctx := context.Background()
-	j.Append(ctx, e)
+	_ = j.Append(ctx, e)
 
 	cursor, err := j.Checkpoint(ctx)
 	if err != nil {
@@ -1099,14 +1097,14 @@ func TestJournalRotate(t *testing.T) {
 	j, _ := OpenJournal(journalPath, JournalOptions{MaxBytes: 1024 * 1024})
 
 	e := Event{
-		ID:       "01ARYZ6S41TVGZPZ9J5QSBC4GT",
-		TS:       time.Now(),
-		Type:     EvtNote,
+		ID:   "01ARYZ6S41TVGZPZ9J5QSBC4GT",
+		TS:   time.Now(),
+		Type: EvtNote,
 	}
 	e.Sig = e.ComputeSig()
 
 	ctx := context.Background()
-	j.Append(ctx, e)
+	_ = j.Append(ctx, e)
 
 	if err := j.Rotate(ctx); err != nil {
 		t.Fatalf("Rotate failed: %v", err)
@@ -1140,9 +1138,9 @@ func TestJournalDurable(t *testing.T) {
 	})
 
 	e := Event{
-		ID:       "test1",
-		TS:       time.Now(),
-		Type:     EvtNote,
+		ID:   "test1",
+		TS:   time.Now(),
+		Type: EvtNote,
 	}
 	e.Sig = e.ComputeSig()
 
@@ -1293,7 +1291,7 @@ func TestFuzzyMatchEdgeCases(t *testing.T) {
 
 	// Very high tolerance
 	if FuzzyMatch("hello", "world", 100) {
-		// May be true with very high tolerance
+		t.Log("FuzzyMatch with tolerance 100 matched unrelated strings")
 	}
 
 	// Empty strings

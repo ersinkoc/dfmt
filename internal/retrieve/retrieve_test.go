@@ -162,8 +162,9 @@ func TestSnapshotBuilderBuildWithinBudget(t *testing.T) {
 func TestSnapshotBuilderBuildExceedsBudget(t *testing.T) {
 	sb := NewSnapshotBuilder(50) // Very small budget
 
+	largeData := map[string]any{"large": strings.Repeat("x", 1000)}
 	events := []core.Event{
-		{ID: "e1", TS: time.Now(), Type: core.EvtDecision, Priority: core.PriP1, Data: map[string]any{"large": strings.Repeat("x", 1000)}},
+		{ID: "e1", TS: time.Now(), Type: core.EvtDecision, Priority: core.PriP1, Data: largeData},
 		{ID: "e2", TS: time.Now(), Type: core.EvtTaskCreate, Priority: core.PriP2},
 	}
 	snap, err := sb.Build(events)
@@ -538,8 +539,9 @@ func TestSnapshotBuilderBuildAllP1FitsExactlyInBudget(t *testing.T) {
 func TestSnapshotBuilderBuildNoP1Fits(t *testing.T) {
 	sb := NewSnapshotBuilder(10) // Very small budget
 
+	largeData := map[string]any{"large": strings.Repeat("x", 100)}
 	events := []core.Event{
-		{ID: "e1", TS: time.Now(), Type: core.EvtDecision, Priority: core.PriP1, Data: map[string]any{"large": strings.Repeat("x", 100)}},
+		{ID: "e1", TS: time.Now(), Type: core.EvtDecision, Priority: core.PriP1, Data: largeData},
 	}
 	snap, err := sb.Build(events)
 	if err != nil {

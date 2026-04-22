@@ -104,26 +104,47 @@ func (s *TCPServer) handleConn(conn net.Conn) {
 
 func (s *TCPServer) dispatch(ctx context.Context, req *Request) (any, error) {
 	switch req.Method {
-	case "dfmt.remember", "remember":
+	case methodRemember, aliasRemember:
 		var params RememberParams
 		if err := decodeParams(req.Params, &params); err != nil {
 			return nil, err
 		}
 		return s.handlers.Remember(ctx, params)
 
-	case "dfmt.search", "search":
+	case methodSearch, aliasSearch:
 		var params SearchParams
 		if err := decodeParams(req.Params, &params); err != nil {
 			return nil, err
 		}
 		return s.handlers.Search(ctx, params)
 
-	case "dfmt.recall", "recall":
+	case methodRecall, aliasRecall:
 		var params RecallParams
 		if err := decodeParams(req.Params, &params); err != nil {
 			return nil, err
 		}
 		return s.handlers.Recall(ctx, params)
+
+	case methodExec, aliasExec:
+		var params ExecParams
+		if err := decodeParams(req.Params, &params); err != nil {
+			return nil, err
+		}
+		return s.handlers.Exec(ctx, params)
+
+	case methodRead, aliasRead:
+		var params ReadParams
+		if err := decodeParams(req.Params, &params); err != nil {
+			return nil, err
+		}
+		return s.handlers.Read(ctx, params)
+
+	case methodFetch, aliasFetch:
+		var params FetchParams
+		if err := decodeParams(req.Params, &params); err != nil {
+			return nil, err
+		}
+		return s.handlers.Fetch(ctx, params)
 
 	default:
 		return nil, fmt.Errorf("unknown method: %s", req.Method)

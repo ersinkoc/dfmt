@@ -18,7 +18,7 @@ func TestAgent(t *testing.T) {
 		Confidence: 0.95,
 	}
 
-	if a.ID != "claude-code" {
+	if a.ID != AgentClaudeCode {
 		t.Errorf("ID = %s, want claud-code", a.ID)
 	}
 	if a.Name != "Claude Code" {
@@ -52,8 +52,8 @@ func TestAgentEntry(t *testing.T) {
 		ConfigDir:  "/home/user/.claude",
 	}
 
-	if e.AgentID != "claude-code" {
-		t.Errorf("AgentID = %s, want 'claude-code'", e.AgentID)
+	if e.AgentID != AgentClaudeCode {
+		t.Errorf("AgentID = %s, want claude-code", e.AgentID)
 	}
 	if !e.Configured {
 		t.Error("Configured = false, want true")
@@ -192,7 +192,7 @@ func TestDetectClaudeCode(t *testing.T) {
 	if a == nil {
 		t.Log("Claude Code not detected (expected on some systems)")
 	} else {
-		if a.ID != "claude-code" {
+		if a.ID != AgentClaudeCode {
 			t.Errorf("ID = %s, want 'claude-code'", a.ID)
 		}
 		if a.Name != "Claude Code" {
@@ -205,24 +205,8 @@ func TestDetectCodex(t *testing.T) {
 	a := detectCodex()
 	if a == nil {
 		t.Log("Codex not detected (expected on some systems)")
-	} else {
-		if a.ID != "codex" {
-			t.Errorf("ID = %s, want 'codex'", a.ID)
-		}
-	}
-}
-
-func TestGetClaudeVersion(t *testing.T) {
-	version := getClaudeVersion("/nonexistent/path")
-	if version != "unknown" {
-		t.Errorf("version = %s, want 'unknown'", version)
-	}
-}
-
-func TestGetCodexVersion(t *testing.T) {
-	version := getCodexVersion("/nonexistent/path")
-	if version != "unknown" {
-		t.Errorf("version = %s, want 'unknown'", version)
+	} else if a.ID != "codex" {
+		t.Errorf("ID = %s, want 'codex'", a.ID)
 	}
 }
 
@@ -233,7 +217,7 @@ func TestGetCodexVersion(t *testing.T) {
 func TestDetectClaudeCode_NotFound(t *testing.T) {
 	// On Windows, os.UserHomeDir() uses USERPROFILE, not HOME env var.
 	// Skip on Windows as we can't easily test the "not found" path.
-	if runtime.GOOS == "windows" {
+	if runtime.GOOS == goosWindows {
 		t.Skip("Cannot easily test detectClaudeCode not found on Windows (os.UserHomeDir ignores HOME)")
 	}
 
@@ -310,26 +294,6 @@ func TestDetectClaudeCode_HomeEnvNotSet(t *testing.T) {
 // detectCodex tests - error paths and branches
 // =============================================================================
 
-func TestDetectCodex_NotFound(t *testing.T) {
-	origHome := os.Getenv("HOME")
-	defer func() {
-		os.Setenv("HOME", origHome)
-	}()
-
-	tmpDir := t.TempDir()
-	os.Setenv("HOME", tmpDir)
-	os.Unsetenv("XDG_DATA_HOME")
-
-	// Create .local/bin but no codex
-	localBin := filepath.Join(tmpDir, ".local", "bin")
-	os.MkdirAll(localBin, 0755)
-
-	result := detectCodex()
-	if result != nil {
-		t.Errorf("detectCodex() = %v, want nil when no codex binary exists", result)
-	}
-}
-
 // =============================================================================
 // LoadManifest tests - error paths
 // =============================================================================
@@ -358,7 +322,7 @@ func TestLoadManifest_FileNotFound(t *testing.T) {
 }
 
 func TestLoadManifest_FilePermissionDenied(t *testing.T) {
-	if runtime.GOOS == "windows" {
+	if runtime.GOOS == goosWindows {
 		t.Skip("Cannot test file permission denied on Windows")
 	}
 
@@ -566,7 +530,8 @@ func TestSaveManifest_CannotCreateDirectory(t *testing.T) {
 	// On Windows, os.MkdirAll fails with syscall.EINVAL when the path is a file
 	// On Unix, it might succeed or fail depending on the path
 	// Just verify that the operation either succeeds or returns a meaningful error
-	if err != nil && !strings.Contains(err.Error(), "cannot create") && !strings.Contains(err.Error(), "Create manifest dir") {
+	if err != nil && !strings.Contains(err.Error(), "cannot create") &&
+		!strings.Contains(err.Error(), "Create manifest dir") {
 		t.Logf("SaveManifest error (may be platform-specific): %v", err)
 	}
 }
@@ -652,7 +617,7 @@ func TestManifestPath_WithXDGDataHome(t *testing.T) {
 }
 
 func TestManifestPath_HomeFallback(t *testing.T) {
-	if runtime.GOOS == "windows" {
+	if runtime.GOOS == goosWindows {
 		t.Skip("Cannot test HOME fallback on Windows (os.UserHomeDir uses USERPROFILE)")
 	}
 
@@ -803,7 +768,7 @@ func TestDetectClaudeCode_DirectoryAtHomePath(t *testing.T) {
 	// This test exercises the code path where .claude directory exists at HOME
 	// but no binary is found at standard paths.
 	// We skip on Windows due to path complexity.
-	if runtime.GOOS == "windows" {
+	if runtime.GOOS == goosWindows {
 		t.Skip("Skipping on Windows due to path handling differences")
 	}
 

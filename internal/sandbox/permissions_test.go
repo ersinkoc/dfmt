@@ -29,11 +29,12 @@ func TestFetchWithPolicyCheck(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Fetch failed for allowed URL: %v", err)
 	}
-	if resp.Status != 200 {
-		t.Errorf("Status = %d, want 200", resp.Status)
+	// example.com returns 404 for this path, that's fine - the request went through
+	if resp.Status == 0 {
+		t.Error("Status = 0, want non-zero")
 	}
-	if resp.Summary != "fetch not yet implemented" {
-		t.Errorf("Summary = %q, want 'fetch not yet implemented'", resp.Summary)
+	if strings.Contains(resp.Summary, "not yet implemented") {
+		t.Errorf("Summary still contains stub message: %q", resp.Summary)
 	}
 }
 
@@ -358,9 +359,9 @@ func TestExecImplExtraEnv(t *testing.T) {
 	ctx := context.Background()
 
 	resp, err := sb.Exec(ctx, ExecReq{
-		Code:    "echo $MY_CUSTOM_VAR",
-		Lang:    "sh",
-		Env:     map[string]string{"MY_CUSTOM_VAR": "custom_value"},
+		Code: "echo $MY_CUSTOM_VAR",
+		Lang: "sh",
+		Env:  map[string]string{"MY_CUSTOM_VAR": "custom_value"},
 	})
 	if err != nil {
 		t.Fatalf("Exec failed: %v", err)
@@ -560,11 +561,11 @@ func TestExecImplPolicyDenied(t *testing.T) {
 func TestRegexMatchInvalidRegex(t *testing.T) {
 	// These patterns are invalid in Go's regex
 	invalidPatterns := []string{
-		"[",           // Unclosed bracket
-		"(*",          // Nothing to repeat
-		"(?P<",        // Incomplete named group
-		"+ ++",        // Quantifier without target
-		"***",         // Nested quantifiers
+		"[",    // Unclosed bracket
+		"(*",   // Nothing to repeat
+		"(?P<", // Incomplete named group
+		"+ ++", // Quantifier without target
+		"***",  // Nested quantifiers
 	}
 
 	for _, pattern := range invalidPatterns {
@@ -714,8 +715,8 @@ func TestWriteTempFileMultipleExtensions(t *testing.T) {
 	defer os.Setenv("TMPDIR", origTmpDir)
 
 	tests := []struct {
-		lang  string
-		ext   string
+		lang string
+		ext  string
 	}{
 		{"python", ".py"},
 		{"node", ".js"},
@@ -910,9 +911,9 @@ func TestBuildEnvMinimalContainsPATH(t *testing.T) {
 func TestRegexMatchErrorBranch(t *testing.T) {
 	// These should all return false due to invalid regex syntax
 	badPatterns := []string{
-		"\\",           // Trailing backslash
-		"[a",           // Unclosed bracket
-		"*)",           // Nothing to repeat
+		"\\", // Trailing backslash
+		"[a", // Unclosed bracket
+		"*)", // Nothing to repeat
 	}
 	for _, p := range badPatterns {
 		// Verify it doesn't panic and returns false

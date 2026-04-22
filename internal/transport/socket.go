@@ -12,11 +12,11 @@ import (
 
 // SocketServer listens on a Unix socket and handles JSON-RPC requests.
 type SocketServer struct {
-	path      string
-	listener  net.Listener
-	handlers  *Handlers
-	mu        sync.Mutex
-	running   bool
+	path     string
+	listener net.Listener
+	handlers *Handlers
+	mu       sync.Mutex
+	running  bool
 }
 
 // NewSocketServer creates a new socket server.
@@ -110,26 +110,47 @@ func (s *SocketServer) handleConn(conn net.Conn) {
 // dispatch dispatches a request to the appropriate handler method.
 func (s *SocketServer) dispatch(ctx context.Context, req *Request) (any, error) {
 	switch req.Method {
-	case "dfmt.remember", "remember":
+	case methodRemember, aliasRemember:
 		var params RememberParams
 		if err := decodeParams(req.Params, &params); err != nil {
 			return nil, err
 		}
 		return s.handlers.Remember(ctx, params)
 
-	case "dfmt.search", "search":
+	case methodSearch, aliasSearch:
 		var params SearchParams
 		if err := decodeParams(req.Params, &params); err != nil {
 			return nil, err
 		}
 		return s.handlers.Search(ctx, params)
 
-	case "dfmt.recall", "recall":
+	case methodRecall, aliasRecall:
 		var params RecallParams
 		if err := decodeParams(req.Params, &params); err != nil {
 			return nil, err
 		}
 		return s.handlers.Recall(ctx, params)
+
+	case methodExec, aliasExec:
+		var params ExecParams
+		if err := decodeParams(req.Params, &params); err != nil {
+			return nil, err
+		}
+		return s.handlers.Exec(ctx, params)
+
+	case methodRead, aliasRead:
+		var params ReadParams
+		if err := decodeParams(req.Params, &params); err != nil {
+			return nil, err
+		}
+		return s.handlers.Read(ctx, params)
+
+	case methodFetch, aliasFetch:
+		var params FetchParams
+		if err := decodeParams(req.Params, &params); err != nil {
+			return nil, err
+		}
+		return s.handlers.Fetch(ctx, params)
 
 	default:
 		return nil, fmt.Errorf("unknown method: %s", req.Method)

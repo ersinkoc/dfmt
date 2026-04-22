@@ -16,11 +16,11 @@ type Registry struct {
 
 // RegistryEntry represents a project entry in the registry.
 type RegistryEntry struct {
-	ID        string `json:"id"`
-	Path      string `json:"path"`
-	PID       int    `json:"pid,omitempty"`
-	Socket    string `json:"socket"`
-	LastSeen  int64  `json:"last_seen"`
+	ID       string `json:"id"`
+	Path     string `json:"path"`
+	PID      int    `json:"pid,omitempty"`
+	Socket   string `json:"socket"`
+	LastSeen int64  `json:"last_seen"`
 }
 
 // NewRegistry creates or opens a project registry.

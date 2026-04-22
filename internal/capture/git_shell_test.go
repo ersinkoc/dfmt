@@ -53,11 +53,9 @@ func TestGitLog(t *testing.T) {
 	if err != nil {
 		t.Logf("GitLog failed (may not be in git repo): %v", err)
 	}
-	if commits != nil {
-		for _, c := range commits {
-			if c.Hash == "" {
-				t.Error("Commit hash is empty")
-			}
+	for _, c := range commits {
+		if c.Hash == "" {
+			t.Error("Commit hash is empty")
 		}
 	}
 }

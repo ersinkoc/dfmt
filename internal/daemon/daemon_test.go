@@ -95,10 +95,8 @@ func TestAcquireLockNonBlocking(t *testing.T) {
 	lockErr, ok := err.(*LockError)
 	if !ok {
 		t.Error("Error should be LockError")
-	} else {
-		if lockErr.ProjectPath != tmpDir {
-			t.Errorf("LockError.ProjectPath = %s, want %s", lockErr.ProjectPath, tmpDir)
-		}
+	} else if lockErr.ProjectPath != tmpDir {
+		t.Errorf("LockError.ProjectPath = %s, want %s", lockErr.ProjectPath, tmpDir)
 	}
 }
 

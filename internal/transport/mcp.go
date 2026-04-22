@@ -20,9 +20,9 @@ type MCPTool struct {
 
 // MCPInitializeResult is the result of initialization.
 type MCPInitializeResult struct {
-	ProtocolVersion string              `json:"protocolVersion"`
+	ProtocolVersion string                `json:"protocolVersion"`
 	Capabilities    MCPClientCapabilities `json:"capabilities"`
-	ServerInfo      MCPServerInfo        `json:"serverInfo"`
+	ServerInfo      MCPServerInfo         `json:"serverInfo"`
 }
 
 // MCPClientCapabilities represents client capabilities.
@@ -49,10 +49,10 @@ type MCPRequest struct {
 
 // MCPResponse represents an MCP response.
 type MCPResponse struct {
-	JSONRPC string      `json:"jsonrpc"`
-	Result  any         `json:"result,omitempty"`
-	Error   *RPCError   `json:"error,omitempty"`
-	ID      any         `json:"id,omitempty"`
+	JSONRPC string    `json:"jsonrpc"`
+	Result  any       `json:"result,omitempty"`
+	Error   *RPCError `json:"error,omitempty"`
+	ID      any       `json:"id,omitempty"`
 }
 
 // NewMCPProtocol creates a new MCP protocol handler.
@@ -73,7 +73,7 @@ func (m *MCPProtocol) Handle(req *MCPRequest) (*MCPResponse, error) {
 		return m.handlePing(req)
 	default:
 		return &MCPResponse{
-			JSONRPC: "2.0",
+			JSONRPC: jsonRPCVersion,
 			Error: &RPCError{
 				Code:    -32601,
 				Message: fmt.Sprintf("method not found: %s", req.Method),
@@ -86,7 +86,7 @@ func (m *MCPProtocol) Handle(req *MCPRequest) (*MCPResponse, error) {
 func (m *MCPProtocol) handleInitialize(req *MCPRequest) (*MCPResponse, error) {
 	result := MCPInitializeResult{
 		ProtocolVersion: "2024-11-05",
-		Capabilities: MCPClientCapabilities{},
+		Capabilities:    MCPClientCapabilities{},
 		ServerInfo: MCPServerInfo{
 			Name:    "dfmt",
 			Version: "0.1.0",
@@ -94,7 +94,7 @@ func (m *MCPProtocol) handleInitialize(req *MCPRequest) (*MCPResponse, error) {
 	}
 
 	return &MCPResponse{
-		JSONRPC: "2.0",
+		JSONRPC: jsonRPCVersion,
 		Result:  result,
 		ID:      req.ID,
 	}, nil
@@ -103,7 +103,106 @@ func (m *MCPProtocol) handleInitialize(req *MCPRequest) (*MCPResponse, error) {
 func (m *MCPProtocol) handleToolsList(req *MCPRequest) (*MCPResponse, error) {
 	tools := []MCPTool{
 		{
-			Name:        "dfmt.remember",
+			Name:        methodExec,
+			Description: "Execute code in sandbox. Returns intent-matched excerpts to save tokens.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"code": map[string]interface{}{
+						"type":        "string",
+						"description": "Code or command to execute",
+					},
+					"lang": map[string]interface{}{
+						"type":        "string",
+						"description": "Language: bash, sh, node, python, go, etc. Default: bash",
+						"default":     "bash",
+					},
+					"intent": map[string]interface{}{
+						"type":        "string",
+						"description": "What you need from output. Only matching excerpts returned.",
+					},
+					"return": map[string]interface{}{
+						"type":        "string",
+						"description": "Return mode: auto, raw, summary, search. Default: auto",
+						"default":     "auto",
+					},
+					"timeout": map[string]interface{}{
+						"type":        "integer",
+						"description": "Timeout in seconds. Default: 60",
+						"default":     60,
+					},
+				},
+				"required": []string{"code"},
+			},
+		},
+		{
+			Name:        methodRead,
+			Description: "Read file via sandbox. Use this instead of native Read.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"path": map[string]interface{}{
+						"type":        "string",
+						"description": "File path to read",
+					},
+					"intent": map[string]interface{}{
+						"type":        "string",
+						"description": "What you need from the file. Only matching excerpts returned.",
+					},
+					"offset": map[string]interface{}{
+						"type":        "integer",
+						"description": "Byte offset to start reading",
+						"default":     0,
+					},
+					"limit": map[string]interface{}{
+						"type":        "integer",
+						"description": "Maximum bytes to read",
+						"default":     0,
+					},
+					"return": map[string]interface{}{
+						"type":        "string",
+						"description": "Return mode: auto, raw, summary, search. Default: auto",
+						"default":     "auto",
+					},
+				},
+				"required": []string{"path"},
+			},
+		},
+		{
+			Name:        methodFetch,
+			Description: "Fetch URL via sandbox. Use this instead of native WebFetch.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"url": map[string]interface{}{
+						"type":        "string",
+						"description": "URL to fetch",
+					},
+					"intent": map[string]interface{}{
+						"type":        "string",
+						"description": "What you need from the response. Only matching excerpts returned.",
+					},
+					"method": map[string]interface{}{
+						"type":        "string",
+						"description": "HTTP method. Default: GET",
+						"default":     "GET",
+					},
+					"return": map[string]interface{}{
+						"type":        "string",
+						"description": "Return mode: auto, raw, summary, search. Default: auto",
+						"default":     "auto",
+					},
+					"timeout": map[string]interface{}{
+						"type":        "integer",
+						"description": "Timeout in seconds. Default: 30",
+						"default":     30,
+					},
+				},
+				"required": []string{"url"},
+			},
+		},
+		{
+			Name:        methodRemember,
 			Description: "Record an LLM interaction with token usage for session tracking",
 			InputSchema: map[string]interface{}{
 				"type": "object",
@@ -145,15 +244,15 @@ func (m *MCPProtocol) handleToolsList(req *MCPRequest) (*MCPResponse, error) {
 			},
 		},
 		{
-			Name:        "dfmt.stats",
+			Name:        methodStats,
 			Description: "Get token savings statistics for the session",
 			InputSchema: map[string]interface{}{
-				"type": "object",
+				"type":       "object",
 				"properties": map[string]interface{}{},
 			},
 		},
 		{
-			Name:        "dfmt.search",
+			Name:        methodSearch,
 			Description: "Search session events",
 			InputSchema: map[string]interface{}{
 				"type": "object",
@@ -171,7 +270,7 @@ func (m *MCPProtocol) handleToolsList(req *MCPRequest) (*MCPResponse, error) {
 			},
 		},
 		{
-			Name:        "dfmt.recall",
+			Name:        methodRecall,
 			Description: "Build a session snapshot with token budget",
 			InputSchema: map[string]interface{}{
 				"type": "object",
@@ -190,7 +289,7 @@ func (m *MCPProtocol) handleToolsList(req *MCPRequest) (*MCPResponse, error) {
 	}
 
 	return &MCPResponse{
-		JSONRPC: "2.0",
+		JSONRPC: jsonRPCVersion,
 		Result: map[string]interface{}{
 			"tools": tools,
 		},
@@ -204,13 +303,13 @@ func (m *MCPProtocol) handleToolsCall(req *MCPRequest) (*MCPResponse, error) {
 	}
 
 	var params struct {
-		Name   string          `json:"name"`
-		Args   json.RawMessage `json:"arguments,omitempty"`
+		Name string          `json:"name"`
+		Args json.RawMessage `json:"arguments,omitempty"`
 	}
 
 	if err := json.Unmarshal(req.Params, &params); err != nil {
 		return &MCPResponse{
-			JSONRPC: "2.0",
+			JSONRPC: jsonRPCVersion,
 			Error: &RPCError{
 				Code:    -32602,
 				Message: fmt.Sprintf("invalid params: %v", err),
@@ -221,7 +320,52 @@ func (m *MCPProtocol) handleToolsCall(req *MCPRequest) (*MCPResponse, error) {
 
 	ctx := context.Background()
 	switch params.Name {
-	case "dfmt.remember":
+	case methodExec:
+		var args ExecParams
+		if err := json.Unmarshal(params.Args, &args); err != nil {
+			return m.errorResult(req.ID, -32602, err.Error())
+		}
+		result, err := m.handlers.Exec(ctx, args)
+		if err != nil {
+			return m.errorResult(req.ID, -32603, err.Error())
+		}
+		return &MCPResponse{
+			JSONRPC: jsonRPCVersion,
+			Result:  result,
+			ID:      req.ID,
+		}, nil
+
+	case methodRead:
+		var args ReadParams
+		if err := json.Unmarshal(params.Args, &args); err != nil {
+			return m.errorResult(req.ID, -32602, err.Error())
+		}
+		result, err := m.handlers.Read(ctx, args)
+		if err != nil {
+			return m.errorResult(req.ID, -32603, err.Error())
+		}
+		return &MCPResponse{
+			JSONRPC: jsonRPCVersion,
+			Result:  result,
+			ID:      req.ID,
+		}, nil
+
+	case methodFetch:
+		var args FetchParams
+		if err := json.Unmarshal(params.Args, &args); err != nil {
+			return m.errorResult(req.ID, -32602, err.Error())
+		}
+		result, err := m.handlers.Fetch(ctx, args)
+		if err != nil {
+			return m.errorResult(req.ID, -32603, err.Error())
+		}
+		return &MCPResponse{
+			JSONRPC: jsonRPCVersion,
+			Result:  result,
+			ID:      req.ID,
+		}, nil
+
+	case methodRemember:
 		var args RememberParams
 		if err := json.Unmarshal(params.Args, &args); err != nil {
 			return m.errorResult(req.ID, -32602, err.Error())
@@ -231,12 +375,12 @@ func (m *MCPProtocol) handleToolsCall(req *MCPRequest) (*MCPResponse, error) {
 			return m.errorResult(req.ID, -32603, err.Error())
 		}
 		return &MCPResponse{
-			JSONRPC: "2.0",
+			JSONRPC: jsonRPCVersion,
 			Result:  result,
 			ID:      req.ID,
 		}, nil
 
-	case "dfmt.stats":
+	case methodStats:
 		var args StatsParams
 		if params.Args != nil {
 			json.Unmarshal(params.Args, &args)
@@ -246,12 +390,12 @@ func (m *MCPProtocol) handleToolsCall(req *MCPRequest) (*MCPResponse, error) {
 			return m.errorResult(req.ID, -32603, err.Error())
 		}
 		return &MCPResponse{
-			JSONRPC: "2.0",
+			JSONRPC: jsonRPCVersion,
 			Result:  result,
 			ID:      req.ID,
 		}, nil
 
-	case "dfmt.search":
+	case methodSearch:
 		var args SearchParams
 		if err := json.Unmarshal(params.Args, &args); err != nil {
 			return m.errorResult(req.ID, -32602, err.Error())
@@ -261,12 +405,12 @@ func (m *MCPProtocol) handleToolsCall(req *MCPRequest) (*MCPResponse, error) {
 			return m.errorResult(req.ID, -32603, err.Error())
 		}
 		return &MCPResponse{
-			JSONRPC: "2.0",
+			JSONRPC: jsonRPCVersion,
 			Result:  result,
 			ID:      req.ID,
 		}, nil
 
-	case "dfmt.recall":
+	case methodRecall:
 		var args RecallParams
 		if err := json.Unmarshal(params.Args, &args); err != nil {
 			return m.errorResult(req.ID, -32602, err.Error())
@@ -276,7 +420,7 @@ func (m *MCPProtocol) handleToolsCall(req *MCPRequest) (*MCPResponse, error) {
 			return m.errorResult(req.ID, -32603, err.Error())
 		}
 		return &MCPResponse{
-			JSONRPC: "2.0",
+			JSONRPC: jsonRPCVersion,
 			Result:  result,
 			ID:      req.ID,
 		}, nil
@@ -288,7 +432,7 @@ func (m *MCPProtocol) handleToolsCall(req *MCPRequest) (*MCPResponse, error) {
 
 func (m *MCPProtocol) handlePing(req *MCPRequest) (*MCPResponse, error) {
 	return &MCPResponse{
-		JSONRPC: "2.0",
+		JSONRPC: jsonRPCVersion,
 		Result:  map[string]interface{}{},
 		ID:      req.ID,
 	}, nil
@@ -296,7 +440,7 @@ func (m *MCPProtocol) handlePing(req *MCPRequest) (*MCPResponse, error) {
 
 func (m *MCPProtocol) errorResult(id any, code int, message string) (*MCPResponse, error) {
 	return &MCPResponse{
-		JSONRPC: "2.0",
+		JSONRPC: jsonRPCVersion,
 		Error: &RPCError{
 			Code:    code,
 			Message: message,

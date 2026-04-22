@@ -6,7 +6,7 @@ import (
 
 // TrigramIndex provides fast substring search via trigram inverted index.
 type TrigramIndex struct {
-	 postings map[string][]string // trigram -> document IDs
+	postings map[string][]string // trigram -> document IDs
 }
 
 // NewTrigramIndex creates a new trigram index.

@@ -639,7 +639,7 @@ func TestSocketServer_HandleConn_ValidRequest(t *testing.T) {
 		JSONRPC: "2.0",
 		Method:  "search",
 		Params:  json.RawMessage(`{"query":"test"}`),
-		ID:     1,
+		ID:      1,
 	}
 	if err := codec.WriteRequest(req); err != nil {
 		t.Fatalf("WriteRequest failed: %v", err)
@@ -688,7 +688,7 @@ func TestSocketServer_HandleConn_UnknownMethod(t *testing.T) {
 	req := &Request{
 		JSONRPC: "2.0",
 		Method:  "unknown_method_xyz",
-		ID:     2,
+		ID:      2,
 	}
 	if err := codec.WriteRequest(req); err != nil {
 		t.Fatalf("WriteRequest failed: %v", err)
@@ -740,7 +740,7 @@ func TestSocketServer_HandleConn_BadParams(t *testing.T) {
 		JSONRPC: "2.0",
 		Method:  "search",
 		Params:  json.RawMessage(`{"query": 123}`), // query should be string
-		ID:     3,
+		ID:      3,
 	}
 	if err := codec.WriteRequest(req); err != nil {
 		t.Fatalf("WriteRequest failed: %v", err)
@@ -828,4 +828,3 @@ func TestSocketServer_Start_Errors(t *testing.T) {
 		t.Logf("Start failed as expected: %v", err)
 	}
 }
-

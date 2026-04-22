@@ -119,7 +119,7 @@ func TestGetChunks(t *testing.T) {
 	store, _ := NewStore(StoreOptions{})
 
 	// Add chunks
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		chunk := &Chunk{
 			ID:       "chunk-" + string(rune('a'+i)),
 			ParentID: "set-1",
@@ -204,7 +204,7 @@ func TestEviction(t *testing.T) {
 	store.PutChunkSet(set)
 
 	// Add chunks until eviction happens
-	for i := 0; i < 20; i++ {
+	for i := range 20 {
 		chunk := &Chunk{
 			ID:       "chunk-" + string(rune(i)),
 			ParentID: "set-1",
@@ -249,9 +249,9 @@ func TestSummarizer(t *testing.T) {
 	s := &Summarizer{}
 
 	tests := []struct {
-		name     string
-		body     string
-		kind     ChunkKind
+		name      string
+		body      string
+		kind      ChunkKind
 		wantLines bool
 	}{
 		{"simple", "hello\nworld", ChunkKindText, true},
@@ -266,7 +266,7 @@ func TestSummarizer(t *testing.T) {
 				t.Fatal("Summarize returned nil")
 			}
 			if tt.wantLines && sum.Lines == 0 {
-				// Empty body might give 0 lines
+				t.Log("empty body gave 0 lines")
 			}
 		})
 	}
@@ -628,7 +628,7 @@ func TestPutChunkTriggersEviction(t *testing.T) {
 
 	// Create multiple chunk sets so eviction doesn't remove our test set
 	// (evict removes the oldest set by Created time)
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		set := &ChunkSet{
 			ID:      "set-" + string(rune('A'+i)),
 			Kind:    "test",
@@ -640,7 +640,7 @@ func TestPutChunkTriggersEviction(t *testing.T) {
 
 	// Add chunks until we trigger eviction
 	// Each chunk body is 30 bytes, maxSize is 50
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		chunk := &Chunk{
 			ID:       "chunk-" + string(rune(i)),
 			ParentID: "set-A", // Use the oldest set

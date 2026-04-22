@@ -385,7 +385,7 @@ func TestRunCaptureUnknownSubcommand(t *testing.T) {
 
 func TestMustMarshalJSONPretty(t *testing.T) {
 	input := map[string]any{
-		"name": "test",
+		"name":   "test",
 		"values": []int{1, 2, 3},
 	}
 	result := mustMarshalJSON(input)
@@ -737,6 +737,38 @@ func TestRunInitErrorCreatingDir(t *testing.T) {
 	}
 }
 
+func TestRunInitCreatesClaudeSettings(t *testing.T) {
+	tmpDir := t.TempDir()
+	code := Dispatch([]string{"init", "-dir", tmpDir})
+	if code != 0 {
+		t.Fatalf("init returned %d, want 0", code)
+	}
+
+	settingsPath := filepath.Join(tmpDir, ".claude", "settings.json")
+	data, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatalf("settings.json not created: %v", err)
+	}
+
+	var settings map[string]any
+	if err := json.Unmarshal(data, &settings); err != nil {
+		t.Fatalf("settings.json is not valid JSON: %v", err)
+	}
+
+	perm, ok := settings["permissions"].(map[string]any)
+	if !ok {
+		t.Fatal("permissions section missing")
+	}
+
+	deny, ok := perm["deny"].([]any)
+	if !ok {
+		t.Fatal("deny list missing")
+	}
+	if len(deny) == 0 {
+		t.Error("deny list is empty")
+	}
+}
+
 func TestRunDoctorNoDir(t *testing.T) {
 	flagProject = ""
 	code := Dispatch([]string{"doctor"})
@@ -1039,7 +1071,7 @@ func TestRunMCPWithDaemonRunning(t *testing.T) {
 func TestMCPProtocolInitialize(t *testing.T) {
 	// Test MCP protocol initialization directly
 	index := core.NewIndex()
-	handlers := transport.NewHandlers(index, nil)
+	handlers := transport.NewHandlers(index, nil, nil)
 	mcp := transport.NewMCPProtocol(handlers)
 
 	req := &transport.MCPRequest{
@@ -1062,7 +1094,7 @@ func TestMCPProtocolInitialize(t *testing.T) {
 
 func TestMCPProtocolToolsList(t *testing.T) {
 	index := core.NewIndex()
-	handlers := transport.NewHandlers(index, nil)
+	handlers := transport.NewHandlers(index, nil, nil)
 	mcp := transport.NewMCPProtocol(handlers)
 
 	req := &transport.MCPRequest{
@@ -1106,7 +1138,7 @@ func TestMCPProtocolToolsList(t *testing.T) {
 
 func TestMCPProtocolPing(t *testing.T) {
 	index := core.NewIndex()
-	handlers := transport.NewHandlers(index, nil)
+	handlers := transport.NewHandlers(index, nil, nil)
 	mcp := transport.NewMCPProtocol(handlers)
 
 	req := &transport.MCPRequest{
@@ -1129,7 +1161,7 @@ func TestMCPProtocolPing(t *testing.T) {
 
 func TestMCPProtocolUnknownMethod(t *testing.T) {
 	index := core.NewIndex()
-	handlers := transport.NewHandlers(index, nil)
+	handlers := transport.NewHandlers(index, nil, nil)
 	mcp := transport.NewMCPProtocol(handlers)
 
 	req := &transport.MCPRequest{
@@ -1170,7 +1202,7 @@ func TestMCPProtocolToolsCallNoHandler(t *testing.T) {
 
 func TestMCPProtocolToolsCallInvalidParams(t *testing.T) {
 	index := core.NewIndex()
-	handlers := transport.NewHandlers(index, nil)
+	handlers := transport.NewHandlers(index, nil, nil)
 	mcp := transport.NewMCPProtocol(handlers)
 
 	// Missing name field
@@ -1192,7 +1224,7 @@ func TestMCPProtocolToolsCallInvalidParams(t *testing.T) {
 
 func TestMCPProtocolToolsCallKnownTool(t *testing.T) {
 	index := core.NewIndex()
-	handlers := transport.NewHandlers(index, nil)
+	handlers := transport.NewHandlers(index, nil, nil)
 	mcp := transport.NewMCPProtocol(handlers)
 
 	req := &transport.MCPRequest{
@@ -1396,16 +1428,25 @@ func TestConfigureAgentClaudeCode(t *testing.T) {
 }
 
 func TestConfigureAgentCodex(t *testing.T) {
+	tmpDir := t.TempDir()
+	os.Setenv("HOME", tmpDir)
+	defer os.Unsetenv("HOME")
+
 	agent := setup.Agent{
 		ID:         "codex",
 		Name:       "Codex",
 		Version:    "1.0",
-		InstallDir: "/tmp/codex",
+		InstallDir: tmpDir,
 	}
 
 	err := configureAgent(agent)
-	if err == nil {
-		t.Error("configureAgent(codex) should return error (not implemented)")
+	if err != nil {
+		t.Fatalf("configureAgent(codex) failed: %v", err)
+	}
+
+	mcpPath := filepath.Join(tmpDir, ".codex", "mcp.json")
+	if _, err := os.Stat(mcpPath); os.IsNotExist(err) {
+		t.Errorf("mcp.json was not created at %s", mcpPath)
 	}
 }
 
@@ -1482,17 +1523,26 @@ func TestConfigureClaudeCodeExisting(t *testing.T) {
 	}
 }
 
-func TestConfigureCodexNotImplemented(t *testing.T) {
+func TestConfigureCodexSuccess(t *testing.T) {
+	tmpDir := t.TempDir()
+	os.Setenv("HOME", tmpDir)
+	defer os.Unsetenv("HOME")
+
 	agent := setup.Agent{
 		ID:         "codex",
 		Name:       "Codex CLI",
 		Version:    "1.0",
-		InstallDir: "/tmp/codex",
+		InstallDir: tmpDir,
 	}
 
 	err := configureCodex(agent)
-	if err == nil {
-		t.Error("configureCodex should return error (not implemented)")
+	if err != nil {
+		t.Fatalf("configureCodex failed: %v", err)
+	}
+
+	mcpPath := filepath.Join(tmpDir, ".codex", "mcp.json")
+	if _, err := os.Stat(mcpPath); os.IsNotExist(err) {
+		t.Errorf("mcp.json was not created at %s", mcpPath)
 	}
 }
 
@@ -2627,23 +2677,6 @@ func TestRunInstallHooksErrorReadingSource(t *testing.T) {
 // =============================================================================
 // configureAgent error path tests (75.0% coverage)
 // =============================================================================
-
-func TestConfigureAgentCodexError(t *testing.T) {
-	agent := setup.Agent{
-		ID:         "codex",
-		Name:       "Codex CLI",
-		Version:    "1.0",
-		InstallDir: "/tmp/codex-test",
-	}
-
-	err := configureAgent(agent)
-	if err == nil {
-		t.Error("configureAgent(codex) should return error")
-	}
-	if err != nil && !strings.Contains(err.Error(), "not yet implemented") && !strings.Contains(err.Error(), "unsupported") {
-		t.Errorf("expected 'not yet implemented' or 'unsupported' error, got: %v", err)
-	}
-}
 
 func TestConfigureAgentEmptyIDPath(t *testing.T) {
 	agent := setup.Agent{

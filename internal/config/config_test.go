@@ -9,6 +9,8 @@ import (
 	"time"
 )
 
+const durabilityInvalid = "invalid"
+
 func TestDefault(t *testing.T) {
 	cfg := Default()
 
@@ -75,11 +77,11 @@ func TestValidate(t *testing.T) {
 	}
 
 	// Invalid durability
-	cfg.Storage.Durability = "invalid"
+	cfg.Storage.Durability = durabilityInvalid
 	if err := cfg.Validate(); err == nil {
 		t.Error("Validate() should fail for invalid durability")
 	}
-	cfg.Storage.Durability = "batched"
+	cfg.Storage.Durability = durabilityBatched
 
 	// Invalid max_batch_ms
 	cfg.Storage.MaxBatchMS = -1

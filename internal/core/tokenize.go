@@ -14,13 +14,6 @@ var englishStopwords = map[string]struct{}{
 	"were": {}, "will": {}, "with": {},
 }
 
-// Default Turkish stopwords.
-var turkishStopwords = map[string]struct{}{
-	"bir": {}, "bu": {}, "da": {}, "de": {}, "daha": {}, "ama": {}, "çok": {},
-	"gibi": {}, "için": {}, "kadar": {}, "ne": {}, "olan": {}, "olarak": {},
-	"ve": {}, "ya": {}, "yani": {},
-}
-
 // Tokenize splits text into lowercase tokens for indexing.
 // It drops tokens shorter than 2 or longer than 64 characters,
 // and removes stopwords.

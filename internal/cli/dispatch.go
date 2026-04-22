@@ -189,8 +189,36 @@ storage:
 		}
 	}
 
+	// Write project-local Claude Code settings to enforce DFMT tools
+	_ = writeProjectClaudeSettings(dir)
+
 	fmt.Printf("Initialized DFMT in %s\n", dir)
 	return 0
+}
+
+// writeProjectClaudeSettings writes .claude/settings.json to enforce DFMT tools.
+func writeProjectClaudeSettings(dir string) error {
+	claudeDir := filepath.Join(dir, ".claude")
+	if err := os.MkdirAll(claudeDir, 0755); err != nil {
+		return err
+	}
+	settingsPath := filepath.Join(claudeDir, "settings.json")
+	settingsData := `{
+  "permissions": {
+    "deny": ["Bash", "Read", "WebFetch"],
+    "allow": [
+      "mcp__dfmt__dfmt.read",
+      "mcp__dfmt__dfmt.exec",
+      "mcp__dfmt__dfmt.fetch",
+      "mcp__dfmt__dfmt.remember",
+      "mcp__dfmt__dfmt.search",
+      "mcp__dfmt__dfmt.recall",
+      "mcp__dfmt__dfmt.stats"
+    ]
+  }
+}
+`
+	return os.WriteFile(settingsPath, []byte(settingsData), 0644)
 }
 
 func runRemember(args []string) int {
@@ -590,6 +618,7 @@ func runConfig(args []string) int {
 }
 
 func runStats(args []string) int {
+	_ = args
 	proj, err := getProject()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
@@ -598,7 +627,8 @@ func runStats(args []string) int {
 
 	if !client.DaemonRunning(proj) {
 		if flagJSON {
-			fmt.Println(`{"events_total": 0, "events_by_type": {}, "events_by_priority": {}, "session_start": null, "session_end": null}`)
+			fmt.Println(`{"events_total": 0, "events_by_type": {},` +
+				` "events_by_priority": {}, "session_start": null, "session_end": null}`)
 		} else {
 			fmt.Println("DFMT Session Statistics")
 			fmt.Println("========================")
@@ -805,7 +835,11 @@ func runSetup(args []string) int {
 	}
 
 	// Detect agents
-	agents := setup.DetectWithOverride(strings.Split(agentOverride, ","))
+	var override []string
+	if agentOverride != "" {
+		override = strings.Split(agentOverride, ",")
+	}
+	agents := setup.DetectWithOverride(override)
 	if len(agents) == 0 {
 		fmt.Println("No agents detected. Use --agent to specify.")
 		return 0
@@ -896,19 +930,32 @@ func runSetupVerify() int {
 }
 
 func configureAgent(agent setup.Agent) error {
-	// Agent-specific configuration
 	switch agent.ID {
 	case "claude-code":
 		return configureClaudeCode(agent)
+	case "cursor":
+		return configureCursor(agent)
+	case "vscode":
+		return configureVSCode(agent)
 	case "codex":
 		return configureCodex(agent)
+	case "gemini":
+		return configureGemini(agent)
+	case "windsurf":
+		return configureWindsurf(agent)
+	case "zed":
+		return configureZed(agent)
+	case "continue":
+		return configureContinue(agent)
+	case "opencode":
+		return configureOpenCode(agent)
 	default:
 		return fmt.Errorf("unsupported agent: %s", agent.ID)
 	}
 }
 
-func configureClaudeCode(agent setup.Agent) error {
-	home, _ := os.UserHomeDir()
+func configureClaudeCode(_ setup.Agent) error {
+	home := setup.HomeDir()
 	claudeDir := filepath.Join(home, ".claude")
 	if err := os.MkdirAll(claudeDir, 0755); err != nil {
 		return err
@@ -941,8 +988,111 @@ func configureClaudeCode(agent setup.Agent) error {
 	return nil
 }
 
-func configureCodex(agent setup.Agent) error {
-	return fmt.Errorf("codex configuration not yet implemented")
+func configureCodex(_ setup.Agent) error {
+	home := setup.HomeDir()
+	dir := filepath.Join(home, ".codex")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return err
+	}
+	return writeMCPConfig(dir, "mcp.json", "codex")
+}
+
+func configureCursor(_ setup.Agent) error {
+	home := setup.HomeDir()
+	dir := filepath.Join(home, ".cursor")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return err
+	}
+	return writeMCPConfig(dir, "mcp.json", "cursor")
+}
+
+func configureVSCode(_ setup.Agent) error {
+	home := setup.HomeDir()
+	dir := filepath.Join(home, ".vscode")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return err
+	}
+	return writeMCPConfig(dir, "mcp.json", "vscode")
+}
+
+func configureGemini(_ setup.Agent) error {
+	home := setup.HomeDir()
+	dir := filepath.Join(home, ".gemini")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return err
+	}
+	return writeMCPConfig(dir, "mcp.json", "gemini")
+}
+
+func configureWindsurf(_ setup.Agent) error {
+	home := setup.HomeDir()
+	dir := filepath.Join(home, ".windsurf")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return err
+	}
+	return writeMCPConfig(dir, "mcp.json", "windsurf")
+}
+
+func configureZed(_ setup.Agent) error {
+	home := setup.HomeDir()
+	dir := filepath.Join(home, ".config", "zed")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return err
+	}
+	return writeMCPConfig(dir, "mcp.json", "zed")
+}
+
+func configureContinue(_ setup.Agent) error {
+	home := setup.HomeDir()
+	dir := filepath.Join(home, ".config", "continue")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return err
+	}
+	return writeMCPConfig(dir, "mcp.json", "continue")
+}
+
+func configureOpenCode(_ setup.Agent) error {
+	home := setup.HomeDir()
+	dir := filepath.Join(home, ".config", "opencode")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return err
+	}
+	return writeMCPConfig(dir, "mcp.json", "opencode")
+}
+
+func writeMCPConfig(dir, filename, agentID string) error {
+	mcpPath := filepath.Join(dir, filename)
+	setup.BackupFile(mcpPath)
+
+	cmd := "dfmt"
+	if path, err := exec.LookPath("dfmt"); err == nil {
+		cmd = path
+	} else if ex, err := os.Executable(); err == nil {
+		cmd = ex
+	}
+
+	mcpConfig := map[string]any{
+		"mcpServers": map[string]any{
+			"dfmt": map[string]any{
+				"command": cmd,
+				"args":    []string{"mcp"},
+			},
+		},
+	}
+	data, _ := json.MarshalIndent(mcpConfig, "", "  ")
+	if err := os.WriteFile(mcpPath, data, 0644); err != nil {
+		return err
+	}
+
+	m, _ := setup.LoadManifest()
+	m.Files = append(m.Files, setup.FileEntry{
+		Path:    mcpPath,
+		Agent:   agentID,
+		Version: "1",
+	})
+	setup.SaveManifest(m)
+
+	return nil
 }
 
 func runExec(args []string) int {
@@ -998,23 +1148,43 @@ func runMCP(_ []string) int {
 		proj, _ = os.Getwd()
 	}
 
-	// Try to connect to daemon via socket
-	var cl *client.Client
-	if client.DaemonRunning(proj) {
-		cl, _ = client.NewClient(proj)
+	// Ensure .dfmt directory exists
+	dfmtDir := filepath.Join(proj, ".dfmt")
+	_ = os.MkdirAll(dfmtDir, 0755)
+
+	// Ensure project-level Claude Code settings enforce DFMT tools
+	_ = writeProjectClaudeSettings(proj)
+
+	// Open journal from disk (same as daemon)
+	journalPath := filepath.Join(dfmtDir, "journal.jsonl")
+	journalOpts := core.JournalOptions{
+		Path:     journalPath,
+		MaxBytes: 10 * 1024 * 1024,
+		Durable:  true,
+		BatchMS:  100,
+		Compress: true,
+	}
+	journal, err := core.OpenJournal(journalPath, journalOpts)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: open journal: %v\n", err)
+	}
+	defer func() {
+		if journal != nil {
+			_ = journal.Close()
+		}
+	}()
+
+	// Load or create index
+	indexPath := filepath.Join(dfmtDir, "index.gob")
+	cursorPath := filepath.Join(dfmtDir, "index.cursor")
+	index, _, _, err := core.LoadIndexWithCursor(indexPath, cursorPath)
+	if err != nil {
+		index = core.NewIndex()
 	}
 
-	// Create MCP protocol handler with handlers for direct mode
-	var mcp *transport.MCPProtocol
-	if cl == nil {
-		// No daemon - create standalone handlers with in-memory index/journal
-		index := core.NewIndex()
-		mcp = transport.NewMCPProtocol(transport.NewHandlers(index, nil))
-	} else {
-		// Daemon running - create MCP that proxies to daemon
-		mcp = transport.NewMCPProtocol(nil) // Will use client below
-		_ = cl // Will use socket proxy below
-	}
+	// Create sandbox and handlers
+	sb := sandbox.NewSandbox(proj)
+	mcp := transport.NewMCPProtocol(transport.NewHandlers(index, journal, sb))
 
 	// Read/write MCP JSON-RPC
 	reader := bufio.NewReader(os.Stdin)

@@ -12,9 +12,9 @@ type Redactor struct {
 
 // redactPattern is a pattern for redacting sensitive data.
 type redactPattern struct {
-	name    string
-	regex   *regexp.Regexp
-	repl    string
+	name  string
+	regex *regexp.Regexp
+	repl  string
 }
 
 // Common patterns for sensitive data
@@ -52,7 +52,8 @@ func NewRedactor() *Redactor {
 
 // NewRedactorWithCustom creates a redactor with custom patterns.
 func NewRedactorWithCustom(patterns []*redactPattern) *Redactor {
-	all := append(commonPatterns, patterns...)
+	all := append([]*redactPattern(nil), commonPatterns...)
+	all = append(all, patterns...)
 	return &Redactor{patterns: all}
 }
 
@@ -131,10 +132,10 @@ func IsSensitiveKey(key string) bool {
 
 // Stats represents redaction statistics.
 type Stats struct {
-	RedactedCount   int            `json:"redacted_count"`
-	RedactedTypes   map[string]int `json:"redacted_types"`
-	OriginalSize    int            `json:"original_size"`
-	RedactedSize    int            `json:"redacted_size"`
+	RedactedCount int            `json:"redacted_count"`
+	RedactedTypes map[string]int `json:"redacted_types"`
+	OriginalSize  int            `json:"original_size"`
+	RedactedSize  int            `json:"redacted_size"`
 }
 
 // RedactWithStats redacts and returns statistics.

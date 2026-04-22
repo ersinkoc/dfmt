@@ -14,7 +14,7 @@ var defaultPriorities = map[EventType]Priority{
 	EvtGitCheckout: PriP2,
 	EvtFileEdit:    PriP3,
 	EvtFileCreate:  PriP3,
-	EvtTaskCreate: PriP3,
+	EvtTaskCreate:  PriP3,
 	EvtError:       PriP2,
 	EvtMCPCall:     PriP4,
 	EvtNote:        PriP4,
@@ -23,9 +23,9 @@ var defaultPriorities = map[EventType]Priority{
 
 // RuleMatch defines matching criteria for a classification rule.
 type RuleMatch struct {
-	Type         EventType  `yaml:"type"`
-	PathGlob     string     `yaml:"path_glob,omitempty"`
-	MessageRegex string     `yaml:"message_regex,omitempty"`
+	Type         EventType `yaml:"type"`
+	PathGlob     string    `yaml:"path_glob,omitempty"`
+	MessageRegex string    `yaml:"message_regex,omitempty"`
 }
 
 // Rule defines a classification rule.

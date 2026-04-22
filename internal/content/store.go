@@ -40,12 +40,12 @@ type Chunk struct {
 
 // ChunkSet groups chunks from the same output.
 type ChunkSet struct {
-	ID      string    `json:"id"`
-	Kind    string    `json:"kind"` // "exec-stdout" | "file-read" | "fetch" | ...
-	Source  string    `json:"source"`
-	Intent  string    `json:"intent,omitempty"`
-	Chunks  []string  `json:"chunks"` // chunk IDs in order
-	Created time.Time `json:"created"`
+	ID      string        `json:"id"`
+	Kind    string        `json:"kind"` // "exec-stdout" | "file-read" | "fetch" | ...
+	Source  string        `json:"source"`
+	Intent  string        `json:"intent,omitempty"`
+	Chunks  []string      `json:"chunks"` // chunk IDs in order
+	Created time.Time     `json:"created"`
 	TTL     time.Duration `json:"ttl"`
 }
 
@@ -61,9 +61,9 @@ type Store struct {
 
 // StoreOptions configures the content store.
 type StoreOptions struct {
-	Path        string
-	MaxSize     int64 // Maximum size in bytes (default 64 MB)
-	PersistTTL  time.Duration
+	Path       string
+	MaxSize    int64 // Maximum size in bytes (default 64 MB)
+	PersistTTL time.Duration
 }
 
 // NewStore creates a new content store.
