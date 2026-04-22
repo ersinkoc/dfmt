@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"syscall"
 	"time"
 
 	"github.com/ersinkoc/dfmt/internal/project"
@@ -92,31 +93,42 @@ func (c *Client) ensureDaemon(projectPath string) error {
 	}
 
 	// Daemon not running - try to start it
+	// First, cleanup any stale daemon state
+	cleanupStaleDaemon(projectPath)
+
 	if startErr := startDaemon(projectPath); startErr != nil {
-		return fmt.Errorf("start daemon: %w", startErr)
+		return fmt.Errorf("failed to start daemon: %w (try: dfmt daemon --foreground to see errors)", startErr)
 	}
 
-	// Give daemon time to start
-	time.Sleep(500 * time.Millisecond)
+	// Give daemon time to start (with retry)
+	maxRetries := 3
+	for i := 0; i < maxRetries; i++ {
+		time.Sleep(500 * time.Millisecond)
 
-	// Update address from port file on Windows
-	if runtime.GOOS == goosWindows {
-		if data, err := os.ReadFile(portFile); err == nil {
-			if port, err := strconv.Atoi(string(data)); err == nil {
-				c.address = fmt.Sprintf("localhost:%d", port)
+		// Update address from port file on Windows
+		if runtime.GOOS == goosWindows {
+			if data, err := os.ReadFile(portFile); err == nil {
+				if port, err := strconv.Atoi(string(data)); err == nil {
+					c.address = fmt.Sprintf("localhost:%d", port)
+				}
 			}
+		}
+
+		// Try to connect
+		ctx2, cancel2 := context.WithTimeout(context.Background(), 2*time.Second)
+		_, err := c.Connect(ctx2)
+		cancel2()
+		if err == nil {
+			return nil
+		}
+
+		// Check if we should retry
+		if i == maxRetries-1 {
+			return fmt.Errorf("daemon started but not responding (try: dfmt daemon --foreground to debug)")
 		}
 	}
 
-	// Retry connection once
-	ctx2, cancel2 := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel2()
-
-	if _, err := c.Connect(ctx2); err != nil {
-		return fmt.Errorf("connect to daemon after start: %w", err)
-	}
-
-	return nil
+	return fmt.Errorf("daemon failed to start after %d retries", maxRetries)
 }
 
 // autoInitProject initializes the project if .dfmt/ doesn't exist.
@@ -309,7 +321,7 @@ func (c *Client) Recall(ctx context.Context, params transport.RecallParams) (*tr
 }
 
 // DaemonRunning checks if a daemon is running for the project.
-// It actually tries to connect to verify the daemon is responsive.
+// It actually tries to connect and verify via health check.
 func DaemonRunning(projectPath string) bool {
 	portFile := filepath.Join(projectPath, ".dfmt", "port")
 	socketPath := project.SocketPath(projectPath)
@@ -332,6 +344,15 @@ func DaemonRunning(projectPath string) bool {
 		return false
 	}
 
+	// Check if PID file matches a running process
+	if pid := readPID(projectPath); pid > 0 {
+		if !isProcessRunning(pid) {
+			// Stale PID - daemon crashed, cleanup
+			cleanupStaleDaemon(projectPath)
+			return false
+		}
+	}
+
 	// Actually try to connect
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
@@ -343,6 +364,44 @@ func DaemonRunning(projectPath string) bool {
 	}
 	conn.Close()
 	return true
+}
+
+// readPID reads the daemon PID from the pid file.
+func readPID(projectPath string) int {
+	pidPath := filepath.Join(projectPath, ".dfmt", "daemon.pid")
+	data, err := os.ReadFile(pidPath)
+	if err != nil {
+		return 0
+	}
+	var pid int
+	fmt.Sscanf(string(data), "%d", &pid)
+	return pid
+}
+
+// isProcessRunning checks if a process with the given PID is running.
+func isProcessRunning(pid int) bool {
+	process, err := os.FindProcess(pid)
+	if err != nil {
+		return false
+	}
+	// On Unix, we can signal 0 to check if process exists
+	// On Windows, FindProcess succeeds even for dead processes, so we need to check differently
+	if runtime.GOOS == "windows" {
+		// On Windows, try to kill with signal 0 doesn't work the same way
+		// Instead, we check if the process is still alive by waiting for it with 0 timeout
+		err := process.Signal(syscall.Signal(0))
+		return err == nil
+	}
+	// On Unix, signal 0 just checks if we can send to process
+	err = process.Signal(syscall.Signal(0))
+	return err == nil
+}
+
+// cleanupStaleDaemon cleans up files from a crashed daemon.
+func cleanupStaleDaemon(projectPath string) {
+	pidPath := filepath.Join(projectPath, ".dfmt", "daemon.pid")
+	os.Remove(pidPath)
+	// Don't remove port/socket - new daemon will overwrite
 }
 
 // Stats returns aggregated statistics from the daemon.
