@@ -165,6 +165,19 @@ func (s *HTTPServer) Stop(ctx context.Context) error {
 }
 
 func (s *HTTPServer) handle(w http.ResponseWriter, r *http.Request) {
+	// Recover from panics in request handling
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Printf("handler panic recovered: %v\n", r)
+			w.Header().Set("Content-Type", "application/json")
+			resp := Response{
+				JSONRPC: jsonRPCVersion,
+				Error:   &RPCError{Code: -32603, Message: "Internal error"},
+			}
+			json.NewEncoder(w).Encode(resp)
+		}
+	}()
+
 	w.Header().Set("Content-Type", "application/json")
 
 	if r.Method != http.MethodPost {

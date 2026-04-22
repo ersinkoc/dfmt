@@ -120,17 +120,27 @@ func New(projectPath string, cfg *config.Config) (*Daemon, error) {
 	return d, nil
 }
 
-// Start starts the daemon.
+// Start starts the daemon with panic recovery.
 func (d *Daemon) Start(ctx context.Context) error {
 	if d.running.Load() {
 		return fmt.Errorf("daemon already running")
 	}
 	d.running.Store(true)
 
-	// Start server
-	if err := d.server.Start(ctx); err != nil {
-		d.running.Store(false)
-		return fmt.Errorf("start server: %w", err)
+	// Protect server start with panic recovery
+	var startErr error
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				startErr = fmt.Errorf("panic during start: %v", r)
+				d.running.Store(false)
+			}
+		}()
+		startErr = d.server.Start(ctx)
+	}()
+
+	if startErr != nil {
+		return fmt.Errorf("start server: %w", startErr)
 	}
 
 	// Write PID file

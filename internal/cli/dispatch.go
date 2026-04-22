@@ -1177,8 +1177,8 @@ func runMCP(_ []string) int {
 	// Load or create index
 	indexPath := filepath.Join(dfmtDir, "index.gob")
 	cursorPath := filepath.Join(dfmtDir, "index.cursor")
-	index, _, _, err := core.LoadIndexWithCursor(indexPath, cursorPath)
-	if err != nil {
+	index, _, needsRebuild, err := core.LoadIndexWithCursor(indexPath, cursorPath)
+	if err != nil || needsRebuild || index == nil {
 		index = core.NewIndex()
 	}
 

@@ -27,6 +27,25 @@ func NewHandlers(index *core.Index, journal core.Journal, sb sandbox.Sandbox) *H
 	}
 }
 
+// logEvent appends a tool call event to the journal and index.
+func (h *Handlers) logEvent(ctx context.Context, eventType, summary string, data map[string]any) {
+	if h.journal == nil {
+		return
+	}
+	e := core.Event{
+		ID:       string(core.NewULID(time.Now())),
+		TS:       time.Now(),
+		Type:     core.EventType(eventType),
+		Priority: core.PriP4,
+		Source:   core.SrcMCP,
+		Data:     data,
+		Tags:     []string{summary},
+	}
+	e.Sig = e.ComputeSig()
+	_ = h.journal.Append(ctx, e)
+	h.index.Add(e)
+}
+
 // RememberParams are the parameters for the Remember method.
 type RememberParams struct {
 	Type     string         `json:"type"`
@@ -453,6 +472,12 @@ func (h *Handlers) Exec(ctx context.Context, params ExecParams) (*ExecResponse, 
 		return nil, err
 	}
 
+	h.logEvent(ctx, "tool.exec", params.Intent, map[string]any{
+		"lang":    params.Lang,
+		"exit":    resp.Exit,
+		"duration": resp.DurationMs,
+	})
+
 	return &ExecResponse{
 		Exit:       resp.Exit,
 		Stdout:     resp.Stdout,
@@ -497,6 +522,12 @@ func (h *Handlers) Read(ctx context.Context, params ReadParams) (*ReadResponse, 
 	if err != nil {
 		return nil, err
 	}
+
+	h.logEvent(ctx, "tool.read", params.Intent, map[string]any{
+		"path":       params.Path,
+		"read_bytes": resp.ReadBytes,
+		"size":       resp.Size,
+	})
 
 	return &ReadResponse{
 		Content:   resp.Content,
@@ -552,6 +583,11 @@ func (h *Handlers) Fetch(ctx context.Context, params FetchParams) (*FetchRespons
 	if err != nil {
 		return nil, err
 	}
+
+	h.logEvent(ctx, "tool.fetch", params.Intent, map[string]any{
+		"url":    params.URL,
+		"status": resp.Status,
+	})
 
 	return &FetchResponse{
 		Status:     resp.Status,

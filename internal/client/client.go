@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -33,6 +34,7 @@ const (
 )
 
 // NewClient creates a new client for the given project.
+// If the daemon is not running, it automatically starts it.
 func NewClient(projectPath string) (*Client, error) {
 	socketPath := project.SocketPath(projectPath)
 	portFile := filepath.Join(projectPath, ".dfmt", "port")
@@ -56,12 +58,54 @@ func NewClient(projectPath string) (*Client, error) {
 		address = socketPath
 	}
 
-	return &Client{
+	c := &Client{
 		socketPath: socketPath, // For debugging
 		network:    network,
 		address:    address,
 		timeout:    5 * time.Second,
-	}, nil
+	}
+
+	// Try to connect; if fails, auto-start daemon and retry
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	if _, err := c.Connect(ctx); err != nil {
+		// Daemon not running - try to start it
+		if startErr := startDaemon(projectPath); startErr == nil {
+			// Give daemon time to start
+			time.Sleep(500 * time.Millisecond)
+			// Update address from port file on Windows
+			if runtime.GOOS == goosWindows {
+				if data, err := os.ReadFile(portFile); err == nil {
+					if port, err := strconv.Atoi(string(data)); err == nil {
+						c.address = fmt.Sprintf("localhost:%d", port)
+					}
+				}
+			}
+		}
+	}
+
+	return c, nil
+}
+
+// startDaemon starts the dfmt daemon for the given project.
+func startDaemon(projectPath string) error {
+	exePath, err := os.Executable()
+	if err != nil {
+		// Try to find dfmt in PATH
+		if path, err := exec.LookPath("dfmt"); err == nil {
+			exePath = path
+		} else {
+			return fmt.Errorf("cannot find dfmt executable")
+		}
+	}
+
+	cmd := exec.Command(exePath, "daemon")
+	cmd.Dir = projectPath
+	cmd.Stdout = nil
+	cmd.Stderr = nil
+
+	return cmd.Start()
 }
 
 // Connect establishes a connection to the daemon.
