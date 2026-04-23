@@ -4387,3 +4387,26 @@ func TestInstallHookContentSubstitution(t *testing.T) {
 		t.Errorf("expected bare `dfmt capture` to be gone, got: %q", out)
 	}
 }
+
+func TestGetProjectReadsEnv(t *testing.T) {
+	prevEnv, hadEnv := os.LookupEnv("DFMT_PROJECT")
+	prevFlag := flagProject
+	t.Cleanup(func() {
+		flagProject = prevFlag
+		if hadEnv {
+			os.Setenv("DFMT_PROJECT", prevEnv)
+		} else {
+			os.Unsetenv("DFMT_PROJECT")
+		}
+	})
+	flagProject = ""
+	tmp := t.TempDir()
+	os.Setenv("DFMT_PROJECT", tmp)
+	got, err := getProject()
+	if err != nil {
+		t.Fatalf("getProject() error: %v", err)
+	}
+	if got != tmp && !strings.Contains(got, tmp) {
+		t.Fatalf("getProject() = %q, want %q (or contains)", got, tmp)
+	}
+}

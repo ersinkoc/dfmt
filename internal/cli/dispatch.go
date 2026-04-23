@@ -781,20 +781,30 @@ func runShellInit(args []string) int {
 		shell = args[0]
 	}
 
+	// Resolve the absolute path of the installing dfmt so sourced hooks
+	// invoke *this* binary rather than whatever `dfmt` is on PATH.
+	dfmtBin, err := os.Executable()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: os.Executable failed (%v); shell hooks will use PATH\n", err)
+		dfmtBin = ""
+	} else {
+		dfmtBin = filepath.ToSlash(dfmtBin)
+	}
+
 	switch shell {
 	case "bash":
 		fmt.Println("# Add to ~/.bashrc:")
 		fmt.Println("source /dev/stdin << 'EOF'")
-		fmt.Println(readHookFile("bash.sh"))
+		fmt.Println(installShellHookContent(readHookFile("bash.sh"), dfmtBin))
 		fmt.Println("EOF")
 	case "zsh":
 		fmt.Println("# Add to ~/.zshrc:")
 		fmt.Println("source /dev/stdin << 'EOF'")
-		fmt.Println(readHookFile("zsh.sh"))
+		fmt.Println(installShellHookContent(readHookFile("zsh.sh"), dfmtBin))
 		fmt.Println("EOF")
 	case "fish":
 		fmt.Println("# Add to ~/.config/fish/config.fish:")
-		fmt.Println(readHookFile("fish.fish"))
+		fmt.Println(installShellHookContent(readHookFile("fish.fish"), dfmtBin))
 	default:
 		fmt.Fprintf(os.Stderr, "unknown shell: %s\n", shell)
 		return 1
@@ -875,6 +885,19 @@ func installHookContent(raw, dfmtBin string) string {
 	// `dfmt capture` is specific enough to replace globally; the embedded
 	// templates do not otherwise mention it.
 	out = strings.ReplaceAll(out, "dfmt capture", quoted+" capture")
+	return out
+}
+
+// installShellHookContent pins shell-init templates to the absolute path of the
+// installing dfmt binary by replacing the PATH-based `command -v dfmt` guard.
+func installShellHookContent(raw, dfmtBin string) string {
+	if dfmtBin == "" || strings.Contains(dfmtBin, "'") {
+		return raw
+	}
+	quoted := "'" + dfmtBin + "'"
+	out := strings.ReplaceAll(raw, "command -v dfmt >/dev/null 2>&1", "[ -x "+quoted+" ]")
+	out = strings.ReplaceAll(out, "\tdfmt capture", "\t"+quoted+" capture")
+	out = strings.ReplaceAll(out, "    dfmt capture", "    "+quoted+" capture")
 	return out
 }
 
