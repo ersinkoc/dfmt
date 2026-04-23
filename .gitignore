@@ -53,3 +53,5 @@ coverage.html
 
 .dmft/
 .project/
+# Claude Code per-session harness
+.claude/
