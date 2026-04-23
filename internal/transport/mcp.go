@@ -1,4 +1,4 @@
-package transport
+﻿package transport
 
 import (
 	"context"
@@ -61,7 +61,15 @@ func NewMCPProtocol(handlers *Handlers) *MCPProtocol {
 }
 
 // Handle handles an MCP request.
+//
+// JSON-RPC notifications — messages without an "id" field — MUST NOT receive
+// a response. The MCP handshake uses notifications/initialized; Claude Code
+// considers a server that replies to notifications broken. Callers should
+// treat a (nil, nil) return as "no response to send".
 func (m *MCPProtocol) Handle(req *MCPRequest) (*MCPResponse, error) {
+	if req.ID == nil {
+		return nil, nil
+	}
 	switch req.Method {
 	case "initialize":
 		return m.handleInitialize(req)

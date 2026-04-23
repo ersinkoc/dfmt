@@ -1,4 +1,4 @@
-package cli
+﻿package cli
 
 import (
 	"bufio"
@@ -627,9 +627,9 @@ func runDoctor(args []string) int {
 	allOk := true
 	for _, c := range checks {
 		if c.check() {
-			fmt.Printf("✓ %s\n", c.name)
+			fmt.Printf("âœ“ %s\n", c.name)
 		} else {
-			fmt.Printf("✗ %s\n", c.name)
+			fmt.Printf("âœ— %s\n", c.name)
 			allOk = false
 		}
 	}
@@ -738,7 +738,7 @@ func runStats(args []string) int {
 		}
 
 		if resp.SessionStart != "" && resp.SessionEnd != "" {
-			fmt.Printf("Session: %s → %s\n", resp.SessionStart, resp.SessionEnd)
+			fmt.Printf("Session: %s â†’ %s\n", resp.SessionStart, resp.SessionEnd)
 		}
 
 		if resp.EventsTotal == 0 {
@@ -956,10 +956,10 @@ func runSetupVerify() int {
 	allOk := true
 	for _, f := range m.Files {
 		if _, err := os.Stat(f.Path); err != nil {
-			fmt.Printf("✗ %s (missing)\n", f.Path)
+			fmt.Printf("âœ— %s (missing)\n", f.Path)
 			allOk = false
 		} else {
-			fmt.Printf("✓ %s\n", f.Path)
+			fmt.Printf("âœ“ %s\n", f.Path)
 		}
 	}
 
@@ -1262,6 +1262,13 @@ func runMCP(_ []string) int {
 
 		// Handle via MCP protocol
 		resp, _ := mcp.Handle(&req)
+
+		// JSON-RPC notifications (no ID) yield a nil response and MUST NOT
+		// produce any bytes on stdout — writing {} or null would confuse
+		// the client's request/response correlation.
+		if resp == nil {
+			continue
+		}
 
 		// Write response
 		if err := json.NewEncoder(writer).Encode(resp); err != nil {
