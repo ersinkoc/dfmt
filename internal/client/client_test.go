@@ -1259,8 +1259,8 @@ func TestNewClientWindowsPortFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewClient failed: %v", err)
 	}
-	if cl.address != "localhost:54321" {
-		t.Errorf("address = %s, want localhost:54321", cl.address)
+	if cl.address != "127.0.0.1:54321" {
+		t.Errorf("address = %s, want 127.0.0.1:54321", cl.address)
 	}
 }
 

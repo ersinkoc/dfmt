@@ -33,7 +33,7 @@ type Client struct {
 const (
 	goosWindows    = "windows"
 	netUnix        = "unix"
-	addrLocalhost0 = "localhost:0"
+	addrLocalhost0 = "127.0.0.1:0"
 )
 
 // NewClient creates a new client for the given project.
@@ -58,7 +58,7 @@ func NewClient(projectPath string) (*Client, error) {
 		// Try to read port file
 		if data, err := os.ReadFile(portFile); err == nil {
 			if port, err := strconv.Atoi(string(data)); err == nil {
-				address = fmt.Sprintf("localhost:%d", port)
+				address = fmt.Sprintf("127.0.0.1:%d", port)
 			}
 		}
 	} else {
@@ -118,7 +118,7 @@ func (c *Client) ensureDaemon(projectPath string) error {
 		if runtime.GOOS == goosWindows {
 			if data, err := os.ReadFile(portFile); err == nil {
 				if port, err := strconv.Atoi(string(data)); err == nil {
-					c.address = fmt.Sprintf("localhost:%d", port)
+					c.address = fmt.Sprintf("127.0.0.1:%d", port)
 				}
 			}
 		}
@@ -371,7 +371,7 @@ func DaemonRunning(projectPath string) bool {
 		network = "tcp"
 		if data, err := os.ReadFile(portFile); err == nil {
 			if port, err := strconv.Atoi(string(data)); err == nil {
-				address = fmt.Sprintf("localhost:%d", port)
+				address = fmt.Sprintf("127.0.0.1:%d", port)
 			}
 		}
 	} else {
@@ -383,26 +383,27 @@ func DaemonRunning(projectPath string) bool {
 		return false
 	}
 
-	// Check if PID file matches a running process
-	if pid := readPID(projectPath); pid > 0 {
-		if !isProcessRunning(pid) {
-			// Stale PID - daemon crashed, cleanup
-			cleanupStaleDaemon(projectPath)
-			return false
-		}
-	}
-
-	// Actually try to connect
+	// Try to connect — a successful dial is the ground truth that a daemon
+	// is accepting requests, regardless of PID file state.
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
 
 	dialer := net.Dialer{Timeout: 500 * time.Millisecond}
 	conn, err := dialer.DialContext(ctx, network, address)
-	if err != nil {
-		return false
+	if err == nil {
+		conn.Close()
+		return true
 	}
-	conn.Close()
-	return true
+
+	// Dial failed. If there's a PID file for a dead process, remove it so
+	// the next auto-start doesn't see stale state. isProcessRunning is
+	// best-effort on Windows; on a false "not running" reading we would
+	// still only delete the PID file (port/socket are untouched), so the
+	// overall "not running" verdict remains consistent with the failed dial.
+	if pid := readPID(projectPath); pid > 0 && !isProcessRunning(pid) {
+		cleanupStaleDaemon(projectPath)
+	}
+	return false
 }
 
 // readPID reads the daemon PID from the pid file.

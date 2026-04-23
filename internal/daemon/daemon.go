@@ -92,8 +92,11 @@ func New(projectPath string, cfg *config.Config) (*Daemon, error) {
 	// Create server based on platform - use HTTPServer for HTTP support (dashboard, API)
 	var server Server
 	if runtime.GOOS == "windows" {
-		// On Windows, use TCP with HTTPServer for full HTTP support
-		httpServer := transport.NewHTTPServer("localhost:0", handlers)
+		// On Windows, use TCP with HTTPServer for full HTTP support.
+		// Bind to the IPv4 loopback explicitly so we don't race between
+		// ::1 and 127.0.0.1 — the client also dials 127.0.0.1 to avoid
+		// slow IPv6-first fallbacks through "localhost" resolution.
+		httpServer := transport.NewHTTPServer("127.0.0.1:0", handlers)
 		portFile := filepath.Join(dfmtDir, "port")
 		httpServer.SetPortFile(portFile)
 		server = httpServer
