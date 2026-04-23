@@ -735,7 +735,6 @@ func TestWriteTempFileMultipleExtensions(t *testing.T) {
 		if err != nil {
 			t.Fatalf("writeTempFile(%s) failed: %v", tt.lang, err)
 		}
-		defer os.Remove(path)
 
 		if !strings.HasSuffix(path, tt.ext) {
 			t.Errorf("writeTempFile(%s) path = %q, want suffix %q", tt.lang, path, tt.ext)
@@ -868,7 +867,6 @@ func TestWriteTempFileUnknownLanguage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("writeTempFile(cobol) failed: %v", err)
 	}
-	defer os.Remove(path)
 
 	if !strings.HasSuffix(path, ".txt") {
 		t.Errorf("writeTempFile(cobol) path = %q, want suffix .txt", path)
@@ -932,11 +930,10 @@ func TestWriteTempFileMultipleLangs(t *testing.T) {
 	langs := []string{"python", "node", "ruby", "perl", "php", "R", "elixir", "go", "bash", "sh"}
 
 	for _, lang := range langs {
-		path, err := writeTempFile(lang, "code")
+		_, err := writeTempFile(lang, "code")
 		if err != nil {
 			t.Fatalf("writeTempFile(%s) failed: %v", lang, err)
 		}
-		defer os.Remove(path)
 	}
 }
 
