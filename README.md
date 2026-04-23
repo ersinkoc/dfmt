@@ -30,13 +30,33 @@ DFMT is a local daemon that sits between your AI coding agent and its tools. It 
 
 **Works everywhere.** MCP + hooks + CLI on all major AI coding agents. `dfmt setup` detects what you have installed and configures each.
 
-## Install
+## Quick install
 
-### macOS and Linux
+One command, and Claude Code is wired up (binary installed, MCP server registered, per-project trust prompts silenced the first time you run `dfmt init`).
+
+### macOS / Linux
 
 ```bash
-curl -fsSL https://dfmt.dev/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/ersinkoc/dfmt/main/install.sh | sh
 ```
+
+### Windows (PowerShell)
+
+```powershell
+iwr https://raw.githubusercontent.com/ersinkoc/dfmt/main/install.ps1 | iex
+```
+
+After the installer finishes:
+
+```bash
+cd my-project
+dfmt init
+# then restart Claude Code - you're done.
+```
+
+Set `DFMT_DEBUG=1` (or `$env:DFMT_DEBUG = '1'` on Windows) for verbose install logs.
+
+## Install (other options)
 
 ### Homebrew (macOS, Linux)
 

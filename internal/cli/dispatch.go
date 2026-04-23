@@ -195,6 +195,13 @@ storage:
 	// Write project-local Claude Code settings to enforce DFMT tools
 	_ = writeProjectClaudeSettings(dir)
 
+	// Mark this project as trusted in ~/.claude.json so Claude Code doesn't
+	// re-prompt and the dfmt MCP server is attached to this project. Failure
+	// is non-fatal.
+	if err := setup.PatchClaudeCodeUserJSON(dir, false); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: patch ~/.claude.json: %v\n", err)
+	}
+
 	fmt.Printf("Initialized DFMT in %s\n", dir)
 	return 0
 }
@@ -1024,6 +1031,20 @@ func configureClaudeCode(_ setup.Agent) error {
 		Agent:   "claude-code",
 		Version: "1",
 	})
+
+	// Also patch ~/.claude.json so the Claude Code CLI picks up the dfmt
+	// MCP server at user scope. Failure is non-fatal: the legacy mcp.json
+	// above still works for older Claude Code versions.
+	//
+	// NOTE: ~/.claude.json is deliberately NOT added to the setup manifest.
+	// The manifest-based uninstall calls os.Remove on every tracked path,
+	// and ~/.claude.json is a *shared* config file owned by the user — we
+	// only want to strip our own keys, not delete the whole file. A proper
+	// uninstall of these keys is tracked separately (see install.sh/ps1
+	// and the dfmt.bak backup written on first patch).
+	if err := setup.PatchClaudeCodeUserJSON("", true); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: patch ~/.claude.json: %v\n", err)
+	}
 	setup.SaveManifest(m)
 
 	return nil
