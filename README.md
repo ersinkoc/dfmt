@@ -1,5 +1,9 @@
 # DFMT
 
+<p align="center">
+  <img src="assets/banner.png" alt="DFMT Banner" width="100%">
+</p >
+
 **Your tokens, your work, your agent — undisturbed.**
 
 DFMT is a local daemon that keeps AI coding agents from wasting your context window — and from losing your working state when the conversation resets.
