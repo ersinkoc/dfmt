@@ -5,6 +5,9 @@ on:
     tags:
       - v*
 
+permissions:
+  contents: write
+
 jobs:
   release:
     runs-on: ubuntu-latest
@@ -18,24 +21,38 @@ jobs:
           cache: true
 
       - name: Cross-compile
+        env:
+          CGO_ENABLED: "0"
+          VERSION: ${{ github.ref_name }}
         run: |
           mkdir -p dist
-          GOOS=linux GOARCH=amd64 go build -ldflags "-X main.version=${{ github.ref_name }}" -o dist/dfmt-linux-amd64 ./cmd/dfmt
-          GOOS=linux GOARCH=arm64 go build -ldflags "-X main.version=${{ github.ref_name }}" -o dist/dfmt-linux-arm64 ./cmd/dfmt
-          GOOS=darwin GOARCH=amd64 go build -ldflags "-X main.version=${{ github.ref_name }}" -o dist/dfmt-darwin-amd64 ./cmd/dfmt
-          GOOS=darwin GOARCH=arm64 go build -ldflags "-X main.version=${{ github.ref_name }}" -o dist/dfmt-darwin-arm64 ./cmd/dfmt
-          GOOS=windows GOARCH=amd64 go build -ldflags "-X main.version=${{ github.ref_name }}" -o dist/dfmt-windows-amd64.exe ./cmd/dfmt
+          LDFLAGS="-s -w -X main.version=${VERSION}"
+          build() {
+            local os="$1" arch="$2" ext="$3"
+            local out="dist/dfmt-${os}-${arch}${ext}"
+            echo "building $out"
+            GOOS="$os" GOARCH="$arch" go build -trimpath -ldflags "$LDFLAGS" -o "$out" ./cmd/dfmt
+          }
+          build linux   amd64 ""
+          build linux   arm64 ""
+          build darwin  amd64 ""
+          build darwin  arm64 ""
+          build windows amd64 ".exe"
+          build windows arm64 ".exe"
+          build freebsd amd64 ""
 
       - name: Checksums
         run: |
           cd dist
           sha256sum * > sha256sums.txt
+          cat sha256sums.txt
 
       - name: Create Release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
+          generate_release_notes: true
           files: |
-            dist/*
+            dist/dfmt-*
             dist/sha256sums.txt
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

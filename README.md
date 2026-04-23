@@ -32,7 +32,7 @@ DFMT is a local daemon that sits between your AI coding agent and its tools. It 
 
 ## Quick install
 
-One command, and Claude Code is wired up (binary installed, MCP server registered, per-project trust prompts silenced the first time you run `dfmt init`).
+One command. No Go toolchain required — the installer downloads a prebuilt binary from GitHub Releases (falls back to `go install` from source if no release matches your platform). Claude Code is wired up automatically: MCP server registered, per-project trust prompts silenced the first time you run `dfmt init`.
 
 ### macOS / Linux
 

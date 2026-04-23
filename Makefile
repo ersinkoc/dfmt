@@ -33,5 +33,6 @@ release:
 	GOOS=darwin GOARCH=amd64 go build -ldflags "$(LDFLAGS)" -o dist/release/dfmt-darwin-amd64 ./cmd/dfmt
 	GOOS=darwin GOARCH=arm64 go build -ldflags "$(LDFLAGS)" -o dist/release/dfmt-darwin-arm64 ./cmd/dfmt
 	GOOS=windows GOARCH=amd64 go build -ldflags "$(LDFLAGS)" -o dist/release/dfmt-windows-amd64.exe ./cmd/dfmt
+	GOOS=windows GOARCH=arm64 go build -ldflags "$(LDFLAGS)" -o dist/release/dfmt-windows-arm64.exe ./cmd/dfmt
 	GOOS=freebsd GOARCH=amd64 go build -ldflags "$(LDFLAGS)" -o dist/release/dfmt-freebsd-amd64 ./cmd/dfmt
 	@echo "Release binaries in dist/release/"
