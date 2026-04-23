@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/ersinkoc/dfmt/internal/capture"
 	"github.com/ersinkoc/dfmt/internal/client"
 	"github.com/ersinkoc/dfmt/internal/config"
 	"github.com/ersinkoc/dfmt/internal/core"
@@ -32,6 +33,7 @@ type Daemon struct {
 	journal     core.Journal
 	server      Server
 	handlers    *transport.Handlers
+	fswatcher   *capture.FSWatcher
 
 	running    atomic.Bool // Use atomic for race-free access
 	idleTimer  *time.Timer
@@ -115,6 +117,17 @@ func New(projectPath string, cfg *config.Config) (*Daemon, error) {
 		server = transport.NewHTTPServerWithListener(ln, handlers, socketPath)
 	}
 
+	// Optionally construct the filesystem watcher. Start() wires its event channel into the journal.
+	var fswatcher *capture.FSWatcher
+	if cfg.Capture.FS.Enabled {
+		w, werr := capture.NewFSWatcher(projectPath, cfg.Capture.FS.Ignore, cfg.Capture.FS.DebounceMS)
+		if werr != nil {
+			return nil, fmt.Errorf("create fswatcher: %w", werr)
+		}
+		w.SetProject(projectPath)
+		fswatcher = w
+	}
+
 	d := &Daemon{
 		projectPath: projectPath,
 		config:      cfg,
@@ -122,6 +135,7 @@ func New(projectPath string, cfg *config.Config) (*Daemon, error) {
 		journal:     journal,
 		server:      server,
 		handlers:    handlers,
+		fswatcher:   fswatcher,
 		shutdownCh:  make(chan struct{}),
 	}
 
@@ -155,6 +169,15 @@ func (d *Daemon) Start(ctx context.Context) error {
 	pidPath := filepath.Join(d.projectPath, ".dfmt", "daemon.pid")
 	pidData := fmt.Sprintf("%d\n", os.Getpid())
 	os.WriteFile(pidPath, []byte(pidData), 0644)
+
+	// Start optional filesystem watcher and pipe its events into the journal.
+	if d.fswatcher != nil {
+		if err := d.fswatcher.Start(ctx); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: fswatcher start: %v\n", err)
+		} else {
+			go d.consumeFSWatch(ctx)
+		}
+	}
 
 	// Start idle monitor
 	d.startIdleMonitor(ctx)
@@ -193,6 +216,11 @@ func (d *Daemon) Stop(ctx context.Context) error {
 	}
 	core.PersistIndex(d.index, indexPath, hiID)
 
+	// Stop filesystem watcher
+	if d.fswatcher != nil {
+		_ = d.fswatcher.Stop(ctx)
+	}
+
 	// Stop server
 	if err := d.server.Stop(ctx); err != nil {
 		return fmt.Errorf("stop server: %w", err)
@@ -212,6 +240,29 @@ func (d *Daemon) Stop(ctx context.Context) error {
 
 	fmt.Println("DFMT daemon stopped")
 	return nil
+}
+
+// consumeFSWatch drains events from the filesystem watcher into the journal and index.
+// It returns when the watcher's Events channel closes or the daemon shuts down.
+func (d *Daemon) consumeFSWatch(ctx context.Context) {
+	events := d.fswatcher.Events()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-d.shutdownCh:
+			return
+		case e, ok := <-events:
+			if !ok {
+				return
+			}
+			if err := d.journal.Append(ctx, e); err != nil {
+				fmt.Fprintf(os.Stderr, "fswatch journal append: %v\n", err)
+				continue
+			}
+			d.index.Add(e)
+		}
+	}
 }
 
 func (d *Daemon) startIdleMonitor(ctx context.Context) {

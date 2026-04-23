@@ -14,11 +14,12 @@ import (
 
 // FSWatcher watches the filesystem for changes.
 type FSWatcher struct {
-	path       string
-	ignore     []string
-	debounceMs int
-	events     chan core.Event
-	stopCh     chan struct{}
+	path        string
+	projectPath string
+	ignore      []string
+	debounceMs  int
+	events      chan core.Event
+	stopCh      chan struct{}
 
 	// pathsMu guards watchedPaths, which tracks every directory that currently
 	// has a live platform-specific watcher. Stop() iterates this slice to wake
@@ -33,6 +34,9 @@ type FSWatcher struct {
 
 // initWatcher is set by platform-specific files via init()
 var initWatcher func(w *FSWatcher)
+
+// SetProject sets the project identifier stamped on every emitted Event before its signature is computed. It is optional; when empty, events are emitted with no project attribution.
+func (w *FSWatcher) SetProject(p string) { w.projectPath = p }
 
 // NewFSWatcher creates a new filesystem watcher.
 func NewFSWatcher(path string, ignore []string, debounceMs int) (*FSWatcher, error) {
@@ -183,6 +187,7 @@ func (w *FSWatcher) emitEvent(path string, isDir bool, operation string) {
 	e := core.Event{
 		ID:       string(core.NewULID(time.Now())),
 		TS:       time.Now(),
+		Project:  w.projectPath,
 		Type:     eventType,
 		Priority: core.PriP3,
 		Source:   core.SrcFSWatch,

@@ -23,8 +23,8 @@ func TestDefault(t *testing.T) {
 	if !cfg.Capture.MCP.Enabled {
 		t.Error("Capture.MCP.Enabled should be true")
 	}
-	if !cfg.Capture.FS.Enabled {
-		t.Error("Capture.FS.Enabled should be true")
+	if cfg.Capture.FS.Enabled {
+		t.Error("Capture.FS.Enabled should be false (opt-in)")
 	}
 	if cfg.Capture.FS.DebounceMS != 500 {
 		t.Errorf("Capture.FS.DebounceMS = %d, want 500", cfg.Capture.FS.DebounceMS)
