@@ -172,6 +172,7 @@ func TestLinuxWatchLoop_CreateEvent(t *testing.T) {
 	}
 
 	close(w.stopCh)
+	unix.Close(fd) // unblock the blocking inotify read
 	wg.Wait()
 }
 
@@ -231,6 +232,7 @@ func TestLinuxWatchLoop_ModifyEvent(t *testing.T) {
 	}
 
 	close(w.stopCh)
+	unix.Close(fd) // unblock the blocking inotify read
 	wg.Wait()
 }
 
@@ -290,6 +292,7 @@ func TestLinuxWatchLoop_DeleteEvent(t *testing.T) {
 	}
 
 	close(w.stopCh)
+	unix.Close(fd) // unblock the blocking inotify read
 	wg.Wait()
 }
 
@@ -361,6 +364,7 @@ func TestLinuxWatchLoop_EmptyName(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	close(w.stopCh)
+	unix.Close(fd) // unblock the blocking inotify read
 	wg.Wait()
 }
 
