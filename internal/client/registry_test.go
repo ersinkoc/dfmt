@@ -145,7 +145,7 @@ func TestRegistryConcurrent(t *testing.T) {
 		go func(n int) {
 			defer wg.Done()
 			r.Register(DaemonEntry{
-				ProjectPath: filepath.Join("/p", "x"),
+				ProjectPath: "/p/x",
 				PID:         os.Getpid(),
 				Port:        n,
 			})
