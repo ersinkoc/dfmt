@@ -151,4 +151,3 @@ func (s *Summarizer) extractTopPhrases(body string) []string {
 func intToStr(n int) string {
 	return strconv.Itoa(n)
 }
-
