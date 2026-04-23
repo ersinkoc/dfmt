@@ -205,6 +205,31 @@ issues:
       linters:
         - errcheck
       source: 'fs\.Parse\(args\)|os\.Remove\(|os\.WriteFile\(|fmt\.Scanln\(|setup\.SaveManifest\(|setup\.BackupFile\(|json\.NewEncoder\(writer\)\.Encode\(|writer\.Flush\(|f\.WriteString\(|f\.Close\(\)|json\.Unmarshal\(|d\.Stop\(|fmt\.Sscanf\(|process\.Signal\('
+    # Client dispatcher: best-effort file and socket cleanup
+    - path: internal/client/client\.go$
+      linters:
+        - errcheck
+      source: 'f\.(WriteString|Close)\(|os\.(MkdirAll|WriteFile|Remove)\(|conn\.Close\(|fmt\.Sscanf\('
+    # Client registry: best-effort file operations
+    - path: internal/client/registry\.go$
+      linters:
+        - errcheck
+      source: 'os\.(MkdirAll|WriteFile)\(|fmt\.Sscanf\('
+    # Client process (Windows): handle close is best-effort
+    - path: internal/client/process_windows\.go$
+      linters:
+        - errcheck
+      source: 'syscall\.CloseHandle\('
+    # Client dispatcher: network string repeated a handful of times, not worth a constant
+    - path: internal/client/client\.go$
+      linters:
+        - goconst
+      source: '"tcp"'
+    # CLI dispatcher: runtime.GOOS comparison literals repeat by necessity
+    - path: internal/cli/dispatch\.go$
+      linters:
+        - goconst
+      source: '"windows"'
     # Dashboard HTML: CSS lines are inherently long
     - path: internal/transport/dashboard\.go$
       linters:

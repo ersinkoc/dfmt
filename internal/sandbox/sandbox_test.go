@@ -63,8 +63,8 @@ func TestGlobMatch(t *testing.T) {
 		{"git *", "git push origin main", true},
 		{"git *", "gitk", false},
 		{"npm *", "npm install", true},
-		{"rm -rf *", "rm -rf /", false}, // star doesn't match slash
-		{"rm -rf /*", "rm -rf /", false},   // /* at end requires a non-empty path segment
+		{"rm -rf *", "rm -rf /", false},     // star doesn't match slash
+		{"rm -rf /*", "rm -rf /", false},    // /* at end requires a non-empty path segment
 		{"rm -rf /*", "rm -rf /home", true}, // catches dangerous children like /home, /etc, /var
 		{"**", "anything", true},
 	}

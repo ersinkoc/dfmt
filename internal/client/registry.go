@@ -16,7 +16,7 @@ import (
 type DaemonEntry struct {
 	ProjectPath string    `json:"project_path"`
 	PID         int       `json:"pid"`
-	Port        int       `json:"port,omitempty"`      // Windows TCP port
+	Port        int       `json:"port,omitempty"`        // Windows TCP port
 	SocketPath  string    `json:"socket_path,omitempty"` // Unix socket
 	StartedAt   time.Time `json:"started_at"`
 	LastSeen    time.Time `json:"last_seen"`

@@ -477,8 +477,8 @@ func (h *Handlers) Exec(ctx context.Context, params ExecParams) (*ExecResponse, 
 	}
 
 	h.logEvent(ctx, "tool.exec", params.Intent, map[string]any{
-		"lang":    params.Lang,
-		"exit":    resp.Exit,
+		"lang":     params.Lang,
+		"exit":     resp.Exit,
 		"duration": resp.DurationMs,
 	})
 
