@@ -1,248 +1,245 @@
-linter-settings:
-  golangci-lint:
-    version: latest
-  govet:
-    check-shadowing: true
-  gocyclo:
-    min-complexity: 20
-  maligned:
-    suggest-new: true
-  dupl:
-    threshold: 150
-  goconst:
-    min-len: 3
-    min-occurrences: 3
-  misspell:
-    locale: US
-  lll:
-    line-length: 120
-  gocritic:
-    enabled-tags:
-      - diagnostic
-      - experimental
-      - opinionated
-      - performance
-      - style
-    disabled-checks:
-      - ifElseChain
-      - captLocal
+version: "2"
 
 linters:
-  disable-all: true
+  default: none
   enable:
     - bodyclose
-    - copyloopvar
     - dogsled
     - errcheck
     - goconst
     - gocritic
     - gocyclo
-    - gofmt
-    - goimports
-    - gosimple
     - govet
     - ineffassign
     - lll
     - misspell
     - nakedret
     - staticcheck
-    - typecheck
     - unconvert
-    - unused
+  settings:
+    govet:
+      enable:
+        - shadow
+    gocyclo:
+      min-complexity: 20
+    dupl:
+      threshold: 150
+    goconst:
+      min-len: 3
+      min-occurrences: 3
+    misspell:
+      locale: US
+    lll:
+      line-length: 120
+    gocritic:
+      enabled-tags:
+        - diagnostic
+        - experimental
+        - opinionated
+        - performance
+        - style
+      disabled-checks:
+        - ifElseChain
+        - captLocal
+  exclusions:
+    rules:
+      # Test files: common OS helpers whose errors are safe to ignore in tests
+      - path: _test\.go$
+        linters:
+          - errcheck
+        source: 'os\.(Setenv|Unsetenv|MkdirAll|WriteFile|Remove|RemoveAll|Chmod|Chdir|Create|Truncate|Symlink)\('
+      # Test files: defer close/remove patterns
+      - path: _test\.go$
+        linters:
+          - errcheck
+        source: 'defer .*\.(Close|Remove)\('
+      # Test files: fmt.Fprintf to testing output is safe to ignore
+      - path: _test\.go$
+        linters:
+          - errcheck
+        source: 'fmt\.(Fprint|Fprintf|Fprintln)\('
+      # Logging helper: Init in package init is intentionally best-effort
+      - path: internal/logging/logging\.go$
+        linters:
+          - errcheck
+        source: 'Init\('
+      # Logging writer: best-effort write
+      - path: internal/logging/logging\.go$
+        linters:
+          - errcheck
+        source: 'w\.Write\('
+      # Sandbox permissions: temp file cleanup is best-effort
+      - path: internal/sandbox/permissions\.go$
+        linters:
+          - errcheck
+        source: 'defer os\.Remove|tmpfile\.(Close|Sync)\(|os\.Remove\(tmpName\)'
+      # Logging: best-effort closer close
+      - path: internal/logging/logging\.go$
+        linters:
+          - errcheck
+        source: 'closer\.Close\('
+      # Registry: best-effort defer close
+      - path: internal/project/registry\.go$
+        linters:
+          - errcheck
+        source: 'defer f\.Close\('
+      # Daemon lock: best-effort close/unlock
+      - path: internal/daemon/lock\.go$
+        linters:
+          - errcheck
+        source: 'f\.Close\(|unlockFlock\('
+      # Client: best-effort body close
+      - path: internal/client/client\.go$
+        linters:
+          - errcheck
+        source: 'defer resp\.Body\.Close\('
+      # Content store / core index: defer close on file handles is best-effort
+      - path: 'internal/content/store\.go$|internal/core/index\.go$|internal/core/index_persist\.go$'
+        linters:
+          - errcheck
+        source: 'defer (f|gz|cf)\.Close\('
+      # Test files: single-statement close/write/add/stop/connect/probe/exec/remove
+      - path: _test\.go$
+        linters:
+          - errcheck
+        source: '(\w+\.Close\(|\w+\.Write\(|\w+\.Add\(|\w+\.Remove\(|\w+\.Stop\(|\w+\.Connect\(|\w+\.Probe\(|\w+\.Exec\(|\w+\.Close\(|\w+\.writeAll\(|fmt\.Sscanf\()'
+      # Test files: deferred close/stop
+      - path: _test\.go$
+        linters:
+          - errcheck
+        source: 'defer \w+\.(Close|Stop)\('
+      # Benchmark: best-effort exec
+      - path: cmd/dfmt-bench/main\.go$
+        linters:
+          - errcheck
+        source: 'sb\.Exec\('
+      # Content store tests: PutChunk/PutChunkSet/persistChunkSet are best-effort
+      - path: internal/content/store_test\.go$
+        linters:
+          - errcheck
+        source: 'store\.(PutChunk|PutChunkSet|persistChunkSet)\('
+      # Core journal tests: Append/WriteString/Checkpoint are best-effort
+      - path: 'internal/core/journal_test\.go$'
+        linters:
+          - errcheck
+        source: 'j\.Append\(|f\.WriteString\(|j\.Checkpoint\('
+      # Core journal: best-effort file operations
+      - path: internal/core/journal\.go$
+        linters:
+          - errcheck
+        source: 'f\.Close\(\)|readFile\.Close\(\)|j\.file\.Seek\('
+      # Core ulid: rand.Read errors are negligible for ULIDs
+      - path: internal/core/ulid\.go$
+        linters:
+          - errcheck
+        source: 'rand\.Read\('
+      # Daemon tests: lock release is best-effort
+      - path: internal/daemon/daemon_test\.go$
+        linters:
+          - errcheck
+        source: 'lock1\.Release\('
+      # Capture windows: filepath.Walk is best-effort
+      - path: internal/capture/fswatch_windows\.go$
+        linters:
+          - errcheck
+        source: 'filepath\.Walk\('
+      # CLI tests: WriteString and SaveManifest are best-effort
+      - path: internal/cli/cli_test\.go$
+        linters:
+          - errcheck
+        source: 'w\.WriteString\(|setup\.SaveManifest\('
+      # Daemon: best-effort file operations
+      - path: internal/daemon/daemon\.go$
+        linters:
+          - errcheck
+        source: 'os\.Chmod\(|os\.WriteFile\(|core\.PersistIndex\(|os\.Remove\(|d\.Stop\('
+      # Transport socket/tcp: best-effort writes and closes
+      - path: 'internal/transport/socket\.go$|internal/transport/tcp\.go$'
+        linters:
+          - errcheck
+        source: 'os\.Chmod\(|defer conn\.Close\(\)|codec\.Write(Error|Response)\(|ln\.Close\(\)'
+      # Transport socket tests: server start is best-effort
+      - path: internal/transport/socket_test\.go$
+        linters:
+          - errcheck
+        source: 'server\.Start\('
+      # Transport HTTP: standard web handler patterns are best-effort
+      - path: internal/transport/http\.go$
+        linters:
+          - errcheck
+        source: 'defer r\.Body\.Close\(|json\.NewEncoder\(w\)\.Encode\(|json\.Unmarshal\(|w\.Write\(|ln\.Close\(\)|os\.Remove\(|s\.server\.(Shutdown|Serve)\('
+      # Transport JSON-RPC: write is best-effort
+      - path: internal/transport/jsonrpc\.go$
+        linters:
+          - errcheck
+        source: 'c\.rw\.Write\('
+      # Transport socket: remove is best-effort
+      - path: internal/transport/socket\.go$
+        linters:
+          - errcheck
+        source: 'os\.Remove\('
+      # Transport MCP: unmarshal is best-effort
+      - path: internal/transport/mcp\.go$
+        linters:
+          - errcheck
+        source: 'json\.Unmarshal\('
+      # Transport tests: codec write/unmarshal
+      - path: internal/transport/.+_test\.go$
+        linters:
+          - errcheck
+        source: 'codec\.Write(Request|Response)\(|json\.Unmarshal\('
+      # CLI dispatch: flag parse and best-effort cleanup
+      - path: internal/cli/dispatch\.go$
+        linters:
+          - errcheck
+        source: 'fs\.Parse\(args\)|os\.Remove\(|os\.WriteFile\(|fmt\.Scanln\(|setup\.SaveManifest\(|setup\.BackupFile\(|json\.NewEncoder\(writer\)\.Encode\(|writer\.Flush\(|f\.WriteString\(|f\.Close\(\)|json\.Unmarshal\(|d\.Stop\(|fmt\.Sscanf\(|process\.Signal\('
+      # Client dispatcher: best-effort file and socket cleanup
+      - path: internal/client/client\.go$
+        linters:
+          - errcheck
+        source: 'f\.(WriteString|Close)\(|os\.(MkdirAll|WriteFile|Remove)\(|conn\.Close\(|fmt\.Sscanf\('
+      # Client registry: best-effort file operations
+      - path: internal/client/registry\.go$
+        linters:
+          - errcheck
+        source: 'os\.(MkdirAll|WriteFile)\(|fmt\.Sscanf\('
+      # Client process (Windows): handle close is best-effort
+      - path: internal/client/process_windows\.go$
+        linters:
+          - errcheck
+        source: 'syscall\.CloseHandle\('
+      # Client dispatcher: network string repeated a handful of times, not worth a constant
+      - path: internal/client/client\.go$
+        linters:
+          - goconst
+        source: '"tcp"'
+      # CLI dispatcher: runtime.GOOS comparison literals repeat by necessity
+      - path: internal/cli/dispatch\.go$
+        linters:
+          - goconst
+        source: '"windows"'
+      # Dashboard HTML: CSS lines are inherently long
+      - path: internal/transport/dashboard\.go$
+        linters:
+          - lll
+      # Redact patterns: regexes and test inputs are inherently long
+      - path: 'internal/redact/redact\.go$|internal/redact/redact_test\.go$'
+        linters:
+          - lll
+      # Hook messages: warning strings are inherently long
+      - path: internal/hook/hook\.go$
+        linters:
+          - lll
+      # Algorithm files: gocritic style checks conflict with algorithmic clarity
+      - path: 'internal/core/bm25\.go$|internal/core/trigram\.go$|internal/sandbox/permissions\.go$'
+        linters:
+          - gocritic
 
 issues:
-  exclude-use-default: false
   max-issues-per-linter: 0
   max-same-issues: 0
-  exclude-rules:
-    # Test files: common OS helpers whose errors are safe to ignore in tests
-    - path: _test\.go$
-      linters:
-        - errcheck
-      source: 'os\.(Setenv|Unsetenv|MkdirAll|WriteFile|Remove|RemoveAll|Chmod|Chdir|Create|Truncate|Symlink)\('
-    # Test files: defer close/remove patterns
-    - path: _test\.go$
-      linters:
-        - errcheck
-      source: 'defer .*\.(Close|Remove)\('
-    # Test files: fmt.Fprintf to testing output is safe to ignore
-    - path: _test\.go$
-      linters:
-        - errcheck
-      source: 'fmt\.(Fprint|Fprintf|Fprintln)\('
-    # Logging helper: Init in package init is intentionally best-effort
-    - path: internal/logging/logging\.go$
-      linters:
-        - errcheck
-      source: 'Init\('
-    # Logging writer: best-effort write
-    - path: internal/logging/logging\.go$
-      linters:
-        - errcheck
-      source: 'w\.Write\('
-    # Sandbox permissions: temp file cleanup is best-effort
-    - path: internal/sandbox/permissions\.go$
-      linters:
-        - errcheck
-      source: 'defer os\.Remove|tmpfile\.(Close|Sync)\(|os\.Remove\(tmpName\)'
-    # Logging: best-effort closer close
-    - path: internal/logging/logging\.go$
-      linters:
-        - errcheck
-      source: 'closer\.Close\('
-    # Registry: best-effort defer close
-    - path: internal/project/registry\.go$
-      linters:
-        - errcheck
-      source: 'defer f\.Close\('
-    # Daemon lock: best-effort close/unlock
-    - path: internal/daemon/lock\.go$
-      linters:
-        - errcheck
-      source: 'f\.Close\(|unlockFlock\('
-    # Client: best-effort body close
-    - path: internal/client/client\.go$
-      linters:
-        - errcheck
-      source: 'defer resp\.Body\.Close\('
-    # Content store / core index: defer close on file handles is best-effort
-    - path: 'internal/content/store\.go$|internal/core/index\.go$|internal/core/index_persist\.go$'
-      linters:
-        - errcheck
-      source: 'defer (f|gz|cf)\.Close\('
-    # Test files: single-statement close/write/add/stop/connect/probe/exec/remove
-    - path: _test\.go$
-      linters:
-        - errcheck
-      source: '(\w+\.Close\(|\w+\.Write\(|\w+\.Add\(|\w+\.Remove\(|\w+\.Stop\(|\w+\.Connect\(|\w+\.Probe\(|\w+\.Exec\(|\w+\.Close\(|\w+\.writeAll\(|fmt\.Sscanf\()'
-    # Test files: deferred close/stop
-    - path: _test\.go$
-      linters:
-        - errcheck
-      source: 'defer \w+\.(Close|Stop)\('
-    # Benchmark: best-effort exec
-    - path: cmd/dfmt-bench/main\.go$
-      linters:
-        - errcheck
-      source: 'sb\.Exec\('
-    # Content store tests: PutChunk/PutChunkSet/persistChunkSet are best-effort
-    - path: internal/content/store_test\.go$
-      linters:
-        - errcheck
-      source: 'store\.(PutChunk|PutChunkSet|persistChunkSet)\('
-    # Core journal tests: Append/WriteString/Checkpoint are best-effort
-    - path: 'internal/core/journal_test\.go$'
-      linters:
-        - errcheck
-      source: 'j\.Append\(|f\.WriteString\(|j\.Checkpoint\('
-    # Core journal: best-effort file operations
-    - path: internal/core/journal\.go$
-      linters:
-        - errcheck
-      source: 'f\.Close\(\)|readFile\.Close\(\)|j\.file\.Seek\('
-    # Core ulid: rand.Read errors are negligible for ULIDs
-    - path: internal/core/ulid\.go$
-      linters:
-        - errcheck
-      source: 'rand\.Read\('
-    # Daemon tests: lock release is best-effort
-    - path: internal/daemon/daemon_test\.go$
-      linters:
-        - errcheck
-      source: 'lock1\.Release\('
-    # Capture windows: filepath.Walk is best-effort
-    - path: internal/capture/fswatch_windows\.go$
-      linters:
-        - errcheck
-      source: 'filepath\.Walk\('
-    # CLI tests: WriteString and SaveManifest are best-effort
-    - path: internal/cli/cli_test\.go$
-      linters:
-        - errcheck
-      source: 'w\.WriteString\(|setup\.SaveManifest\('
-    # Daemon: best-effort file operations
-    - path: internal/daemon/daemon\.go$
-      linters:
-        - errcheck
-      source: 'os\.Chmod\(|os\.WriteFile\(|core\.PersistIndex\(|os\.Remove\(|d\.Stop\('
-    # Transport socket/tcp: best-effort writes and closes
-    - path: 'internal/transport/socket\.go$|internal/transport/tcp\.go$'
-      linters:
-        - errcheck
-      source: 'os\.Chmod\(|defer conn\.Close\(\)|codec\.Write(Error|Response)\(|ln\.Close\(\)'
-    # Transport socket tests: server start is best-effort
-    - path: internal/transport/socket_test\.go$
-      linters:
-        - errcheck
-      source: 'server\.Start\('
-    # Transport HTTP: standard web handler patterns are best-effort
-    - path: internal/transport/http\.go$
-      linters:
-        - errcheck
-      source: 'defer r\.Body\.Close\(|json\.NewEncoder\(w\)\.Encode\(|json\.Unmarshal\(|w\.Write\(|ln\.Close\(\)|os\.Remove\(|s\.server\.(Shutdown|Serve)\('
-    # Transport JSON-RPC: write is best-effort
-    - path: internal/transport/jsonrpc\.go$
-      linters:
-        - errcheck
-      source: 'c\.rw\.Write\('
-    # Transport socket: remove is best-effort
-    - path: internal/transport/socket\.go$
-      linters:
-        - errcheck
-      source: 'os\.Remove\('
-    # Transport MCP: unmarshal is best-effort
-    - path: internal/transport/mcp\.go$
-      linters:
-        - errcheck
-      source: 'json\.Unmarshal\('
-    # Transport tests: codec write/unmarshal
-    - path: internal/transport/.+_test\.go$
-      linters:
-        - errcheck
-      source: 'codec\.Write(Request|Response)\(|json\.Unmarshal\('
-    # CLI dispatch: flag parse and best-effort cleanup
-    - path: internal/cli/dispatch\.go$
-      linters:
-        - errcheck
-      source: 'fs\.Parse\(args\)|os\.Remove\(|os\.WriteFile\(|fmt\.Scanln\(|setup\.SaveManifest\(|setup\.BackupFile\(|json\.NewEncoder\(writer\)\.Encode\(|writer\.Flush\(|f\.WriteString\(|f\.Close\(\)|json\.Unmarshal\(|d\.Stop\(|fmt\.Sscanf\(|process\.Signal\('
-    # Client dispatcher: best-effort file and socket cleanup
-    - path: internal/client/client\.go$
-      linters:
-        - errcheck
-      source: 'f\.(WriteString|Close)\(|os\.(MkdirAll|WriteFile|Remove)\(|conn\.Close\(|fmt\.Sscanf\('
-    # Client registry: best-effort file operations
-    - path: internal/client/registry\.go$
-      linters:
-        - errcheck
-      source: 'os\.(MkdirAll|WriteFile)\(|fmt\.Sscanf\('
-    # Client process (Windows): handle close is best-effort
-    - path: internal/client/process_windows\.go$
-      linters:
-        - errcheck
-      source: 'syscall\.CloseHandle\('
-    # Client dispatcher: network string repeated a handful of times, not worth a constant
-    - path: internal/client/client\.go$
-      linters:
-        - goconst
-      source: '"tcp"'
-    # CLI dispatcher: runtime.GOOS comparison literals repeat by necessity
-    - path: internal/cli/dispatch\.go$
-      linters:
-        - goconst
-      source: '"windows"'
-    # Dashboard HTML: CSS lines are inherently long
-    - path: internal/transport/dashboard\.go$
-      linters:
-        - lll
-    # Redact patterns: regexes and test inputs are inherently long
-    - path: 'internal/redact/redact\.go$|internal/redact/redact_test\.go$'
-      linters:
-        - lll
-    # Hook messages: warning strings are inherently long
-    - path: internal/hook/hook\.go$
-      linters:
-        - lll
-    # Algorithm files: gocritic style checks conflict with algorithmic clarity
-    - path: 'internal/core/bm25\.go$|internal/core/trigram\.go$|internal/sandbox/permissions\.go$'
-      linters:
-        - gocritic
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
