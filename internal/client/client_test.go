@@ -1,10 +1,10 @@
 package client
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -21,6 +21,30 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
+// serveMockHTTP starts an HTTP server on ln that dispatches each request to
+// handler. Returns a stop func that shuts the server down and waits for the
+// serve goroutine to exit. The listener is owned by the returned helper
+// until stop is called; callers must not Close(ln) directly.
+//
+// The production daemon speaks HTTP over its Unix socket, and the client's
+// doHTTP method drives real http.Client requests. Mock servers must therefore
+// also speak HTTP — writing a bare newline-framed JSON blob over the raw
+// socket only accidentally "worked" on Linux, and failed on macOS with a
+// bare "Post http://unix/: EOF" because XNU delivers write+FIN separately.
+func serveMockHTTP(t *testing.T, ln net.Listener, handler http.HandlerFunc) func() {
+	t.Helper()
+	srv := &http.Server{Handler: handler}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = srv.Serve(ln)
+	}()
+	return func() {
+		_ = srv.Close()
+		<-done
+	}
+}
+
 func TestRememberWithMockSocket(t *testing.T) {
 	if os.PathSeparator == '\\' {
 		t.Skip("skipping Unix socket test on Windows")
@@ -32,28 +56,10 @@ func TestRememberWithMockSocket(t *testing.T) {
 	if err != nil {
 		t.Skipf("skipping: could not create socket: %v", err)
 	}
-	defer ln.Close()
 
-	// Start server goroutine
-	serverDone := make(chan struct{})
-	go func() {
-		conn, err := ln.Accept()
-		if err != nil {
-			return
-		}
-		defer conn.Close()
-
-		reader := bufio.NewReader(conn)
-		line, err := reader.ReadBytes('\n')
-		if err != nil {
-			return
-		}
+	stop := serveMockHTTP(t, ln, func(w http.ResponseWriter, r *http.Request) {
 		var req transport.Request
-		if json.Unmarshal(line, &req) != nil {
-			return
-		}
-
-		// Send response
+		_ = json.NewDecoder(r.Body).Decode(&req)
 		resp := transport.Response{
 			JSONRPC: "2.0",
 			ID:      req.ID,
@@ -62,10 +68,10 @@ func TestRememberWithMockSocket(t *testing.T) {
 				"ts": time.Now().Format(time.RFC3339Nano),
 			},
 		}
-		data, _ := json.Marshal(resp)
-		conn.Write(append(data, '\n'))
-	}()
-	defer close(serverDone)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	})
+	defer stop()
 
 	cl, err := NewClient(tmpDir)
 	if err != nil {
@@ -98,27 +104,10 @@ func TestSearchWithMockSocket(t *testing.T) {
 	if err != nil {
 		t.Skipf("skipping: could not create socket: %v", err)
 	}
-	defer ln.Close()
 
-	// Start server
-	serverDone := make(chan struct{})
-	go func() {
-		conn, err := ln.Accept()
-		if err != nil {
-			return
-		}
-		defer conn.Close()
-
-		reader := bufio.NewReader(conn)
-		line, err := reader.ReadBytes('\n')
-		if err != nil {
-			return
-		}
+	stop := serveMockHTTP(t, ln, func(w http.ResponseWriter, r *http.Request) {
 		var req transport.Request
-		if json.Unmarshal(line, &req) != nil {
-			return
-		}
-
+		_ = json.NewDecoder(r.Body).Decode(&req)
 		resp := transport.Response{
 			JSONRPC: "2.0",
 			ID:      req.ID,
@@ -130,10 +119,10 @@ func TestSearchWithMockSocket(t *testing.T) {
 				"layer": "bm25",
 			},
 		}
-		data, _ := json.Marshal(resp)
-		conn.Write(append(data, '\n'))
-	}()
-	defer close(serverDone)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	})
+	defer stop()
 
 	cl, _ := NewClient(tmpDir)
 
@@ -163,27 +152,10 @@ func TestRecallWithMockSocket(t *testing.T) {
 	if err != nil {
 		t.Skipf("skipping: could not create socket: %v", err)
 	}
-	defer ln.Close()
 
-	// Start server
-	serverDone := make(chan struct{})
-	go func() {
-		conn, err := ln.Accept()
-		if err != nil {
-			return
-		}
-		defer conn.Close()
-
-		reader := bufio.NewReader(conn)
-		line, err := reader.ReadBytes('\n')
-		if err != nil {
-			return
-		}
+	stop := serveMockHTTP(t, ln, func(w http.ResponseWriter, r *http.Request) {
 		var req transport.Request
-		if json.Unmarshal(line, &req) != nil {
-			return
-		}
-
+		_ = json.NewDecoder(r.Body).Decode(&req)
 		resp := transport.Response{
 			JSONRPC: "2.0",
 			ID:      req.ID,
@@ -192,10 +164,10 @@ func TestRecallWithMockSocket(t *testing.T) {
 				"format":   "md",
 			},
 		}
-		data, _ := json.Marshal(resp)
-		conn.Write(append(data, '\n'))
-	}()
-	defer close(serverDone)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	})
+	defer stop()
 
 	cl, _ := NewClient(tmpDir)
 
@@ -392,26 +364,10 @@ func TestRememberErrorResponse(t *testing.T) {
 	if err != nil {
 		t.Skipf("skipping: could not create socket: %v", err)
 	}
-	defer ln.Close()
 
-	// Server that returns error
-	go func() {
-		conn, err := ln.Accept()
-		if err != nil {
-			return
-		}
-		defer conn.Close()
-
-		reader := bufio.NewReader(conn)
-		line, err := reader.ReadBytes('\n')
-		if err != nil {
-			return
-		}
+	stop := serveMockHTTP(t, ln, func(w http.ResponseWriter, r *http.Request) {
 		var req transport.Request
-		if json.Unmarshal(line, &req) != nil {
-			return
-		}
-
+		_ = json.NewDecoder(r.Body).Decode(&req)
 		resp := transport.Response{
 			JSONRPC: "2.0",
 			ID:      req.ID,
@@ -420,9 +376,10 @@ func TestRememberErrorResponse(t *testing.T) {
 				Message: "internal error",
 			},
 		}
-		data, _ := json.Marshal(resp)
-		conn.Write(append(data, '\n'))
-	}()
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	})
+	defer stop()
 
 	cl, _ := NewClient(tmpDir)
 
@@ -449,25 +406,10 @@ func TestSearchErrorResponse(t *testing.T) {
 	if err != nil {
 		t.Skipf("skipping: could not create socket: %v", err)
 	}
-	defer ln.Close()
 
-	go func() {
-		conn, err := ln.Accept()
-		if err != nil {
-			return
-		}
-		defer conn.Close()
-
-		reader := bufio.NewReader(conn)
-		line, err := reader.ReadBytes('\n')
-		if err != nil {
-			return
-		}
+	stop := serveMockHTTP(t, ln, func(w http.ResponseWriter, r *http.Request) {
 		var req transport.Request
-		if json.Unmarshal(line, &req) != nil {
-			return
-		}
-
+		_ = json.NewDecoder(r.Body).Decode(&req)
 		resp := transport.Response{
 			JSONRPC: "2.0",
 			ID:      req.ID,
@@ -476,9 +418,10 @@ func TestSearchErrorResponse(t *testing.T) {
 				Message: "search failed",
 			},
 		}
-		data, _ := json.Marshal(resp)
-		conn.Write(append(data, '\n'))
-	}()
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	})
+	defer stop()
 
 	cl, _ := NewClient(tmpDir)
 
@@ -502,25 +445,10 @@ func TestRecallErrorResponse(t *testing.T) {
 	if err != nil {
 		t.Skipf("skipping: could not create socket: %v", err)
 	}
-	defer ln.Close()
 
-	go func() {
-		conn, err := ln.Accept()
-		if err != nil {
-			return
-		}
-		defer conn.Close()
-
-		reader := bufio.NewReader(conn)
-		line, err := reader.ReadBytes('\n')
-		if err != nil {
-			return
-		}
+	stop := serveMockHTTP(t, ln, func(w http.ResponseWriter, r *http.Request) {
 		var req transport.Request
-		if json.Unmarshal(line, &req) != nil {
-			return
-		}
-
+		_ = json.NewDecoder(r.Body).Decode(&req)
 		resp := transport.Response{
 			JSONRPC: "2.0",
 			ID:      req.ID,
@@ -529,9 +457,10 @@ func TestRecallErrorResponse(t *testing.T) {
 				Message: "recall failed",
 			},
 		}
-		data, _ := json.Marshal(resp)
-		conn.Write(append(data, '\n'))
-	}()
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	})
+	defer stop()
 
 	cl, _ := NewClient(tmpDir)
 
@@ -1450,23 +1379,11 @@ func TestRememberWithReadResponseError(t *testing.T) {
 	if err != nil {
 		t.Skipf("skipping: could not create socket: %v", err)
 	}
-	defer ln.Close()
-
-	// Server that sends malformed response
-	go func() {
-		conn, _ := ln.Accept()
-		if conn != nil {
-			defer conn.Close()
-			reader := bufio.NewReader(conn)
-			_, err := reader.ReadBytes('\n')
-			if err != nil {
-				return
-			}
-			// Send malformed response
-			conn.Write([]byte("not valid json\n"))
-			return
-		}
-	}()
+	stop := serveMockHTTP(t, ln, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte("not valid json"))
+	})
+	defer stop()
 
 	cl, _ := NewClient(tmpDir)
 
@@ -1490,36 +1407,22 @@ func TestRememberWithRPCErrorResponse(t *testing.T) {
 	if err != nil {
 		t.Skipf("skipping: could not create socket: %v", err)
 	}
-	defer ln.Close()
 
-	// Server that returns RPC error
-	go func() {
-		conn, _ := ln.Accept()
-		if conn != nil {
-			defer conn.Close()
-			reader := bufio.NewReader(conn)
-			line, err := reader.ReadBytes('\n')
-			if err != nil {
-				return
-			}
-			var req transport.Request
-			if json.Unmarshal(line, &req) != nil {
-				return
-			}
-
-			resp := transport.Response{
-				JSONRPC: "2.0",
-				ID:      req.ID,
-				Error: &transport.RPCError{
-					Code:    -32603,
-					Message: "internal error",
-				},
-			}
-			data, _ := json.Marshal(resp)
-			conn.Write(append(data, '\n'))
-			return
+	stop := serveMockHTTP(t, ln, func(w http.ResponseWriter, r *http.Request) {
+		var req transport.Request
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		resp := transport.Response{
+			JSONRPC: "2.0",
+			ID:      req.ID,
+			Error: &transport.RPCError{
+				Code:    -32603,
+				Message: "internal error",
+			},
 		}
-	}()
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	})
+	defer stop()
 
 	cl, _ := NewClient(tmpDir)
 
@@ -1546,33 +1449,19 @@ func TestRememberWithResultUnmarshalError(t *testing.T) {
 	if err != nil {
 		t.Skipf("skipping: could not create socket: %v", err)
 	}
-	defer ln.Close()
 
-	// Server that returns valid JSON but wrong type for result
-	go func() {
-		conn, _ := ln.Accept()
-		if conn != nil {
-			defer conn.Close()
-			reader := bufio.NewReader(conn)
-			line, err := reader.ReadBytes('\n')
-			if err != nil {
-				return
-			}
-			var req transport.Request
-			if json.Unmarshal(line, &req) != nil {
-				return
-			}
-
-			resp := transport.Response{
-				JSONRPC: "2.0",
-				ID:      req.ID,
-				Result:  "not an object", // Invalid result type
-			}
-			data, _ := json.Marshal(resp)
-			conn.Write(append(data, '\n'))
-			return
+	stop := serveMockHTTP(t, ln, func(w http.ResponseWriter, r *http.Request) {
+		var req transport.Request
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		resp := transport.Response{
+			JSONRPC: "2.0",
+			ID:      req.ID,
+			Result:  "not an object", // Invalid result type
 		}
-	}()
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	})
+	defer stop()
 
 	cl, _ := NewClient(tmpDir)
 
@@ -1648,35 +1537,22 @@ func TestSearchWithRPCError(t *testing.T) {
 	if err != nil {
 		t.Skipf("skipping: could not create socket: %v", err)
 	}
-	defer ln.Close()
 
-	go func() {
-		conn, _ := ln.Accept()
-		if conn != nil {
-			defer conn.Close()
-			reader := bufio.NewReader(conn)
-			line, err := reader.ReadBytes('\n')
-			if err != nil {
-				return
-			}
-			var req transport.Request
-			if json.Unmarshal(line, &req) != nil {
-				return
-			}
-
-			resp := transport.Response{
-				JSONRPC: "2.0",
-				ID:      req.ID,
-				Error: &transport.RPCError{
-					Code:    -32603,
-					Message: "search failed",
-				},
-			}
-			data, _ := json.Marshal(resp)
-			conn.Write(append(data, '\n'))
-			return
+	stop := serveMockHTTP(t, ln, func(w http.ResponseWriter, r *http.Request) {
+		var req transport.Request
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		resp := transport.Response{
+			JSONRPC: "2.0",
+			ID:      req.ID,
+			Error: &transport.RPCError{
+				Code:    -32603,
+				Message: "search failed",
+			},
 		}
-	}()
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	})
+	defer stop()
 
 	cl, _ := NewClient(tmpDir)
 
@@ -1700,32 +1576,19 @@ func TestSearchWithResultUnmarshalError(t *testing.T) {
 	if err != nil {
 		t.Skipf("skipping: could not create socket: %v", err)
 	}
-	defer ln.Close()
 
-	go func() {
-		conn, _ := ln.Accept()
-		if conn != nil {
-			defer conn.Close()
-			reader := bufio.NewReader(conn)
-			line, err := reader.ReadBytes('\n')
-			if err != nil {
-				return
-			}
-			var req transport.Request
-			if json.Unmarshal(line, &req) != nil {
-				return
-			}
-
-			resp := transport.Response{
-				JSONRPC: "2.0",
-				ID:      req.ID,
-				Result:  123, // Invalid - should be object
-			}
-			data, _ := json.Marshal(resp)
-			conn.Write(append(data, '\n'))
-			return
+	stop := serveMockHTTP(t, ln, func(w http.ResponseWriter, r *http.Request) {
+		var req transport.Request
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		resp := transport.Response{
+			JSONRPC: "2.0",
+			ID:      req.ID,
+			Result:  123, // Invalid - should be object
 		}
-	}()
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	})
+	defer stop()
 
 	cl, _ := NewClient(tmpDir)
 
@@ -1801,35 +1664,22 @@ func TestRecallWithRPCError(t *testing.T) {
 	if err != nil {
 		t.Skipf("skipping: could not create socket: %v", err)
 	}
-	defer ln.Close()
 
-	go func() {
-		conn, _ := ln.Accept()
-		if conn != nil {
-			defer conn.Close()
-			reader := bufio.NewReader(conn)
-			line, err := reader.ReadBytes('\n')
-			if err != nil {
-				return
-			}
-			var req transport.Request
-			if json.Unmarshal(line, &req) != nil {
-				return
-			}
-
-			resp := transport.Response{
-				JSONRPC: "2.0",
-				ID:      req.ID,
-				Error: &transport.RPCError{
-					Code:    -32603,
-					Message: "recall failed",
-				},
-			}
-			data, _ := json.Marshal(resp)
-			conn.Write(append(data, '\n'))
-			return
+	stop := serveMockHTTP(t, ln, func(w http.ResponseWriter, r *http.Request) {
+		var req transport.Request
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		resp := transport.Response{
+			JSONRPC: "2.0",
+			ID:      req.ID,
+			Error: &transport.RPCError{
+				Code:    -32603,
+				Message: "recall failed",
+			},
 		}
-	}()
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	})
+	defer stop()
 
 	cl, _ := NewClient(tmpDir)
 
@@ -1853,32 +1703,19 @@ func TestRecallWithResultUnmarshalError(t *testing.T) {
 	if err != nil {
 		t.Skipf("skipping: could not create socket: %v", err)
 	}
-	defer ln.Close()
 
-	go func() {
-		conn, _ := ln.Accept()
-		if conn != nil {
-			defer conn.Close()
-			reader := bufio.NewReader(conn)
-			line, err := reader.ReadBytes('\n')
-			if err != nil {
-				return
-			}
-			var req transport.Request
-			if json.Unmarshal(line, &req) != nil {
-				return
-			}
-
-			resp := transport.Response{
-				JSONRPC: "2.0",
-				ID:      req.ID,
-				Result:  123, // Invalid - should be object
-			}
-			data, _ := json.Marshal(resp)
-			conn.Write(append(data, '\n'))
-			return
+	stop := serveMockHTTP(t, ln, func(w http.ResponseWriter, r *http.Request) {
+		var req transport.Request
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		resp := transport.Response{
+			JSONRPC: "2.0",
+			ID:      req.ID,
+			Result:  123, // Invalid - should be object
 		}
-	}()
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	})
+	defer stop()
 
 	cl, _ := NewClient(tmpDir)
 
@@ -1902,12 +1739,13 @@ func TestClientConnectToUnixSocketRefused(t *testing.T) {
 	tmpDir := t.TempDir()
 	socketPath := project.SocketPath(tmpDir)
 
-	// Create socket but don't accept - simulate refused connection
+	// Create socket then remove it so dial reliably refuses.
 	ln, err := net.Listen("unix", socketPath)
 	if err != nil {
 		t.Skipf("skipping: could not create socket: %v", err)
 	}
-	// Don't accept - just close to simulate refused
+	_ = ln.Close()
+	_ = os.Remove(socketPath)
 
 	cl, _ := NewClient(tmpDir)
 
@@ -1918,6 +1756,4 @@ func TestClientConnectToUnixSocketRefused(t *testing.T) {
 	if err == nil {
 		t.Error("Connect should fail when nothing accepting")
 	}
-
-	ln.Close()
 }
