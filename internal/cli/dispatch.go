@@ -626,19 +626,22 @@ func runDoctor(args []string) int {
 			cfg, err := config.Load(dir)
 			return err == nil && cfg != nil
 		}},
-		{"Daemon running", func() bool {
-			return client.DaemonRunning(dir)
-		}},
 	}
 
 	allOk := true
 	for _, c := range checks {
 		if c.check() {
-			fmt.Printf("âœ“ %s\n", c.name)
+			fmt.Printf("✓ %s\n", c.name)
 		} else {
-			fmt.Printf("âœ— %s\n", c.name)
+			fmt.Printf("✗ %s\n", c.name)
 			allOk = false
 		}
+	}
+
+	if client.DaemonRunning(dir) {
+		fmt.Println("[i] Daemon running")
+	} else {
+		fmt.Println("[i] Daemon stopped (auto-starts on next command)")
 	}
 
 	if !allOk {
@@ -963,10 +966,10 @@ func runSetupVerify() int {
 	allOk := true
 	for _, f := range m.Files {
 		if _, err := os.Stat(f.Path); err != nil {
-			fmt.Printf("âœ— %s (missing)\n", f.Path)
+			fmt.Printf("✗ %s (missing)\n", f.Path)
 			allOk = false
 		} else {
-			fmt.Printf("âœ“ %s\n", f.Path)
+			fmt.Printf("✓ %s\n", f.Path)
 		}
 	}
 
@@ -1045,6 +1048,7 @@ func configureClaudeCode(_ setup.Agent) error {
 	if err := setup.PatchClaudeCodeUserJSON("", true); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: patch ~/.claude.json: %v\n", err)
 	}
+	m.RecordAgent("claude-code", claudeDir)
 	setup.SaveManifest(m)
 
 	return nil
@@ -1152,6 +1156,7 @@ func writeMCPConfig(dir, filename, agentID string) error {
 		Agent:   agentID,
 		Version: "1",
 	})
+	m.RecordAgent(agentID, dir)
 	setup.SaveManifest(m)
 
 	return nil
@@ -1246,7 +1251,9 @@ func runMCP(_ []string) int {
 
 	// Create sandbox and handlers
 	sb := sandbox.NewSandbox(proj)
-	mcp := transport.NewMCPProtocol(transport.NewHandlers(index, journal, sb))
+	handlers := transport.NewHandlers(index, journal, sb)
+	handlers.SetProject(proj)
+	mcp := transport.NewMCPProtocol(handlers)
 
 	// Read/write MCP JSON-RPC
 	reader := bufio.NewReader(os.Stdin)

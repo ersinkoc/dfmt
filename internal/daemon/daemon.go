@@ -91,6 +91,7 @@ func New(projectPath string, cfg *config.Config) (*Daemon, error) {
 
 	// Create handlers
 	handlers := transport.NewHandlers(index, journal, sb)
+	handlers.SetProject(projectPath)
 
 	// Create server based on platform - use HTTPServer for HTTP support (dashboard, API)
 	var server Server

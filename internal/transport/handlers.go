@@ -16,6 +16,7 @@ type Handlers struct {
 	index   *core.Index
 	journal core.Journal
 	sandbox sandbox.Sandbox
+	project string
 }
 
 // NewHandlers creates a new Handlers instance.
@@ -27,6 +28,9 @@ func NewHandlers(index *core.Index, journal core.Journal, sb sandbox.Sandbox) *H
 	}
 }
 
+// SetProject sets the project identifier stamped on all events written by this handler.
+func (h *Handlers) SetProject(p string) { h.project = p }
+
 // logEvent appends a tool call event to the journal and index.
 func (h *Handlers) logEvent(ctx context.Context, eventType, summary string, data map[string]any) {
 	if h.journal == nil {
@@ -35,6 +39,7 @@ func (h *Handlers) logEvent(ctx context.Context, eventType, summary string, data
 	e := core.Event{
 		ID:       string(core.NewULID(time.Now())),
 		TS:       time.Now(),
+		Project:  h.project,
 		Type:     core.EventType(eventType),
 		Priority: core.PriP4,
 		Source:   core.SrcMCP,
@@ -95,6 +100,7 @@ func (h *Handlers) Remember(ctx context.Context, params RememberParams) (*Rememb
 	e := core.Event{
 		ID:       string(core.NewULID(time.Now())),
 		TS:       time.Now(),
+		Project:  h.project,
 		Type:     core.EventType(params.Type),
 		Priority: core.Priority(params.Priority),
 		Source:   core.Source(params.Source),

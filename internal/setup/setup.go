@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -51,6 +52,27 @@ type FileEntry struct {
 	Path    string `yaml:"path"`
 	Agent   string `yaml:"agent"`
 	Version string `yaml:"version"`
+}
+
+// RecordAgent bumps the manifest timestamp and upserts an AgentEntry
+// marking the given agent as configured.
+func (m *Manifest) RecordAgent(agentID, configDir string) {
+	if m.Version == 0 {
+		m.Version = 1
+	}
+	m.Timestamp = time.Now().UTC().Format(time.RFC3339)
+	for i, a := range m.Agents {
+		if a.AgentID == agentID {
+			m.Agents[i].Configured = true
+			m.Agents[i].ConfigDir = configDir
+			return
+		}
+	}
+	m.Agents = append(m.Agents, AgentEntry{
+		AgentID:    agentID,
+		Configured: true,
+		ConfigDir:  configDir,
+	})
 }
 
 // Detect runs filesystem probes to find installed agents.
