@@ -139,7 +139,7 @@ func TestLinuxWatchLoop_CreateEvent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("inotify add watch failed: %v", err)
 	}
-	defer func() { _ = unix.InotifyRmWatch(fd, uint32(wd)) }()
+	defer func() { _, _ = unix.InotifyRmWatch(fd, uint32(wd)) }()
 
 	w := &FSWatcher{
 		path:   tmpDir,
@@ -199,7 +199,7 @@ func TestLinuxWatchLoop_ModifyEvent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("inotify add watch failed: %v", err)
 	}
-	defer func() { _ = unix.InotifyRmWatch(fd, uint32(wd)) }()
+	defer func() { _, _ = unix.InotifyRmWatch(fd, uint32(wd)) }()
 
 	w := &FSWatcher{
 		path:   tmpDir,
@@ -259,7 +259,7 @@ func TestLinuxWatchLoop_DeleteEvent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("inotify add watch failed: %v", err)
 	}
-	defer func() { _ = unix.InotifyRmWatch(fd, uint32(wd)) }()
+	defer func() { _, _ = unix.InotifyRmWatch(fd, uint32(wd)) }()
 
 	w := &FSWatcher{
 		path:   tmpDir,
@@ -336,7 +336,7 @@ func TestLinuxWatchLoop_EmptyName(t *testing.T) {
 	if err != nil {
 		t.Fatalf("inotify add watch failed: %v", err)
 	}
-	defer func() { _ = unix.InotifyRmWatch(fd, uint32(wd)) }()
+	defer func() { _, _ = unix.InotifyRmWatch(fd, uint32(wd)) }()
 
 	w := &FSWatcher{
 		path:   tmpDir,
