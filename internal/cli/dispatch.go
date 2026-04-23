@@ -475,9 +475,21 @@ func startDaemonBackground(proj string) (int, error) {
 		return 0, fmt.Errorf("daemon already running")
 	}
 
+	// Refuse to re-exec a test binary as the daemon. Under `go test` the
+	// test framework would ignore the extra args and re-run the suite,
+	// causing an exponential fork bomb.
+	if flag.Lookup("test.v") != nil {
+		return 0, fmt.Errorf("refusing to spawn daemon from test binary")
+	}
+
 	exePath, err := os.Executable()
 	if err != nil {
 		return 0, fmt.Errorf("find executable: %w", err)
+	}
+
+	exeBase := strings.ToLower(filepath.Base(exePath))
+	if strings.HasSuffix(exeBase, ".test") || strings.HasSuffix(exeBase, ".test.exe") {
+		return 0, fmt.Errorf("refusing to spawn daemon from test binary: %s", exePath)
 	}
 
 	cmd := exec.Command(exePath, "daemon", "--foreground")
@@ -488,6 +500,8 @@ func startDaemonBackground(proj string) (int, error) {
 	if err := cmd.Start(); err != nil {
 		return 0, fmt.Errorf("start daemon: %w", err)
 	}
+	// Reap the child when it exits so we don't leak process handles.
+	go func() { _ = cmd.Wait() }()
 
 	pidPath := filepath.Join(proj, ".dfmt", "daemon.pid")
 	pidData := fmt.Sprintf("%d\n", cmd.Process.Pid)

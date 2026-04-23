@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io"
 	"net"
@@ -13,6 +14,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -82,6 +84,13 @@ func NewClient(projectPath string) (*Client, error) {
 
 // ensureDaemon ensures the daemon is running, starting it if needed.
 func (c *Client) ensureDaemon(projectPath string) error {
+	// Opt-out for tests and embedded callers that manage their own daemon
+	// lifecycle. Without this, auto-start re-execs os.Args[0] which under
+	// `go test` is the test binary itself — resulting in a fork bomb.
+	if os.Getenv("DFMT_DISABLE_AUTOSTART") != "" || isTestBinary() {
+		return nil
+	}
+
 	portFile := filepath.Join(projectPath, ".dfmt", "port")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -206,8 +215,26 @@ lifecycle:
 	return nil
 }
 
+// isTestBinary reports whether the current process is a Go test binary.
+// This is the key safety check: if we re-exec os.Args[0] with "daemon"
+// from a test binary, the test framework ignores the extra arg and re-runs
+// the entire test suite, which then spawns more children — a fork bomb.
+func isTestBinary() bool {
+	if flag.Lookup("test.v") != nil {
+		return true
+	}
+	base := strings.ToLower(filepath.Base(os.Args[0]))
+	return strings.HasSuffix(base, ".test") || strings.HasSuffix(base, ".test.exe")
+}
+
 // startDaemon starts the dfmt daemon for the given project.
 func startDaemon(projectPath string) error {
+	// Belt-and-braces: refuse to re-exec a test binary even if a caller
+	// reaches this function directly. See isTestBinary for the rationale.
+	if isTestBinary() {
+		return fmt.Errorf("refusing to spawn daemon from test binary")
+	}
+
 	exePath, err := os.Executable()
 	if err != nil {
 		// Try to find dfmt in PATH
@@ -218,12 +245,24 @@ func startDaemon(projectPath string) error {
 		}
 	}
 
+	// Extra guard: if the resolved executable still looks like a test binary
+	// (e.g. os.Executable returned go-build temp path), bail out.
+	exeBase := strings.ToLower(filepath.Base(exePath))
+	if strings.HasSuffix(exeBase, ".test") || strings.HasSuffix(exeBase, ".test.exe") {
+		return fmt.Errorf("refusing to spawn daemon from test binary: %s", exePath)
+	}
+
 	cmd := exec.Command(exePath, "daemon")
 	cmd.Dir = projectPath
 	cmd.Stdout = nil
 	cmd.Stderr = nil
 
-	return cmd.Start()
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	// Reap the child when it exits so we don't leak process handles.
+	go func() { _ = cmd.Wait() }()
+	return nil
 }
 
 // Connect establishes a connection to the daemon.
