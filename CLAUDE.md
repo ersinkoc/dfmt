@@ -86,15 +86,15 @@ This repository is the DFMT project itself. When working on it, you MUST use DFM
 
 ### Capture pipeline
 
-`internal/capture/` defines five event-ingestion paths, but only two are currently wired into the running daemon:
+`internal/capture/` defines five event-ingestion paths. Four are wired into the running daemon today:
 
 - **MCP calls** — Routed through transport. **Live.**
 - **CLI commands** — Manual `dfmt remember`, `dfmt task`, etc. **Live.**
 - **Filesystem watcher** (`fswatch*.go`) — Platform-specific implementations for Linux and Windows. **Not wired**: `NewFSWatcher` is fully implemented and emits on an `Events()` channel, but nothing in the daemon currently consumes that channel.
-- **Git hooks** (`git.go`) — post-commit, post-checkout, pre-push. **Stub**: `SubmitCommit`/`SubmitCheckout`/`SubmitPush` build events then discard them (`_ = e; return nil`). No git hook scripts are installed either.
-- **Shell integration** (`shell.go`) — Tracks cwd, env vars, commands. **Stub**: `SubmitCommand` builds an event then discards it; comment reads `// Would submit to daemon here`.
+- **Git hooks** (`git.go`) — post-commit, post-checkout, pre-push. **Live (opt-in)**: `dfmt install-hooks` writes the three scripts (embedded in the binary) into `.git/hooks/`, and each script shells out to `dfmt capture git <subcmd>` which calls `client.Remember` so the event lands in the journal via the daemon.
+- **Shell integration** (`shell.go`) — Tracks cwd. **Live (opt-in)**: `dfmt shell-init <bash|zsh|fish>` prints the integration snippet; once sourced, the shell invokes `dfmt capture env.cwd` on every prompt and the event is journaled the same way.
 
-The three non-live paths still live under `internal/capture/` with their own unit tests, but they don't contribute to the journal today.
+The helper types in `capture/git.go` and `capture/shell.go` are still orphan stubs — the live path goes through the CLI (`dfmt capture ...`) and the transport `Remember` RPC, not those types. The filesystem watcher remains the only non-live ingestion path.
 
 ### Agent setup
 

@@ -784,16 +784,16 @@ func runShellInit(args []string) int {
 	case "bash":
 		fmt.Println("# Add to ~/.bashrc:")
 		fmt.Println("source /dev/stdin << 'EOF'")
-		fmt.Println(readHookFile("docs/hooks/bash.sh"))
+		fmt.Println(readHookFile("bash.sh"))
 		fmt.Println("EOF")
 	case "zsh":
 		fmt.Println("# Add to ~/.zshrc:")
 		fmt.Println("source /dev/stdin << 'EOF'")
-		fmt.Println(readHookFile("docs/hooks/zsh.sh"))
+		fmt.Println(readHookFile("zsh.sh"))
 		fmt.Println("EOF")
 	case "fish":
 		fmt.Println("# Add to ~/.config/fish/config.fish:")
-		fmt.Println(readHookFile("docs/hooks/fish.fish"))
+		fmt.Println(readHookFile("fish.fish"))
 	default:
 		fmt.Fprintf(os.Stderr, "unknown shell: %s\n", shell)
 		return 1
@@ -816,10 +816,16 @@ func runInstallHooks(_ []string) int {
 
 	hooks := []string{"post-commit", "post-checkout", "pre-push"}
 	for _, hook := range hooks {
-		src := filepath.Join("docs", "hooks", "git-"+hook+".sh")
+		content := readHookFile("git-" + hook + ".sh")
+		if content == "" {
+			fmt.Fprintf(os.Stderr, "error: missing embedded hook git-%s.sh\n", hook)
+			return 1
+		}
 		dst := filepath.Join(hooksDir, hook)
-		content := readHookFile(src)
-		os.WriteFile(dst, []byte(content), 0755)
+		if err := os.WriteFile(dst, []byte(content), 0755); err != nil {
+			fmt.Fprintf(os.Stderr, "error: writing %s: %v\n", dst, err)
+			return 1
+		}
 		fmt.Printf("Installed %s\n", hook)
 	}
 
@@ -827,40 +833,124 @@ func runInstallHooks(_ []string) int {
 	return 0
 }
 
+// buildCaptureParams converts CLI args for `dfmt capture <type> ...` into a
+// RememberParams ready to submit to the daemon. Kept separate from runCapture
+// so the arg-parsing logic can be unit-tested without spinning up a daemon.
+func buildCaptureParams(args []string) (transport.RememberParams, error) {
+	if len(args) < 1 {
+		return transport.RememberParams{}, fmt.Errorf("capture type required")
+	}
+	switch args[0] {
+	case "git":
+		if len(args) < 2 {
+			return transport.RememberParams{}, fmt.Errorf("git capture requires subcommand")
+		}
+		switch args[1] {
+		case "commit":
+			if len(args) < 3 {
+				return transport.RememberParams{}, fmt.Errorf("git commit requires hash")
+			}
+			msg := ""
+			if len(args) >= 4 {
+				msg = args[3]
+			}
+			return transport.RememberParams{
+				Type:     string(core.EvtGitCommit),
+				Priority: string(core.PriP2),
+				Source:   string(core.SrcGitHook),
+				Data:     map[string]any{"hash": args[2], "message": msg},
+			}, nil
+		case "checkout":
+			if len(args) < 3 {
+				return transport.RememberParams{}, fmt.Errorf("git checkout requires ref")
+			}
+			isBranch := "0"
+			if len(args) >= 4 {
+				isBranch = args[3]
+			}
+			return transport.RememberParams{
+				Type:     string(core.EvtGitCheckout),
+				Priority: string(core.PriP3),
+				Source:   string(core.SrcGitHook),
+				Data:     map[string]any{"ref": args[2], "is_branch": isBranch},
+			}, nil
+		case "push":
+			if len(args) < 4 {
+				return transport.RememberParams{}, fmt.Errorf("git push requires remote and branch")
+			}
+			return transport.RememberParams{
+				Type:     string(core.EvtGitPush),
+				Priority: string(core.PriP2),
+				Source:   string(core.SrcGitHook),
+				Data:     map[string]any{"remote": args[2], "branch": args[3]},
+			}, nil
+		default:
+			return transport.RememberParams{}, fmt.Errorf("unknown git subcommand: %s", args[1])
+		}
+	case "env.cwd":
+		if len(args) < 2 {
+			return transport.RememberParams{}, fmt.Errorf("env.cwd requires path")
+		}
+		return transport.RememberParams{
+			Type:     string(core.EvtEnvCwd),
+			Priority: string(core.PriP4),
+			Source:   string(core.SrcShell),
+			Data:     map[string]any{"cwd": args[1]},
+		}, nil
+	case "shell":
+		if len(args) < 2 {
+			return transport.RememberParams{}, fmt.Errorf("shell requires command")
+		}
+		cwd := ""
+		if len(args) >= 3 {
+			cwd = args[2]
+		}
+		return transport.RememberParams{
+			Type:     string(core.EvtNote),
+			Priority: string(core.PriP4),
+			Source:   string(core.SrcShell),
+			Data:     map[string]any{"cmd": args[1], "cwd": cwd},
+		}, nil
+	default:
+		return transport.RememberParams{}, fmt.Errorf("unknown capture type: %s", args[0])
+	}
+}
+
 func runCapture(args []string) int {
-	if len(args) < 2 {
-		fmt.Fprintf(os.Stderr, "error: capture type and args required\n")
+	params, err := buildCaptureParams(args)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		return 1
 	}
 
-	captureType := args[0]
-	switch captureType {
-	case "git":
-		if len(args) < 3 {
-			fmt.Fprintf(os.Stderr, "error: git capture requires subcommand and args\n")
-			return 1
-		}
-		subcmd := args[1]
-		switch subcmd {
-		case "commit":
-			fmt.Printf("Captured git commit: %s\n", args[2])
-		case "checkout":
-			fmt.Printf("Captured git checkout: %s\n", args[2])
-		case "push":
-			fmt.Printf("Captured git push: %s %s\n", args[2], args[3])
-		}
-	case "shell":
-		fmt.Printf("Captured shell command\n")
-	default:
-		fmt.Fprintf(os.Stderr, "error: unknown capture type: %s\n", captureType)
+	proj, err := getProject()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		return 1
+	}
+
+	cl, err := client.NewClient(proj)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		return 1
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if _, err := cl.Remember(ctx, params); err != nil {
+		fmt.Fprintf(os.Stderr, "error: remember: %v\n", err)
 		return 1
 	}
 	return 0
 }
 
-func readHookFile(path string) string {
-	content, _ := os.ReadFile(path)
-	return string(content)
+func readHookFile(name string) string {
+	b, err := hookFilesFS.ReadFile("hooks/" + name)
+	if err != nil {
+		return ""
+	}
+	return string(b)
 }
 
 func runSetup(args []string) int {
