@@ -55,7 +55,7 @@ type FileEntry struct {
 
 // Detect runs filesystem probes to find installed agents.
 func Detect() []Agent {
-	var agents []Agent
+	agents := []Agent{}
 
 	if a := detectClaudeCode(); a != nil {
 		agents = append(agents, *a)

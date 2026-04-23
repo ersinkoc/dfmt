@@ -504,9 +504,13 @@ func TestPersistChunkSet(t *testing.T) {
 
 func TestPersistChunkSetCreateError(t *testing.T) {
 	// Use an invalid path that may cause os.Create to fail
-	store, _ := NewStore(StoreOptions{
+	store, err := NewStore(StoreOptions{
 		Path: "/nonexistent/directory/that/cannot/be/created",
 	})
+	if err != nil || store == nil {
+		t.Skipf("NewStore failed (expected for invalid path): %v", err)
+		return
+	}
 
 	set := &ChunkSet{
 		ID:      "test-set",

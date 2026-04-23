@@ -337,8 +337,15 @@ func TestSocketServer_Start_ListenError(t *testing.T) {
 	}
 
 	handlers := &Handlers{}
-	// Use an unresolvable path (non-existent parent) to cause listen error
-	socketPath := filepath.Join(t.TempDir(), "no-such-parent", "bad.sock")
+	// Force a definitive listen error by placing the socket's parent
+	// at a regular file path — bind then fails with ENOTDIR on every
+	// Unix variant instead of relying on "no-such-parent".
+	tmpDir := t.TempDir()
+	notDir := filepath.Join(tmpDir, "not-a-dir")
+	if err := os.WriteFile(notDir, []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	socketPath := filepath.Join(notDir, "bad.sock")
 
 	server := NewSocketServer(socketPath, handlers)
 	ctx := context.Background()

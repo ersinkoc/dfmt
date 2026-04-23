@@ -178,16 +178,13 @@ func TestGlobalConfigPath(t *testing.T) {
 	// Without XDG_DATA_HOME, uses os.UserHomeDir() which on Windows
 	// doesn't respect HOME env var. Skip this part on Windows.
 	if runtime.GOOS != "windows" {
-		home, err := os.UserHomeDir()
-		if err == nil {
-			os.Setenv("HOME", tmpDir)
-			defer os.Unsetenv("HOME")
+		os.Setenv("HOME", tmpDir)
+		defer os.Unsetenv("HOME")
 
-			path = globalConfigPath()
-			expected = filepath.Join(home, ".local", "share", "dfmt", "config.yaml")
-			if path != expected {
-				t.Errorf("globalConfigPath() = %q, want %q", path, expected)
-			}
+		path = globalConfigPath()
+		expected = filepath.Join(tmpDir, ".local", "share", "dfmt", "config.yaml")
+		if path != expected {
+			t.Errorf("globalConfigPath() = %q, want %q", path, expected)
 		}
 	}
 }
@@ -489,6 +486,9 @@ func TestLoadWithProjectConfigMergeError(t *testing.T) {
 }
 
 func TestGlobalConfigPathEmptyXDGHomeOnWindows(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows-specific test")
+	}
 	// On Windows, os.UserHomeDir() doesn't use HOME env var,
 	// so we can only test that XDG_DATA_HOME is used when set
 	// and that globalConfigPath() returns a valid path structure

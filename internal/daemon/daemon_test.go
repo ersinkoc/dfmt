@@ -10,6 +10,7 @@ import (
 
 	"github.com/ersinkoc/dfmt/internal/config"
 	"github.com/ersinkoc/dfmt/internal/core"
+	"github.com/ersinkoc/dfmt/internal/project"
 )
 
 func TestLockError(t *testing.T) {
@@ -446,10 +447,16 @@ func TestNewIndexLoadFailure(t *testing.T) {
 	indexPath := filepath.Join(d.projectPath, ".dfmt", "index.gob")
 	os.WriteFile(indexPath, []byte("corrupted data"), 0644)
 
-	// Close the first daemon's journal before creating second one
+	// Close the first daemon's journal and listener before creating the
+	// second one. Without stopping the server, the Unix-socket listener
+	// stays bound and the second New() call fails with EADDRINUSE.
 	if d.journal != nil {
 		d.journal.Close()
 	}
+	if d.server != nil {
+		d.server.Stop(context.Background())
+	}
+	os.Remove(project.SocketPath(tmpDir))
 
 	// Create new daemon with corrupted index - should rebuild
 	d2, err := New(tmpDir, cfg)

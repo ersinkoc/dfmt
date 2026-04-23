@@ -26,7 +26,7 @@ func TestRememberWithMockSocket(t *testing.T) {
 		t.Skip("skipping Unix socket test on Windows")
 	}
 	tmpDir := t.TempDir()
-	socketPath := filepath.Join(tmpDir, "daemon.sock")
+	socketPath := project.SocketPath(tmpDir)
 
 	ln, err := net.Listen("unix", socketPath)
 	if err != nil {
@@ -92,7 +92,7 @@ func TestSearchWithMockSocket(t *testing.T) {
 		t.Skip("skipping Unix socket test on Windows")
 	}
 	tmpDir := t.TempDir()
-	socketPath := filepath.Join(tmpDir, "daemon.sock")
+	socketPath := project.SocketPath(tmpDir)
 
 	ln, err := net.Listen("unix", socketPath)
 	if err != nil {
@@ -157,7 +157,7 @@ func TestRecallWithMockSocket(t *testing.T) {
 		t.Skip("skipping Unix socket test on Windows")
 	}
 	tmpDir := t.TempDir()
-	socketPath := filepath.Join(tmpDir, "daemon.sock")
+	socketPath := project.SocketPath(tmpDir)
 
 	ln, err := net.Listen("unix", socketPath)
 	if err != nil {
@@ -225,7 +225,7 @@ func TestDaemonRunningTrue(t *testing.T) {
 	if err := os.MkdirAll(dfmtDir, 0755); err != nil {
 		t.Skipf("skipping: could not create .dfmt dir: %v", err)
 	}
-	socketPath := filepath.Join(dfmtDir, "daemon.sock")
+	socketPath := project.SocketPath(tmpDir)
 
 	ln, err := net.Listen("unix", socketPath)
 	if err != nil {
@@ -285,7 +285,7 @@ func TestConnectSuccess(t *testing.T) {
 	}
 
 	tmpDir := t.TempDir()
-	socketPath := filepath.Join(tmpDir, "daemon.sock")
+	socketPath := project.SocketPath(tmpDir)
 
 	ln, err := net.Listen("unix", socketPath)
 	if err != nil {
@@ -386,7 +386,7 @@ func TestRememberErrorResponse(t *testing.T) {
 		t.Skip("skipping Unix socket test on Windows")
 	}
 	tmpDir := t.TempDir()
-	socketPath := filepath.Join(tmpDir, "daemon.sock")
+	socketPath := project.SocketPath(tmpDir)
 
 	ln, err := net.Listen("unix", socketPath)
 	if err != nil {
@@ -443,7 +443,7 @@ func TestSearchErrorResponse(t *testing.T) {
 		t.Skip("skipping Unix socket test on Windows")
 	}
 	tmpDir := t.TempDir()
-	socketPath := filepath.Join(tmpDir, "daemon.sock")
+	socketPath := project.SocketPath(tmpDir)
 
 	ln, err := net.Listen("unix", socketPath)
 	if err != nil {
@@ -496,7 +496,7 @@ func TestRecallErrorResponse(t *testing.T) {
 		t.Skip("skipping Unix socket test on Windows")
 	}
 	tmpDir := t.TempDir()
-	socketPath := filepath.Join(tmpDir, "daemon.sock")
+	socketPath := project.SocketPath(tmpDir)
 
 	ln, err := net.Listen("unix", socketPath)
 	if err != nil {
@@ -607,7 +607,7 @@ func TestClientSocketPathFormat(t *testing.T) {
 		t.Skip("NewClient failed - likely no daemon available in test environment")
 	}
 
-	expected := filepath.Join(tmpDir, ".dfmt", "daemon.sock")
+	expected := project.SocketPath(tmpDir)
 	if cl.socketPath != expected {
 		t.Errorf("socketPath = %s, want %s", cl.socketPath, expected)
 	}
@@ -676,7 +676,12 @@ func TestClientSocketPath(t *testing.T) {
 func TestDaemonRunning(t *testing.T) {
 	// Create temp file as fake socket
 	tmpDir := t.TempDir()
-	socketPath := filepath.Join(tmpDir, "daemon.sock")
+	socketPath := project.SocketPath(tmpDir)
+	// Ensure the parent directory exists (on Windows the socket path
+	// resolves to tmpDir/.dfmt/daemon.sock which doesn't exist yet).
+	if err := os.MkdirAll(filepath.Dir(socketPath), 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
 
 	// File doesn't exist - should return false
 	if DaemonRunning(tmpDir) {
@@ -1125,7 +1130,7 @@ func TestClientNewClientWithSpecialChars(t *testing.T) {
 
 func TestDaemonRunningWithFile(t *testing.T) {
 	tmpDir := t.TempDir()
-	socketPath := filepath.Join(tmpDir, ".dfmt", "daemon.sock")
+	socketPath := project.SocketPath(tmpDir)
 
 	// Nothing present → false.
 	if DaemonRunning(tmpDir) {
@@ -1156,7 +1161,7 @@ func TestNewClientWithRealPath(t *testing.T) {
 	if cl == nil {
 		t.Fatal("NewClient returned nil")
 	}
-	expected := filepath.Join(tmpDir, ".dfmt", "daemon.sock")
+	expected := project.SocketPath(tmpDir)
 	if cl.socketPath != expected {
 		t.Errorf("socketPath = %s, want %s", cl.socketPath, expected)
 	}
@@ -1229,9 +1234,15 @@ func TestNewClientWithEmptyProjectPath(t *testing.T) {
 }
 
 func TestNewClientNonExistentPath(t *testing.T) {
+	// On Linux this path is unwritable for a normal user (mkdir
+	// /nonexistent denies permission) so NewClient may legitimately
+	// fail during auto-init. On Windows the leading / is resolved
+	// against the current drive and the path is usually writable.
+	// Accept either outcome; just make sure we don't panic.
 	cl, err := NewClient("/nonexistent/path/12345")
 	if err != nil {
-		t.Fatalf("NewClient with nonexistent path failed: %v", err)
+		// Expected on systems where the path cannot be created.
+		return
 	}
 	if cl == nil {
 		t.Fatal("NewClient returned nil")
@@ -1355,7 +1366,7 @@ func TestClientSocketPathEnvVarPattern(t *testing.T) {
 	// Test that socket path follows expected format
 	tmpDir := t.TempDir()
 	cl, _ := NewClient(tmpDir)
-	expected := filepath.Join(tmpDir, ".dfmt", "daemon.sock")
+	expected := project.SocketPath(tmpDir)
 	if cl.socketPath != expected {
 		t.Errorf("socketPath = %s, want %s", cl.socketPath, expected)
 	}
@@ -1401,7 +1412,7 @@ func TestRememberWithWriteError(t *testing.T) {
 		t.Skip("skipping Unix socket test on Windows")
 	}
 	tmpDir := t.TempDir()
-	socketPath := filepath.Join(tmpDir, "daemon.sock")
+	socketPath := project.SocketPath(tmpDir)
 
 	ln, err := net.Listen("unix", socketPath)
 	if err != nil {
@@ -1433,7 +1444,7 @@ func TestRememberWithReadResponseError(t *testing.T) {
 		t.Skip("skipping Unix socket test on Windows")
 	}
 	tmpDir := t.TempDir()
-	socketPath := filepath.Join(tmpDir, "daemon.sock")
+	socketPath := project.SocketPath(tmpDir)
 
 	ln, err := net.Listen("unix", socketPath)
 	if err != nil {
@@ -1473,7 +1484,7 @@ func TestRememberWithRPCErrorResponse(t *testing.T) {
 		t.Skip("skipping Unix socket test on Windows")
 	}
 	tmpDir := t.TempDir()
-	socketPath := filepath.Join(tmpDir, "daemon.sock")
+	socketPath := project.SocketPath(tmpDir)
 
 	ln, err := net.Listen("unix", socketPath)
 	if err != nil {
@@ -1529,7 +1540,7 @@ func TestRememberWithResultUnmarshalError(t *testing.T) {
 		t.Skip("skipping Unix socket test on Windows")
 	}
 	tmpDir := t.TempDir()
-	socketPath := filepath.Join(tmpDir, "daemon.sock")
+	socketPath := project.SocketPath(tmpDir)
 
 	ln, err := net.Listen("unix", socketPath)
 	if err != nil {
@@ -1600,7 +1611,7 @@ func TestSearchWithWriteError(t *testing.T) {
 		t.Skip("skipping Unix socket test on Windows")
 	}
 	tmpDir := t.TempDir()
-	socketPath := filepath.Join(tmpDir, "daemon.sock")
+	socketPath := project.SocketPath(tmpDir)
 
 	ln, err := net.Listen("unix", socketPath)
 	if err != nil {
@@ -1631,7 +1642,7 @@ func TestSearchWithRPCError(t *testing.T) {
 		t.Skip("skipping Unix socket test on Windows")
 	}
 	tmpDir := t.TempDir()
-	socketPath := filepath.Join(tmpDir, "daemon.sock")
+	socketPath := project.SocketPath(tmpDir)
 
 	ln, err := net.Listen("unix", socketPath)
 	if err != nil {
@@ -1683,7 +1694,7 @@ func TestSearchWithResultUnmarshalError(t *testing.T) {
 		t.Skip("skipping Unix socket test on Windows")
 	}
 	tmpDir := t.TempDir()
-	socketPath := filepath.Join(tmpDir, "daemon.sock")
+	socketPath := project.SocketPath(tmpDir)
 
 	ln, err := net.Listen("unix", socketPath)
 	if err != nil {
@@ -1753,7 +1764,7 @@ func TestRecallWithWriteError(t *testing.T) {
 		t.Skip("skipping Unix socket test on Windows")
 	}
 	tmpDir := t.TempDir()
-	socketPath := filepath.Join(tmpDir, "daemon.sock")
+	socketPath := project.SocketPath(tmpDir)
 
 	ln, err := net.Listen("unix", socketPath)
 	if err != nil {
@@ -1784,7 +1795,7 @@ func TestRecallWithRPCError(t *testing.T) {
 		t.Skip("skipping Unix socket test on Windows")
 	}
 	tmpDir := t.TempDir()
-	socketPath := filepath.Join(tmpDir, "daemon.sock")
+	socketPath := project.SocketPath(tmpDir)
 
 	ln, err := net.Listen("unix", socketPath)
 	if err != nil {
@@ -1836,7 +1847,7 @@ func TestRecallWithResultUnmarshalError(t *testing.T) {
 		t.Skip("skipping Unix socket test on Windows")
 	}
 	tmpDir := t.TempDir()
-	socketPath := filepath.Join(tmpDir, "daemon.sock")
+	socketPath := project.SocketPath(tmpDir)
 
 	ln, err := net.Listen("unix", socketPath)
 	if err != nil {
@@ -1889,7 +1900,7 @@ func TestClientConnectToUnixSocketRefused(t *testing.T) {
 		t.Skip("skipping Unix socket test on Windows")
 	}
 	tmpDir := t.TempDir()
-	socketPath := filepath.Join(tmpDir, "daemon.sock")
+	socketPath := project.SocketPath(tmpDir)
 
 	// Create socket but don't accept - simulate refused connection
 	ln, err := net.Listen("unix", socketPath)

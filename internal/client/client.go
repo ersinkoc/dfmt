@@ -472,14 +472,28 @@ func (c *Client) doHTTP(method string, req transport.Request) ([]byte, error) {
 		return nil, err
 	}
 
-	url := fmt.Sprintf("http://%s%s", c.address, method)
+	var url string
+	client := &http.Client{Timeout: c.timeout}
+	if c.network == netUnix {
+		url = "http://unix" + method
+		socketAddr := c.address
+		timeout := c.timeout
+		client.Transport = &http.Transport{
+			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				d := net.Dialer{Timeout: timeout}
+				return d.DialContext(ctx, netUnix, socketAddr)
+			},
+		}
+	} else {
+		url = fmt.Sprintf("http://%s%s", c.address, method)
+	}
+
 	httpReq, err := http.NewRequest("POST", url, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{Timeout: c.timeout}
 	resp, err := client.Do(httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("http request: %w", err)

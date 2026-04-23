@@ -40,6 +40,9 @@ type Daemon struct {
 
 // New creates a new daemon instance.
 func New(projectPath string, cfg *config.Config) (*Daemon, error) {
+	if cfg == nil {
+		cfg = &config.Config{}
+	}
 	// Discover project if not found
 	if projectPath == "" {
 		cwd, err := os.Getwd()

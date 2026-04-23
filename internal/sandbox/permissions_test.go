@@ -120,6 +120,7 @@ func TestExecImplBashPath(t *testing.T) {
 	if !ok || !rt.Available {
 		t.Skip("bash not available on this system")
 	}
+	_ = rt
 
 	// Use policy that allows all exec (wildcard)
 	policy := Policy{
@@ -267,12 +268,13 @@ func TestExecImplExitCodeCapture(t *testing.T) {
 
 // TestExecImplMaxRawBytesTruncation tests that output is truncated to MaxRawBytes.
 func TestExecImplMaxRawBytesTruncation(t *testing.T) {
-	rt, ok := runtimes.Get("sh")
+	// Bash-specific: the command below uses brace expansion which dash
+	// (the default /bin/sh on Ubuntu) does not support — there it would
+	// emit a literal 1-byte string and the truncation assertion would
+	// never trigger.
+	rt, ok := runtimes.Get("bash")
 	if !ok || !rt.Available {
-		rt, ok = runtimes.Get("bash")
-	}
-	if !ok || !rt.Available {
-		t.Skip("sh/bash not available on this system")
+		t.Skip("bash not available on this system")
 	}
 
 	policy := Policy{
@@ -289,7 +291,7 @@ func TestExecImplMaxRawBytesTruncation(t *testing.T) {
 	// Create a string of approximately 300KB
 	resp, err := sb.Exec(ctx, ExecReq{
 		Code: "printf 'A%.0s' {1..400000}",
-		Lang: "sh",
+		Lang: "bash",
 	})
 	if err != nil {
 		t.Fatalf("Exec failed: %v", err)

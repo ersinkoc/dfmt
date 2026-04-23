@@ -148,6 +148,16 @@ func (s *HTTPServer) Stop(ctx context.Context) error {
 	defer s.mu.Unlock()
 
 	if !s.running {
+		// Server was never started; still release a pre-bound listener so
+		// callers can rebind the same address/path (e.g. in tests that
+		// create a daemon, never call Start, then re-create).
+		if s.listener != nil {
+			s.listener.Close()
+			s.listener = nil
+		}
+		if s.socketPath != "" {
+			os.Remove(s.socketPath)
+		}
 		return nil
 	}
 
