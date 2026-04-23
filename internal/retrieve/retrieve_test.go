@@ -600,13 +600,15 @@ func TestSnapshotBuilderTierOrderReflectsAllTiers(t *testing.T) {
 func TestSnapshotBuilderTimestampSortNewestFirst(t *testing.T) {
 	sb := NewSnapshotBuilder(10000)
 
-	oldest := time.Now().Add(-1 * time.Hour)
-	newest := time.Now()
+	base := time.Now()
+	oldest := base.Add(-2 * time.Hour)
+	mid := base.Add(-1 * time.Hour)
+	newest := base
 
 	events := []core.Event{
 		{ID: "old", TS: oldest, Type: core.EvtDecision, Priority: core.PriP1},
 		{ID: "new", TS: newest, Type: core.EvtDecision, Priority: core.PriP1},
-		{ID: "mid", TS: time.Now(), Type: core.EvtDecision, Priority: core.PriP1},
+		{ID: "mid", TS: mid, Type: core.EvtDecision, Priority: core.PriP1},
 	}
 	snap, err := sb.Build(events)
 	if err != nil {

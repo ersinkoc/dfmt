@@ -83,20 +83,25 @@ func detectAgent(spec agentSpec) *Agent {
 
 func detectClaudeCode() *Agent {
 	home := HomeDir()
-	return detectAgent(agentSpec{
-		id:   AgentClaudeCode,
-		name: "Claude Code",
-		paths: []string{
-			filepath.Join(home, ".claude"),
-			filepath.Join(home, ".local", "bin", "claude"),
-			filepath.Join(home, "AppData", "Roaming", "Claude"),
-			"/usr/local/bin/claude",
-			"/opt/claude/bin/claude",
-		},
-		binary:           "claude",
-		confidencePath:   0.95,
-		confidenceBinary: 0.85,
-	})
+	binaryPaths := []string{
+		filepath.Join(home, ".local", "bin", "claude"),
+		filepath.Join(home, "AppData", "Roaming", "Claude"),
+		"/usr/local/bin/claude",
+		"/opt/claude/bin/claude",
+	}
+	for _, bp := range binaryPaths {
+		if _, err := os.Stat(bp); err == nil {
+			return &Agent{ID: AgentClaudeCode, Name: "Claude Code", Detected: true, InstallDir: bp, Confidence: 0.95}
+		}
+	}
+	if bin, err := exec.LookPath("claude"); err == nil {
+		return &Agent{ID: AgentClaudeCode, Name: "Claude Code", Detected: true, InstallDir: bin, Confidence: 0.85}
+	}
+	claudeDir := filepath.Join(home, ".claude")
+	if entries, err := os.ReadDir(claudeDir); err == nil && len(entries) > 0 {
+		return &Agent{ID: AgentClaudeCode, Name: "Claude Code", Detected: true, InstallDir: claudeDir, Confidence: 0.8}
+	}
+	return nil
 }
 
 func detectCursor() *Agent {

@@ -147,6 +147,10 @@ func (h *Handlers) Search(ctx context.Context, params SearchParams) (*SearchResp
 		params.Limit = 10
 	}
 
+	if h.index == nil {
+		return &SearchResponse{Results: nil, Layer: params.Layer}, nil
+	}
+
 	var hits []core.ScoredHit
 
 	switch params.Layer {

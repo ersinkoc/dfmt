@@ -8,6 +8,8 @@ import (
 	"runtime"
 	"sync"
 	"time"
+
+	"github.com/ersinkoc/dfmt/internal/project"
 )
 
 // DaemonEntry represents a running daemon in the registry.
@@ -193,7 +195,7 @@ func NewDaemonEntry(projectPath string, pid int) DaemonEntry {
 			entry.Port = port
 		}
 	} else {
-		entry.SocketPath = filepath.Join(projectPath, ".dfmt", "daemon.sock")
+		entry.SocketPath = project.SocketPath(projectPath)
 	}
 
 	return entry

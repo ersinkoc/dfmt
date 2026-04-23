@@ -90,8 +90,8 @@ func TestSocketServer_Start_DoubleStart(t *testing.T) {
 		t.Errorf("socket file does not exist: %v", err)
 	}
 
-	if info.Mode() != 0700 {
-		t.Errorf("expected socket mode 0700, got %v", info.Mode())
+	if info.Mode().Perm() != 0700 {
+		t.Errorf("expected socket mode 0700, got %v", info.Mode().Perm())
 	}
 
 	server.Stop(ctx)
@@ -337,12 +337,8 @@ func TestSocketServer_Start_ListenError(t *testing.T) {
 	}
 
 	handlers := &Handlers{}
-	// Use an already-in-use path to cause listen error
-	socketPath := "/tmp/test_existing.sock"
-	// Create a file at that path first
-	f, _ := os.Create(socketPath)
-	f.Close()
-	defer os.Remove(socketPath)
+	// Use an unresolvable path (non-existent parent) to cause listen error
+	socketPath := filepath.Join(t.TempDir(), "no-such-parent", "bad.sock")
 
 	server := NewSocketServer(socketPath, handlers)
 	ctx := context.Background()

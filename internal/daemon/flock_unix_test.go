@@ -114,6 +114,11 @@ func TestLockFlock_NonBlockNowAvailable(t *testing.T) {
 		t.Fatalf("first lockFlock failed: %v", err)
 	}
 
+	err = unlockFlock(file1)
+	if err != nil {
+		t.Fatalf("unlockFlock(file1) failed: %v", err)
+	}
+
 	// Try non-blocking - should succeed after unlock
 	err = lockFlock(file2, true)
 	if err != nil {

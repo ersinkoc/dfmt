@@ -784,6 +784,8 @@ func TestDetectClaudeCode_DirectoryAtHomePath(t *testing.T) {
 	// Only create .claude directory at HOME path - no binary paths
 	claudeDir := filepath.Join(tmpDir, ".claude")
 	os.MkdirAll(claudeDir, 0755)
+	// Non-empty dir required for detection
+	os.WriteFile(filepath.Join(claudeDir, "settings.json"), []byte("{}"), 0644)
 
 	result := detectClaudeCode()
 	// Should find the directory and return an agent with Confidence 0.8

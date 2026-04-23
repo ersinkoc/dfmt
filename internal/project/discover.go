@@ -66,5 +66,10 @@ func ID(projectPath string) string {
 
 // SocketPath returns the socket path for a project.
 func SocketPath(projectPath string) string {
-	return filepath.Join(projectPath, ".dfmt", "daemon.sock")
+	full := filepath.Join(projectPath, ".dfmt", "daemon.sock")
+	if len(full) <= 100 {
+		return full
+	}
+	h := sha256.Sum256([]byte(projectPath))
+	return filepath.Join(os.TempDir(), "dfmt-"+hex.EncodeToString(h[:8])+".sock")
 }

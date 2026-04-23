@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ersinkoc/dfmt/internal/project"
 	"github.com/ersinkoc/dfmt/internal/transport"
 )
 
@@ -759,7 +760,7 @@ func TestDaemonRunningWithRealSocketPath(t *testing.T) {
 
 	// Create client for that path
 	cl, _ := NewClient(tmpDir)
-	expectedPath := filepath.Join(tmpDir, ".dfmt", "daemon.sock")
+	expectedPath := project.SocketPath(tmpDir)
 	if cl.socketPath != expectedPath {
 		t.Errorf("socketPath = %s, want %s", cl.socketPath, expectedPath)
 	}
@@ -1344,7 +1345,7 @@ func TestNewClientUnixSocketPath(t *testing.T) {
 	if cl.network != "unix" {
 		t.Errorf("network = %s, want unix", cl.network)
 	}
-	expectedPath := filepath.Join(tmpDir, ".dfmt", "daemon.sock")
+	expectedPath := project.SocketPath(tmpDir)
 	if cl.address != expectedPath {
 		t.Errorf("address = %s, want %s", cl.address, expectedPath)
 	}

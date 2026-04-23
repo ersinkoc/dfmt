@@ -158,11 +158,11 @@ func globToRegex(pattern string) string {
 			result.WriteString(".*")
 			i += 2
 		} else if i+1 < len(pattern) && pattern[i] == '/' && pattern[i+1] == '*' {
-			// /* at end or followed by end: matches just "/" (root only)
-			// /* followed by more: matches "/<something>" path component after /
+			// /* at end matches any non-empty path segment (/home, /etc, /var, ...)
+			// /* in the middle matches a /component before the rest of the pattern
 			if i+2 >= len(pattern) || (i+2 < len(pattern) && pattern[i+2] == '$') {
-				// /* at end - match root only
-				result.WriteString("/")
+				// /* at end - match a non-empty path segment
+				result.WriteString("/[^/]+")
 				i += 2
 			} else {
 				// /* followed by more content - match a path component after /
