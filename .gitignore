@@ -1,8 +1,8 @@
 # === Binaries ===
-dfmt
-dfmt.exe
-dfmt-bench
-dfmt-bench.exe
+/dfmt
+/dfmt.exe
+/dfmt-bench
+/dfmt-bench.exe
 *.exe
 *.dll
 *.so
