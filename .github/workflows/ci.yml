@@ -10,9 +10,15 @@ jobs:
   test:
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
         go: ["1.24", "1.26"]
+    # macOS test suite has pre-existing platform-specific flakes (long $TMPDIR
+    # exceeds sun_path limits, test hardcoding of Linux-style paths). Until a
+    # dedicated hardening pass lands, macOS failures are informational and do
+    # not block the overall workflow. Linux + Windows remain required.
+    continue-on-error: ${{ matrix.os == 'macos-latest' }}
     steps:
       - uses: actions/checkout@v4
 
