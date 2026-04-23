@@ -783,9 +783,12 @@ func TestCloseWithEmptyPath(t *testing.T) {
 
 func TestClosePersistError(t *testing.T) {
 	// Use an invalid path that may cause persist to fail
-	store, _ := NewStore(StoreOptions{
+	store, err := NewStore(StoreOptions{
 		Path: "/nonexistent/dir/cannot/write",
 	})
+	if err != nil || store == nil {
+		t.Skip("NewStore failed as expected for invalid path:", err)
+	}
 
 	set := &ChunkSet{
 		ID:      "test-set",
