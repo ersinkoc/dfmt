@@ -86,13 +86,15 @@ This repository is the DFMT project itself. When working on it, you MUST use DFM
 
 ### Capture pipeline
 
-`internal/capture/` ingests events from five sources:
+`internal/capture/` defines five event-ingestion paths, but only two are currently wired into the running daemon:
 
-- **Filesystem watcher** (`fswatch*.go`) — Platform-specific implementations for Linux and Windows
-- **Git hooks** (`git.go`) — post-commit, post-checkout, pre-push
-- **Shell integration** (`shell.go`) — Tracks cwd, env vars, commands
-- **MCP calls** — Routed through transport
-- **CLI commands** — Manual `dfmt remember`, `dfmt task`, etc.
+- **MCP calls** — Routed through transport. **Live.**
+- **CLI commands** — Manual `dfmt remember`, `dfmt task`, etc. **Live.**
+- **Filesystem watcher** (`fswatch*.go`) — Platform-specific implementations for Linux and Windows. **Not wired**: `NewFSWatcher` is fully implemented and emits on an `Events()` channel, but nothing in the daemon currently consumes that channel.
+- **Git hooks** (`git.go`) — post-commit, post-checkout, pre-push. **Stub**: `SubmitCommit`/`SubmitCheckout`/`SubmitPush` build events then discard them (`_ = e; return nil`). No git hook scripts are installed either.
+- **Shell integration** (`shell.go`) — Tracks cwd, env vars, commands. **Stub**: `SubmitCommand` builds an event then discards it; comment reads `// Would submit to daemon here`.
+
+The three non-live paths still live under `internal/capture/` with their own unit tests, but they don't contribute to the journal today.
 
 ### Agent setup
 
