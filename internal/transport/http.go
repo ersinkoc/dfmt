@@ -152,7 +152,7 @@ func (s *HTTPServer) Stop(ctx context.Context) error {
 		// callers can rebind the same address/path (e.g. in tests that
 		// create a daemon, never call Start, then re-create).
 		if s.listener != nil {
-			s.listener.Close()
+			_ = s.listener.Close()
 			s.listener = nil
 		}
 		if s.socketPath != "" {

@@ -24,7 +24,7 @@ func linuxWatchDir(w *FSWatcher, path string) {
 	_, err = unix.InotifyAddWatch(fd, path,
 		unix.IN_CREATE|unix.IN_DELETE|unix.IN_MODIFY|unix.IN_MOVED_FROM|unix.IN_MOVED_TO)
 	if err != nil {
-		unix.Close(fd)
+		_ = unix.Close(fd)
 		return
 	}
 
@@ -41,7 +41,7 @@ func linuxWatchLoop(w *FSWatcher, fd int, dirPath string) {
 	buf := make([]byte, eventSize*1024)
 	// Ensure the inotify fd is released when the loop exits, regardless of
 	// whether Read returned an error or we observed stopCh.
-	defer unix.Close(fd)
+	defer func() { _ = unix.Close(fd) }()
 
 	for {
 		n, err := unix.Read(fd, buf)

@@ -208,6 +208,10 @@ linters:
         linters:
           - errcheck
         source: 'syscall\.CloseHandle\('
+      # Test files: repeated literals like "tcp" or "windows" are idiomatic, not worth extracting
+      - path: _test\.go$
+        linters:
+          - goconst
       # Client dispatcher: network string repeated a handful of times, not worth a constant
       - path: internal/client/client\.go$
         linters:

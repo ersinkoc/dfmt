@@ -74,7 +74,7 @@ func TestLockFlock_NonBlocking(t *testing.T) {
 	err = lockFlock(file2, true)
 	if err == nil {
 		t.Error("expected error for second non-blocking lock, got nil")
-		unlockFlock(file2)
+		_ = unlockFlock(file2)
 	}
 
 	// Unlock first file
