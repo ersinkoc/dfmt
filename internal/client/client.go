@@ -15,7 +15,6 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/ersinkoc/dfmt/internal/project"
@@ -419,22 +418,14 @@ func readPID(projectPath string) int {
 }
 
 // isProcessRunning checks if a process with the given PID is running.
+// The implementation is platform-specific — see client_unix.go and
+// client_windows.go. os.FindProcess + Signal(0) cannot be used on Windows
+// because syscall.Signal is not supported there and the call always errors.
 func isProcessRunning(pid int) bool {
-	process, err := os.FindProcess(pid)
-	if err != nil {
+	if pid <= 0 {
 		return false
 	}
-	// On Unix, we can signal 0 to check if process exists
-	// On Windows, FindProcess succeeds even for dead processes, so we need to check differently
-	if runtime.GOOS == "windows" {
-		// On Windows, try to kill with signal 0 doesn't work the same way
-		// Instead, we check if the process is still alive by waiting for it with 0 timeout
-		err := process.Signal(syscall.Signal(0))
-		return err == nil
-	}
-	// On Unix, signal 0 just checks if we can send to process
-	err = process.Signal(syscall.Signal(0))
-	return err == nil
+	return isProcessRunningPlatform(pid)
 }
 
 // cleanupStaleDaemon cleans up files from a crashed daemon.
