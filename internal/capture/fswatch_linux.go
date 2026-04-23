@@ -41,6 +41,12 @@ func linuxWatchLoop(w *FSWatcher, fd int, dirPath string) {
 			return
 		}
 
+		select {
+		case <-w.stopCh:
+			return
+		default:
+		}
+
 		for offset := 0; offset < n; {
 			event := (*unix.InotifyEvent)(unsafe.Pointer(&buf[offset]))
 			nameLen := int(event.Len)

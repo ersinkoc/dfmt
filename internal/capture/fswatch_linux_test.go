@@ -172,7 +172,7 @@ func TestLinuxWatchLoop_CreateEvent(t *testing.T) {
 	}
 
 	close(w.stopCh)
-	unix.Close(fd) // unblock the blocking inotify read
+	_ = os.WriteFile(filepath.Join(tmpDir, ".stop_create"), nil, 0600)
 	wg.Wait()
 }
 
@@ -232,7 +232,7 @@ func TestLinuxWatchLoop_ModifyEvent(t *testing.T) {
 	}
 
 	close(w.stopCh)
-	unix.Close(fd) // unblock the blocking inotify read
+	_ = os.WriteFile(filepath.Join(tmpDir, ".stop_modify"), nil, 0600)
 	wg.Wait()
 }
 
@@ -292,7 +292,7 @@ func TestLinuxWatchLoop_DeleteEvent(t *testing.T) {
 	}
 
 	close(w.stopCh)
-	unix.Close(fd) // unblock the blocking inotify read
+	_ = os.WriteFile(filepath.Join(tmpDir, ".stop_delete"), nil, 0600)
 	wg.Wait()
 }
 
@@ -364,7 +364,7 @@ func TestLinuxWatchLoop_EmptyName(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	close(w.stopCh)
-	unix.Close(fd) // unblock the blocking inotify read
+	_ = os.WriteFile(filepath.Join(tmpDir, ".stop_empty"), nil, 0600)
 	wg.Wait()
 }
 
