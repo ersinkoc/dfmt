@@ -232,11 +232,11 @@ linters:
         linters:
           - gocritic
 
-issues:
-  max-issues-per-linter: 0
-  max-same-issues: 0
-
-formatters:
-  enable:
-    - gofmt
-    - goimports
+lint:
+  issues:
+    max-issues-per-linter: 0
+    max-same-issues: 0
+  formatters:
+    enable:
+      - gofmt
+      - goimports
