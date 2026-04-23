@@ -28,12 +28,20 @@ func linuxWatchDir(w *FSWatcher, path string) {
 		return
 	}
 
+	// Track the watched path so Stop() can wake the inotify reader by writing
+	// a marker file into this directory. close(fd) alone does NOT unblock a
+	// goroutine parked in unix.Read on Linux.
+	w.addWatchedPath(path)
+
 	go linuxWatchLoop(w, fd, path)
 }
 
 func linuxWatchLoop(w *FSWatcher, fd int, dirPath string) {
 	const eventSize = 16 + unix.PathMax
 	buf := make([]byte, eventSize*1024)
+	// Ensure the inotify fd is released when the loop exits, regardless of
+	// whether Read returned an error or we observed stopCh.
+	defer unix.Close(fd)
 
 	for {
 		n, err := unix.Read(fd, buf)

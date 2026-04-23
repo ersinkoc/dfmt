@@ -3,6 +3,7 @@
 package capture
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"sync"
@@ -408,4 +409,94 @@ func tmpDir() string {
 	d, _ := os.MkdirTemp("", "fswatch_test")
 	os.RemoveAll(d)
 	return d
+}
+
+// TestFSWatcherStopUnblocks verifies that Stop() actually terminates all
+// linux watch goroutines rather than leaving them parked inside unix.Read.
+// Previously Stop() only closed stopCh; the read never returned and the
+// goroutine leaked. Stop() now writes a marker file into each watched
+// directory to wake the reader.
+func TestFSWatcherStopUnblocks(t *testing.T) {
+	if os.PathSeparator == '\\' {
+		t.Skip("skipping Linux-specific test on Windows")
+	}
+
+	tmpDir, err := os.MkdirTemp("", "fswatch_stop_")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	// Also create a nested subdir so Start() walks and registers two separate
+	// inotify fds. Both watch goroutines must unblock on Stop().
+	subDir := filepath.Join(tmpDir, "sub")
+	if err := os.MkdirAll(subDir, 0o755); err != nil {
+		t.Fatalf("failed to create subdir: %v", err)
+	}
+
+	w, err := NewFSWatcher(tmpDir, []string{}, 0)
+	if err != nil {
+		t.Fatalf("NewFSWatcher failed: %v", err)
+	}
+
+	ctx := context.Background()
+	if err := w.Start(ctx); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+
+	// Give the watch goroutines a moment to park inside unix.Read.
+	time.Sleep(100 * time.Millisecond)
+
+	// Drain events in the background so a full channel does not block
+	// emitEvent and keep a goroutine alive past Stop().
+	drainDone := make(chan struct{})
+	go func() {
+		defer close(drainDone)
+		for {
+			select {
+			case <-w.events:
+			case <-time.After(3 * time.Second):
+				return
+			}
+		}
+	}()
+
+	// Stop() must return promptly AND the watch goroutines must exit.
+	// We enforce both by putting Stop in its own goroutine and waiting with
+	// a timeout. If Stop hangs, we fail loudly rather than time-out the test.
+	stopDone := make(chan error, 1)
+	go func() {
+		stopDone <- w.Stop(ctx)
+	}()
+
+	select {
+	case err := <-stopDone:
+		if err != nil {
+			t.Fatalf("Stop returned error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Stop did not return within 2s — watch goroutines likely leaked")
+	}
+}
+
+// TestFSWatcherStopNoWatches verifies Stop() is safe when no watchers were
+// ever registered (e.g. Start was never called or the path did not exist).
+func TestFSWatcherStopNoWatches(t *testing.T) {
+	w, err := NewFSWatcher(os.TempDir(), []string{}, 0)
+	if err != nil {
+		t.Fatalf("NewFSWatcher failed: %v", err)
+	}
+	ctx := context.Background()
+
+	stopDone := make(chan error, 1)
+	go func() { stopDone <- w.Stop(ctx) }()
+
+	select {
+	case err := <-stopDone:
+		if err != nil {
+			t.Fatalf("Stop returned error: %v", err)
+		}
+	case <-time.After(1 * time.Second):
+		t.Fatal("Stop hung with no registered watches")
+	}
 }
