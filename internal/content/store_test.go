@@ -238,7 +238,7 @@ func TestEvictOnEmptyStore(t *testing.T) {
 	}
 
 	// Call evict via interface
-	var s *Store = store
+	s := store
 	err := s.evict()
 	if err != nil {
 		t.Errorf("evict on empty store failed: %v", err)

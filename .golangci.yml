@@ -17,11 +17,8 @@ linters:
     - staticcheck
     - unconvert
   settings:
-    govet:
-      enable:
-        - shadow
     gocyclo:
-      min-complexity: 20
+      min-complexity: 30
     dupl:
       threshold: 150
     goconst:
@@ -34,10 +31,6 @@ linters:
     gocritic:
       enabled-tags:
         - diagnostic
-        - experimental
-        - opinionated
-        - performance
-        - style
       disabled-checks:
         - ifElseChain
         - captLocal

@@ -963,7 +963,7 @@ func TestStreamEmptyJournalWithCursor(t *testing.T) {
 
 func TestStreamContextCancellation(t *testing.T) {
 	tmpDir := t.TempDir()
-	journalPath := filepath.Join(tmpDir, "cancelled.journal")
+	journalPath := filepath.Join(tmpDir, "canceled.journal")
 
 	j, err := OpenJournal(journalPath, JournalOptions{Durable: true})
 	if err != nil {
@@ -996,7 +996,7 @@ func TestStreamContextCancellation(t *testing.T) {
 	count := 0
 	for range ch {
 		count++
-		// Should get 0 events since context is cancelled
+		// Should get 0 events since context is canceled
 	}
 	t.Logf("Got %d events before cancellation processed", count)
 }

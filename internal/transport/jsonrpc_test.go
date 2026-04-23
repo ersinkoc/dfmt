@@ -18,7 +18,7 @@ func (b badJSONMarshaler) MarshalJSON() ([]byte, error) {
 	return nil, b.err
 }
 
-var mockEncodeErr = errors.New("mock encode error")
+var errMockEncode = errors.New("mock encode error")
 
 func TestReadRequest_EOF(t *testing.T) {
 	// Create a pipe
@@ -71,7 +71,7 @@ func TestWriteRequest_EncodeError(t *testing.T) {
 	req := &Request{
 		Method: "test",
 		Params: json.RawMessage(`{}`),
-		ID:     &badJSONMarshaler{err: mockEncodeErr},
+		ID:     &badJSONMarshaler{err: errMockEncode},
 	}
 
 	err := codec.WriteRequest(req)
@@ -89,7 +89,7 @@ func TestWriteResponse_EncodeError(t *testing.T) {
 
 	// Try to write a response with a type that fails marshaling
 	resp := &Response{
-		Result: &badJSONMarshaler{err: mockEncodeErr},
+		Result: &badJSONMarshaler{err: errMockEncode},
 		ID:     1,
 	}
 

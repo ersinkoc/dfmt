@@ -925,11 +925,11 @@ func TestExecImplNonExitError(t *testing.T) {
 	}
 	sb := NewSandboxWithPolicyAndRuntimes("/tmp", policy, runtimes)
 
-	// Create a context that is already cancelled
+	// Create a context that is already canceled
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // Cancel immediately
 
-	// The exec should fail because context is cancelled
+	// The exec should fail because context is canceled
 	_, err := sb.Exec(ctx, ExecReq{
 		Code: "echo hello",
 		Lang: "sh",
@@ -973,14 +973,14 @@ func TestExecImplExecError(t *testing.T) {
 func TestGetVersionContextCancellation(t *testing.T) {
 	r := NewRuntimes()
 
-	// Create a context that is already cancelled
+	// Create a context that is already canceled
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // Cancel immediately
 
-	// getVersion should return "unknown" when context is cancelled
+	// getVersion should return "unknown" when context is canceled
 	version := r.getVersion(ctx, "/bin/sh")
 	if version != "unknown" {
-		t.Errorf("getVersion = %q, want 'unknown' when context is cancelled", version)
+		t.Errorf("getVersion = %q, want 'unknown' when context is canceled", version)
 	}
 }
 
@@ -1179,9 +1179,9 @@ func TestRuntimesProbeContextCancellation(t *testing.T) {
 	cancel() // Cancel immediately
 
 	err := r.Probe(ctx)
-	// Should not error even with cancelled context
+	// Should not error even with canceled context
 	if err != nil {
-		t.Errorf("Probe with cancelled context failed: %v", err)
+		t.Errorf("Probe with canceled context failed: %v", err)
 	}
 }
 

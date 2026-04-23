@@ -479,7 +479,7 @@ func TestExecImplMaxTimeout(t *testing.T) {
 	}
 }
 
-// TestExecImplTimeoutCancelled tests that execution is cancelled on timeout.
+// TestExecImplTimeoutCancelled tests that execution is canceled on timeout.
 func TestExecImplTimeoutCancelled(t *testing.T) {
 	rt, ok := runtimes.Get("sh")
 	if !ok || !rt.Available {

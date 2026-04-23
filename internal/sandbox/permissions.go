@@ -132,9 +132,10 @@ func LoadPolicy(path string) (*Policy, error) {
 		text := strings.TrimSpace(parts[2])
 
 		rule := Rule{Op: op, Text: text}
-		if action == "allow" {
+		switch action {
+		case "allow":
 			policy.Allow = append(policy.Allow, rule)
-		} else if action == "deny" {
+		case "deny":
 			policy.Deny = append(policy.Deny, rule)
 		}
 	}

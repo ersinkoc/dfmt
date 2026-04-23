@@ -347,7 +347,7 @@ func TestConnectCancelContext(t *testing.T) {
 
 	_, err := cl.Connect(ctx)
 	if err == nil {
-		t.Error("expected error from cancelled context")
+		t.Error("expected error from canceled context")
 	}
 }
 
