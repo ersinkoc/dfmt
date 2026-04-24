@@ -184,7 +184,7 @@ func autoInitProject(projectPath string) error {
       "matcher": "",
       "hooks": [{
         "type": "command",
-        "command": "dfmt capture tool ${toolName} '${toolInput}'",
+        "command": "dfmt capture tool",
         "timeout": 5,
         "statusMessage": "Logging tool call..."
       }]

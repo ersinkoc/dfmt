@@ -202,14 +202,24 @@ func writeProjectClaudeSettings(dir string) error {
 	settingsPath := filepath.Join(claudeDir, "settings.json")
 	// Hooks use 'dfmt' from PATH (single global installation).
 	// Recall saves to .dfmt/last-recall.md relative to project root.
-	// PreToolUse logs all tool calls for token tracking.
-	settingsData := `{
+	// PreToolUse reads tool_name/tool_input from stdin JSON (works on any shell).
+	isWindows := runtime.GOOS == "windows"
+	var preCompact, sessionStart string
+	if isWindows {
+		preCompact = `dfmt recall --format md > .dfmt/last-recall.md 2>$null`
+		sessionStart = `if (Test-Path .dfmt/last-recall.md) { Write-Host '--- Previous session summary ---'; Get-Content .dfmt/last-recall.md; Write-Host '--- End of previous session ---' }`
+	} else {
+		preCompact = `dfmt recall --format md > .dfmt/last-recall.md 2>/dev/null || true`
+		sessionStart = `if [ -f .dfmt/last-recall.md ]; then echo '--- Previous session summary ---' && cat .dfmt/last-recall.md && echo '--- End of previous session ---'; fi`
+	}
+	preToolUse := `dfmt capture tool`
+	settingsData := fmt.Sprintf(`{
   "hooks": {
     "PreToolUse": [{
       "matcher": "",
       "hooks": [{
         "type": "command",
-        "command": "dfmt capture tool ${toolName} '${toolInput}'",
+        "command": "%s",
         "timeout": 5,
         "statusMessage": "Logging tool call..."
       }]
@@ -218,7 +228,7 @@ func writeProjectClaudeSettings(dir string) error {
       "matcher": "",
       "hooks": [{
         "type": "command",
-        "command": "dfmt recall --format md > .dfmt/last-recall.md 2>/dev/null || true",
+        "command": "%s",
         "timeout": 30,
         "statusMessage": "Saving session snapshot for next session..."
       }]
@@ -227,7 +237,7 @@ func writeProjectClaudeSettings(dir string) error {
       "matcher": "",
       "hooks": [{
         "type": "command",
-        "command": "if [ -f .dfmt/last-recall.md ]; then echo '--- Previous session summary ---' && cat .dfmt/last-recall.md && echo '--- End of previous session ---'; fi",
+        "command": "%s",
         "timeout": 10,
         "statusMessage": "Loading previous session summary..."
       }]
@@ -245,7 +255,7 @@ func writeProjectClaudeSettings(dir string) error {
     ]
   }
 }
-`
+`, preToolUse, preCompact, sessionStart)
 	return os.WriteFile(settingsPath, []byte(settingsData), 0644)
 }
 
@@ -878,6 +888,11 @@ func installShellHookContent(raw, dfmtBin string) string {
 	return raw
 }
 
+// errSkipCapture signals that buildCaptureParams intentionally produced no event
+// (e.g. PreToolUse hook fired with no usable args/stdin) and the caller should
+// exit 0 without sending anything to the daemon.
+var errSkipCapture = fmt.Errorf("capture: nothing to record")
+
 func buildCaptureParams(args []string) (transport.RememberParams, error) {
 	if len(args) < 1 {
 		return transport.RememberParams{}, fmt.Errorf("capture type required")
@@ -940,12 +955,15 @@ func buildCaptureParams(args []string) (transport.RememberParams, error) {
 			Data:     map[string]any{"cwd": args[1]},
 		}, nil
 	case "tool":
-		// PreToolUse hook capture: logs tool calls to journal
-		// Usage: dfmt capture tool [toolName] [inputJson]
+		// PreToolUse hook capture: logs tool calls to journal.
+		// Usage: dfmt capture tool                  (preferred — read JSON from stdin)
+		//        dfmt capture tool <name> <input>   (legacy — accepts pre-expanded template args)
 		//
-		// On Windows, ${toolName} and ${toolInput} are not expanded by cmd.exe/PowerShell.
-		// Claude Code passes JSON to stdin with tool_name and tool_input fields.
-		// When toolName is literally "${toolName}", read from stdin instead.
+		// Claude Code always passes {"tool_name":..., "tool_input":...} as JSON on stdin
+		// for PreToolUse hooks. We prefer stdin because shell-template expansion of
+		// ${toolName}/${toolInput} is unreliable: PowerShell expands $toolName as its own
+		// (undefined) variable to "" before our binary ever runs. Args are kept as a
+		// fallback for the bash case where the templates were already substituted.
 		toolName := ""
 		input := ""
 		if len(args) >= 2 {
@@ -954,25 +972,19 @@ func buildCaptureParams(args []string) (transport.RememberParams, error) {
 		if len(args) >= 3 {
 			input = args[2]
 		}
-		// Detect unexpanded template on Windows - read from stdin
-		if toolName == "${toolName}" || (strings.Contains(toolName, "${") && strings.Contains(toolName, "}")) {
+		needStdin := toolName == "" || strings.Contains(toolName, "${")
+		if needStdin {
 			hookInput, err := readHookStdin()
-			if err == nil && hookInput.ToolName != "" {
-				toolName = hookInput.ToolName
-				if hookInput.ToolInput != nil {
-					if jsonBytes, jsonErr := json.Marshal(hookInput.ToolInput); jsonErr == nil {
-						input = string(jsonBytes)
-					}
+			if err != nil || hookInput.ToolName == "" {
+				// No usable input from either args or stdin — drop silently
+				// rather than journaling empty noise on every tool call.
+				return transport.RememberParams{}, errSkipCapture
+			}
+			toolName = hookInput.ToolName
+			if hookInput.ToolInput != nil {
+				if jsonBytes, jsonErr := json.Marshal(hookInput.ToolInput); jsonErr == nil {
+					input = string(jsonBytes)
 				}
-			} else {
-				// stdin read failed or empty - skip
-				return transport.RememberParams{
-					Type:     string(core.EvtNote),
-					Priority: string(core.PriP3),
-					Source:   string(core.SrcMCP),
-					Data:     map[string]any{"tool": toolName, "input": "<stdin-read-failed>"},
-					Tags:     []string{"skipped"},
-				}, nil
 			}
 		}
 		return transport.RememberParams{
@@ -1004,6 +1016,9 @@ func buildCaptureParams(args []string) (transport.RememberParams, error) {
 func runCapture(args []string) int {
 	params, err := buildCaptureParams(args)
 	if err != nil {
+		if err == errSkipCapture {
+			return 0
+		}
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		return 1
 	}
