@@ -57,15 +57,15 @@ This repository is the DFMT project itself. When working on it, you MUST use DFM
 
 ### Per-project daemon
 
-`internal/daemon/` manages a single daemon per project directory. The daemon auto-starts on first command and idle-exits after a timeout. It owns the journal and index lifecycle.
+`internal/daemon/` manages a single daemon per project directory. The daemon auto-starts on first command and idle-exits after a timeout. It owns the journal and index lifecycle. Idle monitor uses channel-based signaling (idleCh) — no time.AfterFunc race condition.
 
 ### Core domain
 
 `internal/core/` is the heart of the system:
 
 - **Events** (`event.go`) — Typed events (file edits, git ops, tasks, decisions, MCP calls, etc.) with priority tiers (p1–p4) and sources (MCP, filesystem watcher, git hook, shell, CLI).
-- **Journal** (`journal.go`) — Append-only JSONL file on disk. Durable writes are the default.
-- **Index** (`index.go`, `index_persist.go`) — In-memory inverted index using BM25 scoring, with gob persistence. Includes Porter stemming, trigram indexing, and English/Turkish stopwords.
+- **Journal** (`journal.go`) — Append-only JSONL file on disk. Durable writes are the default; batched mode flushes every 30s via a periodic sync ticker. Rotation writes a tombstone event before rename.
+- **Index** (`index.go`, `index_persist.go`) — In-memory inverted index using BM25 scoring, with custom JSON serialization (unexported fields via MarshalJSON/UnmarshalJSON). Includes Porter stemming, trigram indexing (properly wired in Index.Add()), and English/Turkish stopwords.
 - **Tokenization** (`tokenize.go`) — Unicode-aware tokenization for search indexing.
 
 ### Transport layer
@@ -90,11 +90,13 @@ This repository is the DFMT project itself. When working on it, you MUST use DFM
 
 - **MCP calls** — Routed through transport. **Live.**
 - **CLI commands** — Manual `dfmt remember`, `dfmt task`, etc. **Live.**
-- **Filesystem watcher** (`fswatch*.go`) — Platform-specific implementations for Linux and Windows. **Not wired**: `NewFSWatcher` is fully implemented and emits on an `Events()` channel, but nothing in the daemon currently consumes that channel.
+- **Filesystem watcher** (`fswatch*.go`) — Platform-specific implementations for Linux and Windows. **Live (opt-in)**: `capture.fs.enabled=true` starts the watcher, daemon pipes its Events() channel into the journal and index. Uses per-path non-blocking debounce; Windows walks only changed directories via mod-time tracking.
 - **Git hooks** (`git.go`) — post-commit, post-checkout, pre-push. **Live (opt-in)**: `dfmt install-hooks` writes the three scripts (embedded in the binary) into `.git/hooks/`, and each script shells out to `dfmt capture git <subcmd>` which calls `client.Remember` so the event lands in the journal via the daemon.
 - **Shell integration** (`shell.go`) — Tracks cwd. **Live (opt-in)**: `dfmt shell-init <bash|zsh|fish>` prints the integration snippet; once sourced, the shell invokes `dfmt capture env.cwd` on every prompt and the event is journaled the same way.
 
-The helper types in `capture/git.go` and `capture/shell.go` are still orphan stubs — the live path goes through the CLI (`dfmt capture ...`) and the transport `Remember` RPC, not those types. The filesystem watcher remains the only non-live ingestion path.
+The helper types in `capture/git.go` and `capture/shell.go` are still orphan stubs — the live path goes through the CLI (`dfmt capture ...`) and the transport `Remember` RPC, not those types.
+
+FSWatcher is wired: daemon.Start() launches the watcher and drains its Events() channel into the journal and index (opt-in via `capture.fs.enabled=true`).
 
 ### Agent setup
 
