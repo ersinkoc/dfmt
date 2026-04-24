@@ -283,18 +283,25 @@ func (s *HTTPServer) Stop(ctx context.Context) error {
 }
 
 func (s *HTTPServer) handle(w http.ResponseWriter, r *http.Request) {
-	// Recover from panics in request handling
+	// Recover from panics in request handling. Encode error is logged but the
+	// connection will be dropped anyway, so we don't retry.
 	defer func() {
 		if r := recover(); r != nil {
-			fmt.Printf("handler panic recovered: %v\n", r)
+			fmt.Fprintf(os.Stderr, "handler panic recovered: %v\n", r)
 			w.Header().Set("Content-Type", "application/json")
-			resp := Response{
+			if err := json.NewEncoder(w).Encode(Response{
 				JSONRPC: jsonRPCVersion,
 				Error:   &RPCError{Code: -32603, Message: "Internal error"},
+			}); err != nil {
+				fmt.Fprintf(os.Stderr, "encode panic response: %v\n", err)
 			}
-			json.NewEncoder(w).Encode(resp)
 		}
 	}()
+
+	if s.handlers == nil {
+		http.Error(w, "handlers not configured", http.StatusServiceUnavailable)
+		return
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 
@@ -349,7 +356,9 @@ func (s *HTTPServer) handle(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	json.NewEncoder(w).Encode(resp)
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
+		fmt.Fprintf(os.Stderr, "encode response: %v\n", err)
+	}
 }
 
 func (s *HTTPServer) handleRemember(ctx context.Context, req Request) Response {
@@ -463,6 +472,17 @@ func (s *HTTPServer) handleDashboardJS(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *HTTPServer) handleAPIStats(w http.ResponseWriter, r *http.Request) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			fmt.Fprintf(os.Stderr, "handleAPIStats panic recovered: %v\n", rec)
+			http.Error(w, "internal error", http.StatusInternalServerError)
+		}
+	}()
+	if s.handlers == nil {
+		http.Error(w, "handlers not configured", http.StatusServiceUnavailable)
+		return
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 
 	if r.Method != http.MethodPost {
@@ -470,7 +490,7 @@ func (s *HTTPServer) handleAPIStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	body, err := io.ReadAll(r.Body)
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
 	if err != nil {
 		http.Error(w, "Bad request", http.StatusBadRequest)
 		return
@@ -479,22 +499,23 @@ func (s *HTTPServer) handleAPIStats(w http.ResponseWriter, r *http.Request) {
 
 	var req Request
 	if err := json.Unmarshal(body, &req); err != nil {
-		resp := Response{
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(Response{
 			JSONRPC: jsonRPCVersion,
+			ID:      nil,
 			Error:   &RPCError{Code: -32700, Message: "Parse error"},
-		}
-		json.NewEncoder(w).Encode(resp)
+		})
 		return
 	}
 
 	var params StatsParams
 	if req.Params != nil {
-		json.Unmarshal(req.Params, &params)
+		_ = json.Unmarshal(req.Params, &params)
 	}
 
 	resp, err := s.handlers.Stats(r.Context(), params)
 	if err != nil {
-		json.NewEncoder(w).Encode(Response{
+		_ = json.NewEncoder(w).Encode(Response{
 			JSONRPC: jsonRPCVersion,
 			ID:      req.ID,
 			Error:   &RPCError{Code: -32603, Message: err.Error()},
@@ -502,20 +523,28 @@ func (s *HTTPServer) handleAPIStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	json.NewEncoder(w).Encode(Response{
+	if err := json.NewEncoder(w).Encode(Response{
 		JSONRPC: jsonRPCVersion,
 		ID:      req.ID,
 		Result:  resp,
-	})
+	}); err != nil {
+		fmt.Fprintf(os.Stderr, "encode stats response: %v\n", err)
+	}
 }
 
 func (s *HTTPServer) handleHealth(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/plain")
 	w.WriteHeader(http.StatusOK)
-	w.Write([]byte("ok"))
+	_, _ = w.Write([]byte("ok"))
 }
 
 func (s *HTTPServer) handleAPIDaemons(w http.ResponseWriter, r *http.Request) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			fmt.Fprintf(os.Stderr, "handleAPIDaemons panic recovered: %v\n", rec)
+			http.Error(w, "internal error", http.StatusInternalServerError)
+		}
+	}()
 	w.Header().Set("Content-Type", "application/json")
 
 	// Read registry file directly (avoid circular import)
@@ -528,18 +557,20 @@ func (s *HTTPServer) handleAPIDaemons(w http.ResponseWriter, r *http.Request) {
 	data, err := os.ReadFile(registryPath)
 	if err != nil {
 		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode([]any{})
+		_ = json.NewEncoder(w).Encode([]any{})
 		return
 	}
 
 	var daemons []map[string]any
 	if err := json.Unmarshal(data, &daemons); err != nil {
 		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode([]any{})
+		_ = json.NewEncoder(w).Encode([]any{})
 		return
 	}
 
-	json.NewEncoder(w).Encode(daemons)
+	if err := json.NewEncoder(w).Encode(daemons); err != nil {
+		fmt.Fprintf(os.Stderr, "encode daemons: %v\n", err)
+	}
 }
 
 func (s *HTTPServer) handleExec(ctx context.Context, req Request) Response {

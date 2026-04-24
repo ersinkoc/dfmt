@@ -78,16 +78,22 @@ func (ix *Index) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// Add adds an event to the index.
+// Add adds an event to the index. If the event ID was already indexed the
+// call is a no-op — this prevents totalDocs drift and duplicate posting-list
+// entries when a caller (e.g. a retry path) re-submits the same event.
 func (ix *Index) Add(e Event) {
 	ix.mu.Lock()
 	defer ix.mu.Unlock()
+
+	id := e.ID
+	if _, exists := ix.docLen[id]; exists {
+		return
+	}
 
 	// Extract searchable text from event
 	text := ix.eventText(e)
 	tokens := TokenizeFull(text, nil)
 
-	id := e.ID
 	docLen := len(tokens)
 	ix.docLen[id] = docLen
 	ix.totalDocs++

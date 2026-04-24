@@ -126,14 +126,23 @@ var (
 	flagProject string
 )
 
-func init() {
-	flag.BoolVar(&flagJSON, "json", false, "JSON output")
-	flag.StringVar(&flagProject, "project", "", "Project path")
-}
+// SetGlobalJSON is called from cmd/dfmt once --json has been stripped off
+// os.Args. We avoid package-level flag.BoolVar because flag.Parse is never
+// called in this binary — all subcommands use their own flagset.
+func SetGlobalJSON(v bool) { flagJSON = v }
+
+// SetGlobalProject is called from cmd/dfmt once --project has been stripped
+// off os.Args.
+func SetGlobalProject(p string) { flagProject = p }
 
 func getProject() (string, error) {
 	if flagProject != "" {
 		return flagProject, nil
+	}
+	// Honor DFMT_PROJECT so child processes launched via exec inherit the
+	// parent's --project selection.
+	if env := os.Getenv("DFMT_PROJECT"); env != "" {
+		return env, nil
 	}
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -557,32 +566,50 @@ func runStop(_ []string) int {
 		return 0
 	}
 
-	// Read PID file
+	// Read PID file and signal the daemon to stop. Ordering matters:
+	// 1) signal the process, 2) poll until it terminates, 3) only then
+	// clean up pid/lock/socket files. Removing the socket while the daemon
+	// still holds it breaks existing clients and leaves the live process
+	// orphaned. Windows os.Interrupt is a no-op (syscall.Signal is not
+	// supported for arbitrary PIDs), so we invoke taskkill there.
 	pidPath := filepath.Join(proj, ".dfmt", "daemon.pid")
-	pidData, err := os.ReadFile(pidPath)
-	if err == nil {
+	if pidData, err := os.ReadFile(pidPath); err == nil {
 		var pid int
 		fmt.Sscanf(string(pidData), "%d", &pid)
 		if pid > 0 {
-			process, err := os.FindProcess(pid)
-			if err == nil {
-				process.Signal(os.Interrupt)
-				fmt.Printf("Sent interrupt to PID %d\n", pid)
+			signalStopProcess(pid)
+			fmt.Printf("Sent stop signal to PID %d\n", pid)
+			// Wait up to 5s for the daemon to terminate before cleaning up
+			// files it may still be writing to.
+			deadline := time.Now().Add(5 * time.Second)
+			for time.Now().Before(deadline) {
+				if !client.DaemonRunning(proj) {
+					break
+				}
+				time.Sleep(100 * time.Millisecond)
 			}
 		}
-		os.Remove(pidPath)
 	}
 
-	// Release lock file if exists
-	lockPath := filepath.Join(proj, ".dfmt", "lock")
-	os.Remove(lockPath)
-
-	// Remove socket
-	socketPath := project.SocketPath(proj)
-	os.Remove(socketPath)
+	// Now safe to remove state files.
+	_ = os.Remove(pidPath)
+	_ = os.Remove(filepath.Join(proj, ".dfmt", "lock"))
+	_ = os.Remove(project.SocketPath(proj))
 
 	fmt.Printf("Daemon stopped for %s\n", proj)
 	return 0
+}
+
+// signalStopProcess asks the OS to terminate pid. Implemented per-platform
+// because os.Process.Signal(os.Interrupt) is a no-op on Windows.
+func signalStopProcess(pid int) {
+	if runtime.GOOS == "windows" {
+		_ = exec.Command("taskkill", "/PID", fmt.Sprintf("%d", pid), "/T").Run()
+		return
+	}
+	if process, err := os.FindProcess(pid); err == nil {
+		_ = process.Signal(os.Interrupt)
+	}
 }
 
 func runList(_ []string) int {
@@ -1485,12 +1512,6 @@ func runMCP(_ []string) int {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "warning: open journal: %v\n", err)
 	}
-	defer func() {
-		if journal != nil {
-			_ = journal.Close()
-		}
-	}()
-
 	// Load or create index
 	indexPath := filepath.Join(dfmtDir, "index.gob")
 	cursorPath := filepath.Join(dfmtDir, "index.cursor")
@@ -1498,6 +1519,19 @@ func runMCP(_ []string) int {
 	if err != nil || needsRebuild || index == nil {
 		index = core.NewIndex()
 	}
+
+	// Persist index on exit so events ingested during the MCP session survive
+	// into the next run. The journal is the durable source of truth, but the
+	// in-memory index would otherwise be rebuilt from scratch every session
+	// (the prior deferred journal.Close was the only persistence step).
+	defer func() {
+		if journal != nil {
+			if hiID, cerr := journal.Checkpoint(context.Background()); cerr == nil {
+				_ = core.PersistIndex(index, indexPath, hiID)
+			}
+			_ = journal.Close()
+		}
+	}()
 
 	// Create sandbox and handlers
 	sb := sandbox.NewSandbox(proj)

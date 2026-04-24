@@ -13,6 +13,31 @@ import (
 	"github.com/ersinkoc/dfmt/internal/core"
 )
 
+// TestHandlersRedactExecCode verifies that tool.exec invocations redact
+// secrets that appear in the code argument before they hit the journal.
+func TestHandlersRedactExecCode(t *testing.T) {
+	tmp := t.TempDir()
+	journal, err := core.OpenJournal(tmp+"/journal.jsonl", core.JournalOptions{Durable: true})
+	if err != nil {
+		t.Fatalf("OpenJournal: %v", err)
+	}
+	defer journal.Close()
+	idx := core.NewIndex()
+	h := NewHandlers(idx, journal, nil)
+
+	h.logEvent(context.Background(), "tool.exec", "push", map[string]any{
+		"code": "curl -H 'Authorization: Bearer abc123xyz456def789xyz' https://example.com",
+	})
+
+	data, err := os.ReadFile(tmp + "/journal.jsonl")
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if bytes.Contains(data, []byte("abc123xyz456def789xyz")) {
+		t.Errorf("bearer token leaked into journal: %s", string(data))
+	}
+}
+
 // TestHandlersRedactRemember verifies that Remember redacts secrets in the
 // Data map before the event is journaled. Guards against the "redact package
 // is orphan" regression from the second audit.

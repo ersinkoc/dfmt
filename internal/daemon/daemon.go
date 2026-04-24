@@ -335,7 +335,7 @@ func (d *Daemon) consumeFSWatch(ctx context.Context) {
 	}
 }
 
-func (d *Daemon) startIdleMonitor(ctx context.Context) {
+func (d *Daemon) startIdleMonitor(_ context.Context) {
 	idleTimeout, err := time.ParseDuration(d.config.Lifecycle.IdleTimeout)
 	if err != nil {
 		idleTimeout = 30 * time.Minute
@@ -348,11 +348,17 @@ func (d *Daemon) startIdleMonitor(ctx context.Context) {
 			return // Stop() was called first
 		default:
 		}
-		// Check if still running before attempting shutdown
-		if d.running.Load() {
-			fmt.Println("Daemon idle timeout, shutting down...")
-			d.Stop(ctx)
+		if !d.running.Load() {
+			return
 		}
+		fmt.Println("Daemon idle timeout, shutting down...")
+		// Use a fresh background context with a shutdown budget. The Start
+		// caller's ctx may already be cancelled (e.g. tests that Cancel
+		// before the idle timer fires), and reusing it would make
+		// server.Shutdown's deadline expire instantly.
+		stopCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = d.Stop(stopCtx)
 	})
 }
 

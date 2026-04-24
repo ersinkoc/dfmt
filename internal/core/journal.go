@@ -335,6 +335,13 @@ func (j *journalImpl) Close() error {
 }
 
 // scanLastID scans the file to find the last event ID.
+// Also performs crash-recovery: if the file does not end with '\n' the last
+// append was interrupted mid-write. We log a warning so subsequent appends
+// don't produce a visually garbled line (Append always writes \n before
+// payload when the previous append was partial; currently it just appends
+// which is slightly malformed but readable line-by-line except the stitched
+// line. Future: open the file without O_APPEND to truncate, on Windows
+// O_APPEND disallows truncate).
 func (j *journalImpl) scanLastID() error {
 	if _, err := j.file.Seek(0, io.SeekStart); err != nil {
 		return fmt.Errorf("seek start: %w", err)
@@ -357,6 +364,25 @@ func (j *journalImpl) scanLastID() error {
 		return fmt.Errorf("scan: %w", err)
 	}
 	j.hiCursor = last.ID
+
+	// Partial-write detection: last byte must be '\n' if file is non-empty.
+	fi, err := j.file.Stat()
+	if err != nil {
+		return fmt.Errorf("stat: %w", err)
+	}
+	if fi.Size() > 0 {
+		var buf [1]byte
+		if _, err := j.file.ReadAt(buf[:], fi.Size()-1); err == nil && buf[0] != '\n' {
+			fmt.Fprintf(os.Stderr, "warning: journal %s does not end with newline (partial write?); "+
+				"next append will insert a leading newline to recover\n", j.path)
+			// Ensure the next Append starts a new line by writing a newline
+			// separator before anything else. This keeps JSONL parseable.
+			if _, werr := j.file.Write([]byte{'\n'}); werr != nil {
+				fmt.Fprintf(os.Stderr, "warning: could not insert recovery newline: %v\n", werr)
+			}
+		}
+	}
+
 	if _, err := j.file.Seek(0, io.SeekEnd); err != nil {
 		return fmt.Errorf("seek end: %w", err)
 	}
