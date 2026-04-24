@@ -105,16 +105,16 @@ func (r *Registry) Register(entry DaemonEntry) {
 	r.mu.Lock()
 	entry.LastSeen = time.Now()
 	r.daemons[entry.ProjectPath] = entry
-	r.mu.Unlock()
 	r.saveNoLock()
+	r.mu.Unlock()
 }
 
 // Unregister removes a daemon from the registry.
 func (r *Registry) Unregister(projectPath string) {
 	r.mu.Lock()
 	delete(r.daemons, projectPath)
-	r.mu.Unlock()
 	r.saveNoLock()
+	r.mu.Unlock()
 }
 
 // List returns all registered daemons.

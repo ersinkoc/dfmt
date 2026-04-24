@@ -73,6 +73,10 @@ func Dispatch(args []string) int {
 		return runSetup(remaining)
 	case "exec":
 		return runExec(remaining)
+	case "read":
+		return runRead(remaining)
+	case "fetch":
+		return runFetch(remaining)
 	case "mcp":
 		return runMCP(remaining)
 	case "help", "--help", "-h":
@@ -198,8 +202,18 @@ func writeProjectClaudeSettings(dir string) error {
 	settingsPath := filepath.Join(claudeDir, "settings.json")
 	// Hooks use 'dfmt' from PATH (single global installation).
 	// Recall saves to .dfmt/last-recall.md relative to project root.
+	// PreToolUse logs all tool calls for token tracking.
 	settingsData := `{
   "hooks": {
+    "PreToolUse": [{
+      "matcher": "",
+      "hooks": [{
+        "type": "command",
+        "command": "dfmt capture tool ${toolName} '${toolInput}'",
+        "timeout": 5,
+        "statusMessage": "Logging tool call..."
+      }]
+    }],
     "PreCompact": [{
       "matcher": "",
       "hooks": [{
@@ -221,14 +235,13 @@ func writeProjectClaudeSettings(dir string) error {
   },
   "permissions": {
     "allow": [
-      "mcp__dfmt__dfmt.read",
       "mcp__dfmt__dfmt.exec",
+      "mcp__dfmt__dfmt.read",
       "mcp__dfmt__dfmt.fetch",
       "mcp__dfmt__dfmt.remember",
       "mcp__dfmt__dfmt.search",
       "mcp__dfmt__dfmt.recall",
-      "mcp__dfmt__dfmt.stats",
-      "Bash(dfmt recall --format md *)"
+      "mcp__dfmt__dfmt.stats"
     ]
   }
 }
@@ -926,6 +939,49 @@ func buildCaptureParams(args []string) (transport.RememberParams, error) {
 			Source:   string(core.SrcShell),
 			Data:     map[string]any{"cwd": args[1]},
 		}, nil
+	case "tool":
+		// PreToolUse hook capture: logs tool calls to journal
+		// Usage: dfmt capture tool [toolName] [inputJson]
+		//
+		// On Windows, ${toolName} and ${toolInput} are not expanded by cmd.exe/PowerShell.
+		// Claude Code passes JSON to stdin with tool_name and tool_input fields.
+		// When toolName is literally "${toolName}", read from stdin instead.
+		toolName := ""
+		input := ""
+		if len(args) >= 2 {
+			toolName = args[1]
+		}
+		if len(args) >= 3 {
+			input = args[2]
+		}
+		// Detect unexpanded template on Windows - read from stdin
+		if toolName == "${toolName}" || (strings.Contains(toolName, "${") && strings.Contains(toolName, "}")) {
+			hookInput, err := readHookStdin()
+			if err == nil && hookInput.ToolName != "" {
+				toolName = hookInput.ToolName
+				if hookInput.ToolInput != nil {
+					if jsonBytes, jsonErr := json.Marshal(hookInput.ToolInput); jsonErr == nil {
+						input = string(jsonBytes)
+					}
+				}
+			} else {
+				// stdin read failed or empty - skip
+				return transport.RememberParams{
+					Type:     string(core.EvtNote),
+					Priority: string(core.PriP3),
+					Source:   string(core.SrcMCP),
+					Data:     map[string]any{"tool": toolName, "input": "<stdin-read-failed>"},
+					Tags:     []string{"skipped"},
+				}, nil
+			}
+		}
+		return transport.RememberParams{
+			Type:     string(core.EvtNote),
+			Priority: string(core.PriP3),
+			Source:   string(core.SrcMCP),
+			Data:     map[string]any{"tool": toolName, "input": input},
+			Tags:     []string{toolName},
+		}, nil
 	case "shell":
 		if len(args) < 2 {
 			return transport.RememberParams{}, fmt.Errorf("shell requires command")
@@ -980,6 +1036,23 @@ func readHookFile(name string) string {
 		return ""
 	}
 	return string(b)
+}
+
+// HookStdinInput represents the JSON input Claude Code passes to hooks via stdin.
+type HookStdinInput struct {
+	ToolName  string         `json:"tool_name"`
+	ToolInput map[string]any `json:"tool_input"`
+}
+
+// readHookStdin reads and parses JSON from stdin for hook commands.
+// Returns HookStdinInput on success or empty struct on failure.
+func readHookStdin() (HookStdinInput, error) {
+	var input HookStdinInput
+	decoder := json.NewDecoder(os.Stdin)
+	if err := decoder.Decode(&input); err != nil {
+		return input, err
+	}
+	return input, nil
 }
 
 func runSetup(args []string) int {
@@ -1303,24 +1376,51 @@ func runExec(args []string) int {
 		return 1
 	}
 
-	ctx := context.Background()
-
-	resp, err := sandbox.NewSandbox(proj).Exec(ctx, sandbox.ExecReq{
-		Code:   code,
-		Lang:   lang,
-		Intent: intent,
-	})
+	// Connect to daemon for journal logging and token savings
+	cl, err := client.NewClient(proj)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		return 1
 	}
 
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	// Try HTTP daemon call first (journal logged)
+	execResp, err := cl.Exec(ctx, transport.ExecParams{
+		Code:   code,
+		Lang:   lang,
+		Intent: intent,
+	})
+	if err != nil {
+		// Fallback to direct sandbox if daemon not available
+		resp, err := sandbox.NewSandbox(proj).Exec(ctx, sandbox.ExecReq{
+			Code:   code,
+			Lang:   lang,
+			Intent: intent,
+		})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			return 1
+		}
+		if flagJSON {
+			fmt.Println(mustMarshalJSON(resp))
+		} else {
+			fmt.Print(resp.Stdout)
+		}
+		return 0
+	}
+
 	if flagJSON {
-		fmt.Println(mustMarshalJSON(resp))
+		fmt.Println(mustMarshalJSON(execResp))
 	} else {
-		fmt.Print(resp.Stdout)
-		if resp.Stderr != "" {
-			fmt.Fprintf(os.Stderr, "stderr: %s\n", resp.Stderr)
+		if execResp.Summary != "" {
+			fmt.Print(execResp.Summary)
+		} else {
+			fmt.Print(execResp.Stdout)
+		}
+		if execResp.Stderr != "" {
+			fmt.Fprintf(os.Stderr, "stderr: %s\n", execResp.Stderr)
 		}
 	}
 
@@ -1423,6 +1523,138 @@ func runMCP(_ []string) int {
 			break
 		}
 		writer.Flush()
+	}
+
+	return 0
+}
+
+func runRead(args []string) int {
+	var intent string
+	var offset, limit int64
+
+	fs := flag.NewFlagSet("read", flag.ContinueOnError)
+	fs.StringVar(&intent, "intent", "", "Intent for content filtering")
+	fs.Int64Var(&offset, "offset", 0, "Byte offset")
+	fs.Int64Var(&limit, "limit", 0, "Max bytes to read")
+	fs.Parse(args)
+
+	if fs.NArg() == 0 {
+		fmt.Fprintf(os.Stderr, "error: path required\n")
+		return 1
+	}
+	path := fs.Arg(0)
+
+	proj, err := getProject()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		return 1
+	}
+
+	cl, err := client.NewClient(proj)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		return 1
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	readResp, err := cl.Read(ctx, transport.ReadParams{
+		Path:   path,
+		Intent: intent,
+		Offset: offset,
+		Limit:  limit,
+	})
+	if err != nil {
+		// Fallback to direct sandbox
+		resp, err := sandbox.NewSandbox(proj).Read(ctx, sandbox.ReadReq{
+			Path:   path,
+			Intent: intent,
+			Offset: offset,
+			Limit:  limit,
+		})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			return 1
+		}
+		if flagJSON {
+			fmt.Println(mustMarshalJSON(resp))
+		} else {
+			fmt.Print(resp.Content)
+		}
+		return 0
+	}
+
+	if flagJSON {
+		fmt.Println(mustMarshalJSON(readResp))
+	} else {
+		if len(readResp.Matches) > 0 {
+			for _, m := range readResp.Matches {
+				fmt.Printf("%s\n", m.Text)
+			}
+		} else {
+			fmt.Print(readResp.Content)
+		}
+	}
+
+	return 0
+}
+
+func runFetch(args []string) int {
+	var intent string
+	var method string
+	var body string
+	var timeout int
+
+	fs := flag.NewFlagSet("fetch", flag.ContinueOnError)
+	fs.StringVar(&intent, "intent", "", "Intent for content filtering")
+	fs.StringVar(&method, "method", "GET", "HTTP method")
+	fs.StringVar(&body, "body", "", "Request body")
+	fs.IntVar(&timeout, "timeout", 30, "Timeout in seconds")
+	fs.Parse(args)
+
+	if fs.NArg() == 0 {
+		fmt.Fprintf(os.Stderr, "error: URL required\n")
+		return 1
+	}
+	url := fs.Arg(0)
+
+	proj, err := getProject()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		return 1
+	}
+
+	cl, err := client.NewClient(proj)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		return 1
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout)*time.Second)
+	defer cancel()
+
+	fetchResp, err := cl.Fetch(ctx, transport.FetchParams{
+		URL:    url,
+		Intent: intent,
+		Method: method,
+		Body:   body,
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		return 1
+	}
+
+	if flagJSON {
+		fmt.Println(mustMarshalJSON(fetchResp))
+	} else {
+		if len(fetchResp.Matches) > 0 {
+			for _, m := range fetchResp.Matches {
+				fmt.Printf("%s\n", m.Text)
+			}
+		} else {
+			fmt.Print(fetchResp.Body)
+		}
 	}
 
 	return 0

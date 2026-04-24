@@ -116,6 +116,7 @@ func (w *FSWatcher) runDebounceCleanup() {
 			if w.cleanupTicker != nil {
 				w.cleanupTicker.Stop()
 			}
+			w.cleanupTicker = nil // Prevent nil dereference if Stop() was already called
 			return
 		case <-w.cleanupTicker.C:
 			if w.debounceMs <= 0 {

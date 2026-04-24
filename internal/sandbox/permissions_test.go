@@ -636,9 +636,9 @@ func TestGlobToRegexEdgeCases(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		result := globMatch(tt.pattern, tt.text)
+		result := globMatchDefault(tt.pattern, tt.text)
 		if result != tt.match {
-			t.Errorf("globMatch(%q, %q) = %v, want %v", tt.pattern, tt.text, result, tt.match)
+			t.Errorf("globMatchDefault(%q, %q) = %v, want %v", tt.pattern, tt.text, result, tt.match)
 		}
 	}
 }
@@ -646,7 +646,7 @@ func TestGlobToRegexEdgeCases(t *testing.T) {
 // TestGlobToRegexDoubleStarAtEnd tests the /*$/ pattern (matches root only).
 func TestGlobToRegexDoubleStarAtEnd(t *testing.T) {
 	// Test the edge case in globToRegex where /* at end with $ anchor
-	if !globMatch("/*.go$", "/main.go") {
+	if !globMatchDefault("/*.go$", "/main.go") {
 		t.Error("/*.go$ should match /main.go")
 	}
 }
@@ -798,26 +798,26 @@ func TestRuleMatchOpMismatch(t *testing.T) {
 // TestGlobMatchSingleStarMatchesNoSlash tests that single * matches strings without slashes.
 func TestGlobMatchSingleStarMatchesNoSlash(t *testing.T) {
 	// * should match filenames
-	if !globMatch("*", "filename") {
+	if !globMatchDefault("*", "filename") {
 		t.Error("* should match filename")
 	}
-	if !globMatch("*.go", "main.go") {
+	if !globMatchDefault("*.go", "main.go") {
 		t.Error("*.go should match main.go")
 	}
-	if !globMatch("test*", "test123") {
+	if !globMatchDefault("test*", "test123") {
 		t.Error("test* should match test123")
 	}
-	if globMatch("test*", "atest") {
+	if globMatchDefault("test*", "atest") {
 		t.Error("test* should not match atest")
 	}
 }
 
 // TestGlobMatchDoubleStarMatchesPathSeparators tests that ** matches path separators.
 func TestGlobMatchDoubleStarMatchesPathSeparators(t *testing.T) {
-	if !globMatch("**", "any/path/here") {
+	if !globMatchDefault("**", "any/path/here") {
 		t.Error("** should match any path including slashes")
 	}
-	if !globMatch("**/*.go", "deep/path/to/file.go") {
+	if !globMatchDefault("**/*.go", "deep/path/to/file.go") {
 		t.Error("**/*.go should match nested .go files")
 	}
 }
@@ -828,6 +828,7 @@ func TestGlobToRegexConvertsCorrectly(t *testing.T) {
 		pattern string
 		regex   string
 	}{
+		// globToRegex is path-style, so * doesn't match /
 		{"*", "^[^/]*$"},
 		{"**", "^.*$"},
 		{"*.go", "^[^/]*.go$"},
@@ -845,13 +846,13 @@ func TestGlobToRegexConvertsCorrectly(t *testing.T) {
 
 // TestGlobMatchQuestionMark tests that ? matches any single character.
 func TestGlobMatchQuestionMarkInPermissions(t *testing.T) {
-	if !globMatch("file?.txt", "file1.txt") {
+	if !globMatchDefault("file?.txt", "file1.txt") {
 		t.Error("file?.txt should match file1.txt")
 	}
-	if !globMatch("file?.txt", "fileX.txt") {
+	if !globMatchDefault("file?.txt", "fileX.txt") {
 		t.Error("file?.txt should match fileX.txt")
 	}
-	if globMatch("file?.txt", "file12.txt") {
+	if globMatchDefault("file?.txt", "file12.txt") {
 		t.Error("file?.txt should not match file12.txt (two chars)")
 	}
 }

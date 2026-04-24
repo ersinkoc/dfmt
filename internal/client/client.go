@@ -177,8 +177,18 @@ func autoInitProject(projectPath string) error {
 	settingsPath := filepath.Join(claudeDir, "settings.json")
 	// Hooks use 'dfmt' from PATH (single global installation).
 	// Recall saves to .dfmt/last-recall.md relative to project root.
+	// PreToolUse logs all tool calls to dfmt journal for token tracking.
 	settingsData := `{
   "hooks": {
+    "PreToolUse": [{
+      "matcher": "",
+      "hooks": [{
+        "type": "command",
+        "command": "dfmt capture tool ${toolName} '${toolInput}'",
+        "timeout": 5,
+        "statusMessage": "Logging tool call..."
+      }]
+    }],
     "PreCompact": [{
       "matcher": "",
       "hooks": [{
@@ -200,14 +210,13 @@ func autoInitProject(projectPath string) error {
   },
   "permissions": {
     "allow": [
-      "mcp__dfmt__dfmt.read",
       "mcp__dfmt__dfmt.exec",
+      "mcp__dfmt__dfmt.read",
       "mcp__dfmt__dfmt.fetch",
       "mcp__dfmt__dfmt.remember",
       "mcp__dfmt__dfmt.search",
       "mcp__dfmt__dfmt.recall",
-      "mcp__dfmt__dfmt.stats",
-      "Bash(dfmt recall --format md *)"
+      "mcp__dfmt__dfmt.stats"
     ]
   }
 }
@@ -461,6 +470,90 @@ func (c *Client) Stats(ctx context.Context) (*transport.StatsResponse, error) {
 	}
 
 	var result transport.StatsResponse
+	if err := json.Unmarshal(mustMarshal(resp.Result), &result); err != nil {
+		return nil, fmt.Errorf("unmarshal result: %w", err)
+	}
+
+	return &result, nil
+}
+
+// Exec executes code via the daemon (journal logged, intent-filtered).
+func (c *Client) Exec(ctx context.Context, params transport.ExecParams) (*transport.ExecResponse, error) {
+	body, err := c.doHTTP("/", transport.Request{
+		Method: "exec",
+		Params: mustMarshal(params),
+		ID:     1,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	var resp transport.Response
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, fmt.Errorf("unmarshal response: %w", err)
+	}
+
+	if resp.Error != nil {
+		return nil, fmt.Errorf("rpc error: %s", resp.Error.Message)
+	}
+
+	var result transport.ExecResponse
+	if err := json.Unmarshal(mustMarshal(resp.Result), &result); err != nil {
+		return nil, fmt.Errorf("unmarshal result: %w", err)
+	}
+
+	return &result, nil
+}
+
+// Read reads a file via the daemon (journal logged, intent-filtered).
+func (c *Client) Read(ctx context.Context, params transport.ReadParams) (*transport.ReadResponse, error) {
+	body, err := c.doHTTP("/", transport.Request{
+		Method: "read",
+		Params: mustMarshal(params),
+		ID:     1,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	var resp transport.Response
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, fmt.Errorf("unmarshal response: %w", err)
+	}
+
+	if resp.Error != nil {
+		return nil, fmt.Errorf("rpc error: %s", resp.Error.Message)
+	}
+
+	var result transport.ReadResponse
+	if err := json.Unmarshal(mustMarshal(resp.Result), &result); err != nil {
+		return nil, fmt.Errorf("unmarshal result: %w", err)
+	}
+
+	return &result, nil
+}
+
+// Fetch fetches a URL via the daemon (journal logged, intent-filtered).
+func (c *Client) Fetch(ctx context.Context, params transport.FetchParams) (*transport.FetchResponse, error) {
+	body, err := c.doHTTP("/", transport.Request{
+		Method: "fetch",
+		Params: mustMarshal(params),
+		ID:     1,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	var resp transport.Response
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, fmt.Errorf("unmarshal response: %w", err)
+	}
+
+	if resp.Error != nil {
+		return nil, fmt.Errorf("rpc error: %s", resp.Error.Message)
+	}
+
+	var result transport.FetchResponse
 	if err := json.Unmarshal(mustMarshal(resp.Result), &result); err != nil {
 		return nil, fmt.Errorf("unmarshal result: %w", err)
 	}

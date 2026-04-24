@@ -63,17 +63,45 @@ func TestGlobMatch(t *testing.T) {
 		{"git *", "git push origin main", true},
 		{"git *", "gitk", false},
 		{"npm *", "npm install", true},
-		{"rm -rf *", "rm -rf /", false},     // star doesn't match slash
-		{"rm -rf /*", "rm -rf /", false},    // /* at end requires a non-empty path segment
-		{"rm -rf /*", "rm -rf /home", true}, // catches dangerous children like /home, /etc, /var
+		// Note: rm -rf * in path-style (globMatchDefault) doesn't match / because * doesn't match /
+		{"rm -rf *", "rm -rf /", false},      // path-style: * doesn't match /
+		{"rm -rf /*", "rm -rf /", false},     // /* requires non-empty segment
+		{"rm -rf /*", "rm -rf /home", true},   // catches dangerous children
 		{"**", "anything", true},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.pattern+"_"+tt.text, func(t *testing.T) {
-			got := globMatch(tt.pattern, tt.text)
+			got := globMatchDefault(tt.pattern, tt.text)
 			if got != tt.match {
-				t.Errorf("globMatch(%q, %q) = %v, want %v", tt.pattern, tt.text, got, tt.match)
+				t.Errorf("globMatchDefault(%q, %q) = %v, want %v", tt.pattern, tt.text, got, tt.match)
+			}
+		})
+	}
+}
+
+func TestGlobMatchWithExec(t *testing.T) {
+	// For exec operations, * matches anything including / (shell-style)
+	tests := []struct {
+		pattern string
+		text    string
+		match   bool
+	}{
+		{"git *", "git commit", true},
+		{"git *", "gitk", false},
+		{"npm *", "npm install", true},
+		// Shell-style: * matches / so rm -rf * DOES match rm -rf /
+		{"rm -rf *", "rm -rf /", true},       // shell-style: * matches /
+		// /* requires non-empty segment after /, so / doesn't match but /home does
+		{"rm -rf /*", "rm -rf /", false},     // /* requires non-empty segment
+		{"rm -rf /*", "rm -rf /home", true},  // /home has segment after /
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.pattern+"_"+tt.text, func(t *testing.T) {
+			got := globMatch(tt.pattern, tt.text, "exec")
+			if got != tt.match {
+				t.Errorf("globMatch(%q, %q, \"exec\") = %v, want %v", tt.pattern, tt.text, got, tt.match)
 			}
 		})
 	}
@@ -510,44 +538,44 @@ func TestGlobMatchStar(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		got := globMatch(tt.pattern, tt.text)
+		got := globMatchDefault(tt.pattern, tt.text)
 		if got != tt.match {
-			t.Errorf("globMatch(%q, %q) = %v, want %v", tt.pattern, tt.text, got, tt.match)
+			t.Errorf("globMatchDefault(%q, %q) = %v, want %v", tt.pattern, tt.text, got, tt.match)
 		}
 	}
 }
 
 func TestGlobMatchDoubleStar(t *testing.T) {
-	if !globMatch("**", "any/path/here") {
+	if !globMatchDefault("**", "any/path/here") {
 		t.Error("** should match any path")
 	}
-	if !globMatch("**/*.go", "path/to/file.go") {
+	if !globMatchDefault("**/*.go", "path/to/file.go") {
 		t.Error("**/*.go should match path/to/file.go")
 	}
 }
 
 func TestGlobMatchQuestionMark(t *testing.T) {
-	if !globMatch("file?.txt", "file1.txt") {
+	if !globMatchDefault("file?.txt", "file1.txt") {
 		t.Error("file?.txt should match file1.txt")
 	}
-	if globMatch("file?.txt", "file12.txt") {
+	if globMatchDefault("file?.txt", "file12.txt") {
 		t.Error("file?.txt should not match file12.txt")
 	}
 }
 
 func TestGlobMatchPathComponent(t *testing.T) {
 	// /*.go should match /main.go but not /path/main.go
-	if !globMatch("/*.go", "/main.go") {
+	if !globMatchDefault("/*.go", "/main.go") {
 		t.Error("/*.go should match /main.go")
 	}
-	if globMatch("/*.go", "/path/main.go") {
+	if globMatchDefault("/*.go", "/path/main.go") {
 		t.Error("/*.go should not match /path/main.go")
 	}
 }
 
 func TestGlobMatchEndAnchor(t *testing.T) {
 	// /*.go$ should match only /foo.go (not /foo.go.bak)
-	if !globMatch("/*.go$", "/main.go") {
+	if !globMatchDefault("/*.go$", "/main.go") {
 		t.Error("/*.go$ should match /main.go")
 	}
 }

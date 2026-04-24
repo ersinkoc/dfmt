@@ -12,17 +12,37 @@ This repository is the DFMT project itself. When working on it, you MUST use DFM
 
 | Native Tool | DFMT Replacement | Required `intent`? |
 |-------------|------------------|-------------------|
-| `Read` | `dfmt.read` | Yes — always provide `intent` |
 | `Bash` | `dfmt.exec` | Yes — always provide `intent` |
+| `Read` | `dfmt.read` | Yes — always provide `intent` |
 | `WebFetch` | `dfmt.fetch` | Yes — always provide `intent` |
+
+### Why This Matters
+
+DFMT is not just a tool — it is the **mandatory proxy layer** for all operations:
+
+- **Token Savings**: Intent-matched excerpts reduce context window usage by 70-90%
+- **Session Memory**: Every operation is logged to journal for recall across compactions
+- **Intent Filtering**: You get exactly what you need, not raw output pollution
+
+**Using native tools bypasses DFMT entirely**: No token savings, no memory, no intent matching. The session becomes a dumb terminal.
+
+### Error Handling
+
+| DFMT Error | Required Action |
+|-----------|-----------------|
+| Tool returns error | Report to user, do NOT fall back to native tool |
+| Tool times out | Retry once with shorter intent, then report |
+| Tool unavailable | Report to user immediately |
+
+**NEVER do this**: `Failed to use dfmt.exec, falling back to native Bash`
 
 ### Rules
 
-1. **Never use native `Read`**, `Bash`, or `WebFetch` when DFMT is available.
-2. **Always include `intent`** describing what you need from the output. DFMT returns only intent-matched excerpts, not full content.
-3. **Record interactions** with `dfmt.remember` after significant LLM calls to track token usage.
-4. **Search memory** with `dfmt.search` when you need context from earlier in the session.
-5. **Build snapshots** with `dfmt.recall` when the context window is tight.
+1. **MANDATORY**: Every tool call MUST use a DFMT MCP tool. Native `Bash`, `Read`, `WebFetch` are PROHIBITED. No exceptions, no fallbacks.
+2. **Intent Required**: Every DFMT call MUST include `intent` describing exactly what you need from the output. Without `intent`, you get raw output — defeating token savings.
+3. **On DFMT Failure**: If a DFMT tool errors, report the error to the user. Do NOT silently fall back to native tools.
+4. **Token Savings**: DFMT returns intent-matched excerpts, not full output. The `intent` field is what makes this work.
+5. **Session Memory**: After significant operations, use `dfmt.remember` to log the interaction.
 
 ### Examples
 

@@ -3,6 +3,7 @@ package transport
 import (
 	"context"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -47,8 +48,12 @@ func (h *Handlers) logEvent(ctx context.Context, eventType, summary string, data
 		Tags:     []string{summary},
 	}
 	e.Sig = e.ComputeSig()
-	_ = h.journal.Append(ctx, e)
-	h.index.Add(e)
+	if err := h.journal.Append(ctx, e); err != nil {
+		fmt.Fprintf(os.Stderr, "logEvent: journal append: %v\n", err)
+	}
+	if h.index != nil {
+		h.index.Add(e)
+	}
 }
 
 // RememberParams are the parameters for the Remember method.
@@ -483,6 +488,7 @@ func (h *Handlers) Exec(ctx context.Context, params ExecParams) (*ExecResponse, 
 	}
 
 	h.logEvent(ctx, "tool.exec", params.Intent, map[string]any{
+		"code":     params.Code,
 		"lang":     params.Lang,
 		"exit":     resp.Exit,
 		"duration": resp.DurationMs,

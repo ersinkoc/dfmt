@@ -247,7 +247,10 @@ func (j *journalImpl) Rotate(ctx context.Context) error {
 			"ts":         time.Now().Format(time.RFC3339Nano),
 		},
 	}
-	tombstoneBytes, _ := json.Marshal(tombstone)
+	tombstoneBytes, err := json.Marshal(tombstone)
+	if err != nil {
+		return fmt.Errorf("marshal rotation tombstone: %w", err)
+	}
 	tombstoneBytes = append(tombstoneBytes, '\n')
 
 	// Write tombstone to current file

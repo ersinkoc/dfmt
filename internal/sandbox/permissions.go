@@ -35,7 +35,7 @@ func (r Rule) Match(op, text string) bool {
 	if r.Op != op {
 		return false
 	}
-	return globMatch(r.Text, text)
+	return globMatch(r.Text, text, op)
 }
 
 // Evaluate checks the policy for a given operation.
@@ -67,18 +67,42 @@ func DefaultPolicy() Policy {
 	return Policy{
 		Version: 1,
 		Allow: []Rule{
+			{Op: "exec", Text: "git"},
 			{Op: "exec", Text: "git *"},
+			{Op: "exec", Text: "npm"},
 			{Op: "exec", Text: "npm *"},
+			{Op: "exec", Text: "pnpm"},
 			{Op: "exec", Text: "pnpm *"},
+			{Op: "exec", Text: "pytest"},
 			{Op: "exec", Text: "pytest *"},
+			{Op: "exec", Text: "cargo"},
 			{Op: "exec", Text: "cargo *"},
+			{Op: "exec", Text: "go"},
 			{Op: "exec", Text: "go *"},
+			{Op: "exec", Text: "echo"},
 			{Op: "exec", Text: "echo *"},
+			{Op: "exec", Text: "ls"},
 			{Op: "exec", Text: "ls *"},
+			{Op: "exec", Text: "cat"},
 			{Op: "exec", Text: "cat *"},
+			{Op: "exec", Text: "find"},
 			{Op: "exec", Text: "find *"},
+			{Op: "exec", Text: "grep"},
 			{Op: "exec", Text: "grep *"},
+			{Op: "exec", Text: "dir"},
 			{Op: "exec", Text: "dir *"},
+			{Op: "exec", Text: "pwd"},
+			{Op: "exec", Text: "whoami"},
+			{Op: "exec", Text: "dfmt"},
+			{Op: "exec", Text: "dfmt *"},
+			{Op: "exec", Text: "wc"},
+			{Op: "exec", Text: "wc *"},
+			{Op: "exec", Text: "tail"},
+			{Op: "exec", Text: "tail *"},
+			{Op: "exec", Text: "node"},
+			{Op: "exec", Text: "node *"},
+			{Op: "exec", Text: "python"},
+			{Op: "exec", Text: "python *"},
 			{Op: "read", Text: "**"},
 			{Op: "fetch", Text: "https://*"},
 			{Op: "fetch", Text: "http://*"},
@@ -144,10 +168,53 @@ func LoadPolicy(path string) (*Policy, error) {
 }
 
 // globMatch does simple glob matching (* matches any number of chars).
-func globMatch(pattern, text string) bool {
-	// Convert glob pattern to regex
+// For exec operations, * matches anything (shell-style).
+// For read/fetch operations, * doesn't match / (path-style).
+func globMatch(pattern, text string, op string) bool {
+	// For exec operations, use shell-style globbing where * matches anything including /
+	// For read/fetch, * doesn't match / (path segments)
+	if op == "exec" {
+		regex := globToRegexShell(pattern)
+		return regexMatch(regex, text)
+	}
+	// Convert glob pattern to regex for read/fetch (path-based)
 	regex := globToRegex(pattern)
 	return regexMatch(regex, text)
+}
+
+// globMatchDefault is for tests and direct calls that don't specify an operation.
+// Uses path-style matching where * doesn't match / for backward compatibility.
+func globMatchDefault(pattern, text string) bool {
+	regex := globToRegex(pattern)
+	return regexMatch(regex, text)
+}
+
+func globToRegexShell(pattern string) string {
+	// Shell-style globbing: * matches anything including /
+	// But /* means / followed by something (not just / alone)
+	var result strings.Builder
+	i := 0
+	for i < len(pattern) {
+		if i+1 < len(pattern) && pattern[i] == '*' && pattern[i+1] == '*' {
+			// ** matches anything including path separators
+			result.WriteString(".*")
+			i += 2
+		} else if i+1 < len(pattern) && pattern[i] == '/' && pattern[i+1] == '*' {
+			// /* means / followed by at least one character (like shell glob)
+			result.WriteString("/.+")
+			i += 2
+		} else if pattern[i] == '*' {
+			result.WriteString(".*") // * matches anything
+			i++
+		} else if pattern[i] == '?' {
+			result.WriteByte('.')
+			i++
+		} else {
+			result.WriteByte(pattern[i])
+			i++
+		}
+	}
+	return "^" + result.String() + "$"
 }
 
 func globToRegex(pattern string) string {
@@ -158,21 +225,26 @@ func globToRegex(pattern string) string {
 			// ** matches anything including path separators
 			result.WriteString(".*")
 			i += 2
-		} else if i+1 < len(pattern) && pattern[i] == '/' && pattern[i+1] == '*' {
-			// /* at end matches any non-empty path segment (/home, /etc, /var, ...)
-			// /* in the middle matches a /component before the rest of the pattern
-			if i+2 >= len(pattern) || (i+2 < len(pattern) && pattern[i+2] == '$') {
-				// /* at end - match a non-empty path segment
-				result.WriteString("/[^/]+")
-				i += 2
+		} else if pattern[i] == '*' {
+			// Single * - check BEFORE /* to properly handle https://*
+			// For URL patterns like https://*, * should match everything including /
+			if i >= 3 && pattern[i-3] == ':' && pattern[i-2] == '/' && pattern[i-1] == '/' {
+				result.WriteString(".*")
 			} else {
-				// /* followed by more content - match a path component after /
+				result.WriteString("[^/]*") // Path-style: * doesn't match /
+			}
+			i++
+		} else if i+1 < len(pattern) && pattern[i] == '/' && pattern[i+1] == '*' {
+			// /* at end matches any non-empty path segment
+			// But skip if this is part of ://* URL pattern (://* should use .*)
+			if i >= 2 && pattern[i-2] == ':' && pattern[i-1] == '/' {
+				// This is ://* URL pattern - skip /* and let * branch handle it
+				result.WriteByte(pattern[i])
+				i++
+			} else {
 				result.WriteString("/[^/]+")
 				i += 2
 			}
-		} else if pattern[i] == '*' {
-			result.WriteString("[^/]*")
-			i++
 		} else if pattern[i] == '?' {
 			result.WriteByte('.')
 			i++
@@ -297,6 +369,53 @@ func hasShellChainOperators(cmd string) bool {
 	return false
 }
 
+// isRedirectionOperand checks if a token is a shell redirection operand (not a command).
+// Examples: "2>&1", "&1", "1>", ">>file", "&2"
+func isRedirectionOperand(token string) bool {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return false
+	}
+	// Starts with a number followed by > or >>
+	if len(token) >= 2 && token[0] >= '0' && token[0] <= '9' {
+		if token[1] == '>' || token[1] == '<' {
+			return true
+		}
+	}
+	// Just & followed by number (like &1, &2)
+	if len(token) >= 2 && token[0] == '&' {
+		if token[1] >= '0' && token[1] <= '9' {
+			return true
+		}
+	}
+	return false
+}
+
+// isEnvAssignment checks if a token is an environment variable assignment (not a command).
+// Examples: "GOCACHE=xxx", "HOME=/tmp"
+func isEnvAssignment(token string) bool {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return false
+	}
+	// Must contain = and not start with a digit
+	eqIdx := strings.Index(token, "=")
+	if eqIdx <= 0 {
+		return false
+	}
+	// Check that the part before = looks like a valid env var name
+	// (starts with letter or underscore, alphanumeric+underscore)
+	name := token[:eqIdx]
+	if name == "" {
+		return false
+	}
+	first := name[0]
+	if (first >= 'a' && first <= 'z') || (first >= 'A' && first <= 'Z') || first == '_' {
+		return true
+	}
+	return false
+}
+
 // Exec implements the Sandbox interface.
 func (s *SandboxImpl) Exec(ctx context.Context, req ExecReq) (ExecResp, error) {
 	// Policy check - for shell commands, check each chained command
@@ -306,18 +425,38 @@ func (s *SandboxImpl) Exec(ctx context.Context, req ExecReq) (ExecResp, error) {
 		cmd = req.Lang + " " + cmd
 	}
 
-	// For shell commands with operators, check each command separately
+	// For shell commands with operators, check the full command chain first
+	// against deny rules to catch dangerous patterns like "; rm -rf /" or "| sh"
 	if hasShellChainOperators(cmd) {
-		// Split by operators and check each command
+		// First check: does the base command match any allow rule?
+		baseCmd := extractBaseCommand(cmd)
+		// Skip env var assignments (e.g., "GOCACHE=xxx go test")
+		if baseCmd != "" && !isEnvAssignment(baseCmd) && !s.policy.Evaluate("exec", baseCmd) {
+			return ExecResp{}, fmt.Errorf("operation denied by policy: %s: base command '%s' not allowed", cmd, baseCmd)
+		}
+		// Second check: does the full command match any deny rule?
+		if !s.policy.Evaluate("exec", cmd) {
+			return ExecResp{}, fmt.Errorf("operation denied by policy: %s: %v", cmd, "blocked by deny rule")
+		}
+		// Third check: each individual command (defense in depth)
+		// Skip redirection operands (2>&1, 1>, etc.) - they're not commands
 		parts := splitByShellOperators(cmd)
 		for _, part := range parts {
 			part = strings.TrimSpace(part)
 			if part == "" {
 				continue
 			}
-			baseCmd := extractBaseCommand(part)
-			if err := s.PolicyCheck("exec", baseCmd); err != nil {
-				return ExecResp{}, fmt.Errorf("operation denied by policy: %s: %v", part, err)
+			// Skip pure redirection operands like "2>&1", "&1", "1>"
+			if isRedirectionOperand(part) {
+				continue
+			}
+			// Skip env assignments (VAR=value)
+			if isEnvAssignment(part) {
+				continue
+			}
+			partBase := extractBaseCommand(part)
+			if !s.policy.Evaluate("exec", partBase) {
+				return ExecResp{}, fmt.Errorf("operation denied by policy: %s: part '%s' not allowed", cmd, part)
 			}
 		}
 	} else if isLangPrefix {
@@ -439,11 +578,21 @@ func (s *SandboxImpl) Read(ctx context.Context, req ReadReq) (ReadResp, error) {
 	}
 
 	content := string(data)
-	if req.Offset > 0 && int(req.Offset) < len(content) {
-		content = content[req.Offset:]
+
+	// Validate Offset and Limit to prevent panic or out-of-bounds access
+	if req.Offset < 0 {
+		req.Offset = 0
 	}
-	if req.Limit > 0 && int(req.Limit) < len(content) {
-		content = content[:req.Limit]
+	if req.Limit < 0 {
+		req.Limit = 0
+	}
+	offset := int(req.Offset)
+	limit := int(req.Limit)
+	if offset > 0 && offset < len(content) {
+		content = content[offset:]
+	}
+	if limit > 0 && limit < len(content) {
+		content = content[:limit]
 	}
 
 	// Intent-based filtering
@@ -681,6 +830,10 @@ func buildEnv(extra map[string]string) []string {
 		// Windows: use system PATH so cmd, powershell, git, go, node etc. are found
 		env = []string{
 			"PATH=" + os.Getenv("PATH"),
+			"TMP=" + os.Getenv("TMP"),
+			"TEMP=" + os.Getenv("TEMP"),
+			"LOCALAPPDATA=" + os.Getenv("LOCALAPPDATA"),
+			"USERPROFILE=" + os.Getenv("USERPROFILE"),
 		}
 		if home := os.Getenv("USERPROFILE"); home != "" {
 			env = append(env, "HOME="+home)
