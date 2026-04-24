@@ -13,6 +13,49 @@ import (
 	"github.com/ersinkoc/dfmt/internal/core"
 )
 
+// TestHandlersRedactRemember verifies that Remember redacts secrets in the
+// Data map before the event is journaled. Guards against the "redact package
+// is orphan" regression from the second audit.
+func TestHandlersRedactRemember(t *testing.T) {
+	tmp := t.TempDir()
+	journal, err := core.OpenJournal(tmp+"/journal.jsonl", core.JournalOptions{Durable: true})
+	if err != nil {
+		t.Fatalf("OpenJournal: %v", err)
+	}
+	defer journal.Close()
+	idx := core.NewIndex()
+	h := NewHandlers(idx, journal, nil)
+
+	params := RememberParams{
+		Type:   "note",
+		Source: "mcp",
+		Data: map[string]any{
+			"payload": "export API_TOKEN=ghp_abc123xyz456def789ghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUV",
+		},
+		Tags: []string{"sk-abcd1234efgh5678ijkl9012mnop3456qrst7890uvwx1234yzAB5678CD"},
+	}
+	if _, err := h.Remember(context.Background(), params); err != nil {
+		t.Fatalf("Remember: %v", err)
+	}
+
+	data, err := os.ReadFile(tmp + "/journal.jsonl")
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if bytes.Contains(data, []byte("ghp_abc123xyz456def789")) {
+		t.Error("GitHub token leaked into journal")
+	}
+	if bytes.Contains(data, []byte("sk-abcd1234efgh5678")) {
+		t.Error("OpenAI key leaked into journal via Tags")
+	}
+	// Either the env_export path turns "API_TOKEN=ghp_..." into
+	// "API_TOKEN=[REDACTED]", or the github_token pattern turns the raw
+	// token into "[GITHUB_TOKEN]". Either result is acceptable redaction.
+	if !bytes.Contains(data, []byte("[REDACTED]")) && !bytes.Contains(data, []byte("[GITHUB_TOKEN]")) {
+		t.Errorf("expected redaction marker in %s", string(data))
+	}
+}
+
 func TestRPCError(t *testing.T) {
 	err := &RPCError{Code: -32601, Message: "method not found"}
 	if err.Code != -32601 {

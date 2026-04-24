@@ -174,6 +174,13 @@ func Load(projectPath string) (*Config, error) {
 		}
 	}
 
+	// Validate the merged result so typo'd durability values, malformed
+	// idle_timeout strings, etc. surface immediately instead of silently
+	// degrading to defaults at runtime.
+	if err := cfg.Validate(); err != nil {
+		return nil, fmt.Errorf("config invalid: %w", err)
+	}
+
 	return cfg, nil
 }
 

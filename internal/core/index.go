@@ -9,9 +9,12 @@ import (
 )
 
 // PostingList holds the document IDs and term frequencies for a term.
+// TFs is uint32: uint16 would overflow on tokens repeated 65 536+ times
+// (e.g. a huge log containing the same identifier over and over), silently
+// corrupting BM25 scores.
 type PostingList struct {
 	IDs []string // ULIDs, sorted
-	TFs []uint16 // term frequencies, parallel to IDs
+	TFs []uint32 // term frequencies, parallel to IDs
 }
 
 // Index implements an in-memory inverted index with BM25 scoring.
@@ -105,7 +108,7 @@ func (ix *Index) Add(e Event) {
 			ix.stemPL[stem] = pl
 		}
 		pl.IDs = append(pl.IDs, id)
-		pl.TFs = append(pl.TFs, uint16(freq))
+		pl.TFs = append(pl.TFs, uint32(freq))
 	}
 
 	// Also index for trigram search
@@ -246,7 +249,7 @@ func (ix *Index) Remove(id string) {
 	// Remove from stem posting lists.
 	for stem, pl := range ix.stemPL {
 		newIDs := make([]string, 0, len(pl.IDs))
-		newTFs := make([]uint16, 0, len(pl.TFs))
+		newTFs := make([]uint32, 0, len(pl.TFs))
 		for i, docID := range pl.IDs {
 			if docID != id {
 				newIDs = append(newIDs, docID)

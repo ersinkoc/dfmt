@@ -147,28 +147,33 @@ func New(projectPath string, cfg *config.Config) (*Daemon, error) {
 }
 
 // Start starts the daemon with panic recovery. The whole start sequence is
-// wrapped so a panic in any phase (server, fswatcher, registry) is reported as
-// an error rather than crashing the daemon process.
+// wrapped so a panic in any phase (server, fswatcher, registry) is reported
+// as an error rather than crashing the daemon process — and any partially-
+// opened resources (TCP listener, fswatcher) are torn down before returning.
+//
+// The running flag is flipped with CompareAndSwap so two concurrent Start
+// calls do not both proceed to bind the listener.
 func (d *Daemon) Start(ctx context.Context) error {
-	if d.running.Load() {
+	if !d.running.CompareAndSwap(false, true) {
 		return fmt.Errorf("daemon already running")
 	}
-	d.running.Store(true)
+
+	serverStarted := false
+	fswatcherStarted := false
 
 	var startErr error
 	func() {
 		defer func() {
 			if r := recover(); r != nil {
 				startErr = fmt.Errorf("panic during start: %v", r)
-				d.running.Store(false)
 			}
 		}()
 
 		if err := d.server.Start(ctx); err != nil {
 			startErr = fmt.Errorf("start server: %w", err)
-			d.running.Store(false)
 			return
 		}
+		serverStarted = true
 
 		// Write PID file; a write failure is non-fatal (status/list commands
 		// degrade gracefully) but must surface to the operator via stderr.
@@ -183,6 +188,7 @@ func (d *Daemon) Start(ctx context.Context) error {
 			if err := d.fswatcher.Start(ctx); err != nil {
 				fmt.Fprintf(os.Stderr, "warning: fswatcher start: %v\n", err)
 			} else {
+				fswatcherStarted = true
 				d.wg.Add(1)
 				go d.consumeFSWatch(ctx)
 			}
@@ -196,6 +202,16 @@ func (d *Daemon) Start(ctx context.Context) error {
 	}()
 
 	if startErr != nil {
+		// Partial-start cleanup: tear down anything we already brought up so
+		// the next Start can rebind the port/socket and no fswatch goroutine
+		// is leaked.
+		if fswatcherStarted && d.fswatcher != nil {
+			_ = d.fswatcher.Stop(ctx)
+		}
+		if serverStarted {
+			_ = d.server.Stop(ctx)
+		}
+		d.running.Store(false)
 		return startErr
 	}
 

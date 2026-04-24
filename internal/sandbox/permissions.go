@@ -774,12 +774,24 @@ func assertFetchURLAllowed(rawURL string) error {
 	if lowerHost == "metadata.google.internal" || lowerHost == "metadata.goog" {
 		return fmt.Errorf("%w: cloud metadata host %q", ErrBlockedHost, host)
 	}
+	// Host is allowed to be a bare IP literal; parse first so we don't need DNS.
+	if ip := net.ParseIP(host); ip != nil {
+		if isBlockedIP(ip) {
+			return fmt.Errorf("%w: literal address %s is blocked", ErrBlockedHost, ip)
+		}
+		return nil
+	}
 	// Resolve host to IP(s) and reject if any address falls in a blocked range.
+	// A DNS failure is treated as block, not allow: the previous "pass on
+	// LookupIP error" behavior allowed attacker-controlled hostnames that
+	// briefly NXDOMAIN'd but later resolved to an internal IP — the HTTP
+	// client's own resolver could hit a different result than ours.
 	ips, err := net.LookupIP(host)
 	if err != nil {
-		// Leave DNS-resolution failures to the HTTP client so the caller sees a
-		// natural error; we only enforce SSRF when resolution succeeds.
-		return nil
+		return fmt.Errorf("%w: DNS resolution failed for %s: %v", ErrBlockedHost, host, err)
+	}
+	if len(ips) == 0 {
+		return fmt.Errorf("%w: no addresses for %s", ErrBlockedHost, host)
 	}
 	for _, ip := range ips {
 		if isBlockedIP(ip) {
