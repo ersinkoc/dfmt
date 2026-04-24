@@ -72,7 +72,18 @@ function Download-Binary {
             Write-Warn "could not verify checksum: $_"
         }
 
-        Move-Item -Force -Path $tmpExe -Destination $target
+        Move-Item -Force -Path $tmpExe -Destination $target -ErrorAction SilentlyContinue
+        if (-not (Test-Path $target)) {
+            # target might be locked; remove and retry
+            try {
+                Remove-Item -Force $target -ErrorAction Stop
+                Start-Sleep -Milliseconds 100
+                Move-Item -Path $tmpExe -Destination $target
+            } catch {
+                Write-Warn "could not replace locked file at $target"
+                return $false
+            }
+        }
         Write-Info "installed to $target"
         return $true
     } catch {
@@ -106,8 +117,18 @@ function Install-FromSource {
     }
     $src = Join-Path $goBin 'dfmt.exe'
     if ((Test-Path $src) -and ($src -ne $target)) {
-        Copy-Item -Force -Path $src -Destination $target
-        Write-Info "copied $src -> $target"
+        # Remove target if locked, then copy
+        try {
+            Remove-Item -Force $target -ErrorAction Stop
+        } catch {
+            Write-Warn "could not remove locked file at $target"
+        }
+        Copy-Item -Force -Path $src -Destination $target -ErrorAction SilentlyContinue
+        if (Test-Path $target) {
+            Write-Info "copied $src -> $target"
+        } else {
+            Write-Warn "could not copy to locked target"
+        }
     }
 }
 

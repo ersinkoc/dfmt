@@ -50,11 +50,12 @@ curl -fsSL https://raw.githubusercontent.com/ersinkoc/dfmt/main/install.sh | sh
 iwr https://raw.githubusercontent.com/ersinkoc/dfmt/main/install.ps1 | iex
 ```
 
-After the installer finishes:
+After the installer finishes, initialize each project:
 
 ```bash
 cd my-project
-dfmt init
+dfmt init          # creates .dfmt/ config and .claude/settings.json
+dfmt install-hooks  # install git hooks (post-commit, post-checkout, pre-push)
 # then restart Claude Code - you're done.
 ```
 
@@ -165,10 +166,10 @@ Run `dfmt setup --agent <name> --dry-run` to preview per-agent configuration cha
 
 ```bash
 # Project lifecycle
-dfmt init                          # initialize project
-dfmt init --preset node            # with framework preset (node | python | go | rust | rails | jvm | php | docker | strict | permissive)
-dfmt init --sub                    # mark this directory as a sub-project (for monorepos)
-dfmt setup                         # configure installed agents
+dfmt init                          # initialize project (.dfmt/ + .claude/settings.json)
+dfmt install-hooks                 # install git hooks (post-commit, post-checkout, pre-push)
+dfmt shell-init bash|zsh|fish      # print shell integration snippet
+dfmt setup                         # configure installed agents (run once globally)
 dfmt setup --agent claude          # configure one specific agent
 dfmt setup --dry-run               # preview without writing
 dfmt setup --uninstall             # remove DFMT from all agents
@@ -183,20 +184,19 @@ dfmt doctor                        # diagnostic checks
 dfmt remember <type> <body>        # record an event manually
 dfmt note <body>                   # shorthand for a note event
 dfmt task <body>                   # create a task
+dfmt task done <id>               # mark task done
 dfmt recall                        # print current session snapshot
 dfmt search <query>                # search session events
-dfmt tail --follow                 # stream events live
-dfmt stats                         # show stats or open dashboard
+dfmt tail                          # stream events live
+dfmt stats                         # show session stats
 
 # Sandbox tools (usually called by the agent)
 dfmt exec <code> --lang bash --intent "..."
 dfmt read <path> --intent "..."
 dfmt fetch <url> --intent "..."
-dfmt content search <query>        # query the ephemeral content store
 
-# Support
-dfmt bundle                        # create a redacted support bundle for bug reports
-dfmt --licenses                    # show third-party license attribution
+# MCP server (usually started automatically by the agent)
+dfmt mcp                          # start MCP server over stdio
 ```
 
 All commands support `--json` for machine-readable output and `--project <path>` to target a specific project.
