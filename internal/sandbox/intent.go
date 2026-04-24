@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 )
 
 // englishStopwords for intent parsing.
@@ -244,9 +245,28 @@ func ExtractVocabulary(content string) []string {
 	return vocab
 }
 
+// truncate shortens s to at most maxLen bytes, appending "..." when it had
+// to cut. The cut is backed up to a rune boundary so non-ASCII summaries
+// (Turkish, CJK, accented Latin) don't end mid-rune — encoding/json would
+// otherwise substitute U+FFFD for the invalid UTF-8 tail.
 func truncate(s string, maxLen int) string {
 	if len(s) <= maxLen {
 		return s
 	}
-	return s[:maxLen-3] + "..."
+	// For maxLen < 3 there's no room for the ellipsis; just return a valid
+	// rune-aligned prefix.
+	cut := maxLen - 3
+	if cut <= 0 {
+		cut = maxLen
+	}
+	if cut > len(s) {
+		cut = len(s)
+	}
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	if cut >= maxLen {
+		return s[:cut]
+	}
+	return s[:cut] + "..."
 }
