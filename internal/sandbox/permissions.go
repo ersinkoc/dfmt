@@ -890,8 +890,51 @@ func (s *SandboxImpl) Fetch(ctx context.Context, req FetchReq) (FetchResp, error
 	if timeout <= 0 {
 		timeout = 30 * time.Second
 	}
+	// DNS-rebinding-safe transport: DialContext resolves the host itself,
+	// validates every returned IP, and dials the literal IP. Without this,
+	// http.Transport performs a *second* DNS lookup after assertFetchURLAllowed
+	// and an attacker-controlled authoritative server can return a public IP
+	// for the pre-check and 127.0.0.1 / 169.254.169.254 for the connect.
+	dialer := &net.Dialer{Timeout: timeout, KeepAlive: 30 * time.Second}
+	transport := &http.Transport{
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			host, port, err := net.SplitHostPort(addr)
+			if err != nil {
+				return nil, err
+			}
+			// IP literal: validate once, dial directly.
+			if ip := net.ParseIP(host); ip != nil {
+				if isBlockedIP(ip) {
+					return nil, fmt.Errorf("%w: literal address %s is blocked", ErrBlockedHost, ip)
+				}
+				return dialer.DialContext(ctx, network, addr)
+			}
+			// Hostname: resolve, validate every result, then dial the first
+			// allowed IP by its literal address. Dialing the hostname again
+			// here would reopen the rebinding window.
+			ips, err := net.DefaultResolver.LookupIP(ctx, "ip", host)
+			if err != nil {
+				return nil, fmt.Errorf("%w: DNS resolution failed for %s: %v", ErrBlockedHost, host, err)
+			}
+			if len(ips) == 0 {
+				return nil, fmt.Errorf("%w: no addresses for %s", ErrBlockedHost, host)
+			}
+			for _, ip := range ips {
+				if isBlockedIP(ip) {
+					return nil, fmt.Errorf("%w: %s resolved to blocked address %s", ErrBlockedHost, host, ip)
+				}
+			}
+			return dialer.DialContext(ctx, network, net.JoinHostPort(ips[0].String(), port))
+		},
+		TLSHandshakeTimeout:   10 * time.Second,
+		ResponseHeaderTimeout: timeout,
+		MaxIdleConns:          10,
+		IdleConnTimeout:       90 * time.Second,
+	}
+	defer transport.CloseIdleConnections()
 	client := &http.Client{
-		Timeout: timeout,
+		Timeout:   timeout,
+		Transport: transport,
 		// Re-check every redirect target against SSRF policy.
 		CheckRedirect: func(r *http.Request, via []*http.Request) error {
 			if len(via) >= 10 {

@@ -106,6 +106,15 @@ func scanDir(w *FSWatcher, dirPath string, known map[string]trackedFile, knownDi
 		} else {
 			w.emitEvent(path, info.IsDir(), "create")
 			known[rel] = tf
+			// Spawn a dedicated watch loop for directories created after the
+			// initial Walk — without this, later edits inside the new tree
+			// only update the new dir's mtime (not its parent's), so the
+			// parent's shouldWalkDir never fires again and the subtree goes
+			// silent until daemon restart. rel != "." so we don't respawn
+			// for the root directory this loop already owns.
+			if info.IsDir() && rel != "." {
+				windowsWatchDir(w, path)
+			}
 		}
 
 		return nil

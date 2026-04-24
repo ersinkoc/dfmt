@@ -39,12 +39,20 @@ type Daemon struct {
 	redactor    *redact.Redactor
 	fswatcher   *capture.FSWatcher
 
-	running    atomic.Bool // Use atomic for race-free access
-	idleTimer  *time.Timer
-	idleCh     chan struct{} // closed on idle timeout or stop
-	shutdownCh chan struct{}
-	stopOnce   sync.Once
-	wg         sync.WaitGroup // tracks background goroutines (e.g. fswatch consumer)
+	running        atomic.Bool  // Use atomic for race-free access
+	lastActivityNs atomic.Int64 // UnixNano of last inbound RPC; drives idle monitor
+	idleCh         chan struct{} // closed on idle timeout or stop
+	shutdownCh     chan struct{}
+	stopOnce       sync.Once
+	wg             sync.WaitGroup // tracks background goroutines (e.g. fswatch consumer)
+}
+
+// Touch records inbound activity so the idle monitor resets. Wired into
+// Handlers via SetActivityFn so every RPC bumps the timer — the previous
+// AfterFunc-only monitor never reset, making "idle timeout" effectively a
+// hard uptime cap.
+func (d *Daemon) Touch() {
+	d.lastActivityNs.Store(time.Now().UnixNano())
 }
 
 // New creates a new daemon instance.
@@ -156,6 +164,8 @@ func New(projectPath string, cfg *config.Config) (*Daemon, error) {
 		fswatcher:   fswatcher,
 		shutdownCh:  make(chan struct{}),
 	}
+	d.lastActivityNs.Store(time.Now().UnixNano())
+	handlers.SetActivityFn(d.Touch)
 
 	return d, nil
 }
@@ -262,11 +272,7 @@ func (d *Daemon) Stop(ctx context.Context) error {
 			close(d.shutdownCh)
 		}
 
-		// Stop idle timer and wake its callback so it exits without trying to
-		// re-enter Stop.
-		if d.idleTimer != nil {
-			d.idleTimer.Stop()
-		}
+		// Wake the idle monitor so it returns without trying to re-enter Stop.
 		if d.idleCh != nil {
 			select {
 			case <-d.idleCh:
@@ -359,31 +365,59 @@ func (d *Daemon) consumeFSWatch(ctx context.Context) {
 	}
 }
 
+// startIdleMonitor spawns a goroutine that periodically checks whether
+// lastActivityNs is older than idleTimeout and fires Stop if so. Previous
+// implementation used a one-shot time.AfterFunc and never reset it, so the
+// configured timeout behaved as a hard uptime cap; Touch() now resets the
+// activity clock on every inbound RPC and the monitor re-checks on each tick.
 func (d *Daemon) startIdleMonitor(_ context.Context) {
 	idleTimeout, err := time.ParseDuration(d.config.Lifecycle.IdleTimeout)
-	if err != nil {
+	if err != nil || idleTimeout <= 0 {
 		idleTimeout = 30 * time.Minute
 	}
 
 	d.idleCh = make(chan struct{}, 1)
-	d.idleTimer = time.AfterFunc(idleTimeout, func() {
-		select {
-		case <-d.idleCh:
-			return // Stop() was called first
-		default:
+	// Check at idleTimeout/10 but never more often than every second or less
+	// often than every minute — keeps short timeouts responsive in tests
+	// without burning CPU on long production timeouts.
+	tick := idleTimeout / 10
+	if tick < time.Second {
+		tick = time.Second
+	}
+	if tick > time.Minute {
+		tick = time.Minute
+	}
+
+	// Deliberately NOT tracked in d.wg: the monitor may call Stop() itself,
+	// and Stop calls d.wg.Wait() — adding this goroutine to wg would deadlock.
+	// Stop closes idleCh instead, which the goroutine observes on its next tick.
+	go func() {
+		t := time.NewTicker(tick)
+		defer t.Stop()
+		for {
+			select {
+			case <-d.idleCh:
+				return
+			case <-d.shutdownCh:
+				return
+			case <-t.C:
+				if !d.running.Load() {
+					return
+				}
+				last := d.lastActivityNs.Load()
+				if time.Since(time.Unix(0, last)) < idleTimeout {
+					continue
+				}
+				fmt.Println("Daemon idle timeout, shutting down...")
+				stopCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				// Stop() closes idleCh and sets running→false, so the next
+				// loop iteration (or a concurrent Stop caller) exits cleanly.
+				_ = d.Stop(stopCtx)
+				cancel()
+				return
+			}
 		}
-		if !d.running.Load() {
-			return
-		}
-		fmt.Println("Daemon idle timeout, shutting down...")
-		// Use a fresh background context with a shutdown budget. The Start
-		// caller's ctx may already be cancelled (e.g. tests that Cancel
-		// before the idle timer fires), and reusing it would make
-		// server.Shutdown's deadline expire instantly.
-		stopCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		_ = d.Stop(stopCtx)
-	})
+	}()
 }
 
 func (d *Daemon) register() {

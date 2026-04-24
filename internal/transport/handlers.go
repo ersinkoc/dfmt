@@ -16,8 +16,8 @@ import (
 )
 
 // Handlers implements the business logic for all transport layers. Mutable
-// fields (project, redactor, store) are guarded by mu so concurrent setter
-// calls after Start are race-safe.
+// fields (project, redactor, store, activity) are guarded by mu so concurrent
+// setter calls after Start are race-safe.
 type Handlers struct {
 	index   *core.Index
 	journal core.Journal
@@ -27,6 +27,7 @@ type Handlers struct {
 	project  string
 	redactor *redact.Redactor
 	store    *content.Store
+	activity func()
 }
 
 // NewHandlers creates a new Handlers instance.
@@ -83,6 +84,27 @@ func (h *Handlers) getProject() string {
 	p := h.project
 	h.mu.RUnlock()
 	return p
+}
+
+// SetActivityFn registers a callback invoked on every inbound RPC. The daemon
+// uses this to reset its idle timer — without it, "idle" becomes an uptime cap
+// because the timer is never armed again after startup.
+func (h *Handlers) SetActivityFn(fn func()) {
+	h.mu.Lock()
+	h.activity = fn
+	h.mu.Unlock()
+}
+
+// touch fires the activity callback if one is registered. Called from every
+// RPC entry point so long-lived busy sessions don't get killed by the idle
+// timeout.
+func (h *Handlers) touch() {
+	h.mu.RLock()
+	fn := h.activity
+	h.mu.RUnlock()
+	if fn != nil {
+		fn()
+	}
 }
 
 // stashContent writes body as a single-chunk set into the content store and
@@ -200,6 +222,7 @@ type RememberResponse struct {
 
 // Remember adds an event to the journal and index.
 func (h *Handlers) Remember(ctx context.Context, params RememberParams) (*RememberResponse, error) {
+	h.touch()
 	// Handle direct token fields - add to Data map
 	data := params.Data
 	if params.InputTokens > 0 || params.OutputTokens > 0 || params.CachedTokens > 0 || params.Model != "" {
@@ -282,6 +305,7 @@ type SearchHit struct {
 
 // Search queries the index.
 func (h *Handlers) Search(ctx context.Context, params SearchParams) (*SearchResponse, error) {
+	h.touch()
 	if params.Limit == 0 {
 		params.Limit = 10
 	}
@@ -333,6 +357,7 @@ type RecallResponse struct {
 
 // Recall builds a session snapshot with tier-ordered greedy fill.
 func (h *Handlers) Recall(ctx context.Context, params RecallParams) (*RecallResponse, error) {
+	h.touch()
 	budget := params.Budget
 	if budget == 0 {
 		budget = 4096
@@ -433,6 +458,7 @@ type StatsResponse struct {
 // not O(|journal|). The previous implementation buffered every event into a
 // slice, which grew unbounded on long-running projects.
 func (h *Handlers) Stats(ctx context.Context, params StatsParams) (*StatsResponse, error) {
+	h.touch()
 	stream, err := h.journal.Stream(ctx, "")
 	if err != nil {
 		return nil, fmt.Errorf("stream journal: %w", err)
@@ -568,6 +594,7 @@ type StreamParams struct {
 
 // Stream streams events from the journal.
 func (h *Handlers) Stream(ctx context.Context, params StreamParams) (<-chan core.Event, error) {
+	h.touch()
 	return h.journal.Stream(ctx, params.From)
 }
 
@@ -598,6 +625,7 @@ type ExecResponse struct {
 
 // Exec executes code via the sandbox.
 func (h *Handlers) Exec(ctx context.Context, params ExecParams) (*ExecResponse, error) {
+	h.touch()
 	var timeout time.Duration
 	if params.Timeout > 0 {
 		timeout = time.Duration(params.Timeout) * time.Second
@@ -679,6 +707,7 @@ type ReadResponse struct {
 
 // Read reads a file via the sandbox.
 func (h *Handlers) Read(ctx context.Context, params ReadParams) (*ReadResponse, error) {
+	h.touch()
 	req := sandbox.ReadReq{
 		Path:   params.Path,
 		Intent: params.Intent,
@@ -736,6 +765,7 @@ type FetchResponse struct {
 
 // Fetch fetches a URL via the sandbox.
 func (h *Handlers) Fetch(ctx context.Context, params FetchParams) (*FetchResponse, error) {
+	h.touch()
 	var timeout time.Duration
 	if params.Timeout > 0 {
 		timeout = time.Duration(params.Timeout) * time.Second

@@ -212,13 +212,13 @@ func TestStartIdleMonitorInvalidDuration(t *testing.T) {
 	d.startIdleMonitor(context.Background())
 
 	// Just verify it doesn't panic
-	if d.idleTimer == nil {
-		t.Error("idleTimer should be set")
+	if d.idleCh == nil {
+		t.Error("idleCh should be set")
 	}
 
-	// Clean up timer to avoid lingering goroutines
-	if d.idleTimer != nil {
-		d.idleTimer.Stop()
+	// Wake the monitor goroutine so it exits.
+	if d.idleCh != nil {
+		close(d.idleCh)
 	}
 
 	// Clean up journal
@@ -242,13 +242,12 @@ func TestStartIdleMonitorValidDuration(t *testing.T) {
 
 	d.startIdleMonitor(context.Background())
 
-	if d.idleTimer == nil {
-		t.Error("idleTimer should be set with valid duration")
+	if d.idleCh == nil {
+		t.Error("idleCh should be set with valid duration")
 	}
 
-	// Clean up timer
-	if d.idleTimer != nil {
-		d.idleTimer.Stop()
+	if d.idleCh != nil {
+		close(d.idleCh)
 	}
 
 	// Clean up journal
@@ -273,12 +272,12 @@ func TestStartIdleMonitorZeroDuration(t *testing.T) {
 	// Zero or invalid duration defaults to 30m
 	d.startIdleMonitor(context.Background())
 
-	if d.idleTimer == nil {
-		t.Error("idleTimer should be set")
+	if d.idleCh == nil {
+		t.Error("idleCh should be set")
 	}
 
-	if d.idleTimer != nil {
-		d.idleTimer.Stop()
+	if d.idleCh != nil {
+		close(d.idleCh)
 	}
 
 	// Clean up journal
@@ -743,13 +742,12 @@ func TestStartIdleMonitorWithVeryLongTimeout(t *testing.T) {
 	ctx := context.Background()
 	d.startIdleMonitor(ctx)
 
-	if d.idleTimer == nil {
-		t.Error("idleTimer should be set with very long timeout")
+	if d.idleCh == nil {
+		t.Error("idleCh should be set with very long timeout")
 	}
 
-	// Clean up
-	if d.idleTimer != nil {
-		d.idleTimer.Stop()
+	if d.idleCh != nil {
+		close(d.idleCh)
 	}
 
 	// Clean up daemon resources
@@ -774,16 +772,14 @@ func TestStartIdleMonitorWithShortTimeout(t *testing.T) {
 	ctx := context.Background()
 	d.startIdleMonitor(ctx)
 
-	if d.idleTimer == nil {
-		t.Error("idleTimer should be set")
+	if d.idleCh == nil {
+		t.Error("idleCh should be set")
 	}
 
-	// Wait for timer to potentially fire
-	time.Sleep(10 * time.Millisecond)
-
-	// Clean up
-	if d.idleTimer != nil {
-		d.idleTimer.Stop()
+	// Close idleCh so the ticker goroutine exits before the minimum 1s tick
+	// would fire for this 1ms timeout.
+	if d.idleCh != nil {
+		close(d.idleCh)
 	}
 
 	// Clean up daemon resources
@@ -816,9 +812,9 @@ func TestStartIdleMonitorContextCancel(t *testing.T) {
 	// Give it a moment to process
 	time.Sleep(10 * time.Millisecond)
 
-	// Stop the timer to clean up
-	if d.idleTimer != nil {
-		d.idleTimer.Stop()
+	// Wake the monitor to clean up.
+	if d.idleCh != nil {
+		close(d.idleCh)
 	}
 
 	// Clean up daemon resources
