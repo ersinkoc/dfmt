@@ -175,20 +175,15 @@ func autoInitProject(projectPath string) error {
 	claudeDir := filepath.Join(projectPath, ".claude")
 	os.MkdirAll(claudeDir, 0755)
 	settingsPath := filepath.Join(claudeDir, "settings.json")
-	// Use forward slashes for shell compatibility (git hooks use sh on all platforms).
-	// Escape backslashes and quotes for JSON string safety.
-	projJS := strings.ReplaceAll(filepath.ToSlash(projectPath), `\`, `\\`)
-	projJS = strings.ReplaceAll(projJS, `"`, `\"`)
-	lastRecallPath := filepath.Join(projectPath, ".dfmt", "last-recall.md")
-	lastRecallJS := strings.ReplaceAll(filepath.ToSlash(lastRecallPath), `\`, `\\`)
-	lastRecallJS = strings.ReplaceAll(lastRecallJS, `"`, `\"`)
-	settingsData := fmt.Sprintf(`{
+	// Hooks use 'dfmt' from PATH (single global installation).
+	// Recall saves to .dfmt/last-recall.md relative to project root.
+	settingsData := `{
   "hooks": {
     "PreCompact": [{
       "matcher": "",
       "hooks": [{
         "type": "command",
-        "command": "cd \"%s\" && .dfmt/dfmt recall --format md 2>/dev/null > .dfmt/last-recall.md || echo '# No recall data' > .dfmt/last-recall.md",
+        "command": "dfmt recall --format md > .dfmt/last-recall.md 2>/dev/null || true",
         "timeout": 30,
         "statusMessage": "Saving session snapshot for next session..."
       }]
@@ -197,7 +192,7 @@ func autoInitProject(projectPath string) error {
       "matcher": "",
       "hooks": [{
         "type": "command",
-        "command": "if [ -f \"%s\" ]; then echo '--- Previous session summary ---' && cat \"%s\" && echo '--- End of previous session ---'; fi",
+        "command": "if [ -f .dfmt/last-recall.md ]; then echo '--- Previous session summary ---' && cat .dfmt/last-recall.md && echo '--- End of previous session ---'; fi",
         "timeout": 10,
         "statusMessage": "Loading previous session summary..."
       }]
@@ -212,11 +207,11 @@ func autoInitProject(projectPath string) error {
       "mcp__dfmt__dfmt.search",
       "mcp__dfmt__dfmt.recall",
       "mcp__dfmt__dfmt.stats",
-      "Bash(.dfmt/dfmt recall --format md *)"
+      "Bash(dfmt recall --format md *)"
     ]
   }
 }
-`, projJS, lastRecallJS, lastRecallJS)
+`
 	os.WriteFile(settingsPath, []byte(settingsData), 0644)
 
 	return nil

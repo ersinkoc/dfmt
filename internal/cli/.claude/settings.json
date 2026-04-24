@@ -4,7 +4,7 @@
       "matcher": "",
       "hooks": [{
         "type": "command",
-        "command": "cd \"D:/Codebox/PROJECTS/DFMT/internal/cli\" && .dfmt/dfmt recall --format md 2>/dev/null > .dfmt/last-recall.md || echo '# No recall data' > .dfmt/last-recall.md",
+        "command": "dfmt recall --format md > .dfmt/last-recall.md 2>/dev/null || true",
         "timeout": 30,
         "statusMessage": "Saving session snapshot for next session..."
       }]
@@ -13,7 +13,7 @@
       "matcher": "",
       "hooks": [{
         "type": "command",
-        "command": "if [ -f \"D:/Codebox/PROJECTS/DFMT/internal/cli/.dfmt/last-recall.md\" ]; then echo '--- Previous session summary ---' && cat \"D:/Codebox/PROJECTS/DFMT/internal/cli/.dfmt/last-recall.md\" && echo '--- End of previous session ---'; fi",
+        "command": "if [ -f .dfmt/last-recall.md ]; then echo '--- Previous session summary ---' && cat .dfmt/last-recall.md && echo '--- End of previous session ---'; fi",
         "timeout": 10,
         "statusMessage": "Loading previous session summary..."
       }]
@@ -28,7 +28,7 @@
       "mcp__dfmt__dfmt.search",
       "mcp__dfmt__dfmt.recall",
       "mcp__dfmt__dfmt.stats",
-      "Bash(.dfmt/dfmt recall --format md *)"
+      "Bash(dfmt recall --format md *)"
     ]
   }
 }
