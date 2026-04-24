@@ -5,15 +5,20 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"time"
 
 	"gopkg.in/yaml.v3"
 )
 
 // HomeDir returns the user's home directory, respecting HOME env var for testability.
+// On Windows, $HOME is ignored unless it's a native absolute path — git-bash/MSYS
+// set it to Unix-style forms like "/c/Users/foo" which filepath.Join cannot use.
 func HomeDir() string {
 	if home := os.Getenv("HOME"); home != "" {
-		return home
+		if runtime.GOOS != "windows" || filepath.IsAbs(home) {
+			return home
+		}
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {

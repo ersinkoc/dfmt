@@ -34,10 +34,22 @@ type Rule struct {
 	Priority Priority  `yaml:"priority"`
 }
 
+// compiledRule wraps a Rule with its precompiled MessageRegex so Classify
+// doesn't recompile on every event — prior implementation ran regexp.Compile
+// inside matchRule, making Stats/Recall O(events × rules) compiles.
+// reInvalid tracks MessageRegex that was provided but failed to compile, so
+// matchRule can fail such rules (preserving the pre-cache behavior where an
+// invalid regex meant the rule never matched).
+type compiledRule struct {
+	rule      Rule
+	re        *regexp.Regexp
+	reInvalid bool
+}
+
 // Classifier assigns priority tiers to events.
 type Classifier struct {
 	defaults map[EventType]Priority
-	rules    []Rule
+	rules    []compiledRule
 }
 
 // NewClassifier creates a new Classifier with default priorities.
@@ -48,16 +60,16 @@ func NewClassifier() *Classifier {
 	}
 	return &Classifier{
 		defaults: defaults,
-		rules:    []Rule{},
+		rules:    []compiledRule{},
 	}
 }
 
 // Classify returns the priority for an event.
 func (c *Classifier) Classify(e Event) Priority {
 	// Check rules first (first matching rule wins)
-	for _, rule := range c.rules {
-		if c.matchRule(e, rule.Match) {
-			return rule.Priority
+	for _, cr := range c.rules {
+		if c.matchRule(e, cr) {
+			return cr.rule.Priority
 		}
 	}
 
@@ -70,8 +82,9 @@ func (c *Classifier) Classify(e Event) Priority {
 	return PriP4
 }
 
-// matchRule checks if an event matches a rule.
-func (c *Classifier) matchRule(e Event, m RuleMatch) bool {
+// matchRule checks if an event matches a compiled rule.
+func (c *Classifier) matchRule(e Event, cr compiledRule) bool {
+	m := cr.rule.Match
 	// Check type
 	if m.Type != "" && m.Type != e.Type {
 		return false
@@ -92,8 +105,12 @@ func (c *Classifier) matchRule(e Event, m RuleMatch) bool {
 		}
 	}
 
-	// Check message regex
-	if m.MessageRegex != "" {
+	// Check message regex against the precompiled form. An invalid regex
+	// (reInvalid) never matches — mirrors the pre-cache err != nil branch.
+	if cr.reInvalid {
+		return false
+	}
+	if cr.re != nil {
 		if e.Data == nil {
 			return false
 		}
@@ -101,11 +118,7 @@ func (c *Classifier) matchRule(e Event, m RuleMatch) bool {
 		if !ok {
 			return false
 		}
-		re, err := regexp.Compile(m.MessageRegex)
-		if err != nil {
-			return false
-		}
-		if !re.MatchString(msg) {
+		if !cr.re.MatchString(msg) {
 			return false
 		}
 	}
@@ -113,9 +126,20 @@ func (c *Classifier) matchRule(e Event, m RuleMatch) bool {
 	return true
 }
 
-// AddRule adds a classification rule.
+// AddRule adds a classification rule. The MessageRegex is compiled once
+// here; an invalid regex is logged as a silent skip (matcher treats the
+// rule's regex clause as always-unmet) rather than failing AddRule, so a
+// malformed user rule doesn't prevent the classifier from being built.
 func (c *Classifier) AddRule(rule Rule) {
-	c.rules = append(c.rules, rule)
+	cr := compiledRule{rule: rule}
+	if rule.Match.MessageRegex != "" {
+		if re, err := regexp.Compile(rule.Match.MessageRegex); err == nil {
+			cr.re = re
+		} else {
+			cr.reInvalid = true
+		}
+	}
+	c.rules = append(c.rules, cr)
 }
 
 // SetDefault sets the default priority for an event type.

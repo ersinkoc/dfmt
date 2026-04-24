@@ -159,7 +159,12 @@ func runInit(args []string) int {
 	var dir string
 	fs := flag.NewFlagSet("init", flag.ContinueOnError)
 	fs.StringVar(&dir, "dir", "", "Project directory")
-	fs.Parse(args)
+	if err := fs.Parse(args); err != nil {
+		if err == flag.ErrHelp {
+			return 0
+		}
+		return 2
+	}
 
 	if dir == "" {
 		dir, _ = os.Getwd()
@@ -291,7 +296,12 @@ func runRemember(args []string) int {
 	fs.IntVar(&outputTokens, "output-tokens", 0, "LLM output tokens")
 	fs.IntVar(&cachedTokens, "cached-tokens", 0, "Cached tokens (savings)")
 	fs.StringVar(&model, "model", "", "LLM model name")
-	fs.Parse(args)
+	if err := fs.Parse(args); err != nil {
+		if err == flag.ErrHelp {
+			return 0
+		}
+		return 2
+	}
 
 	proj, err := getProject()
 	if err != nil {
@@ -362,7 +372,12 @@ func runSearch(args []string) int {
 	var limit int
 	fs := flag.NewFlagSet("search", flag.ContinueOnError)
 	fs.IntVar(&limit, "limit", 10, "Max results")
-	fs.Parse(args)
+	if err := fs.Parse(args); err != nil {
+		if err == flag.ErrHelp {
+			return 0
+		}
+		return 2
+	}
 
 	query := fs.Arg(0)
 	if query == "" {
@@ -414,7 +429,12 @@ func runRecall(args []string) int {
 	fs.IntVar(&budget, "budget", 4096, "Byte budget")
 	fs.StringVar(&format, "format", "md", "Output format (md, json, xml)")
 	fs.BoolVar(&save, "save", false, "Write snapshot to .dfmt/last-recall.md (0600) instead of stdout")
-	fs.Parse(args)
+	if err := fs.Parse(args); err != nil {
+		if err == flag.ErrHelp {
+			return 0
+		}
+		return 2
+	}
 
 	proj, err := getProject()
 	if err != nil {
@@ -490,7 +510,12 @@ func runDaemon(args []string) int {
 	var foreground bool
 	fs := flag.NewFlagSet("daemon", flag.ContinueOnError)
 	fs.BoolVar(&foreground, "foreground", false, "Run in foreground")
-	fs.Parse(args)
+	if err := fs.Parse(args); err != nil {
+		if err == flag.ErrHelp {
+			return 0
+		}
+		return 2
+	}
 
 	proj, err := getProject()
 	if err != nil {
@@ -700,7 +725,12 @@ func runDoctor(args []string) int {
 	var dir string
 	fs := flag.NewFlagSet("doctor", flag.ContinueOnError)
 	fs.StringVar(&dir, "dir", "", "Project directory")
-	fs.Parse(args)
+	if err := fs.Parse(args); err != nil {
+		if err == flag.ErrHelp {
+			return 0
+		}
+		return 2
+	}
 
 	if dir == "" {
 		dir, _ = os.Getwd()
@@ -859,7 +889,12 @@ func runTail(args []string) int {
 	var follow bool
 	fs := flag.NewFlagSet("tail", flag.ContinueOnError)
 	fs.BoolVar(&follow, "follow", false, "Follow new events")
-	fs.Parse(args)
+	if err := fs.Parse(args); err != nil {
+		if err == flag.ErrHelp {
+			return 0
+		}
+		return 2
+	}
 
 	fmt.Println("Streaming events... (Ctrl+C to stop)")
 	if !follow {
@@ -994,7 +1029,9 @@ func buildCaptureParams(args []string) (transport.RememberParams, error) {
 			}
 			return transport.RememberParams{
 				Type:     string(core.EvtGitCheckout),
-				Priority: string(core.PriP3),
+				// Match the classifier default (PriP2) so rendered tier
+				// labels agree with Recall sort order.
+				Priority: string(core.PriP2),
 				Source:   string(core.SrcGitHook),
 				Data:     map[string]any{"ref": args[2], "is_branch": isBranch},
 			}, nil
@@ -1153,7 +1190,12 @@ func runSetup(args []string) int {
 	fs.BoolVar(&force, "force", false, "Overwrite existing config")
 	fs.BoolVar(&uninstall, "uninstall", false, "Remove dfmt configuration")
 	fs.BoolVar(&verify, "verify", false, "Verify setup")
-	fs.Parse(args)
+	if err := fs.Parse(args); err != nil {
+		if err == flag.ErrHelp {
+			return 0
+		}
+		return 2
+	}
 
 	if uninstall {
 		return runSetupUninstall()
@@ -1460,7 +1502,12 @@ func runExec(args []string) int {
 	fs := flag.NewFlagSet("exec", flag.ContinueOnError)
 	fs.StringVar(&lang, "lang", "bash", "Language (bash, sh, node, python, etc.)")
 	fs.StringVar(&intent, "intent", "", "Intent for content filtering")
-	fs.Parse(args)
+	if err := fs.Parse(args); err != nil {
+		if err == flag.ErrHelp {
+			return 0
+		}
+		return 2
+	}
 
 	if fs.NArg() == 0 {
 		fmt.Fprintf(os.Stderr, "error: code required\n")
@@ -1587,16 +1634,67 @@ func runMCP(_ []string) int {
 	handlers.SetProject(proj)
 	mcp := transport.NewMCPProtocol(handlers)
 
-	// Read/write MCP JSON-RPC. Use bufio.Scanner with a bounded buffer so a
-	// hostile peer cannot push us past the line size limit — bufio.Reader's
-	// ReadBytes would grow unbounded.
+	// Read/write MCP JSON-RPC. Use bufio.Reader with a per-message cap so
+	// an oversized line produces a -32700 parse error and the session
+	// continues, instead of bufio.Scanner's ErrTooLong which kills the
+	// entire stdio loop.
 	const mcpMaxLineBytes = 1 << 20 // 1 MiB per JSON-RPC message
-	scanner := bufio.NewScanner(os.Stdin)
-	scanner.Buffer(make([]byte, 64*1024), mcpMaxLineBytes)
+	reader := bufio.NewReader(os.Stdin)
 	writer := bufio.NewWriter(os.Stdout)
 
-	for scanner.Scan() {
-		line := scanner.Bytes()
+	writeParseError := func() {
+		resp := transport.MCPResponse{
+			JSONRPC: "2.0",
+			Error: &transport.RPCError{
+				Code:    -32700,
+				Message: "Parse error",
+			},
+		}
+		_ = json.NewEncoder(writer).Encode(resp)
+		_ = writer.Flush()
+	}
+
+	// readCapped reads one line up to max bytes. If max is exceeded, the
+	// remaining bytes of that line are discarded until the next newline so
+	// the next call starts at a fresh message boundary.
+	readCapped := func(max int) (line []byte, overflow bool, err error) {
+		buf := make([]byte, 0, 512)
+		for {
+			b, rerr := reader.ReadByte()
+			if rerr != nil {
+				if rerr == io.EOF && len(buf) == 0 {
+					return nil, false, rerr
+				}
+				return buf, false, rerr
+			}
+			if b == '\n' {
+				return buf, false, nil
+			}
+			if len(buf) >= max {
+				// Drain to next newline so the next iteration starts clean.
+				for {
+					b2, derr := reader.ReadByte()
+					if derr != nil || b2 == '\n' {
+						return nil, true, nil
+					}
+				}
+			}
+			buf = append(buf, b)
+		}
+	}
+
+	for {
+		line, overflow, err := readCapped(mcpMaxLineBytes)
+		if overflow {
+			writeParseError()
+			continue
+		}
+		if err != nil {
+			if err != io.EOF {
+				fmt.Fprintf(os.Stderr, "read error: %v\n", err)
+			}
+			break
+		}
 		if len(line) == 0 {
 			continue
 		}
@@ -1604,15 +1702,7 @@ func runMCP(_ []string) int {
 		// Parse MCP request
 		var req transport.MCPRequest
 		if err := json.Unmarshal(line, &req); err != nil {
-			resp := transport.MCPResponse{
-				JSONRPC: "2.0",
-				Error: &transport.RPCError{
-					Code:    -32700,
-					Message: "Parse error",
-				},
-			}
-			json.NewEncoder(writer).Encode(resp)
-			writer.Flush()
+			writeParseError()
 			continue
 		}
 
@@ -1631,10 +1721,7 @@ func runMCP(_ []string) int {
 			fmt.Fprintf(os.Stderr, "write error: %v\n", err)
 			break
 		}
-		writer.Flush()
-	}
-	if err := scanner.Err(); err != nil {
-		fmt.Fprintf(os.Stderr, "read error: %v\n", err)
+		_ = writer.Flush()
 	}
 
 	return 0
@@ -1648,7 +1735,12 @@ func runRead(args []string) int {
 	fs.StringVar(&intent, "intent", "", "Intent for content filtering")
 	fs.Int64Var(&offset, "offset", 0, "Byte offset")
 	fs.Int64Var(&limit, "limit", 0, "Max bytes to read")
-	fs.Parse(args)
+	if err := fs.Parse(args); err != nil {
+		if err == flag.ErrHelp {
+			return 0
+		}
+		return 2
+	}
 
 	if fs.NArg() == 0 {
 		fmt.Fprintf(os.Stderr, "error: path required\n")
@@ -1723,7 +1815,12 @@ func runFetch(args []string) int {
 	fs.StringVar(&method, "method", "GET", "HTTP method")
 	fs.StringVar(&body, "body", "", "Request body")
 	fs.IntVar(&timeout, "timeout", 30, "Timeout in seconds")
-	fs.Parse(args)
+	if err := fs.Parse(args); err != nil {
+		if err == flag.ErrHelp {
+			return 0
+		}
+		return 2
+	}
 
 	if fs.NArg() == 0 {
 		fmt.Fprintf(os.Stderr, "error: URL required\n")

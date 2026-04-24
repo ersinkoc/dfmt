@@ -43,6 +43,14 @@ func (gc *GitCapture) BuildCommit(hash, message string) core.Event {
 
 // BuildCheckout builds a git-checkout Event from a hook payload.
 func (gc *GitCapture) BuildCheckout(ref string, isBranch bool) core.Event {
+	// Live git hook path (cli.runCapture) stores is_branch as "0"/"1"
+	// strings because the post-checkout hook passes the arg through to
+	// the daemon. Match that here so consumers don't have to type-switch
+	// between helper-built and hook-built events.
+	flag := "0"
+	if isBranch {
+		flag = "1"
+	}
 	e := core.Event{
 		ID:       string(core.NewULID(time.Now())),
 		TS:       time.Now(),
@@ -52,7 +60,7 @@ func (gc *GitCapture) BuildCheckout(ref string, isBranch bool) core.Event {
 		Source:   core.SrcGitHook,
 		Data: map[string]any{
 			"ref":       ref,
-			"is_branch": isBranch,
+			"is_branch": flag,
 		},
 	}
 	e.Sig = e.ComputeSig()

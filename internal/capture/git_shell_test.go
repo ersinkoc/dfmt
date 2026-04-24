@@ -37,13 +37,13 @@ func TestGitCaptureBuildCommit(t *testing.T) {
 func TestGitCaptureBuildCheckout(t *testing.T) {
 	gc := NewGitCapture("/test/path")
 	e := gc.BuildCheckout("main", true)
-	if e.Data["ref"] != "main" || e.Data["is_branch"] != true {
+	if e.Data["ref"] != "main" || e.Data["is_branch"] != "1" {
 		t.Errorf("unexpected payload %+v", e.Data)
 	}
 
 	e2 := gc.BuildCheckout("feature/test", false)
-	if e2.Data["is_branch"] != false {
-		t.Errorf("is_branch = %v, want false", e2.Data["is_branch"])
+	if e2.Data["is_branch"] != "0" {
+		t.Errorf(`is_branch = %v, want "0"`, e2.Data["is_branch"])
 	}
 }
 

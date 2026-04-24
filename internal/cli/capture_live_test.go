@@ -55,8 +55,8 @@ func TestBuildCaptureParamsGitCheckout(t *testing.T) {
 	if p.Source != string(core.SrcGitHook) {
 		t.Errorf("Source = %q, want %q", p.Source, core.SrcGitHook)
 	}
-	if p.Priority != string(core.PriP3) {
-		t.Errorf("Priority = %q, want %q", p.Priority, core.PriP3)
+	if p.Priority != string(core.PriP2) {
+		t.Errorf("Priority = %q, want %q", p.Priority, core.PriP2)
 	}
 	if got, _ := p.Data["ref"].(string); got != "feature/x" {
 		t.Errorf(`Data["ref"] = %q, want "feature/x"`, got)
