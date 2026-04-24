@@ -17,7 +17,7 @@ type MCPProtocol struct {
 type MCPTool struct {
 	Name        string                 `json:"name"`
 	Description string                 `json:"description"`
-	InputSchema map[string]interface{} `json:"inputSchema"`
+	InputSchema map[string]any `json:"inputSchema"`
 }
 
 // MCPInitializeResult is the result of initialization.
@@ -115,28 +115,28 @@ func (m *MCPProtocol) handleToolsList(req *MCPRequest) (*MCPResponse, error) {
 		{
 			Name:        methodExec,
 			Description: "Execute code in sandbox. Returns intent-matched excerpts to save tokens.",
-			InputSchema: map[string]interface{}{
+			InputSchema: map[string]any{
 				"type": "object",
-				"properties": map[string]interface{}{
-					"code": map[string]interface{}{
+				"properties": map[string]any{
+					"code": map[string]any{
 						"type":        "string",
 						"description": "Code or command to execute",
 					},
-					"lang": map[string]interface{}{
+					"lang": map[string]any{
 						"type":        "string",
 						"description": "Language: bash, sh, node, python, go, etc. Default: bash",
 						"default":     "bash",
 					},
-					"intent": map[string]interface{}{
+					"intent": map[string]any{
 						"type":        "string",
 						"description": "What you need from output. Only matching excerpts returned.",
 					},
-					"return": map[string]interface{}{
+					"return": map[string]any{
 						"type":        "string",
 						"description": "Return mode: auto, raw, summary, search. Default: auto",
 						"default":     "auto",
 					},
-					"timeout": map[string]interface{}{
+					"timeout": map[string]any{
 						"type":        "integer",
 						"description": "Timeout in seconds. Default: 60",
 						"default":     60,
@@ -148,28 +148,28 @@ func (m *MCPProtocol) handleToolsList(req *MCPRequest) (*MCPResponse, error) {
 		{
 			Name:        methodRead,
 			Description: "Read file via sandbox. Use this instead of native Read.",
-			InputSchema: map[string]interface{}{
+			InputSchema: map[string]any{
 				"type": "object",
-				"properties": map[string]interface{}{
-					"path": map[string]interface{}{
+				"properties": map[string]any{
+					"path": map[string]any{
 						"type":        "string",
 						"description": "File path to read",
 					},
-					"intent": map[string]interface{}{
+					"intent": map[string]any{
 						"type":        "string",
 						"description": "What you need from the file. Only matching excerpts returned.",
 					},
-					"offset": map[string]interface{}{
+					"offset": map[string]any{
 						"type":        "integer",
 						"description": "Byte offset to start reading",
 						"default":     0,
 					},
-					"limit": map[string]interface{}{
+					"limit": map[string]any{
 						"type":        "integer",
 						"description": "Maximum bytes to read",
 						"default":     0,
 					},
-					"return": map[string]interface{}{
+					"return": map[string]any{
 						"type":        "string",
 						"description": "Return mode: auto, raw, summary, search. Default: auto",
 						"default":     "auto",
@@ -181,28 +181,28 @@ func (m *MCPProtocol) handleToolsList(req *MCPRequest) (*MCPResponse, error) {
 		{
 			Name:        methodFetch,
 			Description: "Fetch URL via sandbox. Use this instead of native WebFetch.",
-			InputSchema: map[string]interface{}{
+			InputSchema: map[string]any{
 				"type": "object",
-				"properties": map[string]interface{}{
-					"url": map[string]interface{}{
+				"properties": map[string]any{
+					"url": map[string]any{
 						"type":        "string",
 						"description": "URL to fetch",
 					},
-					"intent": map[string]interface{}{
+					"intent": map[string]any{
 						"type":        "string",
 						"description": "What you need from the response. Only matching excerpts returned.",
 					},
-					"method": map[string]interface{}{
+					"method": map[string]any{
 						"type":        "string",
 						"description": "HTTP method. Default: GET",
 						"default":     "GET",
 					},
-					"return": map[string]interface{}{
+					"return": map[string]any{
 						"type":        "string",
 						"description": "Return mode: auto, raw, summary, search. Default: auto",
 						"default":     "auto",
 					},
-					"timeout": map[string]interface{}{
+					"timeout": map[string]any{
 						"type":        "integer",
 						"description": "Timeout in seconds. Default: 30",
 						"default":     30,
@@ -214,37 +214,37 @@ func (m *MCPProtocol) handleToolsList(req *MCPRequest) (*MCPResponse, error) {
 		{
 			Name:        methodRemember,
 			Description: "Record an LLM interaction with token usage for session tracking",
-			InputSchema: map[string]interface{}{
+			InputSchema: map[string]any{
 				"type": "object",
-				"properties": map[string]interface{}{
-					"type": map[string]interface{}{
+				"properties": map[string]any{
+					"type": map[string]any{
 						"type":        "string",
 						"description": "Event type (use 'llm.response' for LLM calls, 'note' for notes)",
 						"default":     "llm.response",
 					},
-					"input_tokens": map[string]interface{}{
+					"input_tokens": map[string]any{
 						"type":        "integer",
 						"description": "Number of input tokens sent to LLM",
 					},
-					"output_tokens": map[string]interface{}{
+					"output_tokens": map[string]any{
 						"type":        "integer",
 						"description": "Number of output tokens received from LLM",
 					},
-					"cached_tokens": map[string]interface{}{
+					"cached_tokens": map[string]any{
 						"type":        "integer",
 						"description": "Number of cached tokens (prompt cache savings)",
 					},
-					"model": map[string]interface{}{
+					"model": map[string]any{
 						"type":        "string",
 						"description": "LLM model name (e.g., claude-opus-4-7, gpt-4o)",
 					},
-					"message": map[string]interface{}{
+					"message": map[string]any{
 						"type":        "string",
 						"description": "Description or summary of the interaction",
 					},
-					"tags": map[string]interface{}{
+					"tags": map[string]any{
 						"type": "array",
-						"items": map[string]interface{}{
+						"items": map[string]any{
 							"type": "string",
 						},
 						"description": "Tags for categorizing the event",
@@ -256,22 +256,22 @@ func (m *MCPProtocol) handleToolsList(req *MCPRequest) (*MCPResponse, error) {
 		{
 			Name:        methodStats,
 			Description: "Get token savings statistics for the session",
-			InputSchema: map[string]interface{}{
+			InputSchema: map[string]any{
 				"type":       "object",
-				"properties": map[string]interface{}{},
+				"properties": map[string]any{},
 			},
 		},
 		{
 			Name:        methodSearch,
 			Description: "Search session events",
-			InputSchema: map[string]interface{}{
+			InputSchema: map[string]any{
 				"type": "object",
-				"properties": map[string]interface{}{
-					"query": map[string]interface{}{
+				"properties": map[string]any{
+					"query": map[string]any{
 						"type":        "string",
 						"description": "Search query",
 					},
-					"limit": map[string]interface{}{
+					"limit": map[string]any{
 						"type":        "integer",
 						"description": "Maximum results",
 					},
@@ -282,14 +282,14 @@ func (m *MCPProtocol) handleToolsList(req *MCPRequest) (*MCPResponse, error) {
 		{
 			Name:        methodRecall,
 			Description: "Build a session snapshot with token budget",
-			InputSchema: map[string]interface{}{
+			InputSchema: map[string]any{
 				"type": "object",
-				"properties": map[string]interface{}{
-					"budget": map[string]interface{}{
+				"properties": map[string]any{
+					"budget": map[string]any{
 						"type":        "integer",
 						"description": "Byte budget for snapshot",
 					},
-					"format": map[string]interface{}{
+					"format": map[string]any{
 						"type":        "string",
 						"description": "Output format (md, json, xml)",
 					},
@@ -300,7 +300,7 @@ func (m *MCPProtocol) handleToolsList(req *MCPRequest) (*MCPResponse, error) {
 
 	return &MCPResponse{
 		JSONRPC: jsonRPCVersion,
-		Result: map[string]interface{}{
+		Result: map[string]any{
 			"tools": tools,
 		},
 		ID: req.ID,
@@ -443,7 +443,7 @@ func (m *MCPProtocol) handleToolsCall(req *MCPRequest) (*MCPResponse, error) {
 func (m *MCPProtocol) handlePing(req *MCPRequest) (*MCPResponse, error) {
 	return &MCPResponse{
 		JSONRPC: jsonRPCVersion,
-		Result:  map[string]interface{}{},
+		Result:  map[string]any{},
 		ID:      req.ID,
 	}, nil
 }
