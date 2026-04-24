@@ -175,13 +175,20 @@ func autoInitProject(projectPath string) error {
 	claudeDir := filepath.Join(projectPath, ".claude")
 	os.MkdirAll(claudeDir, 0755)
 	settingsPath := filepath.Join(claudeDir, "settings.json")
-	settingsData := `{
+	// Use forward slashes for shell compatibility (git hooks use sh on all platforms).
+	// Escape backslashes and quotes for JSON string safety.
+	projJS := strings.ReplaceAll(filepath.ToSlash(projectPath), `\`, `\\`)
+	projJS = strings.ReplaceAll(projJS, `"`, `\"`)
+	lastRecallPath := filepath.Join(projectPath, ".dfmt", "last-recall.md")
+	lastRecallJS := strings.ReplaceAll(filepath.ToSlash(lastRecallPath), `\`, `\\`)
+	lastRecallJS = strings.ReplaceAll(lastRecallJS, `"`, `\"`)
+	settingsData := fmt.Sprintf(`{
   "hooks": {
     "PreCompact": [{
       "matcher": "",
       "hooks": [{
         "type": "command",
-        "command": "cd \"$CLAUDE_PROJECT_PATH\" && .dfmt/dfmt recall --format md 2>/dev/null > .dfmt/last-recall.md || echo '# No recall data' > .dfmt/last-recall.md",
+        "command": "cd \"%s\" && .dfmt/dfmt recall --format md 2>/dev/null > .dfmt/last-recall.md || echo '# No recall data' > .dfmt/last-recall.md",
         "timeout": 30,
         "statusMessage": "Saving session snapshot for next session..."
       }]
@@ -190,7 +197,7 @@ func autoInitProject(projectPath string) error {
       "matcher": "",
       "hooks": [{
         "type": "command",
-        "command": "if [ -f \"$CLAUDE_PROJECT_PATH/.dfmt/last-recall.md\" ]; then echo '--- Previous session summary ---' && cat \"$CLAUDE_PROJECT_PATH/.dfmt/last-recall.md\" && echo '--- End of previous session ---'; fi",
+        "command": "if [ -f \"%s\" ]; then echo '--- Previous session summary ---' && cat \"%s\" && echo '--- End of previous session ---'; fi",
         "timeout": 10,
         "statusMessage": "Loading previous session summary..."
       }]
@@ -209,7 +216,7 @@ func autoInitProject(projectPath string) error {
     ]
   }
 }
-`
+`, projJS, lastRecallJS, lastRecallJS)
 	os.WriteFile(settingsPath, []byte(settingsData), 0644)
 
 	return nil

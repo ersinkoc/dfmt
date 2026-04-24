@@ -4,7 +4,7 @@
       "matcher": "",
       "hooks": [{
         "type": "command",
-        "command": "cd \"$CLAUDE_PROJECT_PATH\" && .dfmt/dfmt recall --format md 2>/dev/null > .dfmt/last-recall.md || echo '# No recall data' > .dfmt/last-recall.md",
+        "command": "cd \"D:/Codebox/PROJECTS/DFMT/internal/cli\" && .dfmt/dfmt recall --format md 2>/dev/null > .dfmt/last-recall.md || echo '# No recall data' > .dfmt/last-recall.md",
         "timeout": 30,
         "statusMessage": "Saving session snapshot for next session..."
       }]
@@ -13,7 +13,7 @@
       "matcher": "",
       "hooks": [{
         "type": "command",
-        "command": "if [ -f \"$CLAUDE_PROJECT_PATH/.dfmt/last-recall.md\" ]; then echo '--- Previous session summary ---' && cat \"$CLAUDE_PROJECT_PATH/.dfmt/last-recall.md\" && echo '--- End of previous session ---'; fi",
+        "command": "if [ -f \"D:/Codebox/PROJECTS/DFMT/internal/cli/.dfmt/last-recall.md\" ]; then echo '--- Previous session summary ---' && cat \"D:/Codebox/PROJECTS/DFMT/internal/cli/.dfmt/last-recall.md\" && echo '--- End of previous session ---'; fi",
         "timeout": 10,
         "statusMessage": "Loading previous session summary..."
       }]
