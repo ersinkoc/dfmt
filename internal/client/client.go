@@ -176,7 +176,7 @@ func autoInitProject(projectPath string) error {
 	settingsPath := filepath.Join(claudeDir, "settings.json")
 	settingsData := `{
   "permissions": {
-    "deny": ["Bash", "Read", "WebFetch"],
+    
     "allow": [
       "mcp__dfmt__dfmt.read",
       "mcp__dfmt__dfmt.exec",

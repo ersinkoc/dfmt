@@ -332,7 +332,7 @@ func (s *HTTPServer) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("X-Frame-Options", "DENY")
-	w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'")
+	w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'sha256-i0unlexK92ZD1t7H5j48z4stY8qIlwTBsDJmUf7eu9c=' 'sha256-DwDPWiW9eReE2QDUpB/9ZWjylFssFALdUxAg1j3McKw='")
 	w.Write([]byte(DashboardHTML))
 }
 

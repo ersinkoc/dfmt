@@ -778,12 +778,13 @@ func TestRunInitCreatesClaudeSettings(t *testing.T) {
 		t.Fatal("permissions section missing")
 	}
 
-	deny, ok := perm["deny"].([]any)
+	// deny list removed: we rely on allow-list for DFMT MCP tools instead
+	allow, ok := perm["allow"].([]any)
 	if !ok {
-		t.Fatal("deny list missing")
+		t.Fatal("allow list missing")
 	}
-	if len(deny) == 0 {
-		t.Error("deny list is empty")
+	if len(allow) == 0 {
+		t.Error("allow list is empty")
 	}
 }
 
