@@ -97,7 +97,10 @@ func NewStore(opt StoreOptions) (*Store, error) {
 	}
 
 	if opt.Path != "" {
-		if err := os.MkdirAll(opt.Path, 0755); err != nil {
+		// 0700 to match the parent .dfmt directory and the journal file's
+		// permissions — content store holds redacted-but-still-sensitive
+		// tool output and should not be readable by other local users.
+		if err := os.MkdirAll(opt.Path, 0o700); err != nil {
 			return nil, fmt.Errorf("create content dir: %w", err)
 		}
 	}
@@ -351,20 +354,29 @@ func (s *Store) LoadChunkSet(id string) (*ChunkSet, error) {
 
 // Close closes the store and persists all chunk sets.
 func (s *Store) Close() error {
+	// Snapshot what needs to be persisted under the lock, then release it
+	// before the gzip+disk work — same pattern as PutChunkSet. Holding
+	// s.mu across N disk writes would block every concurrent reader for
+	// the entire flush.
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	// Persist all chunk sets with TTL == 0
-	if s.path != "" {
+	path := s.path
+	var snaps []*ChunkSet
+	if path != "" {
 		for _, set := range s.sets {
 			if set.TTL == 0 {
-				if err := s.persistChunkSet(set); err != nil {
-					return err
-				}
+				c := *set
+				c.Chunks = append([]string(nil), set.Chunks...)
+				snaps = append(snaps, &c)
 			}
 		}
 	}
+	s.mu.Unlock()
 
+	for _, snap := range snaps {
+		if err := persistChunkSetToDisk(path, snap); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 

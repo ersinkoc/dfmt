@@ -114,6 +114,12 @@ func (sb *SnapshotBuilder) groupByTier(events []core.Event) map[string][]core.Ev
 }
 
 func (sb *SnapshotBuilder) eventSize(e core.Event) int {
-	data, _ := json.Marshal(e)
+	data, err := json.Marshal(e)
+	if err != nil {
+		// Treat an unmarshalable event as oversized so the budget check
+		// rejects it. Returning 0 would let broken events bypass the budget
+		// and potentially blow up downstream renderers.
+		return 1 << 30
+	}
 	return len(data)
 }

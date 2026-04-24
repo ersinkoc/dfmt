@@ -26,7 +26,7 @@ func (sc *ShellCapture) BuildCommand(cmd, dir string) core.Event {
 		ID:       string(core.NewULID(time.Now())),
 		TS:       time.Now(),
 		Project:  sc.projectPath,
-		Type:     core.EvtMCPCall,
+		Type:     core.EvtShellCmd,
 		Priority: core.PriP4,
 		Source:   core.SrcShell,
 		Data: map[string]any{

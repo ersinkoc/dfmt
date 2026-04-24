@@ -2,6 +2,7 @@ package core
 
 import (
 	"slices"
+	"strings"
 )
 
 // TrigramIndex provides fast substring search via trigram inverted index.
@@ -41,8 +42,11 @@ func (ti *TrigramIndex) Add(id string, text string) {
 }
 
 // Search finds document IDs that might contain the given substring.
+// The substring is lowercased to match how Add indexes via TokenizeFull,
+// which lowercases every token. Without this, a mixed-case query (e.g.
+// "Path", "URL") silently returned zero matches.
 func (ti *TrigramIndex) Search(substring string) []string {
-	substr := substring
+	substr := strings.ToLower(substring)
 	if len(substr) < 3 {
 		// For very short substrings, scan all
 		var all []string

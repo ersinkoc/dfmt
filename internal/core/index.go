@@ -315,14 +315,13 @@ func (ix *Index) Remove(id string) {
 
 // Persist saves the index to a file using JSON serialization.
 func (ix *Index) Persist(path string) error {
-	// Marshal under the read-lock so concurrent Adds see a consistent
-	// snapshot, but release before the file write — otherwise a slow disk
-	// stalls every Add for the duration of the I/O. writeRawAtomic then
+	// json.Marshal dispatches to ix.MarshalJSON, which itself takes
+	// ix.mu.RLock. Do NOT hold the lock here — Go's RWMutex starves a
+	// pending reader behind a pending writer, so re-entering RLock would
+	// deadlock the goroutine under write contention. writeRawAtomic then
 	// performs tmp+fsync+rename so a crash leaves the prior complete file
 	// intact.
-	ix.mu.RLock()
 	buf, err := json.Marshal(ix)
-	ix.mu.RUnlock()
 	if err != nil {
 		return err
 	}

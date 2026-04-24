@@ -465,8 +465,15 @@ func runStatus(_ []string) int {
 	running := client.DaemonRunning(proj)
 
 	if flagJSON {
-		fmt.Printf(`{"project": %q, "daemon_running": %v, "socket": %q}`,
-			proj, running, project.SocketPath(proj))
+		// fmt %q produces Go-escaped strings, not JSON — low-byte control
+		// characters and "\xHH" escapes in a Windows path would produce
+		// invalid JSON. Encode via json.Marshal instead.
+		out, _ := json.Marshal(map[string]any{
+			"project":        proj,
+			"daemon_running": running,
+			"socket":         project.SocketPath(proj),
+		})
+		fmt.Println(string(out))
 	} else {
 		fmt.Printf("Project: %s\n", proj)
 		if running {
@@ -1561,7 +1568,14 @@ func runMCP(_ []string) int {
 	defer func() {
 		if journal != nil {
 			if hiID, cerr := journal.Checkpoint(context.Background()); cerr == nil {
-				_ = core.PersistIndex(index, indexPath, hiID)
+				if perr := core.PersistIndex(index, indexPath, hiID); perr != nil {
+					// Surface the error so operators notice — on Windows a
+					// locked target file would otherwise silently drop the
+					// snapshot and force a full rebuild next launch.
+					fmt.Fprintf(os.Stderr, "warning: persist index: %v\n", perr)
+				}
+			} else {
+				fmt.Fprintf(os.Stderr, "warning: journal checkpoint: %v\n", cerr)
 			}
 			_ = journal.Close()
 		}

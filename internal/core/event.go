@@ -31,6 +31,7 @@ const (
 	EvtEnvCwd      EventType = "env.cwd"
 	EvtEnvVars     EventType = "env.vars"
 	EvtEnvInstall  EventType = "env.install"
+	EvtShellCmd    EventType = "shell.cmd"
 	EvtPrompt      EventType = "prompt"
 	EvtMCPCall     EventType = "mcp.call"
 	EvtSubagent    EventType = "subagent"

@@ -242,5 +242,21 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	// BM25 parameters must be within sensible ranges. Negative k1 or b
+	// produce NaN BM25 scores; b outside [0,1] makes length normalization
+	// nonsensical. Non-positive budget makes Recall return empty.
+	if c.Index.BM25K1 < 0 {
+		return fmt.Errorf("index.bm25_k1 must be non-negative, got %v", c.Index.BM25K1)
+	}
+	if c.Index.BM25B < 0 || c.Index.BM25B > 1 {
+		return fmt.Errorf("index.bm25_b must be in [0,1], got %v", c.Index.BM25B)
+	}
+	if c.Index.HeadingBoost < 0 {
+		return fmt.Errorf("index.heading_boost must be non-negative, got %v", c.Index.HeadingBoost)
+	}
+	if c.Retrieval.DefaultBudget < 0 {
+		return fmt.Errorf("retrieval.default_budget must be non-negative, got %d", c.Retrieval.DefaultBudget)
+	}
+
 	return nil
 }

@@ -49,12 +49,15 @@ type MCPRequest struct {
 	ID      any             `json:"id,omitempty"`
 }
 
-// MCPResponse represents an MCP response.
+// MCPResponse represents an MCP response. The ID field is emitted as
+// "null" on parse errors per JSON-RPC 2.0 §5.1, so we intentionally do
+// NOT use omitempty — notifications are filtered upstream by returning
+// a nil *MCPResponse from Handle.
 type MCPResponse struct {
 	JSONRPC string    `json:"jsonrpc"`
 	Result  any       `json:"result,omitempty"`
 	Error   *RPCError `json:"error,omitempty"`
-	ID      any       `json:"id,omitempty"`
+	ID      any       `json:"id"`
 }
 
 // NewMCPProtocol creates a new MCP protocol handler.

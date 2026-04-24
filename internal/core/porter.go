@@ -52,9 +52,19 @@ func removeSuffix(s, suffix string) string {
 	return s[:len(s)-len(suffix)]
 }
 
-// Stem returns the Porter stem of a word.
+// Stem returns the Porter stem of a word. Porter's vowel/consonant rules
+// are defined over ASCII letters only — running it byte-wise on a UTF-8
+// string like "çalışma" treats every continuation byte as a consonant and
+// produces nonsense stems. For any non-ASCII input we skip stemming and
+// return the lowercased word unchanged; a dedicated Turkish stemmer would
+// be needed to do better.
 func Stem(word string) string {
 	s := strings.ToLower(word)
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 0x80 {
+			return s
+		}
+	}
 
 	// Step 1a
 	if strings.HasSuffix(s, "sses") {
@@ -70,11 +80,12 @@ func Stem(word string) string {
 		return s[:len(s)-1]
 	}
 
-	// Step 1b
+	// Step 1b: Porter spec is EED → EE when measure(stem) > 0.
+	// "agreed" (m=1) → "agree", not "agre".
 	if strings.HasSuffix(s, "eed") {
 		stem := removeSuffix(s, "eed")
 		if measure(stem) > 0 {
-			return stem
+			return stem + "ee"
 		}
 		return s
 	}
