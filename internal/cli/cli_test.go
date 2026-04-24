@@ -4368,24 +4368,14 @@ func TestRunStatusNoDaemon(t *testing.T) {
 	}
 }
 
-// TestInstallHookContentSubstitution verifies that installHookContent swaps
-// the PATH-based `command -v dfmt` guard and the bare `dfmt capture` call
-// with a reference to the absolute path we pin the hook to at install time.
+// TestInstallHookContentSubstitution verifies that installHookContent leaves
+// hooks unchanged (hooks use 'dfmt' from PATH, not a pinned binary).
 func TestInstallHookContentSubstitution(t *testing.T) {
 	raw := "if command -v dfmt >/dev/null 2>&1; then dfmt capture git commit $1 $2 & fi\n"
 	out := installHookContent(raw, "/abs/path/to/dfmt")
-	if !strings.Contains(out, "[ -x '/abs/path/to/dfmt' ]") {
-		t.Errorf("expected pinned -x guard, got: %q", out)
-	}
-	if !strings.Contains(out, "'/abs/path/to/dfmt' capture") {
-		t.Errorf("expected pinned capture call, got: %q", out)
-	}
-	if strings.Contains(out, "command -v dfmt") {
-		t.Errorf("expected command -v dfmt to be gone, got: %q", out)
-	}
-	// The only remaining `dfmt` tokens should be inside the pinned absolute path.
-	if strings.Contains(out, " dfmt capture") {
-		t.Errorf("expected bare `dfmt capture` to be gone, got: %q", out)
+	// Should be unchanged - hooks use dfmt from PATH
+	if out != raw {
+		t.Errorf("expected raw unchanged, got: %q", out)
 	}
 }
 

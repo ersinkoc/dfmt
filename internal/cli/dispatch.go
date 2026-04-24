@@ -829,20 +829,6 @@ func runInstallHooks(_ []string) int {
 		return 1
 	}
 
-	// Resolve the absolute path of the installing dfmt so the installed hooks
-	// invoke *this* binary rather than whatever `dfmt` happens to be on PATH.
-	// If os.Executable fails (rare), fall back to the embedded script unchanged
-	// and warn the user.
-	dfmtBin, execErr := os.Executable()
-	if execErr != nil {
-		fmt.Fprintf(os.Stderr, "warning: os.Executable failed (%v); installing hooks unpinned\n", execErr)
-		dfmtBin = ""
-	} else {
-		// The hooks run under /bin/sh, so normalise to forward slashes on
-		// Windows where os.Executable returns a backslash path.
-		dfmtBin = filepath.ToSlash(dfmtBin)
-	}
-
 	hooks := []string{"post-commit", "post-checkout", "pre-push"}
 	for _, hook := range hooks {
 		content := readHookFile("git-" + hook + ".sh")
@@ -850,9 +836,8 @@ func runInstallHooks(_ []string) int {
 			fmt.Fprintf(os.Stderr, "error: missing embedded hook git-%s.sh\n", hook)
 			return 1
 		}
-		if dfmtBin != "" {
-			content = installHookContent(content, dfmtBin)
-		}
+		// Hooks use 'dfmt' from PATH (not pinned to a specific binary)
+		content = installHookContent(content, "")
 		dst := filepath.Join(hooksDir, hook)
 		if err := os.WriteFile(dst, []byte(content), 0755); err != nil {
 			fmt.Fprintf(os.Stderr, "error: writing %s: %v\n", dst, err)
@@ -861,48 +846,23 @@ func runInstallHooks(_ []string) int {
 		fmt.Printf("Installed %s\n", hook)
 	}
 
-	if dfmtBin != "" {
-		if pathBin, lookErr := exec.LookPath("dfmt"); lookErr == nil {
-			if filepath.ToSlash(pathBin) != dfmtBin {
-				fmt.Fprintf(os.Stderr, "note: PATH has a different dfmt (%s); hooks pinned to %s\n", pathBin, dfmtBin)
-			}
-		}
-	}
-
 	fmt.Println("Git hooks installed")
 	return 0
 }
 
-// installHookContent pins the hook to the absolute path of the installing dfmt
-// binary by replacing the `command -v dfmt` guard and `dfmt capture ...` call
-// inside a raw embedded hook template. It is a pure function so it can be unit
-// tested without touching the filesystem.
-//
-// If dfmtBin contains a single quote the substitution would produce broken
-// shell, so in that (wildly unlikely) case we return raw unchanged.
+// installHookContent keeps hooks using dfmt from PATH.
+// The dfmtBin parameter is ignored — hooks always use 'dfmt' from PATH.
 func installHookContent(raw, dfmtBin string) string {
-	if strings.Contains(dfmtBin, "'") {
-		return raw
-	}
-	quoted := "'" + dfmtBin + "'"
-	out := strings.ReplaceAll(raw, "command -v dfmt >/dev/null 2>&1", "[ -x "+quoted+" ]")
-	// `dfmt capture` is specific enough to replace globally; the embedded
-	// templates do not otherwise mention it.
-	out = strings.ReplaceAll(out, "dfmt capture", quoted+" capture")
-	return out
+	_ = dfmtBin // unused
+	return raw
 }
 
-// installShellHookContent pins shell-init templates to the absolute path of the
-// installing dfmt binary by replacing the PATH-based `command -v dfmt` guard.
+// installShellHookContent keeps shell-init templates using dfmt from PATH.
+// The dfmtBin parameter is ignored — hooks always use 'dfmt' from PATH
+// so the single global installation is used regardless of which binary installed them.
 func installShellHookContent(raw, dfmtBin string) string {
-	if dfmtBin == "" || strings.Contains(dfmtBin, "'") {
-		return raw
-	}
-	quoted := "'" + dfmtBin + "'"
-	out := strings.ReplaceAll(raw, "command -v dfmt >/dev/null 2>&1", "[ -x "+quoted+" ]")
-	out = strings.ReplaceAll(out, "\tdfmt capture", "\t"+quoted+" capture")
-	out = strings.ReplaceAll(out, "    dfmt capture", "    "+quoted+" capture")
-	return out
+	_ = dfmtBin // unused
+	return raw
 }
 
 func buildCaptureParams(args []string) (transport.RememberParams, error) {
