@@ -3,6 +3,7 @@
 package capture
 
 import (
+	"os"
 	"path/filepath"
 	"unsafe"
 
@@ -92,7 +93,47 @@ func linuxWatchLoop(w *FSWatcher, fd int, dirPath string) {
 			isDir := event.Mask&unix.IN_ISDIR != 0
 			w.emitEvent(fullPath, isDir, operation)
 
+			// Register a watcher on any directory created after startup so
+			// later edits inside the new subtree aren't silently lost — the
+			// parent's watch fires for the mkdir but not for files inside
+			// the new dir, which has no watch of its own yet. Mirrors the
+			// Windows fix in Round 6. Catch-up walk registers nested dirs
+			// and emits creates for files that appeared between mkdir and
+			// our InotifyAddWatch.
+			if isDir && operation == "create" && !w.shouldIgnore(fullPath) {
+				catchUpNewDir(w, fullPath)
+			}
+
 			offset += 16 + int(event.Len)
 		}
 	}
+}
+
+// catchUpNewDir registers watchers on every subdirectory of newDir and emits
+// create events for any files that already exist there. Best-effort: walk
+// errors are swallowed because the subtree may have been deleted again before
+// we reach it.
+func catchUpNewDir(w *FSWatcher, newDir string) {
+	if w.watchDirFn == nil {
+		return
+	}
+	w.watchDirFn(w, newDir)
+	_ = filepath.Walk(newDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil || path == newDir {
+			return nil
+		}
+		if w.shouldIgnore(path) {
+			if info.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if info.IsDir() {
+			w.watchDirFn(w, path)
+			w.emitEvent(path, true, "create")
+		} else {
+			w.emitEvent(path, false, "create")
+		}
+		return nil
+	})
 }
