@@ -1643,3 +1643,66 @@ func TestOpenJournalMkdirAllSucceeds(t *testing.T) {
 		t.Error("directory should have been created")
 	}
 }
+
+func TestPeriodicSyncTicker(t *testing.T) {
+	tmpDir := t.TempDir()
+	journalPath := filepath.Join(tmpDir, "sync.journal")
+
+	// Non-durable journal should have sync ticker
+	j, err := OpenJournal(journalPath, JournalOptions{Durable: false})
+	if err != nil {
+		t.Fatalf("OpenJournal failed: %v", err)
+	}
+	if j.(*journalImpl).syncTicker == nil {
+		t.Error("expected syncTicker to be set for non-durable journal")
+	}
+	j.Close()
+
+	// Durable journal should not have sync ticker
+	j2, err := OpenJournal(journalPath, JournalOptions{Durable: true})
+	if err != nil {
+		t.Fatalf("OpenJournal failed: %v", err)
+	}
+	if j2.(*journalImpl).syncTicker != nil {
+		t.Error("expected syncTicker to be nil for durable journal")
+	}
+	j2.Close()
+}
+
+func TestFlushPendingOnClose(t *testing.T) {
+	tmpDir := t.TempDir()
+	journalPath := filepath.Join(tmpDir, "flush.journal")
+
+	j, err := OpenJournal(journalPath, JournalOptions{Durable: false})
+	if err != nil {
+		t.Fatalf("OpenJournal failed: %v", err)
+	}
+
+	// Append events without durable mode
+	for i := range 5 {
+		e := Event{
+			ID:      fmt.Sprintf("01ARZ3NDEKTSV4RRFFQ69G5F%02d", i),
+			Type:    EvtNote,
+			Project: "test",
+		}
+		if err := j.Append(context.Background(), e); err != nil {
+			t.Fatalf("Append failed: %v", err)
+		}
+	}
+
+	// Close should flush pending events
+	if err := j.Close(); err != nil {
+		t.Fatalf("Close failed: %v", err)
+	}
+
+	// Verify all events were written by reading the file
+	content, err := os.ReadFile(journalPath)
+	if err != nil {
+		t.Fatalf("ReadFile failed: %v", err)
+	}
+
+	lines := bytes.Count(content, []byte{'\n'})
+	if lines < 5 {
+		t.Errorf("expected at least 5 lines after close, got %d", lines)
+	}
+}

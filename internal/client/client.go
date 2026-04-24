@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ersinkoc/dfmt/internal/config"
 	"github.com/ersinkoc/dfmt/internal/project"
 	"github.com/ersinkoc/dfmt/internal/transport"
 )
@@ -155,28 +156,7 @@ func autoInitProject(projectPath string) error {
 	}
 
 	// Write default config
-	defaultConfig := `version: 1
-
-capture:
-  mcp:
-    enabled: true
-  fs:
-    enabled: true
-    watch:
-      - "**"
-    ignore:
-      - ".git/**"
-      - "node_modules/**"
-
-storage:
-  durability: batched
-  journal_max_bytes: 10485760
-
-lifecycle:
-  idle_timeout: 30m
-`
-
-	if err := os.WriteFile(configPath, []byte(defaultConfig), 0644); err != nil {
+	if err := os.WriteFile(configPath, []byte(config.DefaultConfigYAML()), 0644); err != nil {
 		return fmt.Errorf("write config: %w", err)
 	}
 
@@ -476,12 +456,10 @@ func (c *Client) doHTTP(method string, req transport.Request) ([]byte, error) {
 	client := &http.Client{Timeout: c.timeout}
 	if c.network == netUnix {
 		url = "http://unix" + method
-		socketAddr := c.address
-		timeout := c.timeout
 		client.Transport = &http.Transport{
 			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-				d := net.Dialer{Timeout: timeout}
-				return d.DialContext(ctx, netUnix, socketAddr)
+				d := net.Dialer{Timeout: c.timeout}
+				return d.DialContext(ctx, netUnix, c.address)
 			},
 		}
 	} else {

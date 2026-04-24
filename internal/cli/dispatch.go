@@ -159,26 +159,7 @@ func runInit(args []string) int {
 	}
 
 	configPath := filepath.Join(dfmtDir, "config.yaml")
-	defaultConfig := `# DFMT Configuration
-version: 1
-
-capture:
-  mcp:
-    enabled: true
-  fs:
-    # fs capture is opt-in; flip to true to enable the filesystem watcher.
-    enabled: false
-    watch:
-      - "**"
-    ignore:
-      - ".git/**"
-      - "node_modules/**"
-
-storage:
-  durability: batched
-  journal_max_bytes: 10485760
-`
-	if err := os.WriteFile(configPath, []byte(defaultConfig), 0644); err != nil {
+	if err := os.WriteFile(configPath, []byte(config.DefaultConfigYAML()), 0644); err != nil {
 		fmt.Fprintf(os.Stderr, "error writing config: %v\n", err)
 		return 1
 	}

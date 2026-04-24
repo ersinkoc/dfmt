@@ -37,6 +37,7 @@ type Daemon struct {
 
 	running    atomic.Bool // Use atomic for race-free access
 	idleTimer  *time.Timer
+	idleCh     chan struct{} // closed on idle timeout or stop
 	shutdownCh chan struct{}
 }
 
@@ -203,9 +204,17 @@ func (d *Daemon) Stop(ctx context.Context) error {
 		close(d.shutdownCh)
 	}
 
-	// Stop idle timer if running
+	// Stop idle timer and signal callback to return early if it fires concurrently
 	if d.idleTimer != nil {
 		d.idleTimer.Stop()
+	}
+	if d.idleCh != nil {
+		select {
+		case <-d.idleCh:
+			// Already closed
+		default:
+			close(d.idleCh)
+		}
 	}
 
 	// Persist index
@@ -271,7 +280,13 @@ func (d *Daemon) startIdleMonitor(ctx context.Context) {
 		idleTimeout = 30 * time.Minute
 	}
 
+	d.idleCh = make(chan struct{}, 1)
 	d.idleTimer = time.AfterFunc(idleTimeout, func() {
+		select {
+		case <-d.idleCh:
+			return // Stop() was called first
+		default:
+		}
 		// Check if still running before attempting shutdown
 		if d.running.Load() {
 			fmt.Println("Daemon idle timeout, shutting down...")

@@ -4,6 +4,7 @@
 package capture
 
 import (
+	"path/filepath"
 	"unsafe"
 
 	"golang.org/x/sys/unix"
@@ -70,7 +71,7 @@ func linuxWatchLoop(w *FSWatcher, fd int, dirPath string) {
 
 			fullPath := dirPath
 			if name != "" {
-				fullPath = fullPath + "/" + name
+				fullPath = filepath.Join(fullPath, name)
 			}
 
 			var operation string
