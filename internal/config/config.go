@@ -11,6 +11,9 @@ import (
 
 const durabilityBatched = "batched"
 
+// DefaultMCPProtocolVersion is the default MCP protocol version.
+const DefaultMCPProtocolVersion = "2024-11-05"
+
 // Config represents the DFMT configuration.
 type Config struct {
 	Version int `yaml:"version"`

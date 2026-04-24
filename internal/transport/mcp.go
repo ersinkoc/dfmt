@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+
+	"github.com/ersinkoc/dfmt/internal/config"
 )
 
 // MCPProtocol implements the Model Context Protocol over JSON-RPC.
@@ -93,7 +95,7 @@ func (m *MCPProtocol) Handle(req *MCPRequest) (*MCPResponse, error) {
 
 func (m *MCPProtocol) handleInitialize(req *MCPRequest) (*MCPResponse, error) {
 	result := MCPInitializeResult{
-		ProtocolVersion: "2024-11-05",
+		ProtocolVersion: config.DefaultMCPProtocolVersion,
 		Capabilities:    MCPClientCapabilities{},
 		ServerInfo: MCPServerInfo{
 			Name:    "dfmt",

@@ -21,6 +21,12 @@ func NewGitCapture(projectPath string) *GitCapture {
 }
 
 // SubmitCommit submits a git commit event.
+//
+// Deprecated: This method is a CLI-proxy stub. The live git-commit ingestion
+// path is: git post-commit hook → dfmt capture git commit <args> → daemon
+// Remember RPC → journal. This stub exists so the GitCapture type can be used
+// directly if a journal.Writer is available, but currently the daemon-side
+// submission always goes through the CLI binary.
 func (gc *GitCapture) SubmitCommit(ctx context.Context, hash string, message string) error {
 	e := core.Event{
 		ID:       string(core.NewULID(time.Now())),
@@ -35,12 +41,19 @@ func (gc *GitCapture) SubmitCommit(ctx context.Context, hash string, message str
 	}
 	e.Sig = e.ComputeSig()
 
+	// Live path: git hook → dfmt capture git commit <args> → client.Remember
 	_ = ctx
 	_ = e
 	return nil
 }
 
 // SubmitCheckout submits a git checkout event.
+//
+// Deprecated: This method is a CLI-proxy stub. The live git-checkout ingestion
+// path is: git post-checkout hook → dfmt capture git checkout <args> → daemon
+// Remember RPC → journal. This stub exists so the GitCapture type can be used
+// directly if a journal.Writer is available, but currently the daemon-side
+// submission always goes through the CLI binary.
 func (gc *GitCapture) SubmitCheckout(ctx context.Context, ref string, isBranch bool) error {
 	e := core.Event{
 		ID:       string(core.NewULID(time.Now())),
@@ -55,11 +68,18 @@ func (gc *GitCapture) SubmitCheckout(ctx context.Context, ref string, isBranch b
 	}
 	e.Sig = e.ComputeSig()
 
+	// Live path: git hook → dfmt capture git checkout <args> → client.Remember
 	_ = ctx
 	return nil
 }
 
 // SubmitPush submits a git push event.
+//
+// Deprecated: This method is a CLI-proxy stub. The live git-push ingestion path
+// is: git pre-push hook → dfmt capture git push <args> → daemon Remember RPC
+// → journal. This stub exists so the GitCapture type can be used directly if a
+// journal.Writer is available, but currently the daemon-side submission always
+// goes through the CLI binary.
 func (gc *GitCapture) SubmitPush(ctx context.Context, remote string, branch string) error {
 	e := core.Event{
 		ID:       string(core.NewULID(time.Now())),
@@ -74,6 +94,7 @@ func (gc *GitCapture) SubmitPush(ctx context.Context, remote string, branch stri
 	}
 	e.Sig = e.ComputeSig()
 
+	// Live path: git hook → dfmt capture git push <args> → client.Remember
 	_ = ctx
 	return nil
 }

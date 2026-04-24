@@ -19,6 +19,12 @@ func NewShellCapture(projectPath string) *ShellCapture {
 }
 
 // SubmitCommand submits a shell command event.
+//
+// Deprecated: This method is a CLI-proxy stub. The live shell-capture ingestion
+// path is: shell prompt hook → dfmt capture env.cwd <args> → daemon Remember
+// RPC → journal. This stub exists so the ShellCapture type can be used directly
+// if a journal.Writer is available, but currently the daemon-side submission
+// always goes through the CLI binary.
 func (sc *ShellCapture) SubmitCommand(ctx context.Context, cmd string, dir string) error {
 	e := core.Event{
 		ID:       string(core.NewULID(time.Now())),
@@ -33,7 +39,7 @@ func (sc *ShellCapture) SubmitCommand(ctx context.Context, cmd string, dir strin
 	}
 	e.Sig = e.ComputeSig()
 
-	// Would submit to daemon here
+	// Live path: shell integration → dfmt capture env.cwd <args> → client.Remember
 	_ = ctx
 	_ = e
 	return nil
