@@ -1077,8 +1077,12 @@ func (s *SandboxImpl) execImpl(ctx context.Context, req ExecReq, rt Runtime) (Ex
 	}, nil
 }
 
-// writeTempFile writes code to a temp file.
-func writeTempFile(lang, code string) (string, error) {
+// writeTempFile writes code to a temp file. Uses named returns so the
+// deferred cleanup closure observes write/sync/close failures via the outer
+// err binding — the prior form used `if _, err := ...` which shadowed err
+// inside the if-init scope, so WriteString failures left the temp file and
+// its FD leaked on every failed non-bash Exec.
+func writeTempFile(lang, code string) (path string, err error) {
 	ext := map[string]string{
 		"python": ".py",
 		"node":   ".js",
@@ -1098,21 +1102,23 @@ func writeTempFile(lang, code string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	// Ensure cleanup on error - name needed for removal before Close
 	tmpName := tmpfile.Name()
 	defer func() {
 		if err != nil {
-			tmpfile.Close()
-			os.Remove(tmpName)
+			_ = tmpfile.Close()
+			_ = os.Remove(tmpName)
 		}
 	}()
 
-	if _, err := tmpfile.WriteString(code); err != nil {
+	if _, err = tmpfile.WriteString(code); err != nil {
 		return "", err
 	}
-	// Sync before returning to ensure data is written
-	tmpfile.Sync()
-	tmpfile.Close()
+	if err = tmpfile.Sync(); err != nil {
+		return "", err
+	}
+	if err = tmpfile.Close(); err != nil {
+		return "", err
+	}
 	return tmpName, nil
 }
 

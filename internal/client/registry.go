@@ -2,7 +2,6 @@ package client
 
 import (
 	"encoding/json"
-	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -190,11 +189,12 @@ func NewDaemonEntry(projectPath string, pid int) DaemonEntry {
 	}
 
 	if runtime.GOOS == "windows" {
-		// Read port from port file
+		// Port file is now JSON ({"port":N,"token":"..."}); Sscanf("%d") against
+		// JSON always matched zero fields, so every Windows daemon registered
+		// with port 0 in the global registry. Reuse the dual-path reader so
+		// both JSON and legacy integer forms work.
 		portFile := filepath.Join(projectPath, ".dfmt", "port")
-		if data, err := os.ReadFile(portFile); err == nil {
-			var port int
-			fmt.Sscanf(string(data), "%d", &port)
+		if port, _, err := readPortFile(portFile); err == nil {
 			entry.Port = port
 		}
 	} else {
