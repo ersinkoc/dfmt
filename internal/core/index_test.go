@@ -267,8 +267,8 @@ func TestLoadIndexWithCursorVersionMismatch(t *testing.T) {
 
 func TestPersistIndexOpenError(t *testing.T) {
 	ix := NewIndex()
-	// Using an invalid path should fail
-	err := PersistIndex(ix, "/proc/invalid/index.gob", "test1")
+	// Using an invalid path should fail (directory doesn't exist on Windows)
+	err := PersistIndex(ix, "D:\\nonexistent_dir\\path\\index.json", "test1")
 	if err == nil {
 		t.Error("PersistIndex should fail for invalid path")
 	}
@@ -303,13 +303,20 @@ func TestIndexPersistAndLoad(t *testing.T) {
 	ix.Add(e)
 
 	tmpDir := t.TempDir()
-	indexPath := filepath.Join(tmpDir, "index.gob")
+	indexPath := filepath.Join(tmpDir, "index.json")
 
-	// Persist should fail because Index has unexported fields
 	err := ix.Persist(indexPath)
-	// This is expected to fail with gob encoding
-	if err == nil {
-		t.Log("Index.Persist succeeded (unexpected - check if Index has exported fields)")
+	if err != nil {
+		t.Fatalf("Index.Persist failed: %v", err)
+	}
+
+	loaded, err := LoadIndex(indexPath)
+	if err != nil {
+		t.Fatalf("LoadIndex failed: %v", err)
+	}
+
+	if loaded.totalDocs != ix.totalDocs {
+		t.Errorf("totalDocs mismatch: got %d, want %d", loaded.totalDocs, ix.totalDocs)
 	}
 }
 

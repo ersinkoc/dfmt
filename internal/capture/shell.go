@@ -2,7 +2,7 @@ package capture
 
 import (
 	"context"
-	"os/exec"
+	"os"
 	"time"
 
 	"github.com/ersinkoc/dfmt/internal/core"
@@ -49,6 +49,5 @@ func DetectShell() string {
 }
 
 func getEnv(key string) string {
-	out, _ := exec.Command("echo", "$"+key).Output()
-	return string(out)
+	return os.Getenv(key)
 }

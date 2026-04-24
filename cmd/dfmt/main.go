@@ -19,7 +19,12 @@ func main() {
 	// Check for --project flag early
 	for i, arg := range args {
 		if arg == "--project" && i+1 < len(args) {
-			_ = os.Setenv("DFMT_PROJECT", args[i+1])
+			val := args[i+1]
+			if len(val) > 0 && val[0] == '-' {
+				fmt.Fprintf(os.Stderr, "dfmt: invalid --project value: %q\n", val)
+				os.Exit(1)
+			}
+			_ = os.Setenv("DFMT_PROJECT", val)
 			args = append(args[:i], args[i+2:]...)
 			break
 		}

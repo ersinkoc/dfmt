@@ -1,7 +1,7 @@
 package core
 
 import (
-	"encoding/gob"
+	"encoding/json"
 	"os"
 	"path/filepath"
 )
@@ -17,7 +17,7 @@ type IndexCursor struct {
 	AvgDocLen float64 `json:"avg_doc_len"`
 }
 
-// PersistIndex saves the index and cursor to disk.
+// PersistIndex saves the index and cursor to disk using JSON.
 func PersistIndex(index *Index, path string, hiULID string) error {
 	// Write index data
 	f, err := os.Create(path)
@@ -26,7 +26,7 @@ func PersistIndex(index *Index, path string, hiULID string) error {
 	}
 	defer f.Close()
 
-	enc := gob.NewEncoder(f)
+	enc := json.NewEncoder(f)
 	if err := enc.Encode(index); err != nil {
 		return err
 	}
@@ -46,7 +46,7 @@ func PersistIndex(index *Index, path string, hiULID string) error {
 	}
 	defer cf.Close()
 
-	enc = gob.NewEncoder(cf)
+	enc = json.NewEncoder(cf)
 	return enc.Encode(cursor)
 }
 
@@ -81,7 +81,7 @@ func loadCursor(path string) (*IndexCursor, error) {
 	defer f.Close()
 
 	var cursor IndexCursor
-	dec := gob.NewDecoder(f)
+	dec := json.NewDecoder(f)
 	if err := dec.Decode(&cursor); err != nil {
 		return nil, err
 	}

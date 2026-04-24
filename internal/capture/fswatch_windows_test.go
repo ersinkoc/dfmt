@@ -170,9 +170,10 @@ func TestScanDir_Basic(t *testing.T) {
 	}
 
 	known := make(map[string]trackedFile)
+	knownDirs := make(map[string]trackedDir)
 
 	// Initial scan - should detect creates
-	scanDir(w, tmpDir, known)
+	scanDir(w, tmpDir, known, knownDirs)
 
 	// We expect at least file1.txt and file2.txt
 	// There might be additional files from the system
@@ -199,9 +200,10 @@ func TestScanDir_Creation(t *testing.T) {
 	}
 
 	known := make(map[string]trackedFile)
+	knownDirs := make(map[string]trackedDir)
 
 	// Initial scan - empty dir
-	scanDir(w, tmpDir, known)
+	scanDir(w, tmpDir, known, knownDirs)
 	initialCount := len(known)
 
 	// Create a new file
@@ -209,7 +211,7 @@ func TestScanDir_Creation(t *testing.T) {
 	os.WriteFile(testFile, []byte("content"), 0600)
 
 	// Second scan should detect the new file
-	scanDir(w, tmpDir, known)
+	scanDir(w, tmpDir, known, knownDirs)
 
 	if len(known) <= initialCount {
 		t.Errorf("expected more files after creation, initial=%d, final=%d", initialCount, len(known))
@@ -237,14 +239,15 @@ func TestScanDir_Modification(t *testing.T) {
 	}
 
 	known := make(map[string]trackedFile)
-	scanDir(w, tmpDir, known)
+	knownDirs := make(map[string]trackedDir)
+	scanDir(w, tmpDir, known, knownDirs)
 
 	// Modify the file
 	time.Sleep(10 * time.Millisecond)
 	os.WriteFile(testFile, []byte("modified"), 0600)
 
 	// Second scan should detect modification
-	scanDir(w, tmpDir, known)
+	scanDir(w, tmpDir, known, knownDirs)
 
 	// Should still have the file tracked
 	if _, ok := known["modify.txt"]; !ok {
@@ -273,13 +276,14 @@ func TestScanDir_Deletion(t *testing.T) {
 	}
 
 	known := make(map[string]trackedFile)
-	scanDir(w, tmpDir, known)
+	knownDirs := make(map[string]trackedDir)
+	scanDir(w, tmpDir, known, knownDirs)
 
 	// Delete the file
 	os.Remove(testFile)
 
 	// Third scan should detect deletion and remove from known
-	scanDir(w, tmpDir, known)
+	scanDir(w, tmpDir, known, knownDirs)
 
 	if _, ok := known["todelete.txt"]; ok {
 		t.Error("deleted file should be removed from known")
@@ -308,7 +312,8 @@ func TestScanDir_Subdirectory(t *testing.T) {
 	}
 
 	known := make(map[string]trackedFile)
-	scanDir(w, tmpDir, known)
+	knownDirs := make(map[string]trackedDir)
+	scanDir(w, tmpDir, known, knownDirs)
 
 	// Should track subdir and nested file
 	if len(known) < 2 {
@@ -334,9 +339,10 @@ func TestScanDir_WalkError(t *testing.T) {
 	}
 
 	known := make(map[string]trackedFile)
+	knownDirs := make(map[string]trackedDir)
 
 	// Walk with a non-existent path should not panic
-	scanDir(w, filepath.Join(tmpDir, "nonexistent"), known)
+	scanDir(w, filepath.Join(tmpDir, "nonexistent"), known, knownDirs)
 }
 
 func TestScanDir_IgnorePattern(t *testing.T) {
@@ -362,7 +368,8 @@ func TestScanDir_IgnorePattern(t *testing.T) {
 	}
 
 	known := make(map[string]trackedFile)
-	scanDir(w, tmpDir, known)
+	knownDirs := make(map[string]trackedDir)
+	scanDir(w, tmpDir, known, knownDirs)
 
 	// node_modules should be ignored
 	if _, ok := known["node_modules"]; ok {

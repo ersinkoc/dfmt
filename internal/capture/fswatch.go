@@ -30,6 +30,14 @@ type FSWatcher struct {
 
 	// Platform-specific watcher function
 	watchDirFn func(w *FSWatcher, path string)
+
+	// debounceMap tracks the last emit time per path for non-blocking debounce.
+	// Access is guarded by debounceMu.
+	debounceMu sync.Mutex
+	debounceMap map[string]time.Time
+	// cleanupTicker periodically removes stale entries from debounceMap to
+	// prevent unbounded growth. Entries older than 10× debounceMs are purged.
+	cleanupTicker *time.Ticker
 }
 
 // initWatcher is set by platform-specific files via init()
@@ -46,6 +54,10 @@ func NewFSWatcher(path string, ignore []string, debounceMs int) (*FSWatcher, err
 		debounceMs: debounceMs,
 		events:     make(chan core.Event, 100),
 		stopCh:     make(chan struct{}),
+		debounceMap: make(map[string]time.Time),
+	}
+	if debounceMs > 0 {
+		w.cleanupTicker = time.NewTicker(time.Duration(debounceMs) * 10 * time.Millisecond)
 	}
 	if initWatcher != nil {
 		initWatcher(w)
@@ -73,6 +85,10 @@ func (w *FSWatcher) snapshotWatchedPaths() []string {
 
 // Start starts watching the filesystem.
 func (w *FSWatcher) Start(ctx context.Context) error {
+	// Start the cleanup goroutine for debounce map if debounce is enabled.
+	if w.cleanupTicker != nil {
+		go w.runDebounceCleanup()
+	}
 	return filepath.Walk(w.path, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return nil
@@ -89,6 +105,33 @@ func (w *FSWatcher) Start(ctx context.Context) error {
 
 		return nil
 	})
+}
+
+// runDebounceCleanup periodically removes stale entries from the debounce map.
+// An entry is stale if its last emit time is older than 10× debounceMs.
+func (w *FSWatcher) runDebounceCleanup() {
+	for {
+		select {
+		case <-w.stopCh:
+			if w.cleanupTicker != nil {
+				w.cleanupTicker.Stop()
+			}
+			return
+		case <-w.cleanupTicker.C:
+			if w.debounceMs <= 0 {
+				continue
+			}
+			threshold := time.Duration(w.debounceMs*10) * time.Millisecond
+			now := time.Now()
+			w.debounceMu.Lock()
+			for path, lastEmit := range w.debounceMap {
+				if now.Sub(lastEmit) > threshold {
+					delete(w.debounceMap, path)
+				}
+			}
+			w.debounceMu.Unlock()
+		}
+	}
 }
 
 // Stop stops watching.
@@ -181,7 +224,14 @@ func (w *FSWatcher) emitEvent(path string, isDir bool, operation string) {
 	}
 
 	if w.debounceMs > 0 {
-		time.Sleep(time.Duration(w.debounceMs) * time.Millisecond)
+		w.debounceMu.Lock()
+		lastEmit, seen := w.debounceMap[path]
+		if seen && time.Since(lastEmit) < time.Duration(w.debounceMs)*time.Millisecond {
+			w.debounceMu.Unlock()
+			return // still within debounce window
+		}
+		w.debounceMap[path] = time.Now()
+		w.debounceMu.Unlock()
 	}
 
 	e := core.Event{

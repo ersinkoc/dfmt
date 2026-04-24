@@ -2,7 +2,7 @@ package core
 
 import (
 	"container/heap"
-	"encoding/gob"
+	"encoding/json"
 	"os"
 	"strings"
 	"sync"
@@ -31,6 +31,48 @@ func NewIndex() *Index {
 		trigramPL: make(map[string]*PostingList),
 		docLen:    make(map[string]int),
 	}
+}
+
+// indexJSON is the JSON-serializable form of Index.
+type indexJSON struct {
+	StemPL    map[string]*PostingList `json:"stem_pl"`
+	TrigramPL map[string]*PostingList `json:"trigram_pl"`
+	DocLen    map[string]int          `json:"doc_len"`
+	AvgDocLen float64                 `json:"avg_doc_len"`
+	TotalDocs int                     `json:"total_docs"`
+}
+
+// MarshalJSON implements json.Marshaler for Index.
+func (ix *Index) MarshalJSON() ([]byte, error) {
+	ix.mu.RLock()
+	defer ix.mu.RUnlock()
+
+	j := indexJSON{
+		StemPL:    ix.stemPL,
+		TrigramPL: ix.trigramPL,
+		DocLen:    ix.docLen,
+		AvgDocLen: ix.avgDocLen,
+		TotalDocs: ix.totalDocs,
+	}
+	return json.Marshal(j)
+}
+
+// UnmarshalJSON implements json.Unmarshaler for Index.
+func (ix *Index) UnmarshalJSON(data []byte) error {
+	var j indexJSON
+	if err := json.Unmarshal(data, &j); err != nil {
+		return err
+	}
+
+	ix.mu.Lock()
+	defer ix.mu.Unlock()
+
+	ix.stemPL = j.StemPL
+	ix.trigramPL = j.TrigramPL
+	ix.docLen = j.DocLen
+	ix.avgDocLen = j.AvgDocLen
+	ix.totalDocs = j.TotalDocs
+	return nil
 }
 
 // Add adds an event to the index.
@@ -69,13 +111,15 @@ func (ix *Index) Add(e Event) {
 	// Also index for trigram search
 	ti := NewTrigramIndex()
 	ti.Add(id, text)
-	// Merge trigram postings
-	for tg, ids := range map[string][]string{} { // placeholder
-		_ = tg
-		_ = ids
+	// Merge trigram postings into the main index
+	for tg, ids := range ti.postings {
+		pl, ok := ix.trigramPL[tg]
+		if !ok {
+			pl = &PostingList{}
+			ix.trigramPL[tg] = pl
+		}
+		pl.IDs = append(pl.IDs, ids...)
 	}
-	// Note: for simplicity, trigram indexing is done separately
-	_ = ti
 }
 
 // eventText extracts searchable text from an event.
@@ -209,7 +253,7 @@ func (ix *Index) Remove(id string) {
 	}
 }
 
-// Persist saves the index to a file.
+// Persist saves the index to a file using JSON serialization.
 func (ix *Index) Persist(path string) error {
 	ix.mu.RLock()
 	defer ix.mu.RUnlock()
@@ -220,11 +264,11 @@ func (ix *Index) Persist(path string) error {
 	}
 	defer f.Close()
 
-	enc := gob.NewEncoder(f)
+	enc := json.NewEncoder(f)
 	return enc.Encode(ix)
 }
 
-// LoadIndex loads an index from a file.
+// LoadIndex loads an index from a file using JSON deserialization.
 func LoadIndex(path string) (*Index, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -232,8 +276,8 @@ func LoadIndex(path string) (*Index, error) {
 	}
 	defer f.Close()
 
-	dec := gob.NewDecoder(f)
 	var ix Index
+	dec := json.NewDecoder(f)
 	if err := dec.Decode(&ix); err != nil {
 		return nil, err
 	}
