@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -39,6 +40,8 @@ type Daemon struct {
 	idleTimer  *time.Timer
 	idleCh     chan struct{} // closed on idle timeout or stop
 	shutdownCh chan struct{}
+	stopOnce   sync.Once
+	wg         sync.WaitGroup // tracks background goroutines (e.g. fswatch consumer)
 }
 
 // New creates a new daemon instance.
@@ -143,14 +146,15 @@ func New(projectPath string, cfg *config.Config) (*Daemon, error) {
 	return d, nil
 }
 
-// Start starts the daemon with panic recovery.
+// Start starts the daemon with panic recovery. The whole start sequence is
+// wrapped so a panic in any phase (server, fswatcher, registry) is reported as
+// an error rather than crashing the daemon process.
 func (d *Daemon) Start(ctx context.Context) error {
 	if d.running.Load() {
 		return fmt.Errorf("daemon already running")
 	}
 	d.running.Store(true)
 
-	// Protect server start with panic recovery
 	var startErr error
 	func() {
 		defer func() {
@@ -159,101 +163,133 @@ func (d *Daemon) Start(ctx context.Context) error {
 				d.running.Store(false)
 			}
 		}()
-		startErr = d.server.Start(ctx)
+
+		if err := d.server.Start(ctx); err != nil {
+			startErr = fmt.Errorf("start server: %w", err)
+			d.running.Store(false)
+			return
+		}
+
+		// Write PID file; a write failure is non-fatal (status/list commands
+		// degrade gracefully) but must surface to the operator via stderr.
+		pidPath := filepath.Join(d.projectPath, ".dfmt", "daemon.pid")
+		pidData := fmt.Sprintf("%d\n", os.Getpid())
+		if err := os.WriteFile(pidPath, []byte(pidData), 0o644); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: write pid file: %v\n", err)
+		}
+
+		// Start optional filesystem watcher and pipe its events into the journal.
+		if d.fswatcher != nil {
+			if err := d.fswatcher.Start(ctx); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: fswatcher start: %v\n", err)
+			} else {
+				d.wg.Add(1)
+				go d.consumeFSWatch(ctx)
+			}
+		}
+
+		// Start idle monitor
+		d.startIdleMonitor(ctx)
+
+		// Register in global registry
+		d.register()
 	}()
 
 	if startErr != nil {
-		return fmt.Errorf("start server: %w", startErr)
+		return startErr
 	}
-
-	// Write PID file
-	pidPath := filepath.Join(d.projectPath, ".dfmt", "daemon.pid")
-	pidData := fmt.Sprintf("%d\n", os.Getpid())
-	os.WriteFile(pidPath, []byte(pidData), 0644)
-
-	// Start optional filesystem watcher and pipe its events into the journal.
-	if d.fswatcher != nil {
-		if err := d.fswatcher.Start(ctx); err != nil {
-			fmt.Fprintf(os.Stderr, "warning: fswatcher start: %v\n", err)
-		} else {
-			go d.consumeFSWatch(ctx)
-		}
-	}
-
-	// Start idle monitor
-	d.startIdleMonitor(ctx)
-
-	// Register in global registry
-	d.register()
 
 	fmt.Printf("DFMT daemon started for %s\n", d.projectPath)
 	return nil
 }
 
-// Stop stops the daemon gracefully.
+// Stop stops the daemon gracefully. Safe to call multiple times or from both
+// the idle callback and an external trigger — only the first caller performs
+// the real shutdown.
+//
+// Ordering matters: we must stop accepting new events before persisting or
+// closing the journal, otherwise an fswatch event in flight could race with
+// journal.Close() and land on a closed file.
+//
+//  1. flip running→false so new requests/idle callback return early;
+//  2. close shutdownCh to tell consumeFSWatch to return;
+//  3. stop the fswatcher so no more events are produced;
+//  4. wait for consumeFSWatch to drain;
+//  5. persist the index (needs journal.Checkpoint which still works);
+//  6. stop the server;
+//  7. close the journal.
 func (d *Daemon) Stop(ctx context.Context) error {
 	if !d.running.CompareAndSwap(true, false) {
-		return nil // Already stopped
+		return nil
 	}
 
-	// Close shutdown channel only once
-	select {
-	case <-d.shutdownCh:
-		// Already closed
-	default:
-		close(d.shutdownCh)
-	}
-
-	// Stop idle timer and signal callback to return early if it fires concurrently
-	if d.idleTimer != nil {
-		d.idleTimer.Stop()
-	}
-	if d.idleCh != nil {
+	var retErr error
+	d.stopOnce.Do(func() {
+		// (1/2) Signal shutdown to background goroutines.
 		select {
-		case <-d.idleCh:
-			// Already closed
+		case <-d.shutdownCh:
 		default:
-			close(d.idleCh)
+			close(d.shutdownCh)
 		}
-	}
 
-	// Persist index
-	indexPath := filepath.Join(d.projectPath, ".dfmt", "index.gob")
-	hiID, err := d.journal.Checkpoint(ctx)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "warning: checkpoint failed: %v\n", err)
-	}
-	core.PersistIndex(d.index, indexPath, hiID)
+		// Stop idle timer and wake its callback so it exits without trying to
+		// re-enter Stop.
+		if d.idleTimer != nil {
+			d.idleTimer.Stop()
+		}
+		if d.idleCh != nil {
+			select {
+			case <-d.idleCh:
+			default:
+				close(d.idleCh)
+			}
+		}
 
-	// Stop filesystem watcher
-	if d.fswatcher != nil {
-		_ = d.fswatcher.Stop(ctx)
-	}
+		// (3) Stop fswatcher so it stops producing events.
+		if d.fswatcher != nil {
+			_ = d.fswatcher.Stop(ctx)
+		}
 
-	// Stop server
-	if err := d.server.Stop(ctx); err != nil {
-		return fmt.Errorf("stop server: %w", err)
-	}
+		// (4) Wait for consumeFSWatch to finish draining before touching the
+		// journal. This is the fix for the Stop-ordering race where
+		// consumeFSWatch could call journal.Append on a closed journal.
+		d.wg.Wait()
 
-	// Close journal
-	if err := d.journal.Close(); err != nil {
-		return fmt.Errorf("close journal: %w", err)
-	}
+		// (5) Persist the index while the journal is still open for Checkpoint.
+		indexPath := filepath.Join(d.projectPath, ".dfmt", "index.gob")
+		hiID, err := d.journal.Checkpoint(ctx)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "warning: checkpoint failed: %v\n", err)
+		}
+		if perr := core.PersistIndex(d.index, indexPath, hiID); perr != nil {
+			fmt.Fprintf(os.Stderr, "warning: persist index: %v\n", perr)
+		}
 
-	// Remove PID file
-	pidPath := filepath.Join(d.projectPath, ".dfmt", "daemon.pid")
-	os.Remove(pidPath)
+		// (6) Stop the server.
+		if err := d.server.Stop(ctx); err != nil {
+			retErr = fmt.Errorf("stop server: %w", err)
+			// Fall through — we still want to close the journal and unregister.
+		}
 
-	// Unregister from global registry
-	d.unregister()
+		// (7) Close the journal last.
+		if err := d.journal.Close(); err != nil && retErr == nil {
+			retErr = fmt.Errorf("close journal: %w", err)
+		}
 
-	fmt.Println("DFMT daemon stopped")
-	return nil
+		// Best-effort housekeeping.
+		pidPath := filepath.Join(d.projectPath, ".dfmt", "daemon.pid")
+		_ = os.Remove(pidPath)
+		d.unregister()
+		fmt.Println("DFMT daemon stopped")
+	})
+	return retErr
 }
 
 // consumeFSWatch drains events from the filesystem watcher into the journal and index.
 // It returns when the watcher's Events channel closes or the daemon shuts down.
+// Signals d.wg so Stop() can wait for the drain to complete before closing the journal.
 func (d *Daemon) consumeFSWatch(ctx context.Context) {
+	defer d.wg.Done()
 	events := d.fswatcher.Events()
 	for {
 		select {
@@ -264,6 +300,15 @@ func (d *Daemon) consumeFSWatch(ctx context.Context) {
 		case e, ok := <-events:
 			if !ok {
 				return
+			}
+			// Re-check shutdown inside the case — Stop() may have closed
+			// shutdownCh just before this event was selected. We want to
+			// drop in-flight events rather than append to a journal Stop()
+			// is about to close.
+			select {
+			case <-d.shutdownCh:
+				return
+			default:
 			}
 			if err := d.journal.Append(ctx, e); err != nil {
 				fmt.Fprintf(os.Stderr, "fswatch journal append: %v\n", err)

@@ -2,11 +2,11 @@ package transport
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"os"
 	"path/filepath"
-	"strconv"
 	"sync"
 )
 
@@ -50,9 +50,10 @@ func (s *TCPServer) Start(ctx context.Context) error {
 	s.running = true
 	s.mu.Unlock()
 
-	// Write port file if configured
+	// Write port file if configured. TCPServer is the legacy JSON-RPC-over-TCP
+	// transport; no auth token is produced here. For the secured HTTP path use HTTPServer.
 	if s.portFile != "" {
-		if err := s.writePortFile(s.portFile, actualPort); err != nil {
+		if err := s.writePortFile(s.portFile, actualPort, ""); err != nil {
 			ln.Close()
 			return fmt.Errorf("write port file: %w", err)
 		}
@@ -181,10 +182,14 @@ func (s *TCPServer) Stop(ctx context.Context) error {
 	return nil
 }
 
-func (s *TCPServer) writePortFile(path string, port int) error {
+func (s *TCPServer) writePortFile(path string, port int, token string) error {
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
-	return os.WriteFile(path, []byte(strconv.Itoa(port)), 0644)
+	data, err := json.Marshal(PortFile{Port: port, Token: token})
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0o600)
 }

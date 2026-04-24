@@ -73,8 +73,10 @@ func (r *Runtimes) setRuntime(rt Runtime) {
 }
 
 // getVersion runs <exe> --version and returns the first line.
+// 2s timeout: 500ms was too short on cold starts / slow filesystems and made
+// every runtime show up as "unknown" in CI.
 func (r *Runtimes) getVersion(ctx context.Context, path string) string {
-	versionCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
+	versionCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 
 	cmd := exec.CommandContext(versionCtx, path, "--version")

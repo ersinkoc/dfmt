@@ -161,7 +161,7 @@ func TestWritePortFile(t *testing.T) {
 	tmpDir := t.TempDir()
 	portFile := tmpDir + "/.dfmt/port"
 
-	err := hs.writePortFile(portFile, 12345)
+	err := hs.writePortFile(portFile, 12345, "tok123")
 	if err != nil {
 		t.Fatalf("writePortFile failed: %v", err)
 	}
@@ -171,8 +171,15 @@ func TestWritePortFile(t *testing.T) {
 		t.Fatalf("ReadFile failed: %v", err)
 	}
 
-	if string(data) != "12345" {
-		t.Errorf("expected '12345', got '%s'", string(data))
+	var pf PortFile
+	if err := json.Unmarshal(data, &pf); err != nil {
+		t.Fatalf("unmarshal port file: %v", err)
+	}
+	if pf.Port != 12345 {
+		t.Errorf("expected port 12345, got %d", pf.Port)
+	}
+	if pf.Token != "tok123" {
+		t.Errorf("expected token tok123, got %q", pf.Token)
 	}
 }
 
@@ -335,18 +342,21 @@ func TestHTTPServerWritePortFileCreatesNestedDir(t *testing.T) {
 	tmpDir := t.TempDir()
 	portFile := tmpDir + "/.dfmt/nested/deep/port"
 
-	err := hs.writePortFile(portFile, 9999)
+	err := hs.writePortFile(portFile, 9999, "")
 	if err != nil {
 		t.Fatalf("writePortFile failed: %v", err)
 	}
 
+	var pf PortFile
 	data, err := os.ReadFile(portFile)
 	if err != nil {
 		t.Fatalf("ReadFile failed: %v", err)
 	}
-
-	if string(data) != "9999" {
-		t.Errorf("expected '9999', got '%s'", string(data))
+	if err := json.Unmarshal(data, &pf); err != nil {
+		t.Fatalf("unmarshal port file: %v", err)
+	}
+	if pf.Port != 9999 {
+		t.Errorf("expected port 9999, got %d", pf.Port)
 	}
 }
 
@@ -374,7 +384,7 @@ func TestHTTPServerWritePortFileInvalidDir(t *testing.T) {
 		portFile = "NUL:/invalid"
 	}
 
-	err := hs.writePortFile(portFile, 12345)
+	err := hs.writePortFile(portFile, 12345, "")
 	if err == nil {
 		t.Log("writePortFile succeeded (may be allowed on some systems)")
 	}
@@ -386,7 +396,7 @@ func TestHTTPServerWritePortFileEmptyDir(t *testing.T) {
 	hs := NewHTTPServer(":0", handlers)
 
 	// Empty path should fail
-	err := hs.writePortFile("", 12345)
+	err := hs.writePortFile("", 12345, "")
 	if err == nil {
 		t.Error("writePortFile should fail with empty path")
 	}
@@ -435,7 +445,7 @@ func TestTCPServerWritePortFileInvalidPath(t *testing.T) {
 
 	// Try to write port file to a location that definitely can't be created
 	// Use a path under /proc or similar system path that is likely read-only
-	err := server.writePortFile("/proc/12345/portfile_xyz", 12345)
+	err := server.writePortFile("/proc/12345/portfile_xyz", 12345, "")
 	// This may succeed or fail depending on system - just exercise the code path
 	_ = err
 }

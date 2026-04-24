@@ -226,15 +226,24 @@ func (h *hitHeap) Pop() any {
 	return x
 }
 
-// Remove removes a document from the index.
+// Remove removes a document from the index. Cleans up both the stem and
+// trigram posting lists and recomputes avgDocLen from scratch so the BM25
+// scoring stays consistent after deletes.
 func (ix *Index) Remove(id string) {
 	ix.mu.Lock()
 	defer ix.mu.Unlock()
 
+	if _, ok := ix.docLen[id]; !ok {
+		// No-op: unknown id. Prevents totalDocs from going negative on
+		// double-remove.
+		return
+	}
 	delete(ix.docLen, id)
-	ix.totalDocs--
+	if ix.totalDocs > 0 {
+		ix.totalDocs--
+	}
 
-	// Remove from all posting lists
+	// Remove from stem posting lists.
 	for stem, pl := range ix.stemPL {
 		newIDs := make([]string, 0, len(pl.IDs))
 		newTFs := make([]uint16, 0, len(pl.TFs))
@@ -250,6 +259,32 @@ func (ix *Index) Remove(id string) {
 			pl.IDs = newIDs
 			pl.TFs = newTFs
 		}
+	}
+
+	// Remove from trigram posting lists.
+	for tg, pl := range ix.trigramPL {
+		newIDs := make([]string, 0, len(pl.IDs))
+		for _, docID := range pl.IDs {
+			if docID != id {
+				newIDs = append(newIDs, docID)
+			}
+		}
+		if len(newIDs) == 0 {
+			delete(ix.trigramPL, tg)
+		} else {
+			pl.IDs = newIDs
+		}
+	}
+
+	// Recompute avgDocLen from the surviving docs to avoid drift.
+	if ix.totalDocs == 0 {
+		ix.avgDocLen = 0
+	} else {
+		total := 0
+		for _, l := range ix.docLen {
+			total += l
+		}
+		ix.avgDocLen = float64(total) / float64(ix.totalDocs)
 	}
 }
 

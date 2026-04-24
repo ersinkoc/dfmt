@@ -52,13 +52,8 @@ func (e *LockError) Error() string {
 	return fmt.Sprintf("daemon already running for %s (lock file exists)", e.ProjectPath)
 }
 
-// ProcessExists checks if a process with the given PID exists.
+// ProcessExists reports whether a process with the given PID is currently live.
+// The actual implementation is platform-specific (see process_unix.go / process_windows.go).
 func ProcessExists(pid int) bool {
-	process, err := os.FindProcess(pid)
-	if err != nil {
-		return false
-	}
-	// Signal 0 just checks if process exists
-	err = process.Signal(os.Signal(nil))
-	return err == nil
+	return processExistsPlatform(pid)
 }

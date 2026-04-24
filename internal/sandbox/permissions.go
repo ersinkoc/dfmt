@@ -2,9 +2,13 @@ package sandbox
 
 import (
 	"context"
+	"container/list"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -93,8 +97,10 @@ func DefaultPolicy() Policy {
 			{Op: "exec", Text: "dir *"},
 			{Op: "exec", Text: "pwd"},
 			{Op: "exec", Text: "whoami"},
-			{Op: "exec", Text: "dfmt"},
-			{Op: "exec", Text: "dfmt *"},
+			// Note: running dfmt recursively from inside a sandboxed exec is intentionally
+			// denied — `dfmt exec ...` passes arbitrary shell code to the runtime and would
+			// bypass the outer policy (e.g. `dfmt exec 'sudo rm -rf /'`). Agents must call
+			// DFMT tools via MCP, not via a shell invocation.
 			{Op: "exec", Text: "wc"},
 			{Op: "exec", Text: "wc *"},
 			{Op: "exec", Text: "tail"},
@@ -116,11 +122,20 @@ func DefaultPolicy() Policy {
 			{Op: "exec", Text: "reboot *"},
 			{Op: "exec", Text: "mkfs *"},
 			{Op: "exec", Text: "dd if=*"},
+			// Block recursive dfmt invocations that would bypass the outer policy.
+			{Op: "exec", Text: "dfmt"},
+			{Op: "exec", Text: "dfmt *"},
 			{Op: "read", Text: ".env*"},
 			{Op: "read", Text: "**/secrets/**"},
 			{Op: "read", Text: "**/id_rsa"},
 			{Op: "read", Text: "**/id_*"},
+			// SSRF: block cloud metadata and file:// explicitly. Network-level
+			// guards (loopback, RFC1918, link-local) are also applied in Fetch().
 			{Op: "fetch", Text: "http://169.254.169.254/*"},
+			{Op: "fetch", Text: "https://169.254.169.254/*"},
+			{Op: "fetch", Text: "http://metadata.google.internal/*"},
+			{Op: "fetch", Text: "https://metadata.google.internal/*"},
+			{Op: "fetch", Text: "http://metadata.goog/*"},
 			{Op: "fetch", Text: "file://*"},
 		},
 	}
@@ -171,6 +186,12 @@ func LoadPolicy(path string) (*Policy, error) {
 // For exec operations, * matches anything (shell-style).
 // For read/fetch operations, * doesn't match / (path-style).
 func globMatch(pattern, text string, op string) bool {
+	// Normalize Windows path separators for path-based ops so rules written
+	// with forward slashes (e.g. "**/id_rsa") still match `C:\Users\x\id_rsa`.
+	if op == "read" {
+		text = filepath.ToSlash(text)
+		pattern = filepath.ToSlash(pattern)
+	}
 	// For exec operations, use shell-style globbing where * matches anything including /
 	// For read/fetch, * doesn't match / (path segments)
 	if op == "exec" {
@@ -256,21 +277,66 @@ func globToRegex(pattern string) string {
 	return "^" + result.String() + "$"
 }
 
-// regexCache caches compiled regex patterns for performance.
-var regexCache sync.Map
+// regexLRU is a small bounded LRU cache for compiled glob-derived regex patterns.
+// Without a bound, loading a policy with thousands of unique rules would grow
+// the cache indefinitely.
+const regexLRUMaxEntries = 512
+
+type regexLRUCache struct {
+	mu      sync.Mutex
+	order   *list.List
+	entries map[string]*list.Element
+}
+
+type regexLRUEntry struct {
+	key string
+	re  *regexp.Regexp
+}
+
+var regexCache = &regexLRUCache{
+	order:   list.New(),
+	entries: make(map[string]*list.Element),
+}
+
+func (c *regexLRUCache) get(key string) (*regexp.Regexp, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if el, ok := c.entries[key]; ok {
+		c.order.MoveToFront(el)
+		return el.Value.(*regexLRUEntry).re, true
+	}
+	return nil, false
+}
+
+func (c *regexLRUCache) put(key string, re *regexp.Regexp) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if el, ok := c.entries[key]; ok {
+		el.Value.(*regexLRUEntry).re = re
+		c.order.MoveToFront(el)
+		return
+	}
+	el := c.order.PushFront(&regexLRUEntry{key: key, re: re})
+	c.entries[key] = el
+	for c.order.Len() > regexLRUMaxEntries {
+		oldest := c.order.Back()
+		if oldest == nil {
+			break
+		}
+		c.order.Remove(oldest)
+		delete(c.entries, oldest.Value.(*regexLRUEntry).key)
+	}
+}
 
 func regexMatch(pattern, text string) bool {
-	// Check cache first
-	if cached, ok := regexCache.Load(pattern); ok {
-		return cached.(*regexp.Regexp).MatchString(text)
+	if re, ok := regexCache.get(pattern); ok {
+		return re.MatchString(text)
 	}
-
-	// Compile and cache
 	re, err := regexp.Compile(pattern)
 	if err != nil {
 		return false
 	}
-	regexCache.Store(pattern, re)
+	regexCache.put(pattern, re)
 	return re.MatchString(text)
 }
 
@@ -487,11 +553,20 @@ func (s *SandboxImpl) Exec(ctx context.Context, req ExecReq) (ExecResp, error) {
 }
 
 // splitByShellOperators splits a command string by shell operators.
+// Command substitutions `$(...)` and backtick `...` are also split so their
+// inner commands are subject to policy evaluation as independent parts.
 func splitByShellOperators(cmd string) []string {
 	var parts []string
 	var current strings.Builder
 	inQuote := false
 	quoteChar := byte(0)
+
+	flush := func() {
+		if current.Len() > 0 {
+			parts = append(parts, current.String())
+			current.Reset()
+		}
+	}
 
 	for i := 0; i < len(cmd); i++ {
 		c := cmd[i]
@@ -504,34 +579,58 @@ func splitByShellOperators(cmd string) []string {
 			inQuote = false
 			current.WriteByte(c)
 		} else if !inQuote {
-			// Check for two-char operators
+			// $(...) command substitution: extract the inner part as its own segment.
+			if c == '$' && i+1 < len(cmd) && cmd[i+1] == '(' {
+				flush()
+				depth := 1
+				j := i + 2
+				for j < len(cmd) && depth > 0 {
+					switch cmd[j] {
+					case '(':
+						depth++
+					case ')':
+						depth--
+					}
+					if depth == 0 {
+						break
+					}
+					j++
+				}
+				if j <= len(cmd) && j > i+2 {
+					parts = append(parts, cmd[i+2:j])
+				}
+				i = j
+				continue
+			}
+			// Backtick command substitution.
+			if c == '`' {
+				flush()
+				j := i + 1
+				for j < len(cmd) && cmd[j] != '`' {
+					j++
+				}
+				if j > i+1 {
+					parts = append(parts, cmd[i+1:j])
+				}
+				i = j
+				continue
+			}
+			// Two-char operators.
 			if i+1 < len(cmd) {
 				next := cmd[i+1]
 				if c == '&' && next == '&' {
-					parts = append(parts, current.String())
-					current.Reset()
+					flush()
 					i++
 					continue
 				}
 				if c == '|' && next == '|' {
-					parts = append(parts, current.String())
-					current.Reset()
+					flush()
 					i++
 					continue
 				}
 			}
-			if c == ';' || c == '|' || c == '>' || c == '<' {
-				if current.Len() > 0 {
-					parts = append(parts, current.String())
-					current.Reset()
-				}
-				continue
-			}
-			if c == '\n' {
-				if current.Len() > 0 {
-					parts = append(parts, current.String())
-					current.Reset()
-				}
+			if c == ';' || c == '|' || c == '>' || c == '<' || c == '\n' {
+				flush()
 				continue
 			}
 			current.WriteByte(c)
@@ -540,30 +639,43 @@ func splitByShellOperators(cmd string) []string {
 		}
 	}
 
-	if current.Len() > 0 {
-		parts = append(parts, current.String())
-	}
-
+	flush()
 	return parts
 }
+
+// MaxSandboxReadBytes caps the total bytes sandbox.Read will load into memory
+// regardless of the caller's requested limit. Prevents OOM on huge files.
+const MaxSandboxReadBytes = 4 * 1024 * 1024 // 4 MiB
 
 // Read implements the Sandbox interface.
 func (s *SandboxImpl) Read(ctx context.Context, req ReadReq) (ReadResp, error) {
 	// Clean the path to prevent directory traversal
 	cleanPath := filepath.Clean(req.Path)
 
-	// If working directory is set and path is relative, verify it's within wd
-	if s.wd != "" && !filepath.IsAbs(cleanPath) {
+	// Resolve to an absolute path and require it to sit inside the working
+	// directory. Both relative and absolute inputs go through the same check,
+	// so /etc/passwd or C:\Windows\... paths cannot slip past a missing rule.
+	if s.wd != "" {
 		absWd, err := filepath.Abs(s.wd)
-		if err == nil {
-			absPath := filepath.Join(absWd, cleanPath)
-			cleanAbsPath := filepath.Clean(absPath)
-			// Verify the resolved path is still within working directory
-			rel, err := filepath.Rel(absWd, cleanAbsPath)
-			if err != nil || strings.HasPrefix(rel, "..") {
-				return ReadResp{}, fmt.Errorf("path outside working directory: %s", req.Path)
-			}
+		if err != nil {
+			return ReadResp{}, fmt.Errorf("resolve working dir: %w", err)
 		}
+		var absPath string
+		if filepath.IsAbs(cleanPath) {
+			absPath = cleanPath
+		} else {
+			absPath = filepath.Join(absWd, cleanPath)
+		}
+		absPath = filepath.Clean(absPath)
+		rel, err := filepath.Rel(absWd, absPath)
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return ReadResp{}, fmt.Errorf("path outside working directory: %s", req.Path)
+		}
+		cleanPath = absPath
+	} else if filepath.IsAbs(cleanPath) {
+		// No working directory configured: refuse absolute paths rather than
+		// silently trusting whatever policy rules exist.
+		return ReadResp{}, fmt.Errorf("absolute paths not allowed without working directory")
 	}
 
 	// Policy check with the clean path
@@ -571,29 +683,42 @@ func (s *SandboxImpl) Read(ctx context.Context, req ReadReq) (ReadResp, error) {
 		return ReadResp{}, err
 	}
 
-	// Basic read - full implementation would handle chunking
-	data, err := os.ReadFile(cleanPath)
+	// Streaming read with an upper bound to keep memory bounded on huge files.
+	f, err := os.Open(cleanPath)
 	if err != nil {
 		return ReadResp{}, err
 	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil {
+		return ReadResp{}, err
+	}
+	if fi.IsDir() {
+		return ReadResp{}, fmt.Errorf("cannot read directory: %s", req.Path)
+	}
+	totalSize := fi.Size()
 
-	content := string(data)
-
-	// Validate Offset and Limit to prevent panic or out-of-bounds access
 	if req.Offset < 0 {
 		req.Offset = 0
 	}
 	if req.Limit < 0 {
 		req.Limit = 0
 	}
-	offset := int(req.Offset)
-	limit := int(req.Limit)
-	if offset > 0 && offset < len(content) {
-		content = content[offset:]
+	if req.Offset > 0 {
+		if _, err := f.Seek(req.Offset, io.SeekStart); err != nil {
+			return ReadResp{}, err
+		}
 	}
-	if limit > 0 && limit < len(content) {
-		content = content[:limit]
+	readBudget := int64(MaxSandboxReadBytes)
+	if req.Limit > 0 && req.Limit < readBudget {
+		readBudget = req.Limit
 	}
+	data, err := io.ReadAll(io.LimitReader(f, readBudget))
+	if err != nil {
+		return ReadResp{}, err
+	}
+
+	content := string(data)
 
 	// Intent-based filtering
 	keywords := ExtractKeywords(req.Intent)
@@ -603,7 +728,7 @@ func (s *SandboxImpl) Read(ctx context.Context, req ReadReq) (ReadResp, error) {
 			return ReadResp{
 				Matches:   matches,
 				Summary:   GenerateSummary(content, keywords),
-				Size:      int64(len(data)),
+				Size:      totalSize,
 				ReadBytes: int64(len(content)),
 			}, nil
 		}
@@ -617,15 +742,90 @@ func (s *SandboxImpl) Read(ctx context.Context, req ReadReq) (ReadResp, error) {
 
 	return ReadResp{
 		Content:   content,
-		Size:      int64(len(data)),
+		Size:      totalSize,
 		ReadBytes: int64(len(content)),
 	}, nil
 }
+
+// MaxFetchBodyBytes caps the size of an HTTP response body that Fetch will read.
+const MaxFetchBodyBytes = 8 * 1024 * 1024 // 8 MiB
+
+// assertFetchURLAllowed refuses URLs that target loopback, private, link-local,
+// multicast, or cloud metadata ranges. Call on the initial URL and again on
+// every redirect.
+func assertFetchURLAllowed(rawURL string) error {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("parse url: %w", err)
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "http", "https":
+		// ok
+	default:
+		return fmt.Errorf("%w: unsupported scheme %q", ErrBlockedHost, u.Scheme)
+	}
+	host := u.Hostname()
+	if host == "" {
+		return fmt.Errorf("%w: empty host", ErrBlockedHost)
+	}
+	// Well-known cloud metadata hostnames. Block these before DNS so a
+	// resolver that maps them to public IPs cannot evade the IP filter.
+	lowerHost := strings.ToLower(host)
+	if lowerHost == "metadata.google.internal" || lowerHost == "metadata.goog" {
+		return fmt.Errorf("%w: cloud metadata host %q", ErrBlockedHost, host)
+	}
+	// Resolve host to IP(s) and reject if any address falls in a blocked range.
+	ips, err := net.LookupIP(host)
+	if err != nil {
+		// Leave DNS-resolution failures to the HTTP client so the caller sees a
+		// natural error; we only enforce SSRF when resolution succeeds.
+		return nil
+	}
+	for _, ip := range ips {
+		if isBlockedIP(ip) {
+			return fmt.Errorf("%w: %s resolved to blocked address %s", ErrBlockedHost, host, ip)
+		}
+	}
+	return nil
+}
+
+// isBlockedIP returns true if ip is a loopback, private (RFC1918/ULA),
+// link-local, multicast, unspecified, or cloud-metadata IP.
+func isBlockedIP(ip net.IP) bool {
+	if ip == nil {
+		return true
+	}
+	if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() ||
+		ip.IsMulticast() || ip.IsUnspecified() || ip.IsInterfaceLocalMulticast() {
+		return true
+	}
+	if ip.IsPrivate() {
+		return true
+	}
+	// Cloud metadata literal.
+	if ip.Equal(net.IPv4(169, 254, 169, 254)) {
+		return true
+	}
+	// 0.0.0.0/8 - explicitly block any lingering non-routable addresses.
+	if v4 := ip.To4(); v4 != nil && v4[0] == 0 {
+		return true
+	}
+	return false
+}
+
+// ErrBlockedHost indicates the target host/IP falls into a blocked range
+// (loopback, private, link-local, cloud metadata, etc.) and was refused for SSRF reasons.
+var ErrBlockedHost = errors.New("host blocked by SSRF policy")
 
 // Fetch implements the Sandbox interface.
 func (s *SandboxImpl) Fetch(ctx context.Context, req FetchReq) (FetchResp, error) {
 	// Policy check
 	if err := s.PolicyCheck("fetch", req.URL); err != nil {
+		return FetchResp{}, err
+	}
+
+	// SSRF pre-check on the initial URL.
+	if err := assertFetchURLAllowed(req.URL); err != nil {
 		return FetchResp{}, err
 	}
 
@@ -649,14 +849,24 @@ func (s *SandboxImpl) Fetch(ctx context.Context, req FetchReq) (FetchResp, error
 		httpReq.Header.Set(k, v)
 	}
 
-	client := &http.Client{Timeout: req.Timeout}
+	client := &http.Client{
+		Timeout: req.Timeout,
+		// Re-check every redirect target against SSRF policy.
+		CheckRedirect: func(r *http.Request, via []*http.Request) error {
+			if len(via) >= 10 {
+				return errors.New("stopped after 10 redirects")
+			}
+			return assertFetchURLAllowed(r.URL.String())
+		},
+	}
 	resp, err := client.Do(httpReq)
 	if err != nil {
 		return FetchResp{}, fmt.Errorf("fetch: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	body, err := io.ReadAll(resp.Body)
+	// Cap body size to avoid runaway memory on huge responses.
+	body, err := io.ReadAll(io.LimitReader(resp.Body, int64(MaxFetchBodyBytes)))
 	if err != nil {
 		return FetchResp{}, fmt.Errorf("read body: %w", err)
 	}

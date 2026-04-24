@@ -16,13 +16,26 @@ func NewTrigramIndex() *TrigramIndex {
 	}
 }
 
-// Add indexes a document's tokens for trigram search.
+// Add indexes a document's tokens for trigram search. Every 3-character
+// window within each token is indexed so the search side (which generates all
+// windows from the query) can intersect them correctly.
 func (ti *TrigramIndex) Add(id string, text string) {
 	tokens := TokenizeFull(text, nil)
+	seen := make(map[string]struct{})
 	for _, tok := range tokens {
-		if len(tok) >= 3 {
-			trigram := tok[:3]
-			ti.postings[trigram] = append(ti.postings[trigram], id)
+		if len(tok) < 3 {
+			continue
+		}
+		for i := 0; i <= len(tok)-3; i++ {
+			tg := tok[i : i+3]
+			// Dedupe per-document so a posting list doesn't repeat the same id
+			// 10× for "aaaaaa".
+			key := tg + "|" + id
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			ti.postings[tg] = append(ti.postings[tg], id)
 		}
 	}
 }

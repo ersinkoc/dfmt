@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ersinkoc/dfmt/internal/core"
@@ -38,6 +39,17 @@ type FSWatcher struct {
 	// cleanupTicker periodically removes stale entries from debounceMap to
 	// prevent unbounded growth. Entries older than 10× debounceMs are purged.
 	cleanupTicker *time.Ticker
+
+	// droppedEvents counts events that were dropped because the outgoing
+	// channel was full. Consumers can read this via DroppedEvents() to detect
+	// fswatch backpressure — silent drops were previously undetectable.
+	droppedEvents atomic.Uint64
+}
+
+// DroppedEvents returns the number of events that have been dropped due to
+// the outgoing channel being full.
+func (w *FSWatcher) DroppedEvents() uint64 {
+	return w.droppedEvents.Load()
 }
 
 // initWatcher is set by platform-specific files via init()
@@ -57,7 +69,11 @@ func NewFSWatcher(path string, ignore []string, debounceMs int) (*FSWatcher, err
 		debounceMap: make(map[string]time.Time),
 	}
 	if debounceMs > 0 {
-		w.cleanupTicker = time.NewTicker(time.Duration(debounceMs) * 10 * time.Millisecond)
+		// Cleanup period is 10× the debounce window. Multiplying by
+		// time.Millisecond ONCE gives the correct duration — the prior form
+		// `time.Duration(debounceMs) * 10 * time.Millisecond` was a nanosecond
+		// unit mismatch and produced a bogus tick rate.
+		w.cleanupTicker = time.NewTicker(time.Duration(debounceMs*10) * time.Millisecond)
 	}
 	if initWatcher != nil {
 		initWatcher(w)
@@ -251,5 +267,8 @@ func (w *FSWatcher) emitEvent(path string, isDir bool, operation string) {
 	select {
 	case w.events <- e:
 	default:
+		// Consumer is too slow; record the drop so operators can see fswatch
+		// backpressure via DroppedEvents() instead of silently losing signal.
+		w.droppedEvents.Add(1)
 	}
 }

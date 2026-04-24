@@ -159,7 +159,12 @@ func TestSandboxExecWithTimeout(t *testing.T) {
 }
 
 func TestSandboxRead(t *testing.T) {
-	sb := NewSandbox("/tmp")
+	// Use the test's working directory so sandbox_test.go (relative path) resolves correctly.
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd: %v", err)
+	}
+	sb := NewSandbox(wd)
 	ctx := context.Background()
 
 	// Try reading the test file itself
@@ -797,10 +802,10 @@ func TestWriteTempFileFailsWhenTempDirNotWritable(t *testing.T) {
 }
 
 func TestSandboxReadOffsetBeyondContent(t *testing.T) {
-	sb := NewSandbox("/tmp")
+	tmpDir := t.TempDir()
+	sb := NewSandbox(tmpDir)
 	ctx := context.Background()
 
-	tmpDir := t.TempDir()
 	tmpFile := tmpDir + "/test_read_offset.txt"
 	if err := os.WriteFile(tmpFile, []byte("hello world"), 0644); err != nil {
 		t.Fatalf("WriteFile failed: %v", err)
@@ -825,10 +830,10 @@ func TestSandboxReadOffsetBeyondContent(t *testing.T) {
 }
 
 func TestSandboxReadLimitExceedsRemaining(t *testing.T) {
-	sb := NewSandbox("/tmp")
+	tmpDir := t.TempDir()
+	sb := NewSandbox(tmpDir)
 	ctx := context.Background()
 
-	tmpDir := t.TempDir()
 	tmpFile := tmpDir + "/test_read_limit.txt"
 	if err := os.WriteFile(tmpFile, []byte("hello world"), 0644); err != nil {
 		t.Fatalf("WriteFile failed: %v", err)
@@ -854,10 +859,10 @@ func TestSandboxReadLimitExceedsRemaining(t *testing.T) {
 }
 
 func TestSandboxReadWithOffsetAndLimit(t *testing.T) {
-	sb := NewSandbox("/tmp")
+	tmpDir := t.TempDir()
+	sb := NewSandbox(tmpDir)
 	ctx := context.Background()
 
-	tmpDir := t.TempDir()
 	tmpFile := tmpDir + "/test_read_both.txt"
 	if err := os.WriteFile(tmpFile, []byte("0123456789"), 0644); err != nil {
 		t.Fatalf("WriteFile failed: %v", err)
@@ -901,10 +906,10 @@ func TestSandboxReadPolicyDenied(t *testing.T) {
 			{Op: "read", Text: "**"},
 		},
 	}
-	sb := NewSandboxWithPolicy("/tmp", policy)
+	tmpDir := t.TempDir()
+	sb := NewSandboxWithPolicy(tmpDir, policy)
 	ctx := context.Background()
 
-	tmpDir := t.TempDir()
 	tmpFile := tmpDir + "/test_read_denied.txt"
 	if err := os.WriteFile(tmpFile, []byte("secret content"), 0644); err != nil {
 		t.Fatalf("WriteFile failed: %v", err)

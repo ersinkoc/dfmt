@@ -1,7 +1,6 @@
 package capture
 
 import (
-	"context"
 	"testing"
 	"time"
 
@@ -18,32 +17,41 @@ func TestNewGitCapture(t *testing.T) {
 	}
 }
 
-func TestGitCaptureSubmitCommit(t *testing.T) {
+func TestGitCaptureBuildCommit(t *testing.T) {
 	gc := NewGitCapture("/test/path")
-	err := gc.SubmitCommit(context.Background(), "abc123", "Test commit message\nMore details")
-	if err != nil {
-		t.Fatalf("SubmitCommit failed: %v", err)
+	e := gc.BuildCommit("abc123", "Test commit message\nMore details")
+	if e.Type != core.EvtGitCommit {
+		t.Errorf("Type = %s, want %s", e.Type, core.EvtGitCommit)
+	}
+	if e.Data["hash"] != "abc123" {
+		t.Errorf("hash = %v, want abc123", e.Data["hash"])
+	}
+	if e.Data["message"] != "Test commit message" {
+		t.Errorf("message = %v, want first-line only", e.Data["message"])
+	}
+	if e.Sig == "" {
+		t.Error("event sig should be computed")
 	}
 }
 
-func TestGitCaptureSubmitCheckout(t *testing.T) {
+func TestGitCaptureBuildCheckout(t *testing.T) {
 	gc := NewGitCapture("/test/path")
-	err := gc.SubmitCheckout(context.Background(), "main", true)
-	if err != nil {
-		t.Fatalf("SubmitCheckout failed: %v", err)
+	e := gc.BuildCheckout("main", true)
+	if e.Data["ref"] != "main" || e.Data["is_branch"] != true {
+		t.Errorf("unexpected payload %+v", e.Data)
 	}
 
-	err = gc.SubmitCheckout(context.Background(), "feature/test", false)
-	if err != nil {
-		t.Fatalf("SubmitCheckout failed: %v", err)
+	e2 := gc.BuildCheckout("feature/test", false)
+	if e2.Data["is_branch"] != false {
+		t.Errorf("is_branch = %v, want false", e2.Data["is_branch"])
 	}
 }
 
-func TestGitCaptureSubmitPush(t *testing.T) {
+func TestGitCaptureBuildPush(t *testing.T) {
 	gc := NewGitCapture("/test/path")
-	err := gc.SubmitPush(context.Background(), "origin", "main")
-	if err != nil {
-		t.Fatalf("SubmitPush failed: %v", err)
+	e := gc.BuildPush("origin", "main")
+	if e.Data["remote"] != "origin" || e.Data["branch"] != "main" {
+		t.Errorf("unexpected payload %+v", e.Data)
 	}
 }
 
@@ -90,11 +98,14 @@ func TestNewShellCapture(t *testing.T) {
 	}
 }
 
-func TestShellCaptureSubmitCommand(t *testing.T) {
+func TestShellCaptureBuildCommand(t *testing.T) {
 	sc := NewShellCapture("/test/path")
-	err := sc.SubmitCommand(context.Background(), "ls -la", "/test/path")
-	if err != nil {
-		t.Fatalf("SubmitCommand failed: %v", err)
+	e := sc.BuildCommand("ls -la", "/test/path")
+	if e.Data["command"] != "ls -la" || e.Data["cwd"] != "/test/path" {
+		t.Errorf("unexpected payload %+v", e.Data)
+	}
+	if e.Source != core.SrcShell {
+		t.Errorf("Source = %s, want %s", e.Source, core.SrcShell)
 	}
 }
 

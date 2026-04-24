@@ -298,18 +298,16 @@ type StatsResponse struct {
 }
 
 // Stats returns aggregated statistics from the journal.
+// Aggregates as events stream in — O(|event-types| + |priorities|) memory,
+// not O(|journal|). The previous implementation buffered every event into a
+// slice, which grew unbounded on long-running projects.
 func (h *Handlers) Stats(ctx context.Context, params StatsParams) (*StatsResponse, error) {
-	var events []core.Event
 	stream, err := h.journal.Stream(ctx, "")
 	if err != nil {
 		return nil, fmt.Errorf("stream journal: %w", err)
 	}
-	for e := range stream {
-		events = append(events, e)
-	}
 
 	resp := &StatsResponse{
-		EventsTotal:      len(events),
 		EventsByType:     make(map[string]int),
 		EventsByPriority: make(map[string]int),
 	}
@@ -317,12 +315,13 @@ func (h *Handlers) Stats(ctx context.Context, params StatsParams) (*StatsRespons
 	classifier := core.NewClassifier()
 	var earliest, latest time.Time
 	var totalInput, totalOutput, totalCached int
+	total := 0
 
-	for _, e := range events {
+	for e := range stream {
+		total++
 		resp.EventsByType[string(e.Type)]++
 		resp.EventsByPriority[string(classifier.Classify(e))]++
 
-		// Extract token data from event Data field
 		if inputTokens, ok := getInt(e.Data, core.KeyInputTokens); ok {
 			totalInput += inputTokens
 		}
@@ -341,6 +340,7 @@ func (h *Handlers) Stats(ctx context.Context, params StatsParams) (*StatsRespons
 		}
 	}
 
+	resp.EventsTotal = total
 	resp.TotalInputTokens = totalInput
 	resp.TotalOutputTokens = totalOutput
 	resp.TotalCachedTokens = totalCached

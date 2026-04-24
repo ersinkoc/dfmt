@@ -111,7 +111,7 @@ func TestTCPServerWritePortFile(t *testing.T) {
 	tmpDir := t.TempDir()
 	portFile := filepath.Join(tmpDir, ".dfmt", "port")
 
-	if err := server.writePortFile(portFile, 12345); err != nil {
+	if err := server.writePortFile(portFile, 12345, ""); err != nil {
 		t.Fatalf("writePortFile failed: %v", err)
 	}
 
@@ -119,9 +119,12 @@ func TestTCPServerWritePortFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadFile failed: %v", err)
 	}
-
-	if string(data) != "12345" {
-		t.Errorf("port file content = %s, want 12345", string(data))
+	var pf PortFile
+	if err := json.Unmarshal(data, &pf); err != nil {
+		t.Fatalf("unmarshal port file: %v", err)
+	}
+	if pf.Port != 12345 {
+		t.Errorf("port file port = %d, want 12345", pf.Port)
 	}
 }
 
@@ -132,7 +135,7 @@ func TestTCPServerWritePortFileCreatesDir(t *testing.T) {
 	tmpDir := t.TempDir()
 	portFile := filepath.Join(tmpDir, ".dfmt", "nested", "port")
 
-	if err := server.writePortFile(portFile, 54321); err != nil {
+	if err := server.writePortFile(portFile, 54321, ""); err != nil {
 		t.Fatalf("writePortFile failed: %v", err)
 	}
 
@@ -140,9 +143,12 @@ func TestTCPServerWritePortFileCreatesDir(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadFile failed: %v", err)
 	}
-
-	if string(data) != "54321" {
-		t.Errorf("port file content = %s, want 54321", string(data))
+	var pf PortFile
+	if err := json.Unmarshal(data, &pf); err != nil {
+		t.Fatalf("unmarshal port file: %v", err)
+	}
+	if pf.Port != 54321 {
+		t.Errorf("port file port = %d, want 54321", pf.Port)
 	}
 }
 

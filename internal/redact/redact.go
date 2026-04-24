@@ -17,21 +17,30 @@ type redactPattern struct {
 	repl  string
 }
 
+// envExportLineRegex matches `NAME=value` and `export NAME=value` lines.
+// Captures: (1) optional "export " prefix, (2) NAME, (3) value.
+// The replacement decision (redact vs keep) is made by IsSensitiveKey(NAME) in Redact().
+var envExportLineRegex = regexp.MustCompile(`(?m)^(export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$`)
+
 // Common patterns for sensitive data
 var commonPatterns = []*redactPattern{
 	// API keys and tokens
 	{name: "github_token", regex: regexp.MustCompile(`(ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_]{36,}`), repl: "[GITHUB_TOKEN]"},
 	{name: "openai_key", regex: regexp.MustCompile(`sk-[A-Za-z0-9_]{48,}`), repl: "[OPENAI_KEY]"},
 	{name: "aws_key", regex: regexp.MustCompile(`AKIA[A-Z0-9]{16}`), repl: "[AWS_KEY]"},
-	{name: "aws_secret", regex: regexp.MustCompile(`[A-Za-z0-9/+=]{40}\s*$`), repl: "[AWS_SECRET]"},
+	// aws_secret: capture a 40-char base64-ish token that follows an AWS secret-key marker.
+	// The prior pattern matched any 40-char token at end-of-line, producing too many false positives.
+	{name: "aws_secret", regex: regexp.MustCompile(`(?i)(aws[_-]?secret[_-]?access[_-]?key|aws[_-]?secret)\s*[:=]\s*['"]?([A-Za-z0-9/+=]{40})['"]?`), repl: "$1: [AWS_SECRET]"},
 	{name: "stripe_key", regex: regexp.MustCompile(`sk_live_[A-Za-z0-9]{24,}`), repl: "[STRIPE_KEY]"},
 	{name: "stripe_token", regex: regexp.MustCompile(`tok_[A-Za-z0-9]{24,}`), repl: "[STRIPE_TOKEN]"},
 	{name: "generic_secret", regex: regexp.MustCompile(`(?i)(api[_-]?key|secret[_-]?key|access[_-]?token|auth[_-]?token)\s*[:=]\s*['"]?([A-Za-z0-9_/+=.-]{20,})['"]?`), repl: "$1: [REDACTED]"},
 	{name: "bearer_token", regex: regexp.MustCompile(`(?i)bearer\s+[A-Za-z0-9_.-]{20,}`), repl: "Bearer [REDACTED]"},
 	{name: "basic_auth", regex: regexp.MustCompile(`(?i)basic\s+[A-Za-z0-9_.-]{10,}={0,2}`), repl: "Basic [REDACTED]"},
 
-	// Environment variable exports
-	{name: "env_export", regex: regexp.MustCompile(`(?m)^(?:export\s+)?(?:[A-Z_]+)=(.*)$`), repl: "$1=[REDACTED]"},
+	// env_export is handled in Redact() via ReplaceAllStringFunc so the var
+	// name can be matched against IsSensitiveKey() instead of a brittle regex.
+	// A placeholder pattern is kept here only so persisted stats reference this name.
+	{name: "env_export", regex: envExportLineRegex, repl: ""},
 
 	// Private keys
 	{name: "private_key", regex: regexp.MustCompile(`-----BEGIN (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----`), repl: "[PRIVATE KEY]"},
@@ -60,9 +69,43 @@ func NewRedactorWithCustom(patterns []*redactPattern) *Redactor {
 // Redact redacts sensitive data from the input string.
 func (r *Redactor) Redact(s string) string {
 	for _, p := range r.patterns {
+		if p.name == "env_export" {
+			s = redactEnvExport(s)
+			continue
+		}
 		s = p.regex.ReplaceAllString(s, p.repl)
 	}
 	return s
+}
+
+// redactEnvExport replaces the value of every `[export] NAME=value` line whose
+// NAME is classified as sensitive by IsSensitiveKey. Non-sensitive assignments
+// (e.g. HOME=/tmp, DEBUG=true) are left untouched.
+func redactEnvExport(s string) string {
+	return envExportLineRegex.ReplaceAllStringFunc(s, func(line string) string {
+		m := envExportLineRegex.FindStringSubmatch(line)
+		if m == nil {
+			return line
+		}
+		prefix, name := m[1], m[2]
+		if !IsSensitiveKey(name) {
+			return line
+		}
+		return prefix + name + "=[REDACTED]"
+	})
+}
+
+// countEnvExportRedactions returns how many env_export lines would be redacted,
+// used for RedactWithStats accounting.
+func countEnvExportRedactions(s string) int {
+	matches := envExportLineRegex.FindAllStringSubmatch(s, -1)
+	count := 0
+	for _, m := range matches {
+		if len(m) >= 3 && IsSensitiveKey(m[2]) {
+			count++
+		}
+	}
+	return count
 }
 
 // RedactMap redacts sensitive data in a map of strings.
@@ -120,7 +163,7 @@ func IsSensitiveKey(key string) bool {
 	sensitive := []string{
 		"password", "passwd", "secret", "token", "api_key", "apikey",
 		"access_token", "refresh_token", "auth", "credential", "private",
-		"key", "secret", "session", "jwt", "bearer",
+		"key", "session", "jwt", "bearer",
 	}
 	for _, s := range sensitive {
 		if strings.Contains(lower, s) {
@@ -147,6 +190,14 @@ func (r *Redactor) RedactWithStats(s string) (string, Stats) {
 
 	result := s
 	for _, p := range r.patterns {
+		if p.name == "env_export" {
+			if n := countEnvExportRedactions(result); n > 0 {
+				stats.RedactedCount += n
+				stats.RedactedTypes[p.name] = n
+			}
+			result = redactEnvExport(result)
+			continue
+		}
 		matches := p.regex.FindAllStringIndex(result, -1)
 		if len(matches) > 0 {
 			stats.RedactedCount += len(matches)

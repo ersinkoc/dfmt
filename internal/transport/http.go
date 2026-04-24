@@ -2,6 +2,9 @@ package transport
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/subtle"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -9,7 +12,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -34,14 +37,37 @@ const (
 
 // HTTPServer is an HTTP server for the transport layer.
 type HTTPServer struct {
-	bind       string
-	portFile   string
-	socketPath string // For Unix socket cleanup
-	listener   net.Listener
-	handlers   *Handlers
-	server     *http.Server
-	mu         sync.Mutex
-	running    bool
+	bind        string
+	portFile    string
+	socketPath  string // For Unix socket cleanup
+	listener    net.Listener
+	ownListener bool // true if Start() created the listener (so Stop may close it)
+	handlers    *Handlers
+	server      *http.Server
+	mu          sync.Mutex
+	running     bool
+
+	// authToken guards TCP listeners. On loopback TCP any local process can
+	// reach the port, so we require a random token delivered via the port
+	// file (mode 0600). Empty string means "no auth" — only appropriate for
+	// Unix sockets where filesystem perms already restrict access.
+	authToken string
+}
+
+// PortFile is the JSON format written to the port file. Clients read this to
+// discover the TCP port AND the auth token. Older versions wrote a bare
+// integer; we fall back to that format on the read side for compatibility.
+type PortFile struct {
+	Port  int    `json:"port"`
+	Token string `json:"token"`
+}
+
+func generateAuthToken() (string, error) {
+	var b [32]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(b[:]), nil
 }
 
 // NewHTTPServer creates a new HTTP server with TCP listener.
@@ -65,98 +91,173 @@ func NewHTTPServerWithListener(listener net.Listener, handlers *Handlers, socket
 // Start starts the HTTP server.
 func (s *HTTPServer) Start(ctx context.Context) error {
 	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	if s.running {
-		s.mu.Unlock()
 		return fmt.Errorf("server already running")
 	}
 
-	// Create HTTP handler
+	// Pick a listener first so actualPort is known before we write the port file.
+	var ln net.Listener
+	var actualPort int
+	var ownListener bool
+	if s.listener != nil {
+		ln = s.listener
+	} else {
+		l, err := net.Listen("tcp", s.bind)
+		if err != nil {
+			return fmt.Errorf("listen: %w", err)
+		}
+		ln = l
+		ownListener = true
+		if addr, ok := l.Addr().(*net.TCPAddr); ok {
+			actualPort = addr.Port
+		}
+	}
+
+	// Auth token is required for TCP listeners; Unix sockets rely on FS perms.
+	// We need the token before building the mux so the middleware can close over it.
+	if _, isTCP := ln.(*net.TCPListener); isTCP && s.authToken == "" {
+		tok, err := generateAuthToken()
+		if err != nil {
+			_ = ln.Close()
+			return fmt.Errorf("generate auth token: %w", err)
+		}
+		s.authToken = tok
+	}
+
+	// Create HTTP handler with auth + security headers middleware.
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.handle)
 	mux.HandleFunc("/dashboard", s.handleDashboard)
+	mux.HandleFunc("/dashboard.js", s.handleDashboardJS)
 	mux.HandleFunc("/api/stats", s.handleAPIStats)
 	mux.HandleFunc("/api/daemons", s.handleAPIDaemons)
 	mux.HandleFunc("/healthz", s.handleHealth)
 	mux.HandleFunc("/readyz", s.handleHealth)
 
 	s.server = &http.Server{
-		Handler:      mux,
-		ReadTimeout:  30 * time.Second,
-		WriteTimeout: 30 * time.Second,
-		IdleTimeout:  60 * time.Second,
+		Handler:           s.wrapSecurity(mux),
+		ReadTimeout:       30 * time.Second,
+		ReadHeaderTimeout: 5 * time.Second, // Slowloris guard
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    16 << 10, // 16 KiB — tighter than Go's 1 MiB default
 	}
 
-	var ln net.Listener
-	var err error
-	var actualPort int
-
-	if s.listener != nil {
-		// Use custom listener (e.g., Unix socket)
-		ln = s.listener
-	} else {
-		// Create TCP listener
-		ln, err = net.Listen("tcp", s.bind)
-		if err != nil {
-			s.mu.Unlock()
-			return fmt.Errorf("listen: %w", err)
-		}
-		addr := ln.Addr().(*net.TCPAddr)
-		actualPort = addr.Port
-	}
-
-	s.mu.Unlock()
-
-	// Write port file if configured and we have a TCP port
 	if s.portFile != "" && actualPort > 0 {
-		if err := s.writePortFile(s.portFile, actualPort); err != nil {
-			ln.Close()
+		if err := s.writePortFile(s.portFile, actualPort, s.authToken); err != nil {
+			_ = ln.Close()
 			return fmt.Errorf("write port file: %w", err)
 		}
 	}
 
-	// Start serving
+	s.listener = ln
+	s.ownListener = ownListener
+	s.running = true
+
+	// Shutdown watcher.
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
-				// Log and exit - don't let panic kill the server
 				fmt.Printf("http server panic: %v\n", r)
 			}
 		}()
 		<-ctx.Done()
-		s.server.Shutdown(context.Background())
+		_ = s.server.Shutdown(context.Background())
 	}()
 
+	// Serve loop.
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
 				fmt.Printf("http serve panic: %v\n", r)
 			}
 		}()
-		s.server.Serve(ln)
+		_ = s.server.Serve(ln)
 	}()
-
-	s.mu.Lock()
-	s.running = true
-	s.mu.Unlock()
 
 	return nil
 }
 
+// wrapSecurity applies:
+//   - Bearer token auth for TCP listeners (health endpoint excluded).
+//   - CSRF / Origin defense for state-changing paths on the dashboard API
+//     (rejects cross-origin browser requests).
+func (s *HTTPServer) wrapSecurity(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Always set minimal security headers on every response.
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+
+		// Allow health endpoints without auth so readiness probes work.
+		if r.URL.Path == "/healthz" || r.URL.Path == "/readyz" {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		// Reject browser cross-origin requests to non-dashboard endpoints.
+		// The dashboard HTML is served same-origin, so legitimate dashboard
+		// XHRs won't carry a foreign Origin.
+		if origin := r.Header.Get("Origin"); origin != "" {
+			if !s.isAllowedOrigin(origin) {
+				http.Error(w, "cross-origin request rejected", http.StatusForbidden)
+				return
+			}
+		}
+
+		// Bearer-token check when authToken is configured (TCP mode).
+		if s.authToken != "" {
+			got := extractBearerToken(r)
+			if subtle.ConstantTimeCompare([]byte(got), []byte(s.authToken)) != 1 {
+				w.Header().Set("WWW-Authenticate", `Bearer realm="dfmt"`)
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+		}
+
+		next.ServeHTTP(w, r)
+	})
+}
+
+func extractBearerToken(r *http.Request) string {
+	// Prefer Authorization: Bearer <token>
+	if h := r.Header.Get("Authorization"); h != "" {
+		if strings.HasPrefix(strings.ToLower(h), "bearer ") {
+			return strings.TrimSpace(h[len("bearer "):])
+		}
+	}
+	// Fallback: X-DFMT-Token (convenient for curl).
+	return strings.TrimSpace(r.Header.Get("X-DFMT-Token"))
+}
+
+func (s *HTTPServer) isAllowedOrigin(origin string) bool {
+	// Only accept same-origin dashboard requests. Compare host:port against
+	// the listener. If the listener is a Unix socket (no Host), reject all
+	// non-empty origins.
+	if s.listener == nil {
+		return false
+	}
+	var want string
+	if addr, ok := s.listener.Addr().(*net.TCPAddr); ok {
+		want = fmt.Sprintf("http://%s", addr.String())
+	} else {
+		return false
+	}
+	return origin == want
+}
+
 // Stop stops the HTTP server.
+// Only touches the Unix socket path / port file if the server actually owns
+// them — this prevents a Stop() call that never successfully started from
+// deleting another daemon's socket.
 func (s *HTTPServer) Stop(ctx context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	if !s.running {
-		// Server was never started; still release a pre-bound listener so
-		// callers can rebind the same address/path (e.g. in tests that
-		// create a daemon, never call Start, then re-create).
-		if s.listener != nil {
+		if s.listener != nil && s.ownListener {
 			_ = s.listener.Close()
 			s.listener = nil
-		}
-		if s.socketPath != "" {
-			os.Remove(s.socketPath)
 		}
 		return nil
 	}
@@ -167,9 +268,15 @@ func (s *HTTPServer) Stop(ctx context.Context) error {
 	err := s.server.Shutdown(shutdownCtx)
 	s.running = false
 
-	// Clean up Unix socket file if applicable
+	// Only remove the socket if we were started with this socketPath.
+	// Removing here after a successful Shutdown is safe because no new
+	// daemon can bind the path before the Shutdown completes.
 	if s.socketPath != "" {
-		os.Remove(s.socketPath)
+		_ = os.Remove(s.socketPath)
+	}
+	// Clean up the port file we wrote.
+	if s.portFile != "" {
+		_ = os.Remove(s.portFile)
 	}
 
 	return err
@@ -208,11 +315,13 @@ func (s *HTTPServer) handle(w http.ResponseWriter, r *http.Request) {
 
 	var req Request
 	if err := json.Unmarshal(body, &req); err != nil {
-		resp := Response{
+		// JSON-RPC 2.0 §5.1: on parse error the response ID MUST be null.
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(Response{
 			JSONRPC: jsonRPCVersion,
+			ID:      nil,
 			Error:   &RPCError{Code: -32700, Message: "Parse error"},
-		}
-		json.NewEncoder(w).Encode(resp)
+		})
 		return
 	}
 
@@ -315,12 +424,18 @@ func (s *HTTPServer) handleStats(ctx context.Context, req Request) Response {
 	return Response{JSONRPC: jsonRPCVersion, ID: req.ID, Result: resp}
 }
 
-func (s *HTTPServer) writePortFile(path string, port int) error {
+// writePortFile writes {"port":...,"token":"..."} to path with mode 0600 so
+// other local users cannot read the auth token.
+func (s *HTTPServer) writePortFile(path string, port int, token string) error {
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
-	return os.WriteFile(path, []byte(strconv.Itoa(port)), 0644)
+	data, err := json.Marshal(PortFile{Port: port, Token: token})
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0o600)
 }
 
 // SetPortFile sets the path to write the chosen port.
@@ -332,8 +447,19 @@ func (s *HTTPServer) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("X-Frame-Options", "DENY")
-	w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'sha256-i0unlexK92ZD1t7H5j48z4stY8qIlwTBsDJmUf7eu9c=' 'sha256-DwDPWiW9eReE2QDUpB/9ZWjylFssFALdUxAg1j3McKw='")
-	w.Write([]byte(DashboardHTML))
+	// Script is served from /dashboard.js so 'script-src self' is sufficient —
+	// no fragile inline-script hash to keep in sync with the source.
+	w.Header().Set("Content-Security-Policy",
+		"default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'")
+	_, _ = w.Write([]byte(DashboardHTML))
+}
+
+// handleDashboardJS serves the dashboard's JavaScript from an external file so
+// CSP can use the simple `script-src 'self'` directive.
+func (s *HTTPServer) handleDashboardJS(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	_, _ = w.Write([]byte(DashboardJS))
 }
 
 func (s *HTTPServer) handleAPIStats(w http.ResponseWriter, r *http.Request) {

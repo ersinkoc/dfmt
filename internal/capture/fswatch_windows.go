@@ -53,30 +53,21 @@ func windowsWatchLoop(w *FSWatcher, dirPath string) {
 
 // shouldWalkDir checks if the directory's own modification time has changed
 // since the last scan. Directory modtime changes when files are added, removed,
-// or renamed inside it.
+// or renamed inside it. Use dirPath as the key — the prior implementation
+// called filepath.Rel(dirPath, dirPath) which always returns "." and made the
+// map effectively single-entry, dropping mod-time tracking for sibling dirs.
 func shouldWalkDir(dirPath string, knownDirs map[string]trackedDir) bool {
 	info, err := os.Stat(dirPath)
 	if err != nil {
 		return false
 	}
-	rel, err := filepath.Rel(dirPath, dirPath)
-	if err != nil {
-		return true // treat as unknown, walk it
-	}
-	// For the root directory, use empty string as key
-	if rel == "." {
-		rel = ""
-	}
-
-	prev, ok := knownDirs[rel]
+	prev, ok := knownDirs[dirPath]
 	if !ok {
-		// First time seeing this directory
-		knownDirs[rel] = trackedDir{dirModTime: info.ModTime()}
+		knownDirs[dirPath] = trackedDir{dirModTime: info.ModTime()}
 		return true
 	}
-
 	if !prev.dirModTime.Equal(info.ModTime()) {
-		knownDirs[rel] = trackedDir{dirModTime: info.ModTime()}
+		knownDirs[dirPath] = trackedDir{dirModTime: info.ModTime()}
 		return true
 	}
 	return false

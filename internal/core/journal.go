@@ -16,7 +16,19 @@ import (
 var (
 	ErrJournalFull     = errors.New("journal has reached max bytes")
 	ErrJournalNotFound = errors.New("journal not found")
+	// ErrEventTooLarge is returned when a single event exceeds maxEventBytes.
+	ErrEventTooLarge = errors.New("event exceeds max serialized size")
 )
+
+// maxEventBytes caps the serialized size of a single journal event. The limit
+// must stay <= the Scanner.Buffer upper bound used in Stream/scanLastID so we
+// never write an event that cannot be read back.
+const maxEventBytes = 1 << 20 // 1 MiB
+
+// scannerBufferMax is the upper bound bufio.Scanner will grow its buffer to
+// when reading the journal. Any longer line is silently skipped by Scanner,
+// which is why we refuse to write events larger than this.
+const scannerBufferMax = 1 << 20 // 1 MiB
 
 // JournalOptions configures the journal.
 type JournalOptions struct {
@@ -43,7 +55,6 @@ type journalImpl struct {
 	mu         sync.Mutex
 	durable    bool
 	batchMS    int
-	pending    []Event
 	maxBytes   int64
 	compress   bool
 	hiCursor   string
@@ -54,13 +65,14 @@ type journalImpl struct {
 
 // OpenJournal opens or creates a journal at the given path.
 func OpenJournal(path string, opt JournalOptions) (Journal, error) {
-	// Ensure directory exists
+	// Ensure directory exists. Use 0700 so a journal containing potentially
+	// sensitive project activity isn't readable by other local users.
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("create journal dir: %w", err)
 	}
 
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0644)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("open journal: %w", err)
 	}
@@ -93,72 +105,55 @@ func OpenJournal(path string, opt JournalOptions) (Journal, error) {
 
 // Append adds an event to the journal.
 func (j *journalImpl) Append(ctx context.Context, e Event) error {
-	// Check size limit
-	if j.maxBytes > 0 {
-		fi, err := j.file.Stat()
-		if err == nil && fi.Size() >= j.maxBytes {
-			return ErrJournalFull
-		}
-	}
-
-	// Marshal event
+	// Marshal event outside the lock (CPU-bound, no shared state).
 	data, err := json.Marshal(e)
 	if err != nil {
 		return fmt.Errorf("marshal event: %w", err)
+	}
+	if len(data)+1 > maxEventBytes {
+		// +1 for the trailing newline. Refuse events that cannot be read back
+		// via bufio.Scanner (which silently skips lines > its buffer max).
+		return ErrEventTooLarge
 	}
 	data = append(data, '\n')
 
 	j.mu.Lock()
 	defer j.mu.Unlock()
 
-	// Check for periodic sync signal in batched mode
+	if j.closed {
+		return errors.New("journal closed")
+	}
+
+	// Size limit check MUST be under the lock to avoid TOCTOU: two concurrent
+	// Appends could both observe Size() < maxBytes and then push the journal
+	// past the limit.
+	if j.maxBytes > 0 {
+		if fi, statErr := j.file.Stat(); statErr == nil && fi.Size() >= j.maxBytes {
+			return ErrJournalFull
+		}
+	}
+
+	// Periodic sync tick: in batched mode we still fsync every ~30s to bound
+	// the window of unsynced writes.
 	if j.syncCh != nil {
 		select {
 		case <-j.syncCh:
-			// Flush pending events before processing new event
-			j.flushPendingLocked()
+			_ = j.file.Sync()
 		default:
 		}
 	}
 
-	// In durable mode, write and sync each append
+	if _, err := j.file.Write(data); err != nil {
+		return fmt.Errorf("write: %w", err)
+	}
 	if j.durable {
-		if _, err := j.file.Write(data); err != nil {
-			return fmt.Errorf("write: %w", err)
-		}
 		if err := j.file.Sync(); err != nil {
 			return fmt.Errorf("sync: %w", err)
-		}
-	} else {
-		// Buffer and write without sync
-		j.pending = append(j.pending, e)
-		if _, err := j.file.Write(data); err != nil {
-			return fmt.Errorf("write: %w", err)
 		}
 	}
 
 	j.hiCursor = e.ID
 	return nil
-}
-
-// flushPendingLocked flushes all pending events to disk and clears the pending buffer.
-// Caller must hold j.mu.
-func (j *journalImpl) flushPendingLocked() {
-	if len(j.pending) == 0 {
-		return
-	}
-	for _, e := range j.pending {
-		data, err := json.Marshal(e)
-		if err != nil {
-			continue
-		}
-		if _, err := j.file.Write(append(data, '\n')); err != nil {
-			continue
-		}
-	}
-	j.pending = nil
-	// Sync to ensure all pending events are flushed to disk
-	j.file.Sync()
 }
 
 // Stream reads events from the journal starting at 'from' cursor.
@@ -181,8 +176,9 @@ func (j *journalImpl) Stream(ctx context.Context, from string) (<-chan Event, er
 		defer readFile.Close()
 
 		scanner := bufio.NewScanner(readFile)
-		// Increase buffer for large events
-		scanner.Buffer(make([]byte, 64*1024), 1024*1024)
+		// Buffer upper bound must match maxEventBytes; Scanner silently skips
+		// lines beyond this, so it doubles as a data-integrity guardrail.
+		scanner.Buffer(make([]byte, 64*1024), scannerBufferMax)
 
 		foundFrom := from == ""
 		for scanner.Scan() {
@@ -213,6 +209,36 @@ func (j *journalImpl) Stream(ctx context.Context, from string) (<-chan Event, er
 	}()
 
 	return ch, nil
+}
+
+// StreamN is like Stream but stops after emitting at most n events. Pass n <= 0
+// for unlimited. Useful in HTTP handlers that would otherwise buffer the whole
+// journal into memory.
+func (j *journalImpl) StreamN(ctx context.Context, from string, n int) (<-chan Event, error) {
+	if n <= 0 {
+		return j.Stream(ctx, from)
+	}
+	src, err := j.Stream(ctx, from)
+	if err != nil {
+		return nil, err
+	}
+	out := make(chan Event, 32)
+	go func() {
+		defer close(out)
+		sent := 0
+		for e := range src {
+			if sent >= n {
+				return
+			}
+			select {
+			case out <- e:
+				sent++
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	return out, nil
 }
 
 // Checkpoint returns the ULID of the last appended event.
@@ -273,7 +299,7 @@ func (j *journalImpl) Rotate(ctx context.Context) error {
 	}
 
 	// Open new file
-	f, err := os.OpenFile(j.path, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0644)
+	f, err := os.OpenFile(j.path, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0o600)
 	if err != nil {
 		return fmt.Errorf("reopen: %w", err)
 	}
@@ -298,9 +324,6 @@ func (j *journalImpl) Close() error {
 	// Mark as closed to prevent further operations
 	j.closed = true
 
-	// Flush any remaining pending events
-	j.flushPendingLocked()
-
 	// Sync before close
 	if err := j.file.Sync(); err != nil {
 		return fmt.Errorf("sync: %w", err)
@@ -313,9 +336,11 @@ func (j *journalImpl) Close() error {
 
 // scanLastID scans the file to find the last event ID.
 func (j *journalImpl) scanLastID() error {
-	// Seek to start
-	j.file.Seek(0, io.SeekStart)
+	if _, err := j.file.Seek(0, io.SeekStart); err != nil {
+		return fmt.Errorf("seek start: %w", err)
+	}
 	scanner := bufio.NewScanner(j.file)
+	scanner.Buffer(make([]byte, 64*1024), scannerBufferMax)
 	var last Event
 	for scanner.Scan() {
 		line := scanner.Bytes()
@@ -328,7 +353,12 @@ func (j *journalImpl) scanLastID() error {
 		}
 		last = e
 	}
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("scan: %w", err)
+	}
 	j.hiCursor = last.ID
-	j.file.Seek(0, io.SeekEnd)
+	if _, err := j.file.Seek(0, io.SeekEnd); err != nil {
+		return fmt.Errorf("seek end: %w", err)
+	}
 	return nil
 }

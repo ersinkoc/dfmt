@@ -34,6 +34,39 @@ func TestRedact(t *testing.T) {
 	}
 }
 
+func TestRedactEnvExport(t *testing.T) {
+	r := NewRedactor()
+
+	cases := []struct {
+		name       string
+		input      string
+		mustHave   string
+		mustLack   string
+		mustKeep   string // content that should remain unchanged (e.g. the var name)
+	}{
+		{"export SECRET", "export SECRET=hunter2", "SECRET=[REDACTED]", "hunter2", "SECRET"},
+		{"inline PASSWORD", "DB_PASSWORD=supersecret", "DB_PASSWORD=[REDACTED]", "supersecret", "DB_PASSWORD"},
+		{"API_KEY", "MY_API_KEY=abc123def456", "MY_API_KEY=[REDACTED]", "abc123def456", "MY_API_KEY"},
+		{"AUTH_TOKEN", "export GITHUB_AUTH_TOKEN=xyz", "GITHUB_AUTH_TOKEN=[REDACTED]", "xyz", "GITHUB_AUTH_TOKEN"},
+		{"non-sensitive preserved", "HOME=/tmp", "HOME=/tmp", "", "HOME"},
+		{"DEBUG unchanged", "DEBUG=true", "DEBUG=true", "", "DEBUG"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := r.Redact(tc.input)
+			if !strings.Contains(got, tc.mustHave) {
+				t.Errorf("input=%q got=%q, want to contain %q", tc.input, got, tc.mustHave)
+			}
+			if tc.mustLack != "" && strings.Contains(got, tc.mustLack) {
+				t.Errorf("input=%q got=%q must NOT contain secret %q", tc.input, got, tc.mustLack)
+			}
+			if tc.mustKeep != "" && !strings.Contains(got, tc.mustKeep) {
+				t.Errorf("input=%q got=%q must preserve var name %q", tc.input, got, tc.mustKeep)
+			}
+		})
+	}
+}
+
 func TestRedactNoSecrets(t *testing.T) {
 	r := NewRedactor()
 

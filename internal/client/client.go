@@ -27,7 +27,34 @@ type Client struct {
 	socketPath string // For debugging/testing only
 	network    string
 	address    string
+	authToken  string // Bearer token for TCP-mode daemon (Windows). Empty for Unix socket.
 	timeout    time.Duration
+}
+
+// readPortFile parses the port file written by HTTPServer.writePortFile.
+// Supports the current JSON form {"port":N,"token":"..."} and falls back to
+// the legacy bare-integer format from older daemons for compatibility.
+func readPortFile(path string) (int, string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return 0, "", err
+	}
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 {
+		return 0, "", fmt.Errorf("empty port file")
+	}
+	if trimmed[0] == '{' {
+		var pf transport.PortFile
+		if err := json.Unmarshal(trimmed, &pf); err != nil {
+			return 0, "", fmt.Errorf("parse port file: %w", err)
+		}
+		return pf.Port, pf.Token, nil
+	}
+	port, err := strconv.Atoi(string(trimmed))
+	if err != nil {
+		return 0, "", fmt.Errorf("parse port file: %w", err)
+	}
+	return port, "", nil
 }
 
 const (
@@ -50,16 +77,15 @@ func NewClient(projectPath string) (*Client, error) {
 
 	var network, address string
 
+	var token string
 	if runtime.GOOS == goosWindows {
 		// On Windows, use TCP with port from port file
 		network = "tcp"
 		address = addrLocalhost0 // Will be overridden by port file
 
-		// Try to read port file
-		if data, err := os.ReadFile(portFile); err == nil {
-			if port, err := strconv.Atoi(string(data)); err == nil {
-				address = fmt.Sprintf("127.0.0.1:%d", port)
-			}
+		if port, tok, err := readPortFile(portFile); err == nil && port > 0 {
+			address = fmt.Sprintf("127.0.0.1:%d", port)
+			token = tok
 		}
 	} else {
 		// On Unix, use Unix socket
@@ -71,6 +97,7 @@ func NewClient(projectPath string) (*Client, error) {
 		socketPath: socketPath, // For debugging
 		network:    network,
 		address:    address,
+		authToken:  token,
 		timeout:    5 * time.Second,
 	}
 
@@ -109,21 +136,28 @@ func (c *Client) ensureDaemon(projectPath string) error {
 		return fmt.Errorf("failed to start daemon: %w (try: dfmt daemon --foreground to see errors)", startErr)
 	}
 
-	// Give daemon time to start (with retry)
-	maxRetries := 3
-	for i := 0; i < maxRetries; i++ {
-		time.Sleep(500 * time.Millisecond)
+	// Wait for daemon to come up. Exponential backoff with cap keeps CI fast
+	// while still tolerating slow startups. Total budget ≈ 3.9s.
+	delays := []time.Duration{
+		50 * time.Millisecond,
+		100 * time.Millisecond,
+		200 * time.Millisecond,
+		400 * time.Millisecond,
+		800 * time.Millisecond,
+		1200 * time.Millisecond,
+		1200 * time.Millisecond,
+	}
+	for i, delay := range delays {
+		time.Sleep(delay)
 
-		// Update address from port file on Windows
+		// Update address + token from port file on Windows
 		if runtime.GOOS == goosWindows {
-			if data, err := os.ReadFile(portFile); err == nil {
-				if port, err := strconv.Atoi(string(data)); err == nil {
-					c.address = fmt.Sprintf("127.0.0.1:%d", port)
-				}
+			if port, tok, err := readPortFile(portFile); err == nil && port > 0 {
+				c.address = fmt.Sprintf("127.0.0.1:%d", port)
+				c.authToken = tok
 			}
 		}
 
-		// Try to connect
 		ctx2, cancel2 := context.WithTimeout(context.Background(), 2*time.Second)
 		_, err := c.Connect(ctx2)
 		cancel2()
@@ -131,13 +165,11 @@ func (c *Client) ensureDaemon(projectPath string) error {
 			return nil
 		}
 
-		// Check if we should retry
-		if i == maxRetries-1 {
-			return fmt.Errorf("daemon started but not responding (try: dfmt daemon --foreground to debug)")
+		if i == len(delays)-1 {
+			return fmt.Errorf("daemon started but not responding (try: dfmt daemon --foreground to debug): %w", err)
 		}
 	}
-
-	return fmt.Errorf("daemon failed to start after %d retries", maxRetries)
+	return fmt.Errorf("daemon failed to start")
 }
 
 // autoInitProject initializes the project if .dfmt/ doesn't exist.
@@ -380,10 +412,8 @@ func DaemonRunning(projectPath string) bool {
 
 	if runtime.GOOS == goosWindows {
 		network = "tcp"
-		if data, err := os.ReadFile(portFile); err == nil {
-			if port, err := strconv.Atoi(string(data)); err == nil {
-				address = fmt.Sprintf("127.0.0.1:%d", port)
-			}
+		if port, _, err := readPortFile(portFile); err == nil && port > 0 {
+			address = fmt.Sprintf("127.0.0.1:%d", port)
 		}
 	} else {
 		network = netUnix
@@ -579,6 +609,9 @@ func (c *Client) doHTTP(method string, req transport.Request) ([]byte, error) {
 			},
 		}
 	} else {
+		// net.JoinHostPort-style formatting; for IPv6 literals the address
+		// must be bracketed in a URL. Our current caller writes "127.0.0.1:N"
+		// so the default path stays correct.
 		url = fmt.Sprintf("http://%s%s", c.address, method)
 	}
 
@@ -587,6 +620,9 @@ func (c *Client) doHTTP(method string, req transport.Request) ([]byte, error) {
 		return nil, err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
+	if c.authToken != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+c.authToken)
+	}
 
 	resp, err := client.Do(httpReq)
 	if err != nil {

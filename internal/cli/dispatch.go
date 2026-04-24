@@ -776,7 +776,7 @@ func runStats(args []string) int {
 		}
 
 		if resp.SessionStart != "" && resp.SessionEnd != "" {
-			fmt.Printf("Session: %s â†’ %s\n", resp.SessionStart, resp.SessionEnd)
+			fmt.Printf("Session: %s -> %s\n", resp.SessionStart, resp.SessionEnd)
 		}
 
 		if resp.EventsTotal == 0 {
@@ -1061,9 +1061,12 @@ type HookStdinInput struct {
 
 // readHookStdin reads and parses JSON from stdin for hook commands.
 // Returns HookStdinInput on success or empty struct on failure.
+// Stdin is bounded to 1 MiB; a larger payload is rejected so a malicious
+// or buggy client cannot push us past the limit.
 func readHookStdin() (HookStdinInput, error) {
+	const hookStdinMaxBytes = 1 << 20
 	var input HookStdinInput
-	decoder := json.NewDecoder(os.Stdin)
+	decoder := json.NewDecoder(io.LimitReader(os.Stdin, hookStdinMaxBytes))
 	if err := decoder.Decode(&input); err != nil {
 		return input, err
 	}
@@ -1153,11 +1156,24 @@ func runSetupUninstall() int {
 	for _, f := range m.Files {
 		if err := os.Remove(f.Path); err != nil && !os.IsNotExist(err) {
 			fmt.Fprintf(os.Stderr, "error removing %s: %v\n", f.Path, err)
+			continue
+		}
+		// If setup created a .dfmt.bak backup of a pre-existing user config,
+		// restore it so uninstall leaves the user's original config intact.
+		backup := f.Path + ".dfmt.bak"
+		if _, err := os.Stat(backup); err == nil {
+			if err := os.Rename(backup, f.Path); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: restore backup %s: %v\n", backup, err)
+			} else {
+				fmt.Printf("restored original: %s\n", f.Path)
+			}
 		}
 	}
 
 	// Clear manifest
-	setup.SaveManifest(&setup.Manifest{Version: 1})
+	if err := setup.SaveManifest(&setup.Manifest{Version: 1}); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: clear manifest: %v\n", err)
+	}
 	fmt.Println("Uninstall complete")
 	return 0
 }
@@ -1489,20 +1505,16 @@ func runMCP(_ []string) int {
 	handlers.SetProject(proj)
 	mcp := transport.NewMCPProtocol(handlers)
 
-	// Read/write MCP JSON-RPC
-	reader := bufio.NewReader(os.Stdin)
+	// Read/write MCP JSON-RPC. Use bufio.Scanner with a bounded buffer so a
+	// hostile peer cannot push us past the line size limit — bufio.Reader's
+	// ReadBytes would grow unbounded.
+	const mcpMaxLineBytes = 1 << 20 // 1 MiB per JSON-RPC message
+	scanner := bufio.NewScanner(os.Stdin)
+	scanner.Buffer(make([]byte, 64*1024), mcpMaxLineBytes)
 	writer := bufio.NewWriter(os.Stdout)
 
-	for {
-		line, err := reader.ReadBytes('\n')
-		if err != nil {
-			if err == io.EOF {
-				break
-			}
-			fmt.Fprintf(os.Stderr, "read error: %v\n", err)
-			break
-		}
-
+	for scanner.Scan() {
+		line := scanner.Bytes()
 		if len(line) == 0 {
 			continue
 		}
@@ -1538,6 +1550,9 @@ func runMCP(_ []string) int {
 			break
 		}
 		writer.Flush()
+	}
+	if err := scanner.Err(); err != nil {
+		fmt.Fprintf(os.Stderr, "read error: %v\n", err)
 	}
 
 	return 0
