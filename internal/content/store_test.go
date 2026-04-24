@@ -2,6 +2,7 @@ package content
 
 import (
 	"compress/gzip"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -646,7 +647,7 @@ func TestPutChunkTriggersEviction(t *testing.T) {
 	// Each chunk body is 30 bytes, maxSize is 50
 	for i := range 5 {
 		chunk := &Chunk{
-			ID:       "chunk-" + string(rune(i)),
+			ID:       fmt.Sprintf("chunk-%d", i),
 			ParentID: "set-A", // Use the oldest set
 			Index:    i,
 			Kind:     ChunkKindText,

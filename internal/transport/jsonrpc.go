@@ -31,9 +31,18 @@ type RPCError struct {
 	Data    any    `json:"data,omitempty"`
 }
 
+// MaxJSONRPCLineBytes caps a single framed JSON-RPC message. A misbehaving
+// peer that never sends a newline could otherwise grow the read buffer
+// without bound and OOM the daemon.
+const MaxJSONRPCLineBytes = 1 << 20 // 1 MiB
+
 // Codec handles JSON-RPC 2.0 encoding/decoding over an io.ReadWriter.
+// The bufio.Reader is owned by the codec and reused across calls so that
+// bytes buffered past a line boundary (pipelined requests) are not dropped
+// on the next ReadRequest/ReadResponse.
 type Codec struct {
 	rw  io.ReadWriter
+	r   *bufio.Reader
 	enc *json.Encoder
 	mu  sync.Mutex
 }
@@ -42,15 +51,38 @@ type Codec struct {
 func NewCodec(rw io.ReadWriter) *Codec {
 	return &Codec{
 		rw:  rw,
+		r:   bufio.NewReader(rw),
 		enc: json.NewEncoder(rw),
+	}
+}
+
+// readCappedLine reads up to MaxJSONRPCLineBytes, ending at '\n' or cap.
+// Returns an error if cap is reached before a newline.
+func (c *Codec) readCappedLine() ([]byte, error) {
+	buf := make([]byte, 0, 512)
+	for {
+		b, err := c.r.ReadByte()
+		if err != nil {
+			if err == io.EOF && len(buf) > 0 {
+				// Partial line at EOF is an error — we only accept fully
+				// framed messages.
+				return nil, fmt.Errorf("unterminated JSON-RPC line at EOF")
+			}
+			return nil, err
+		}
+		if b == '\n' {
+			return buf, nil
+		}
+		if len(buf) >= MaxJSONRPCLineBytes {
+			return nil, fmt.Errorf("JSON-RPC line exceeds %d bytes", MaxJSONRPCLineBytes)
+		}
+		buf = append(buf, b)
 	}
 }
 
 // ReadRequest reads and decodes a JSON-RPC request.
 func (c *Codec) ReadRequest() (*Request, error) {
-	// Read a line (JSON-RPC uses line-delimited JSON)
-	reader := bufio.NewReader(c.rw)
-	line, err := reader.ReadBytes('\n')
+	line, err := c.readCappedLine()
 	if err != nil {
 		if err == io.EOF {
 			return nil, err
@@ -72,8 +104,7 @@ func (c *Codec) ReadRequest() (*Request, error) {
 
 // ReadResponse reads and decodes a JSON-RPC response.
 func (c *Codec) ReadResponse() (*Response, error) {
-	reader := bufio.NewReader(c.rw)
-	line, err := reader.ReadBytes('\n')
+	line, err := c.readCappedLine()
 	if err != nil {
 		if err == io.EOF {
 			return nil, err

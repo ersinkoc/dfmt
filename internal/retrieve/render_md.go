@@ -2,6 +2,7 @@ package retrieve
 
 import (
 	"encoding/json"
+	"encoding/xml"
 	"fmt"
 	"strings"
 	"time"
@@ -134,6 +135,18 @@ func NewXMLRenderer() *XMLRenderer {
 	return &XMLRenderer{}
 }
 
+// xmlEscape escapes XML metacharacters via encoding/xml. Event fields
+// (Type, Actor, ID) come from agent input through Remember and can contain
+// '<', '&', or ']]>' which would otherwise produce malformed XML or, at
+// worst, be interpreted as new elements by a downstream consumer.
+func xmlEscape(s string) string {
+	var b strings.Builder
+	if err := xml.EscapeText(&b, []byte(s)); err != nil {
+		return ""
+	}
+	return b.String()
+}
+
 // Render renders a snapshot as XML.
 func (r *XMLRenderer) Render(snap *Snapshot) string {
 	var b strings.Builder
@@ -142,18 +155,18 @@ func (r *XMLRenderer) Render(snap *Snapshot) string {
 	fmt.Fprintf(&b, "  <byte_size>%d</byte_size>\n", snap.ByteSize)
 	b.WriteString("  <tier_order>\n")
 	for _, t := range snap.TierOrder {
-		fmt.Fprintf(&b, "    <tier>%s</tier>\n", t)
+		fmt.Fprintf(&b, "    <tier>%s</tier>\n", xmlEscape(t))
 	}
 	b.WriteString("  </tier_order>\n")
 	b.WriteString("  <events>\n")
 	for _, e := range snap.Events {
 		b.WriteString("    <event>\n")
-		fmt.Fprintf(&b, "      <id>%s</id>\n", e.ID)
-		fmt.Fprintf(&b, "      <type>%s</type>\n", e.Type)
-		fmt.Fprintf(&b, "      <priority>%s</priority>\n", e.Priority)
+		fmt.Fprintf(&b, "      <id>%s</id>\n", xmlEscape(e.ID))
+		fmt.Fprintf(&b, "      <type>%s</type>\n", xmlEscape(string(e.Type)))
+		fmt.Fprintf(&b, "      <priority>%s</priority>\n", xmlEscape(string(e.Priority)))
 		fmt.Fprintf(&b, "      <ts>%s</ts>\n", e.TS.Format(time.RFC3339Nano))
 		if e.Actor != "" {
-			fmt.Fprintf(&b, "      <actor>%s</actor>\n", e.Actor)
+			fmt.Fprintf(&b, "      <actor>%s</actor>\n", xmlEscape(e.Actor))
 		}
 		b.WriteString("    </event>\n")
 	}

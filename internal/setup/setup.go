@@ -175,7 +175,9 @@ func SaveManifest(m *Manifest) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0644)
+	// 0600: the manifest lists every file DFMT has installed or modified
+	// in user config dirs — useful info for an attacker planning tampering.
+	return os.WriteFile(path, data, 0o600)
 }
 
 // BackupFile creates a backup of a config file before modification.
@@ -198,5 +200,11 @@ func BackupFile(path string) error {
 			return fmt.Errorf("preserve existing backup %s: %w", backup, renameErr)
 		}
 	}
-	return os.WriteFile(backup, data, 0644)
+	// Preserve the source mode if we can stat it; otherwise default to 0600
+	// so a backup of a previously-0600 file isn't suddenly world-readable.
+	mode := os.FileMode(0o600)
+	if fi, ferr := os.Stat(path); ferr == nil {
+		mode = fi.Mode().Perm()
+	}
+	return os.WriteFile(backup, data, mode)
 }

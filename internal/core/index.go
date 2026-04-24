@@ -70,9 +70,21 @@ func (ix *Index) UnmarshalJSON(data []byte) error {
 	ix.mu.Lock()
 	defer ix.mu.Unlock()
 
+	// Unmarshal may leave these nil if the JSON contained `null` for a
+	// field (corrupt/partial write or older format) — a subsequent Add()
+	// would panic on map assignment. Re-init to keep the index usable.
 	ix.stemPL = j.StemPL
+	if ix.stemPL == nil {
+		ix.stemPL = make(map[string]*PostingList)
+	}
 	ix.trigramPL = j.TrigramPL
+	if ix.trigramPL == nil {
+		ix.trigramPL = make(map[string]*PostingList)
+	}
 	ix.docLen = j.DocLen
+	if ix.docLen == nil {
+		ix.docLen = make(map[string]int)
+	}
 	ix.avgDocLen = j.AvgDocLen
 	ix.totalDocs = j.TotalDocs
 	return nil
@@ -163,7 +175,11 @@ func joinStrings(parts []string, sep string) string {
 	return b.String()
 }
 
-// SearchBM25 searches the index using BM25.
+// SearchBM25 searches the index using BM25. Each query token contributes a
+// BM25 partial score for every document that contains it — summed across
+// tokens. The prior implementation iterated only the smallest posting list
+// and used its own length as the document frequency for every token, which
+// effectively collapsed multi-term queries down to single-term behavior.
 func (ix *Index) SearchBM25(query string, limit int) []ScoredHit {
 	ix.mu.RLock()
 	defer ix.mu.RUnlock()
@@ -173,31 +189,31 @@ func (ix *Index) SearchBM25(query string, limit int) []ScoredHit {
 		return nil
 	}
 
-	// Find smallest posting list to iterate
-	var smallest *PostingList
+	// Deduplicate stems — multiple query tokens stemming to the same form
+	// would otherwise double-count.
+	seenStem := make(map[string]struct{}, len(tokens))
+	scores := make(map[string]float64)
+	bm := NewBM25Okapi()
 	for _, tok := range tokens {
 		stem := Stem(tok)
-		if pl, ok := ix.stemPL[stem]; ok {
-			if smallest == nil || len(pl.IDs) < len(smallest.IDs) {
-				smallest = pl
-			}
+		if _, dup := seenStem[stem]; dup {
+			continue
+		}
+		seenStem[stem] = struct{}{}
+		pl, ok := ix.stemPL[stem]
+		if !ok {
+			continue
+		}
+		df := len(pl.IDs)
+		for i, docID := range pl.IDs {
+			tf := int(pl.TFs[i])
+			docLen := ix.docLen[docID]
+			scores[docID] += bm.Score(tf, docLen, ix.avgDocLen, df, ix.totalDocs)
 		}
 	}
 
-	if smallest == nil {
+	if len(scores) == 0 {
 		return nil
-	}
-
-	// Score documents
-	scores := make(map[string]float64)
-	bm := NewBM25Okapi()
-
-	for i, docID := range smallest.IDs {
-		tf := int(smallest.TFs[i])
-		docLen := ix.docLen[docID]
-		df := len(smallest.IDs)
-		score := bm.Score(tf, docLen, ix.avgDocLen, df, ix.totalDocs)
-		scores[docID] = score
 	}
 
 	// Heap for top-K
@@ -299,17 +315,18 @@ func (ix *Index) Remove(id string) {
 
 // Persist saves the index to a file using JSON serialization.
 func (ix *Index) Persist(path string) error {
+	// Marshal under the read-lock so concurrent Adds see a consistent
+	// snapshot, but release before the file write — otherwise a slow disk
+	// stalls every Add for the duration of the I/O. writeRawAtomic then
+	// performs tmp+fsync+rename so a crash leaves the prior complete file
+	// intact.
 	ix.mu.RLock()
-	defer ix.mu.RUnlock()
-
-	f, err := os.Create(path)
+	buf, err := json.Marshal(ix)
+	ix.mu.RUnlock()
 	if err != nil {
 		return err
 	}
-	defer f.Close()
-
-	enc := json.NewEncoder(f)
-	return enc.Encode(ix)
+	return writeRawAtomic(path, buf)
 }
 
 // LoadIndex loads an index from a file using JSON deserialization.

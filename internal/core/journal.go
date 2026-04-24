@@ -50,17 +50,19 @@ type Journal interface {
 
 // journalImpl implements Journal.
 type journalImpl struct {
-	path       string
-	file       *os.File
-	mu         sync.Mutex
-	durable    bool
-	batchMS    int
-	maxBytes   int64
-	compress   bool
-	hiCursor   string
-	syncTicker *time.Ticker
-	syncCh     <-chan time.Time
-	closed     bool
+	path         string
+	file         *os.File
+	mu           sync.Mutex
+	durable      bool
+	batchMS      int
+	syncInterval time.Duration
+	lastSync     time.Time
+	maxBytes     int64
+	compress     bool
+	hiCursor     string
+	syncTicker   *time.Ticker
+	syncCh       <-chan time.Time
+	closed       bool
 }
 
 // OpenJournal opens or creates a journal at the given path.
@@ -94,6 +96,8 @@ func OpenJournal(path string, opt JournalOptions) (Journal, error) {
 		if opt.BatchMS > 0 {
 			interval = time.Duration(opt.BatchMS) * time.Millisecond
 		}
+		j.syncInterval = interval
+		j.lastSync = time.Now()
 		j.syncTicker = time.NewTicker(interval)
 		j.syncCh = j.syncTicker.C
 	}
@@ -139,13 +143,21 @@ func (j *journalImpl) Append(ctx context.Context, e Event) error {
 		}
 	}
 
-	// Periodic sync tick: in batched mode we still fsync every ~30s to bound
-	// the window of unsynced writes.
+	// Periodic sync in batched mode. A non-blocking select on syncCh alone
+	// misses ticks under steady high-rate writes (Go's time.Ticker only
+	// buffers one value; any tick fired while no one was reading is
+	// silently dropped). Track lastSync so we also catch up if we drifted
+	// past the interval.
 	if j.syncCh != nil {
+		drained := false
 		select {
 		case <-j.syncCh:
-			_ = j.file.Sync()
+			drained = true
 		default:
+		}
+		if drained || (j.syncInterval > 0 && time.Since(j.lastSync) >= j.syncInterval) {
+			_ = j.file.Sync()
+			j.lastSync = time.Now()
 		}
 	}
 

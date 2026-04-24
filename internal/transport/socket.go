@@ -65,11 +65,22 @@ func (s *SocketServer) Start(ctx context.Context) error {
 	return nil
 }
 
-// serve handles incoming connections.
+// serve handles incoming connections. On Accept error we bail when the
+// server has been stopped — otherwise we'd spin at 100% CPU on the
+// "listener closed" error that follows Stop(). Previously the select's
+// default branch just `continue`d, which only exited if the Start ctx was
+// cancelled — but daemon.Stop uses a fresh ctx, so the goroutine would
+// spin forever.
 func (s *SocketServer) serve(ctx context.Context) {
 	for {
 		conn, err := s.listener.Accept()
 		if err != nil {
+			s.mu.Lock()
+			running := s.running
+			s.mu.Unlock()
+			if !running {
+				return
+			}
 			select {
 			case <-ctx.Done():
 				return

@@ -33,7 +33,11 @@ func linuxWatchDir(w *FSWatcher, path string) {
 	// goroutine parked in unix.Read on Linux.
 	w.addWatchedPath(path)
 
-	go linuxWatchLoop(w, fd, path)
+	w.TrackGoroutine()
+	go func() {
+		defer w.UntrackGoroutine()
+		linuxWatchLoop(w, fd, path)
+	}()
 }
 
 func linuxWatchLoop(w *FSWatcher, fd int, dirPath string) {

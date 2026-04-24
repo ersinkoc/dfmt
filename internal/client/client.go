@@ -182,8 +182,9 @@ func autoInitProject(projectPath string) error {
 		return nil // Already initialized
 	}
 
-	// Create .dfmt/ directory
-	if err := os.MkdirAll(dfmtDir, 0755); err != nil {
+	// Create .dfmt/ directory. 0700 so journal, index, and content dir
+	// are owner-only on Unix; matches the permission used by OpenJournal.
+	if err := os.MkdirAll(dfmtDir, 0o700); err != nil {
 		return fmt.Errorf("create .dfmt dir: %w", err)
 	}
 
@@ -253,7 +254,8 @@ func autoInitProject(projectPath string) error {
   }
 }
 `
-	os.WriteFile(settingsPath, []byte(settingsData), 0644)
+	// 0600: grants MCP tool permissions, see cli writeProjectClaudeSettings.
+	_ = os.WriteFile(settingsPath, []byte(settingsData), 0o600)
 
 	return nil
 }

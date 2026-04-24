@@ -6,12 +6,29 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"sync"
 	"time"
 
 	"github.com/ersinkoc/dfmt/internal/core"
 )
+
+// chunkIDPattern restricts chunk/chunk-set IDs to an ASCII-safe shape so a
+// caller cannot smuggle '..', '/', '\\', or drive letters into a filesystem
+// path via LoadChunkSet / persistChunkSet. Letters, digits, dash, and
+// underscore are permitted — production callers supply ULIDs, but the
+// intra-process API also accepts human-readable test IDs.
+var chunkIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
+
+// validateID rejects any chunk or chunk-set ID that would escape the store
+// directory.
+func validateID(id string) error {
+	if !chunkIDPattern.MatchString(id) {
+		return fmt.Errorf("invalid content id %q: must match %s", id, chunkIDPattern)
+	}
+	return nil
+}
 
 // ChunkKind represents the type of content.
 type ChunkKind string
@@ -90,18 +107,34 @@ func NewStore(opt StoreOptions) (*Store, error) {
 
 // PutChunk stores a chunk and adds it to a chunk set.
 func (s *Store) PutChunk(chunk *Chunk) error {
+	if err := validateID(chunk.ID); err != nil {
+		return err
+	}
+	if chunk.ParentID != "" {
+		if err := validateID(chunk.ParentID); err != nil {
+			return err
+		}
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Check size limit
-	if s.curSize >= s.maxSize {
+	// Evict until the new chunk fits under maxSize. The prior single-shot
+	// evict removed just one set, so a chunk larger than the oldest set's
+	// footprint could leave curSize arbitrarily over maxSize. Bail if evict
+	// makes no progress (e.g. all sets already gone).
+	chunkSize := int64(len(chunk.Body))
+	for s.curSize+chunkSize > s.maxSize {
+		before := s.curSize
 		if err := s.evict(); err != nil {
 			return fmt.Errorf("evict chunks: %w", err)
+		}
+		if s.curSize >= before {
+			break
 		}
 	}
 
 	s.chunks[chunk.ID] = chunk
-	s.curSize += int64(len(chunk.Body))
+	s.curSize += chunkSize
 
 	// Add to chunk set
 	if chunk.ParentID != "" {
@@ -113,18 +146,29 @@ func (s *Store) PutChunk(chunk *Chunk) error {
 	return nil
 }
 
-// PutChunkSet stores a chunk set.
+// PutChunkSet stores a chunk set. Disk persistence runs without the write
+// lock held so a slow/failing content dir doesn't wedge readers.
 func (s *Store) PutChunkSet(set *ChunkSet) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	s.sets[set.ID] = set
-
-	// Persist if path is set and TTL is forever
-	if s.path != "" && set.TTL == 0 {
-		return s.persistChunkSet(set)
+	if err := validateID(set.ID); err != nil {
+		return err
 	}
 
+	s.mu.Lock()
+	s.sets[set.ID] = set
+	path := s.path
+	shouldPersist := path != "" && set.TTL == 0
+	// Snapshot a copy under the lock so the subsequent disk write cannot race
+	// with a concurrent mutation of set.Chunks via PutChunk.
+	var snap ChunkSet
+	if shouldPersist {
+		snap = *set
+		snap.Chunks = append([]string(nil), set.Chunks...)
+	}
+	s.mu.Unlock()
+
+	if shouldPersist {
+		return persistChunkSetToDisk(path, &snap)
+	}
 	return nil
 }
 
@@ -252,10 +296,21 @@ func (s *Store) evict() error {
 	return nil
 }
 
-// persistChunkSet writes a chunk set to disk.
+// persistChunkSet writes a chunk set to disk using the store's root path.
+// Kept for internal callers that already hold the lock and want the original
+// behavior; new call sites should use persistChunkSetToDisk with a snapshot.
 func (s *Store) persistChunkSet(set *ChunkSet) error {
-	path := filepath.Join(s.path, set.ID+".json.gz")
-	f, err := os.Create(path)
+	return persistChunkSetToDisk(s.path, set)
+}
+
+// persistChunkSetToDisk gzip-encodes set at rootPath/<id>.json.gz. The caller
+// owns concurrency: pass a snapshot if the set may mutate.
+func persistChunkSetToDisk(rootPath string, set *ChunkSet) error {
+	if err := validateID(set.ID); err != nil {
+		return err
+	}
+	path := filepath.Join(rootPath, set.ID+".json.gz")
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
 	if err != nil {
 		return err
 	}
@@ -270,6 +325,9 @@ func (s *Store) persistChunkSet(set *ChunkSet) error {
 
 // LoadChunkSet loads a chunk set from disk.
 func (s *Store) LoadChunkSet(id string) (*ChunkSet, error) {
+	if err := validateID(id); err != nil {
+		return nil, err
+	}
 	path := filepath.Join(s.path, id+".json.gz")
 	f, err := os.Open(path)
 	if err != nil {

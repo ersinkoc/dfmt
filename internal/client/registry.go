@@ -97,7 +97,10 @@ func (r *Registry) saveNoLock() {
 		return
 	}
 
-	os.WriteFile(r.filePath, data, 0644)
+	// 0600: the registry enumerates every project path the user has ever
+	// opened with DFMT — a privacy leak worth closing off from other local
+	// users.
+	_ = os.WriteFile(r.filePath, data, 0o600)
 }
 
 // Register adds a daemon to the registry.

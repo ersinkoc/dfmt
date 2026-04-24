@@ -25,6 +25,13 @@ func (bm *BM25Okapi) Score(tf int, docLen int, avgDocLen float64, df, N int) flo
 	if tf == 0 || df == 0 {
 		return 0
 	}
+	// avgDocLen <= 0 happens when the index has posting lists but hasn't yet
+	// recomputed the average (e.g. during a rebuild). Dividing by it below
+	// would yield NaN/+Inf and sort garbage rows to the top. Fall back to
+	// IDF-only scoring, which is a correct lower bound.
+	if avgDocLen <= 0 {
+		return IDF(df, N)
+	}
 
 	idf := IDF(df, N)
 

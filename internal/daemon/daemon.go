@@ -17,6 +17,7 @@ import (
 	"github.com/ersinkoc/dfmt/internal/content"
 	"github.com/ersinkoc/dfmt/internal/core"
 	"github.com/ersinkoc/dfmt/internal/project"
+	"github.com/ersinkoc/dfmt/internal/redact"
 	"github.com/ersinkoc/dfmt/internal/sandbox"
 	"github.com/ersinkoc/dfmt/internal/transport"
 )
@@ -35,6 +36,7 @@ type Daemon struct {
 	journal     core.Journal
 	server      Server
 	handlers    *transport.Handlers
+	redactor    *redact.Redactor
 	fswatcher   *capture.FSWatcher
 
 	running    atomic.Bool // Use atomic for race-free access
@@ -63,9 +65,10 @@ func New(projectPath string, cfg *config.Config) (*Daemon, error) {
 		projectPath = p
 	}
 
-	// Ensure .dfmt directory exists
+	// Ensure .dfmt directory exists. 0700 so nobody else on the host can
+	// read the indexed events, raw tool output, or redact patterns.
 	dfmtDir := filepath.Join(projectPath, ".dfmt")
-	if err := os.MkdirAll(dfmtDir, 0755); err != nil {
+	if err := os.MkdirAll(dfmtDir, 0o700); err != nil {
 		return nil, fmt.Errorf("create .dfmt: %w", err)
 	}
 
@@ -149,6 +152,7 @@ func New(projectPath string, cfg *config.Config) (*Daemon, error) {
 		journal:     journal,
 		server:      server,
 		handlers:    handlers,
+		redactor:    redact.NewRedactor(),
 		fswatcher:   fswatcher,
 		shutdownCh:  make(chan struct{}),
 	}
@@ -189,7 +193,7 @@ func (d *Daemon) Start(ctx context.Context) error {
 		// degrade gracefully) but must surface to the operator via stderr.
 		pidPath := filepath.Join(d.projectPath, ".dfmt", "daemon.pid")
 		pidData := fmt.Sprintf("%d\n", os.Getpid())
-		if err := os.WriteFile(pidPath, []byte(pidData), 0o644); err != nil {
+		if err := os.WriteFile(pidPath, []byte(pidData), 0o600); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: write pid file: %v\n", err)
 		}
 
@@ -335,6 +339,16 @@ func (d *Daemon) consumeFSWatch(ctx context.Context) {
 			case <-d.shutdownCh:
 				return
 			default:
+			}
+			// Redact fswatch event before journaling. File paths routinely
+			// contain secrets (~/work/.env.production, customer-token-abc/)
+			// and this event flows into the index and recall output.
+			if d.redactor != nil {
+				e.Data = d.redactor.RedactEvent(e.Data)
+				for i, tag := range e.Tags {
+					e.Tags[i] = d.redactor.Redact(tag)
+				}
+				e.Sig = e.ComputeSig()
 			}
 			if err := d.journal.Append(ctx, e); err != nil {
 				fmt.Fprintf(os.Stderr, "fswatch journal append: %v\n", err)

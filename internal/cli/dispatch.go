@@ -166,7 +166,10 @@ func runInit(args []string) int {
 	}
 
 	dfmtDir := filepath.Join(dir, ".dfmt")
-	if err := os.MkdirAll(dfmtDir, 0755); err != nil {
+	// 0700 matches journal/content dir permissions — indexed events, raw
+	// tool output, and redact patterns all live under .dfmt, and must not
+	// be world- or group-readable on shared hosts.
+	if err := os.MkdirAll(dfmtDir, 0o700); err != nil {
 		fmt.Fprintf(os.Stderr, "error creating .dfmt: %v\n", err)
 		return 1
 	}
@@ -179,11 +182,19 @@ func runInit(args []string) int {
 
 	gitignorePath := filepath.Join(dir, ".gitignore")
 	if _, err := os.Stat(gitignorePath); err == nil {
-		content, _ := os.ReadFile(gitignorePath)
-		if !strings.Contains(string(content), ".dfmt/") {
-			f, _ := os.OpenFile(gitignorePath, os.O_APPEND|os.O_WRONLY, 0644)
-			f.WriteString("\n.dfmt/\n")
-			f.Close()
+		content, rerr := os.ReadFile(gitignorePath)
+		if rerr != nil {
+			fmt.Fprintf(os.Stderr, "warning: read %s: %v\n", gitignorePath, rerr)
+		} else if !strings.Contains(string(content), ".dfmt/") {
+			f, oerr := os.OpenFile(gitignorePath, os.O_APPEND|os.O_WRONLY, 0644)
+			if oerr != nil {
+				fmt.Fprintf(os.Stderr, "warning: open %s for append: %v\n", gitignorePath, oerr)
+			} else {
+				if _, werr := f.WriteString("\n.dfmt/\n"); werr != nil {
+					fmt.Fprintf(os.Stderr, "warning: append to %s: %v\n", gitignorePath, werr)
+				}
+				_ = f.Close()
+			}
 		}
 	}
 
@@ -259,7 +270,9 @@ func writeProjectClaudeSettings(dir string) error {
 		return err
 	}
 	settingsData = append(settingsData, '\n')
-	return os.WriteFile(settingsPath, settingsData, 0644)
+	// 0600: this file grants MCP tool permissions. An attacker who can read
+	// or race-write it controls what dfmt is launched with on next session.
+	return os.WriteFile(settingsPath, settingsData, 0o600)
 }
 
 func runRemember(args []string) int {
@@ -294,7 +307,10 @@ func runRemember(args []string) int {
 
 	var data map[string]any
 	if dataJSON != "" {
-		json.Unmarshal([]byte(dataJSON), &data)
+		if err := json.Unmarshal([]byte(dataJSON), &data); err != nil {
+			fmt.Fprintf(os.Stderr, "error: --data is not valid JSON: %v\n", err)
+			return 1
+		}
 	}
 
 	// Add token data if provided
@@ -481,7 +497,14 @@ func runDaemon(args []string) int {
 		return 0
 	}
 
-	cfg, _ := config.Load(proj)
+	cfg, err := config.Load(proj)
+	if err != nil {
+		// Surface the error — Load now runs Validate (commit 891833b), so a
+		// malformed project YAML would otherwise start the daemon with the
+		// zero-value config and silently ignore user settings.
+		fmt.Fprintf(os.Stderr, "error: load config for %s: %v\n", proj, err)
+		return 1
+	}
 
 	if foreground {
 		return runDaemonForeground(proj, cfg)
@@ -556,7 +579,7 @@ func startDaemonBackground(proj string) (int, error) {
 
 	pidPath := filepath.Join(proj, ".dfmt", "daemon.pid")
 	pidData := fmt.Sprintf("%d\n", cmd.Process.Pid)
-	os.WriteFile(pidPath, []byte(pidData), 0644)
+	_ = os.WriteFile(pidPath, []byte(pidData), 0o600)
 
 	return cmd.Process.Pid, nil
 }
@@ -723,7 +746,10 @@ func runTask(args []string) int {
 		return 0
 	}
 
-	return runRemember([]string{"task.create", "-type", "task.create", args[0]})
+	// Flags must precede the trailing positional arg; otherwise flag.Parse
+	// stops at the first non-flag and -type is dropped, silently journaling
+	// the task as type "note".
+	return runRemember([]string{"-type", "task.create", "-data", fmt.Sprintf(`{"subject":%q}`, args[0])})
 }
 
 func runConfig(args []string) int {
@@ -1282,7 +1308,8 @@ func configureClaudeCode(_ setup.Agent) error {
 		},
 	}
 	data, _ := json.MarshalIndent(mcpConfig, "", "  ")
-	os.WriteFile(mcpPath, data, 0644)
+	// 0600: mcp.json tells the host what command to launch as an MCP server.
+	_ = os.WriteFile(mcpPath, data, 0o600)
 
 	// Update manifest
 	m, _ := setup.LoadManifest()
@@ -1403,7 +1430,7 @@ func writeMCPConfig(dir, filename, agentID string) error {
 		},
 	}
 	data, _ := json.MarshalIndent(mcpConfig, "", "  ")
-	if err := os.WriteFile(mcpPath, data, 0644); err != nil {
+	if err := os.WriteFile(mcpPath, data, 0o600); err != nil {
 		return err
 	}
 
@@ -1499,9 +1526,9 @@ func runMCP(_ []string) int {
 		proj, _ = os.Getwd()
 	}
 
-	// Ensure .dfmt directory exists
+	// Ensure .dfmt directory exists (0700 — see runInit comment).
 	dfmtDir := filepath.Join(proj, ".dfmt")
-	_ = os.MkdirAll(dfmtDir, 0755)
+	_ = os.MkdirAll(dfmtDir, 0o700)
 
 	// Ensure project-level Claude Code settings enforce DFMT tools
 	_ = writeProjectClaudeSettings(proj)

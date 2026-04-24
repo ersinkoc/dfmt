@@ -26,7 +26,11 @@ func init() {
 }
 
 func windowsWatchDir(w *FSWatcher, path string) {
-	go windowsWatchLoop(w, path)
+	w.TrackGoroutine()
+	go func() {
+		defer w.UntrackGoroutine()
+		windowsWatchLoop(w, path)
+	}()
 }
 
 func windowsWatchLoop(w *FSWatcher, dirPath string) {

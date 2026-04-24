@@ -29,6 +29,12 @@ type FSWatcher struct {
 	pathsMu      sync.Mutex
 	watchedPaths []string
 
+	// watchWG tracks every platform-specific watch goroutine so Stop() can
+	// block until they drain. Without this Stop returns before the OS-level
+	// watchers exit, which races with subsequent Close() calls on shared
+	// resources.
+	watchWG sync.WaitGroup
+
 	// Platform-specific watcher function
 	watchDirFn func(w *FSWatcher, path string)
 
@@ -103,7 +109,11 @@ func (w *FSWatcher) snapshotWatchedPaths() []string {
 func (w *FSWatcher) Start(ctx context.Context) error {
 	// Start the cleanup goroutine for debounce map if debounce is enabled.
 	if w.cleanupTicker != nil {
-		go w.runDebounceCleanup()
+		w.watchWG.Add(1)
+		go func() {
+			defer w.watchWG.Done()
+			w.runDebounceCleanup()
+		}()
 	}
 	return filepath.Walk(w.path, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
@@ -121,6 +131,17 @@ func (w *FSWatcher) Start(ctx context.Context) error {
 
 		return nil
 	})
+}
+
+// TrackGoroutine registers a platform watch goroutine so Stop can wait for
+// it to exit. Each platform's watchDirFn must call this before spawning.
+func (w *FSWatcher) TrackGoroutine() {
+	w.watchWG.Add(1)
+}
+
+// UntrackGoroutine signals completion of a tracked goroutine.
+func (w *FSWatcher) UntrackGoroutine() {
+	w.watchWG.Done()
 }
 
 // runDebounceCleanup periodically removes stale entries from the debounce map.
@@ -181,6 +202,11 @@ func (w *FSWatcher) Stop(ctx context.Context) error {
 		// Clean up — we only needed the inotify event, not the file itself.
 		_ = os.Remove(markerPath)
 	}
+	// Wait for every registered platform watcher + the debounce cleanup
+	// goroutine to exit before returning. Without this the daemon can race
+	// past Stop and close shared resources (journal, index) while a
+	// platform goroutine is still running.
+	w.watchWG.Wait()
 	return nil
 }
 

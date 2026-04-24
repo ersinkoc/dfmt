@@ -231,7 +231,11 @@ func globToRegexShell(pattern string) string {
 			result.WriteByte('.')
 			i++
 		} else {
-			result.WriteByte(pattern[i])
+			// Escape regex metacharacters so user-authored patterns like
+			// "api.example.com" don't have their dots interpreted as any-char
+			// (silently broadening the match). The glob tokens we recognize
+			// (* ** ? /) were already handled above.
+			result.WriteString(regexp.QuoteMeta(string(pattern[i])))
 			i++
 		}
 	}
@@ -270,7 +274,11 @@ func globToRegex(pattern string) string {
 			result.WriteByte('.')
 			i++
 		} else {
-			result.WriteByte(pattern[i])
+			// Escape regex metacharacters — same reasoning as in
+			// globToRegexShell. Without this, a rule text like "a+b" fails
+			// to compile or, worse, patterns with literal dots broaden
+			// silently.
+			result.WriteString(regexp.QuoteMeta(string(pattern[i])))
 			i++
 		}
 	}
@@ -875,8 +883,15 @@ func (s *SandboxImpl) Fetch(ctx context.Context, req FetchReq) (FetchResp, error
 		httpReq.Header.Set(k, v)
 	}
 
+	// Guard against an unset/zero-value timeout. req.Timeout == 0 would
+	// produce client.Timeout == 0, which means "no deadline" — a slow or
+	// malicious server could then hang the goroutine indefinitely.
+	timeout := req.Timeout
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
 	client := &http.Client{
-		Timeout: req.Timeout,
+		Timeout: timeout,
 		// Re-check every redirect target against SSRF policy.
 		CheckRedirect: func(r *http.Request, via []*http.Request) error {
 			if len(via) >= 10 {
@@ -1095,12 +1110,64 @@ func buildEnv(extra map[string]string) []string {
 		}
 	}
 
-	// Add extra env vars
+	// Add extra env vars, refusing any name that can alter the loader or
+	// override an interpreter's startup path. An agent that controls these
+	// can escape the sandbox — LD_PRELOAD injects a shared library into every
+	// allowed binary, PATH override redirects 'git'/'python'/etc. to an
+	// attacker-chosen file, and GIT_EXEC_PATH / NODE_OPTIONS do similar.
 	for k, v := range extra {
+		if isSandboxEnvBlocked(k) {
+			continue
+		}
 		env = append(env, k+"="+v)
 	}
 
 	return env
+}
+
+// sandboxBlockedEnvPrefixes and sandboxBlockedEnvNames together form the
+// allowlist-by-exclusion for buildEnv's extra map. Kept as a block-list
+// because the base env is curated and the agent is expected to add debug
+// toggles (e.g. VERBOSE=1), not redefine core runtime behavior.
+var (
+	sandboxBlockedEnvPrefixes = []string{
+		"LD_",
+		"DYLD_",
+		"GIT_",
+		"NODE_",
+		"PYTHON",
+		"RUBY",
+		"PERL5",
+	}
+	sandboxBlockedEnvNames = map[string]struct{}{
+		"PATH":            {},
+		"IFS":             {},
+		"BASH_ENV":        {},
+		"ENV":             {},
+		"PS4":             {},
+		"PROMPT_COMMAND":  {},
+		"HOME":            {},
+		"USER":            {},
+		"USERPROFILE":     {},
+		"APPDATA":         {},
+		"LOCALAPPDATA":    {},
+		"PATHEXT":         {},
+		"COMSPEC":         {},
+		"SYSTEMROOT":      {},
+	}
+)
+
+func isSandboxEnvBlocked(name string) bool {
+	u := strings.ToUpper(name)
+	if _, ok := sandboxBlockedEnvNames[u]; ok {
+		return true
+	}
+	for _, p := range sandboxBlockedEnvPrefixes {
+		if strings.HasPrefix(u, p) {
+			return true
+		}
+	}
+	return false
 }
 
 // convertUTF16LEToUTF8 converts UTF-16LE encoded bytes to UTF-8 string.

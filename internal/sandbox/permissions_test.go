@@ -643,11 +643,12 @@ func TestGlobToRegexEdgeCases(t *testing.T) {
 	}
 }
 
-// TestGlobToRegexDoubleStarAtEnd tests the /*$/ pattern (matches root only).
+// TestGlobToRegexDoubleStarAtEnd tests the /*.go pattern against a file name.
 func TestGlobToRegexDoubleStarAtEnd(t *testing.T) {
-	// Test the edge case in globToRegex where /* at end with $ anchor
-	if !globMatchDefault("/*.go$", "/main.go") {
-		t.Error("/*.go$ should match /main.go")
+	// Regex metacharacters are now escaped in globToRegex, so '$' in a glob
+	// is literal. Use the naked pattern — the regex wrapper already anchors.
+	if !globMatchDefault("/*.go", "/main.go") {
+		t.Error("/*.go should match /main.go")
 	}
 }
 
@@ -831,7 +832,8 @@ func TestGlobToRegexConvertsCorrectly(t *testing.T) {
 		// globToRegex is path-style, so * doesn't match /
 		{"*", "^[^/]*$"},
 		{"**", "^.*$"},
-		{"*.go", "^[^/]*.go$"},
+		// '.' is now QuoteMeta'd so a literal dot in the pattern becomes \. in the regex.
+		{"*.go", "^[^/]*\\.go$"},
 		{"test*", "^test[^/]*$"},
 		{"a/**/b", "^a/[^/]+[^/]*/b$"},
 	}

@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -402,85 +401,3 @@ func TestHTTPServerWritePortFileEmptyDir(t *testing.T) {
 	}
 }
 
-// =============================================================================
-// TCPServer error path tests
-// =============================================================================
-
-func TestTCPServerStartWithInvalidAddr(t *testing.T) {
-	handlers := NewHandlers(nil, nil, nil)
-	// Use an invalid address that should fail to bind
-	server := NewTCPServer("invalid::address::76543", handlers)
-	ctx := context.Background()
-
-	err := server.Start(ctx)
-	if err == nil {
-		t.Error("Start should fail with invalid address")
-	}
-}
-
-func TestTCPServerStartWithPortFileWriteError(t *testing.T) {
-	handlers := NewHandlers(nil, nil, nil)
-	server := NewTCPServer("localhost:0", handlers)
-
-	// Set a port file path that can't be written to
-	// On Unix, /proc is not writable
-	portFile := "/proc/port_file_12345"
-	if os.PathSeparator == '\\' {
-		portFile = "NUL:/portfile"
-	}
-	server.SetPortFile(portFile)
-
-	ctx := context.Background()
-	err := server.Start(ctx)
-	// Should fail when trying to write port file
-	if err == nil {
-		server.Stop(ctx)
-		t.Log("Start succeeded with invalid port file path (may be allowed)")
-	}
-}
-
-func TestTCPServerWritePortFileInvalidPath(t *testing.T) {
-	handlers := NewHandlers(nil, nil, nil)
-	server := NewTCPServer("localhost:0", handlers)
-
-	// Try to write port file to a location that definitely can't be created
-	// Use a path under /proc or similar system path that is likely read-only
-	err := server.writePortFile("/proc/12345/portfile_xyz", 12345, "")
-	// This may succeed or fail depending on system - just exercise the code path
-	_ = err
-}
-
-func TestTCPServerStopNotRunning(t *testing.T) {
-	handlers := NewHandlers(nil, nil, nil)
-	server := NewTCPServer("localhost:0", handlers)
-	ctx := context.Background()
-
-	// Stop before start
-	err := server.Stop(ctx)
-	if err != nil {
-		t.Errorf("Stop before Start failed: %v", err)
-	}
-}
-
-func TestTCPServerStartAndServe(t *testing.T) {
-	handlers := NewHandlers(nil, nil, nil)
-	server := NewTCPServer("localhost:0", handlers)
-	ctx := context.Background()
-
-	if err := server.Start(ctx); err != nil {
-		t.Fatalf("Start failed: %v", err)
-	}
-	defer server.Stop(ctx)
-
-	// Verify server is actually running by connecting
-	port := server.Port()
-	if port == 0 {
-		t.Fatal("Port is 0 after Start")
-	}
-
-	conn, err := net.Dial("tcp", fmt.Sprintf("localhost:%d", port))
-	if err != nil {
-		t.Fatalf("Dial failed: %v", err)
-	}
-	conn.Close()
-}

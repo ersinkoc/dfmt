@@ -579,9 +579,14 @@ func TestGlobMatchPathComponent(t *testing.T) {
 }
 
 func TestGlobMatchEndAnchor(t *testing.T) {
-	// /*.go$ should match only /foo.go (not /foo.go.bak)
-	if !globMatchDefault("/*.go$", "/main.go") {
-		t.Error("/*.go$ should match /main.go")
+	// Globs already anchor (^...$), so '$' inside a pattern is a literal
+	// '$' now that regex metacharacters are escaped in globToRegex. Use
+	// '*.go' to assert end-matching instead.
+	if !globMatchDefault("/*.go", "/main.go") {
+		t.Error("/*.go should match /main.go")
+	}
+	if globMatchDefault("/*.go", "/main.go.bak") {
+		t.Error("/*.go should not match /main.go.bak")
 	}
 }
 

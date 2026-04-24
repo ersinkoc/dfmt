@@ -17,21 +17,15 @@ type IndexCursor struct {
 	AvgDocLen float64 `json:"avg_doc_len"`
 }
 
-// PersistIndex saves the index and cursor to disk using JSON.
+// PersistIndex saves the index and cursor to disk atomically. Each file is
+// written to a sibling <name>.tmp, fsynced, and renamed into place. A crash
+// mid-write leaves the previous complete file intact instead of a truncated
+// stub that would force a full rebuild.
 func PersistIndex(index *Index, path string, hiULID string) error {
-	// Write index data
-	f, err := os.Create(path)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-
-	enc := json.NewEncoder(f)
-	if err := enc.Encode(index); err != nil {
+	if err := writeJSONAtomic(path, index); err != nil {
 		return err
 	}
 
-	// Write cursor
 	cursorPath := filepath.Join(filepath.Dir(path), "index.cursor")
 	cursor := IndexCursor{
 		HiULID:    hiULID,
@@ -39,15 +33,54 @@ func PersistIndex(index *Index, path string, hiULID string) error {
 		TotalDocs: index.totalDocs,
 		AvgDocLen: index.avgDocLen,
 	}
+	return writeJSONAtomic(cursorPath, cursor)
+}
 
-	cf, err := os.Create(cursorPath)
+// writeJSONAtomic encodes v as JSON, then delegates to writeRawAtomic.
+func writeJSONAtomic(path string, v any) error {
+	buf, err := json.Marshal(v)
 	if err != nil {
 		return err
 	}
-	defer cf.Close()
+	return writeRawAtomic(path, buf)
+}
 
-	enc = json.NewEncoder(cf)
-	return enc.Encode(cursor)
+// writeRawAtomic writes buf to a temp file in the same directory, fsyncs,
+// then renames onto path. Mode is 0600 since index and cursor contain
+// indexed event data that may include sensitive strings. A crash mid-write
+// leaves the previous complete file intact rather than a truncated stub.
+func writeRawAtomic(path string, buf []byte) error {
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	success := false
+	defer func() {
+		if !success {
+			_ = tmp.Close()
+			_ = os.Remove(tmpName)
+		}
+	}()
+
+	if err := os.Chmod(tmpName, 0o600); err != nil {
+		return err
+	}
+	if _, err := tmp.Write(buf); err != nil {
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		return err
+	}
+	success = true
+	return nil
 }
 
 // LoadIndexWithCursor loads an index and cursor, returns whether rebuild needed.

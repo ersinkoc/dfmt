@@ -6,6 +6,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ersinkoc/dfmt/internal/content"
@@ -14,11 +15,15 @@ import (
 	"github.com/ersinkoc/dfmt/internal/sandbox"
 )
 
-// Handlers implements the business logic for all transport layers.
+// Handlers implements the business logic for all transport layers. Mutable
+// fields (project, redactor, store) are guarded by mu so concurrent setter
+// calls after Start are race-safe.
 type Handlers struct {
-	index    *core.Index
-	journal  core.Journal
-	sandbox  sandbox.Sandbox
+	index   *core.Index
+	journal core.Journal
+	sandbox sandbox.Sandbox
+
+	mu       sync.RWMutex
 	project  string
 	redactor *redact.Redactor
 	store    *content.Store
@@ -40,19 +45,53 @@ func NewHandlers(index *core.Index, journal core.Journal, sb sandbox.Sandbox) *H
 
 // SetRedactor overrides the redactor used by this Handlers instance.
 // Pass nil to disable redaction (not recommended outside of tests).
-func (h *Handlers) SetRedactor(r *redact.Redactor) { h.redactor = r }
+func (h *Handlers) SetRedactor(r *redact.Redactor) {
+	h.mu.Lock()
+	h.redactor = r
+	h.mu.Unlock()
+}
+
+// getRedactor returns the current redactor under read-lock so callers see a
+// consistent view across concurrent SetRedactor calls.
+func (h *Handlers) getRedactor() *redact.Redactor {
+	h.mu.RLock()
+	r := h.redactor
+	h.mu.RUnlock()
+	return r
+}
 
 // SetContentStore wires the ephemeral content store so Exec/Read/Fetch can
 // stash the full (redacted) raw output for later lookup. The store is
 // optional — when nil, Handlers return excerpts only.
-func (h *Handlers) SetContentStore(s *content.Store) { h.store = s }
+func (h *Handlers) SetContentStore(s *content.Store) {
+	h.mu.Lock()
+	h.store = s
+	h.mu.Unlock()
+}
+
+// getStore returns the current content store under read-lock.
+func (h *Handlers) getStore() *content.Store {
+	h.mu.RLock()
+	s := h.store
+	h.mu.RUnlock()
+	return s
+}
+
+// getProject returns the project identifier under read-lock.
+func (h *Handlers) getProject() string {
+	h.mu.RLock()
+	p := h.project
+	h.mu.RUnlock()
+	return p
+}
 
 // stashContent writes body as a single-chunk set into the content store and
 // returns the chunk set ID. Returns "" when the store is not configured or
 // the body is empty. Errors are logged to stderr and swallowed — content
 // stashing must never fail a sandbox call.
 func (h *Handlers) stashContent(kind, source, intent, body string) string {
-	if h.store == nil || body == "" {
+	store := h.getStore()
+	if store == nil || body == "" {
 		return ""
 	}
 	setID := string(core.NewULID(time.Now()))
@@ -63,7 +102,7 @@ func (h *Handlers) stashContent(kind, source, intent, body string) string {
 		Intent:  intent,
 		Created: time.Now(),
 	}
-	if err := h.store.PutChunkSet(set); err != nil {
+	if err := store.PutChunkSet(set); err != nil {
 		fmt.Fprintf(os.Stderr, "stashContent put set: %v\n", err)
 		return ""
 	}
@@ -75,7 +114,7 @@ func (h *Handlers) stashContent(kind, source, intent, body string) string {
 		Body:     body,
 		Created:  time.Now(),
 	}
-	if err := h.store.PutChunk(chunk); err != nil {
+	if err := store.PutChunk(chunk); err != nil {
 		fmt.Fprintf(os.Stderr, "stashContent put chunk: %v\n", err)
 		return ""
 	}
@@ -85,24 +124,30 @@ func (h *Handlers) stashContent(kind, source, intent, body string) string {
 // redactString returns s with sensitive data scrubbed, or s unchanged if no
 // redactor is configured.
 func (h *Handlers) redactString(s string) string {
-	if h.redactor == nil || s == "" {
+	r := h.getRedactor()
+	if r == nil || s == "" {
 		return s
 	}
-	return h.redactor.Redact(s)
+	return r.Redact(s)
 }
 
 // redactData walks a map[string]any and redacts any string values in place.
 // Returns a new map rather than mutating the caller's to keep the API safe
 // for concurrent reuse of the original data.
 func (h *Handlers) redactData(data map[string]any) map[string]any {
-	if h.redactor == nil {
+	r := h.getRedactor()
+	if r == nil {
 		return data
 	}
-	return h.redactor.RedactEvent(data)
+	return r.RedactEvent(data)
 }
 
 // SetProject sets the project identifier stamped on all events written by this handler.
-func (h *Handlers) SetProject(p string) { h.project = p }
+func (h *Handlers) SetProject(p string) {
+	h.mu.Lock()
+	h.project = p
+	h.mu.Unlock()
+}
 
 // logEvent appends a tool call event to the journal and index.
 // Data is redacted before persistence so secrets in tool arguments/output
@@ -114,7 +159,7 @@ func (h *Handlers) logEvent(ctx context.Context, eventType, summary string, data
 	e := core.Event{
 		ID:       string(core.NewULID(time.Now())),
 		TS:       time.Now(),
-		Project:  h.project,
+		Project:  h.getProject(),
 		Type:     core.EventType(eventType),
 		Priority: core.PriP4,
 		Source:   core.SrcMCP,
@@ -177,7 +222,7 @@ func (h *Handlers) Remember(ctx context.Context, params RememberParams) (*Rememb
 
 	// Redact sensitive strings before the event is persisted or indexed.
 	redactedTags := params.Tags
-	if h.redactor != nil && len(redactedTags) > 0 {
+	if h.getRedactor() != nil && len(redactedTags) > 0 {
 		redactedTags = make([]string, len(params.Tags))
 		for i, t := range params.Tags {
 			redactedTags[i] = h.redactString(t)
@@ -188,7 +233,7 @@ func (h *Handlers) Remember(ctx context.Context, params RememberParams) (*Rememb
 	e := core.Event{
 		ID:       string(core.NewULID(time.Now())),
 		TS:       time.Now(),
-		Project:  h.project,
+		Project:  h.getProject(),
 		Type:     core.EventType(params.Type),
 		Priority: core.Priority(params.Priority),
 		Source:   core.Source(params.Source),
@@ -320,24 +365,19 @@ func (h *Handlers) Recall(ctx context.Context, params RecallParams) (*RecallResp
 		return sorted[i].TS.After(sorted[j].TS)
 	})
 
-	// Greedy fill with budget
+	// Greedy fill with budget. Render each candidate line first so we know
+	// its exact byte cost, then stop as soon as the budget can't hold the
+	// current event — the list is priority-sorted, so a smaller later event
+	// sneaking in would violate the tier ordering.
 	var used int
 	var lines []string
 	lines = append(lines, "# Session Snapshot\n")
 
 	for _, e := range sorted {
-		// Estimate size: event as markdown line
-		prefix := fmt.Sprintf("- [%s] %s", e.Priority, e.Type)
 		var dataStr string
 		if e.Data != nil {
 			dataStr = formatEventData(e.Data)
 		}
-		lineSize := len(prefix) + len(dataStr) + len(e.Tags)*10 + 50 // rough estimate
-
-		if used+lineSize > budget {
-			continue
-		}
-
 		ts := e.TS.Format("15:04:05")
 		actor := ""
 		if e.Actor != "" {
@@ -348,6 +388,14 @@ func (h *Handlers) Recall(ctx context.Context, params RecallParams) (*RecallResp
 			tags = fmt.Sprintf(" #%s", strings.Join(e.Tags, " #"))
 		}
 		line := fmt.Sprintf("- [%s] %s%s%s%s", e.Priority, ts, actor, tags, dataStr)
+		// +1 for the newline strings.Join will insert between this line and
+		// the next; slightly over-counts on the last line but never under.
+		lineSize := len(line) + 1
+
+		if used+lineSize > budget {
+			break
+		}
+
 		lines = append(lines, line)
 		used += lineSize
 	}
@@ -599,7 +647,7 @@ func (h *Handlers) Exec(ctx context.Context, params ExecParams) (*ExecResponse, 
 
 // redactMatches returns a new slice with Text fields redacted.
 func (h *Handlers) redactMatches(in []sandbox.ContentMatch) []sandbox.ContentMatch {
-	if h.redactor == nil || len(in) == 0 {
+	if h.getRedactor() == nil || len(in) == 0 {
 		return in
 	}
 	out := make([]sandbox.ContentMatch, len(in))

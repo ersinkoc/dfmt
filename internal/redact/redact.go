@@ -42,8 +42,11 @@ var commonPatterns = []*redactPattern{
 	// A placeholder pattern is kept here only so persisted stats reference this name.
 	{name: "env_export", regex: envExportLineRegex, repl: ""},
 
-	// Private keys
-	{name: "private_key", regex: regexp.MustCompile(`-----BEGIN (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----`), repl: "[PRIVATE KEY]"},
+	// Private keys — match the entire PEM block (header + base64 body +
+	// footer). The prior regex only matched the BEGIN line and left the key
+	// material visible in the journal. (?s) so '.' spans newlines; non-greedy
+	// so multiple blocks in one buffer don't merge.
+	{name: "private_key", regex: regexp.MustCompile(`(?s)-----BEGIN (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----.*?-----END (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----`), repl: "[PRIVATE KEY]"},
 
 	// JWT tokens
 	{name: "jwt", regex: regexp.MustCompile(`eyJ[A-Za-z0-9_=-]+\.eyJ[A-Za-z0-9_=-]+\.[A-Za-z0-9_/+=.-]*`), repl: "[JWT]"},
@@ -117,30 +120,53 @@ func (r *Redactor) RedactMap(m map[string]string) map[string]string {
 	return result
 }
 
-// RedactEvent redacts sensitive data from event data.
+// RedactEvent redacts sensitive data from event data. Handles string,
+// nested map[string]any, []string, []any (the natural shape of
+// JSON-unmarshaled arrays), and []map[string]any. Unknown types pass
+// through unchanged — which is intentional, as the redactor is only
+// responsible for textual data.
 func (r *Redactor) RedactEvent(data map[string]any) map[string]any {
 	if data == nil {
 		return nil
 	}
 
-	result := make(map[string]any)
+	result := make(map[string]any, len(data))
 	for k, v := range data {
-		switch val := v.(type) {
-		case string:
-			result[k] = r.Redact(val)
-		case map[string]any:
-			result[k] = r.RedactEvent(val)
-		case []string:
-			redacted := make([]string, len(val))
-			for i, s := range val {
-				redacted[i] = r.Redact(s)
-			}
-			result[k] = redacted
-		default:
-			result[k] = val
-		}
+		result[k] = r.redactValue(v)
 	}
 	return result
+}
+
+// redactValue dispatches on v's runtime type and recurses through composite
+// types so a string buried inside data.tags[0] or data.items[*].message gets
+// scrubbed the same as data.message.
+func (r *Redactor) redactValue(v any) any {
+	switch val := v.(type) {
+	case string:
+		return r.Redact(val)
+	case map[string]any:
+		return r.RedactEvent(val)
+	case []string:
+		out := make([]string, len(val))
+		for i, s := range val {
+			out[i] = r.Redact(s)
+		}
+		return out
+	case []any:
+		out := make([]any, len(val))
+		for i, x := range val {
+			out[i] = r.redactValue(x)
+		}
+		return out
+	case []map[string]any:
+		out := make([]map[string]any, len(val))
+		for i, m := range val {
+			out[i] = r.RedactEvent(m)
+		}
+		return out
+	default:
+		return v
+	}
 }
 
 // AddPattern adds a custom redaction pattern.

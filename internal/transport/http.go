@@ -46,6 +46,11 @@ type HTTPServer struct {
 	server      *http.Server
 	mu          sync.Mutex
 	running     bool
+	// doneCh is closed by Stop so the shutdown-watcher goroutine exits even
+	// when the Start ctx is never cancelled (common: daemon passes a fresh
+	// stopCtx to Stop). Without this the watcher goroutine leaks for every
+	// Start/Stop cycle.
+	doneCh chan struct{}
 
 	// authToken guards TCP listeners. On loopback TCP any local process can
 	// reach the port, so we require a random token delivered via the port
@@ -155,16 +160,23 @@ func (s *HTTPServer) Start(ctx context.Context) error {
 	s.listener = ln
 	s.ownListener = ownListener
 	s.running = true
+	s.doneCh = make(chan struct{})
 
-	// Shutdown watcher.
+	// Shutdown watcher exits on either the Start ctx being cancelled or Stop
+	// closing doneCh, whichever comes first.
+	doneCh := s.doneCh
+	server := s.server
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
 				fmt.Printf("http server panic: %v\n", r)
 			}
 		}()
-		<-ctx.Done()
-		_ = s.server.Shutdown(context.Background())
+		select {
+		case <-ctx.Done():
+		case <-doneCh:
+		}
+		_ = server.Shutdown(context.Background())
 	}()
 
 	// Serve loop.
@@ -264,6 +276,15 @@ func (s *HTTPServer) Stop(ctx context.Context) error {
 
 	shutdownCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
+
+	// Wake the shutdown watcher so it doesn't leak after we return.
+	if s.doneCh != nil {
+		select {
+		case <-s.doneCh:
+		default:
+			close(s.doneCh)
+		}
+	}
 
 	err := s.server.Shutdown(shutdownCtx)
 	s.running = false
