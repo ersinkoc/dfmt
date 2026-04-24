@@ -73,6 +73,11 @@ func shouldWalkDir(dirPath string, knownDirs map[string]trackedDir) bool {
 	return false
 }
 
+// maxTrackedEntries caps knownFiles/knownDirs so a hostile or deep tree
+// cannot grow the tracking maps without bound. When exceeded we drop half the
+// entries at random — the next walk will re-populate anything still present.
+const maxTrackedEntries = 100_000
+
 func scanDir(w *FSWatcher, dirPath string, known map[string]trackedFile, knownDirs map[string]trackedDir) {
 	filepath.Walk(dirPath, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
@@ -109,5 +114,46 @@ func scanDir(w *FSWatcher, dirPath string, known map[string]trackedFile, knownDi
 			w.emitEvent(fullPath, false, "delete")
 			delete(known, rel)
 		}
+	}
+
+	// Evict knownDirs entries whose directory no longer exists. Without this
+	// every rename/delete leaves a zombie modtime in the map.
+	for dp := range knownDirs {
+		if _, err := os.Stat(dp); os.IsNotExist(err) {
+			delete(knownDirs, dp)
+		}
+	}
+
+	// Hard cap as a final safety net against a tree that keeps growing even
+	// after zombie eviction.
+	pruneOverflow(known, maxTrackedEntries)
+	pruneOverflowDirs(knownDirs, maxTrackedEntries)
+}
+
+func pruneOverflow(m map[string]trackedFile, cap int) {
+	if len(m) <= cap {
+		return
+	}
+	drop := len(m) - cap/2
+	for k := range m {
+		if drop <= 0 {
+			break
+		}
+		delete(m, k)
+		drop--
+	}
+}
+
+func pruneOverflowDirs(m map[string]trackedDir, cap int) {
+	if len(m) <= cap {
+		return
+	}
+	drop := len(m) - cap/2
+	for k := range m {
+		if drop <= 0 {
+			break
+		}
+		delete(m, k)
+		drop--
 	}
 }

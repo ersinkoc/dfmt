@@ -213,59 +213,53 @@ func writeProjectClaudeSettings(dir string) error {
 	// Recall saves to .dfmt/last-recall.md relative to project root.
 	// PreToolUse reads tool_name/tool_input from stdin JSON (works on any shell).
 	isWindows := runtime.GOOS == "windows"
-	var preCompact, sessionStart string
+	// preCompact uses 'dfmt recall --save' so the file is written from Go
+	// with a 0600 mode rather than whatever umask the shell inherits.
+	preCompact := `dfmt recall --save --format md`
+	var sessionStart string
 	if isWindows {
-		preCompact = `dfmt recall --format md > .dfmt/last-recall.md 2>$null`
 		sessionStart = `if (Test-Path .dfmt/last-recall.md) { Write-Host '--- Previous session summary ---'; Get-Content .dfmt/last-recall.md; Write-Host '--- End of previous session ---' }`
 	} else {
-		preCompact = `dfmt recall --format md > .dfmt/last-recall.md 2>/dev/null || true`
 		sessionStart = `if [ -f .dfmt/last-recall.md ]; then echo '--- Previous session summary ---' && cat .dfmt/last-recall.md && echo '--- End of previous session ---'; fi`
 	}
 	preToolUse := `dfmt capture tool`
-	settingsData := fmt.Sprintf(`{
-  "hooks": {
-    "PreToolUse": [{
-      "matcher": "",
-      "hooks": [{
-        "type": "command",
-        "command": "%s",
-        "timeout": 5,
-        "statusMessage": "Logging tool call..."
-      }]
-    }],
-    "PreCompact": [{
-      "matcher": "",
-      "hooks": [{
-        "type": "command",
-        "command": "%s",
-        "timeout": 30,
-        "statusMessage": "Saving session snapshot for next session..."
-      }]
-    }],
-    "SessionStart": [{
-      "matcher": "",
-      "hooks": [{
-        "type": "command",
-        "command": "%s",
-        "timeout": 10,
-        "statusMessage": "Loading previous session summary..."
-      }]
-    }]
-  },
-  "permissions": {
-    "allow": [
-      "mcp__dfmt__dfmt.exec",
-      "mcp__dfmt__dfmt.read",
-      "mcp__dfmt__dfmt.fetch",
-      "mcp__dfmt__dfmt.remember",
-      "mcp__dfmt__dfmt.search",
-      "mcp__dfmt__dfmt.recall",
-      "mcp__dfmt__dfmt.stats"
-    ]
-  }
-}
-`, preToolUse, preCompact, sessionStart)
-	return os.WriteFile(settingsPath, []byte(settingsData), 0644)
+	type hookCmd struct {
+		Type          string `json:"type"`
+		Command       string `json:"command"`
+		Timeout       int    `json:"timeout"`
+		StatusMessage string `json:"statusMessage"`
+	}
+	type hookGroup struct {
+		Matcher string     `json:"matcher"`
+		Hooks   []hookCmd  `json:"hooks"`
+	}
+	settings := struct {
+		Hooks       map[string][]hookGroup `json:"hooks"`
+		Permissions struct {
+			Allow []string `json:"allow"`
+		} `json:"permissions"`
+	}{
+		Hooks: map[string][]hookGroup{
+			"PreToolUse": {{Matcher: "", Hooks: []hookCmd{{Type: "command", Command: preToolUse, Timeout: 5, StatusMessage: "Logging tool call..."}}}},
+			"PreCompact": {{Matcher: "", Hooks: []hookCmd{{Type: "command", Command: preCompact, Timeout: 30, StatusMessage: "Saving session snapshot for next session..."}}}},
+			"SessionStart": {{Matcher: "", Hooks: []hookCmd{{Type: "command", Command: sessionStart, Timeout: 10, StatusMessage: "Loading previous session summary..."}}}},
+		},
+	}
+	settings.Permissions.Allow = []string{
+		"mcp__dfmt__dfmt.exec",
+		"mcp__dfmt__dfmt.read",
+		"mcp__dfmt__dfmt.fetch",
+		"mcp__dfmt__dfmt.remember",
+		"mcp__dfmt__dfmt.search",
+		"mcp__dfmt__dfmt.recall",
+		"mcp__dfmt__dfmt.stats",
+	}
+	settingsData, err := json.MarshalIndent(settings, "", "  ")
+	if err != nil {
+		return err
+	}
+	settingsData = append(settingsData, '\n')
+	return os.WriteFile(settingsPath, settingsData, 0644)
 }
 
 func runRemember(args []string) int {
@@ -398,10 +392,12 @@ func runSearch(args []string) int {
 func runRecall(args []string) int {
 	var budget int
 	var format string
+	var save bool
 
 	fs := flag.NewFlagSet("recall", flag.ContinueOnError)
 	fs.IntVar(&budget, "budget", 4096, "Byte budget")
 	fs.StringVar(&format, "format", "md", "Output format (md, json, xml)")
+	fs.BoolVar(&save, "save", false, "Write snapshot to .dfmt/last-recall.md (0600) instead of stdout")
 	fs.Parse(args)
 
 	proj, err := getProject()
@@ -426,6 +422,17 @@ func runRecall(args []string) int {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		return 1
+	}
+
+	if save {
+		// Write via Go so permissions are enforced (0600) and we don't rely on
+		// shell redirect portability. PreCompact hooks call this.
+		outPath := filepath.Join(proj, ".dfmt", "last-recall.md")
+		if err := os.WriteFile(outPath, []byte(resp.Snapshot), 0o600); err != nil {
+			fmt.Fprintf(os.Stderr, "error: write %s: %v\n", outPath, err)
+			return 1
+		}
+		return 0
 	}
 
 	fmt.Println(resp.Snapshot)

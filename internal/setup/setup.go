@@ -179,6 +179,9 @@ func SaveManifest(m *Manifest) error {
 }
 
 // BackupFile creates a backup of a config file before modification.
+// BackupFile writes a .dfmt.bak sibling of path. If one already exists, the
+// existing backup is preserved (rolled to .dfmt.bak.<unix-nano>) so a second
+// setup run can't clobber the pristine copy captured on the first run.
 func BackupFile(path string) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -189,5 +192,11 @@ func BackupFile(path string) error {
 	}
 
 	backup := path + ".dfmt.bak"
+	if _, statErr := os.Stat(backup); statErr == nil {
+		rolled := fmt.Sprintf("%s.%d", backup, time.Now().UnixNano())
+		if renameErr := os.Rename(backup, rolled); renameErr != nil {
+			return fmt.Errorf("preserve existing backup %s: %w", backup, renameErr)
+		}
+	}
 	return os.WriteFile(backup, data, 0644)
 }

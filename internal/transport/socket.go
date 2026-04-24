@@ -82,9 +82,21 @@ func (s *SocketServer) serve(ctx context.Context) {
 	}
 }
 
-// handleConn handles a single connection.
+// handleConn handles a single connection. A defer recover prevents a
+// misbehaving request from tearing down the daemon; a nil-handlers guard
+// makes the server usable in tests that build a SocketServer without a
+// full Handlers.
 func (s *SocketServer) handleConn(conn net.Conn) {
-	defer conn.Close()
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Fprintf(os.Stderr, "socket handleConn panic recovered: %v\n", r)
+		}
+		_ = conn.Close()
+	}()
+
+	if s.handlers == nil {
+		return
+	}
 
 	codec := NewCodec(conn)
 
@@ -96,14 +108,18 @@ func (s *SocketServer) handleConn(conn net.Conn) {
 
 		resp, err := s.dispatch(context.Background(), req)
 		if err != nil {
-			codec.WriteError(req.ID, -32603, err.Error(), nil)
+			if werr := codec.WriteError(req.ID, -32603, err.Error(), nil); werr != nil {
+				return
+			}
 			continue
 		}
 
-		codec.WriteResponse(&Response{
+		if werr := codec.WriteResponse(&Response{
 			Result: resp,
 			ID:     req.ID,
-		})
+		}); werr != nil {
+			return
+		}
 	}
 }
 

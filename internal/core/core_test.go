@@ -1,6 +1,7 @@
 package core
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"path/filepath"
@@ -658,6 +659,58 @@ func TestCanonicalJSONDataKeySorting(t *testing.T) {
 	}
 	if aIdx > mIdx || mIdx > zIdx {
 		t.Error("Data keys should be sorted alphabetically in canonical JSON")
+	}
+}
+
+func TestCanonicalJSONNestedMapSorting(t *testing.T) {
+	e := Event{
+		ID:       "test123",
+		TS:       time.Date(2026, 4, 20, 10, 0, 0, 0, time.UTC),
+		Project:  "test-project",
+		Type:     EvtNote,
+		Priority: PriP4,
+		Source:   SrcCLI,
+		Data: map[string]any{
+			"outer": map[string]any{
+				"z_inner": "z",
+				"a_inner": "a",
+				"deep": map[string]any{
+					"z_deep": 1,
+					"a_deep": 2,
+				},
+			},
+			"list": []any{
+				map[string]any{"z_li": "z", "a_li": "a"},
+			},
+		},
+	}
+
+	data, err := CanonicalJSON(e)
+	if err != nil {
+		t.Fatalf("CanonicalJSON failed: %v", err)
+	}
+	js := string(data)
+
+	ai := strings.Index(js, "a_inner")
+	zi := strings.Index(js, "z_inner")
+	if ai == -1 || zi == -1 || ai > zi {
+		t.Errorf("nested map keys should be sorted: a_inner=%d z_inner=%d", ai, zi)
+	}
+	ad := strings.Index(js, "a_deep")
+	zd := strings.Index(js, "z_deep")
+	if ad == -1 || zd == -1 || ad > zd {
+		t.Errorf("deeply nested map keys should be sorted: a_deep=%d z_deep=%d", ad, zd)
+	}
+	al := strings.Index(js, "a_li")
+	zl := strings.Index(js, "z_li")
+	if al == -1 || zl == -1 || al > zl {
+		t.Errorf("map keys inside slices should be sorted: a_li=%d z_li=%d", al, zl)
+	}
+
+	// Determinism: re-encode twice, result must be byte-identical.
+	data2, _ := CanonicalJSON(e)
+	if !bytes.Equal(data, data2) {
+		t.Error("CanonicalJSON must be byte-stable across calls")
 	}
 }
 

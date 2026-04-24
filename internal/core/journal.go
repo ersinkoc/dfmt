@@ -86,9 +86,15 @@ func OpenJournal(path string, opt JournalOptions) (Journal, error) {
 		compress: opt.Compress,
 	}
 
-	// Start periodic sync ticker for batched (non-durable) mode
+	// Start periodic sync ticker for batched (non-durable) mode. Interval is
+	// driven by JournalOptions.BatchMS when set, falling back to 30s which is
+	// the historical default when callers leave the field zero.
 	if !opt.Durable {
-		j.syncTicker = time.NewTicker(30 * time.Second)
+		interval := 30 * time.Second
+		if opt.BatchMS > 0 {
+			interval = time.Duration(opt.BatchMS) * time.Millisecond
+		}
+		j.syncTicker = time.NewTicker(interval)
 		j.syncCh = j.syncTicker.C
 	}
 

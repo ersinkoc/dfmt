@@ -671,6 +671,20 @@ func (s *SandboxImpl) Read(ctx context.Context, req ReadReq) (ReadResp, error) {
 		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 			return ReadResp{}, fmt.Errorf("path outside working directory: %s", req.Path)
 		}
+		// Resolve symlinks and re-check containment. A file that sits inside the
+		// wd lexically but whose target escapes (e.g. symlink pointing at
+		// /etc/passwd) must be refused. EvalSymlinks fails if the file doesn't
+		// exist yet; we only validate when it resolves.
+		if resolved, rerr := filepath.EvalSymlinks(absPath); rerr == nil {
+			resolvedWd, werr := filepath.EvalSymlinks(absWd)
+			if werr != nil {
+				resolvedWd = absWd
+			}
+			relResolved, err := filepath.Rel(resolvedWd, resolved)
+			if err != nil || relResolved == ".." || strings.HasPrefix(relResolved, ".."+string(filepath.Separator)) {
+				return ReadResp{}, fmt.Errorf("path outside working directory after symlink resolution: %s", req.Path)
+			}
+		}
 		cleanPath = absPath
 	} else if filepath.IsAbs(cleanPath) {
 		// No working directory configured: refuse absolute paths rather than
@@ -735,7 +749,7 @@ func (s *SandboxImpl) Read(ctx context.Context, req ReadReq) (ReadResp, error) {
 		return ReadResp{
 			Content:   content,
 			Summary:   GenerateSummary(content, keywords),
-			Size:      int64(len(data)),
+			Size:      totalSize,
 			ReadBytes: int64(len(content)),
 		}, nil
 	}

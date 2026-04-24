@@ -225,7 +225,7 @@ func autoInitProject(projectPath string) error {
       "matcher": "",
       "hooks": [{
         "type": "command",
-        "command": "dfmt recall --format md > .dfmt/last-recall.md 2>/dev/null || true",
+        "command": "dfmt recall --save --format md",
         "timeout": 30,
         "statusMessage": "Saving session snapshot for next session..."
       }]

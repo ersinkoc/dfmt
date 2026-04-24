@@ -14,6 +14,7 @@ import (
 	"github.com/ersinkoc/dfmt/internal/capture"
 	"github.com/ersinkoc/dfmt/internal/client"
 	"github.com/ersinkoc/dfmt/internal/config"
+	"github.com/ersinkoc/dfmt/internal/content"
 	"github.com/ersinkoc/dfmt/internal/core"
 	"github.com/ersinkoc/dfmt/internal/project"
 	"github.com/ersinkoc/dfmt/internal/sandbox"
@@ -98,6 +99,15 @@ func New(projectPath string, cfg *config.Config) (*Daemon, error) {
 	// Create handlers
 	handlers := transport.NewHandlers(index, journal, sb)
 	handlers.SetProject(projectPath)
+
+	// Wire ephemeral content store so sandbox output can be stashed for recall.
+	// Failure here is non-fatal — handlers gracefully degrade to excerpt-only.
+	contentDir := filepath.Join(dfmtDir, "content")
+	if store, cerr := content.NewStore(content.StoreOptions{Path: contentDir}); cerr == nil {
+		handlers.SetContentStore(store)
+	} else {
+		fmt.Fprintf(os.Stderr, "warning: create content store: %v\n", cerr)
+	}
 
 	// Create server based on platform - use HTTPServer for HTTP support (dashboard, API)
 	var server Server

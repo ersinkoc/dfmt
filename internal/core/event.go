@@ -100,9 +100,11 @@ func (e *Event) ComputeSig() string {
 	return hex.EncodeToString(h[:8]) // first 16 hex chars (8 bytes)
 }
 
-// CanonicalJSON returns canonical JSON bytes for an event.
+// CanonicalJSON returns canonical JSON bytes for an event. Nested maps are
+// sorted recursively via canonicalize — encoding/json already sorts
+// map[string]X keys, but recursing explicitly insulates the signature from
+// any future Marshaler behavior change and makes the invariant obvious.
 func CanonicalJSON(e Event) ([]byte, error) {
-	// Use a map to ensure sorted keys
 	m := map[string]any{
 		"id":       e.ID,
 		"ts":       e.TS.Format(time.RFC3339Nano),
@@ -116,17 +118,7 @@ func CanonicalJSON(e Event) ([]byte, error) {
 		m["actor"] = e.Actor
 	}
 	if e.Data != nil {
-		// Sort Data keys
-		keys := make([]string, 0, len(e.Data))
-		for k := range e.Data {
-			keys = append(keys, k)
-		}
-		sort.Strings(keys)
-		sortedData := make(map[string]any, len(e.Data))
-		for _, k := range keys {
-			sortedData[k] = e.Data[k]
-		}
-		m["data"] = sortedData
+		m["data"] = canonicalize(e.Data)
 	}
 	if len(e.Refs) > 0 {
 		m["refs"] = e.Refs
@@ -136,6 +128,33 @@ func CanonicalJSON(e Event) ([]byte, error) {
 	}
 
 	return json.Marshal(m)
+}
+
+// canonicalize walks v and rebuilds any map[string]any with sorted keys,
+// applied recursively through slices and nested maps. Leaves other values
+// untouched.
+func canonicalize(v any) any {
+	switch t := v.(type) {
+	case map[string]any:
+		keys := make([]string, 0, len(t))
+		for k := range t {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		out := make(map[string]any, len(t))
+		for _, k := range keys {
+			out[k] = canonicalize(t[k])
+		}
+		return out
+	case []any:
+		out := make([]any, len(t))
+		for i, x := range t {
+			out[i] = canonicalize(x)
+		}
+		return out
+	default:
+		return v
+	}
 }
 
 // Validate checks if the event's signature is valid.

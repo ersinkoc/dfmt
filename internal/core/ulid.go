@@ -2,7 +2,10 @@ package core
 
 import (
 	"crypto/rand"
+	"encoding/binary"
 	"encoding/hex"
+	"fmt"
+	"os"
 	"sync"
 	"time"
 )
@@ -11,6 +14,10 @@ var (
 	lastTime   uint64
 	lastRandom [10]byte
 	muGen      sync.Mutex
+	// ulidFallbackSeed mixes pid + monotonic counter for the
+	// crypto/rand failure path. ULIDs minted through the fallback are still
+	// unique-per-process (the counter guarantees it) but lose unpredictability.
+	ulidFallbackCtr uint64
 )
 
 // ULID is a Universally Unique Lexicographically Sortable Identifier.
@@ -36,7 +43,17 @@ func NewULID(ts time.Time) ULID {
 		}
 	} else {
 		lastTime = ms
-		rand.Read(lastRandom[:])
+		if _, err := rand.Read(lastRandom[:]); err != nil {
+			// crypto/rand failure is extremely rare but non-fatal for our
+			// purposes: fall back to a deterministic pid+counter+nanotime
+			// mix so the daemon can still mint monotonic IDs instead of
+			// crashing. Surface the error once so operators notice.
+			fmt.Fprintf(os.Stderr, "warning: crypto/rand.Read failed for ULID: %v (using fallback seed)\n", err)
+			ulidFallbackCtr++
+			mix := uint64(os.Getpid())<<32 | ulidFallbackCtr
+			binary.BigEndian.PutUint64(lastRandom[:8], mix^uint64(ts.UnixNano()))
+			binary.BigEndian.PutUint16(lastRandom[8:], uint16(ulidFallbackCtr))
+		}
 	}
 
 	// Encode timestamp (6 bytes)

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ersinkoc/dfmt/internal/content"
 	"github.com/ersinkoc/dfmt/internal/core"
 	"github.com/ersinkoc/dfmt/internal/redact"
 	"github.com/ersinkoc/dfmt/internal/sandbox"
@@ -20,6 +21,7 @@ type Handlers struct {
 	sandbox  sandbox.Sandbox
 	project  string
 	redactor *redact.Redactor
+	store    *content.Store
 }
 
 // NewHandlers creates a new Handlers instance.
@@ -39,6 +41,46 @@ func NewHandlers(index *core.Index, journal core.Journal, sb sandbox.Sandbox) *H
 // SetRedactor overrides the redactor used by this Handlers instance.
 // Pass nil to disable redaction (not recommended outside of tests).
 func (h *Handlers) SetRedactor(r *redact.Redactor) { h.redactor = r }
+
+// SetContentStore wires the ephemeral content store so Exec/Read/Fetch can
+// stash the full (redacted) raw output for later lookup. The store is
+// optional — when nil, Handlers return excerpts only.
+func (h *Handlers) SetContentStore(s *content.Store) { h.store = s }
+
+// stashContent writes body as a single-chunk set into the content store and
+// returns the chunk set ID. Returns "" when the store is not configured or
+// the body is empty. Errors are logged to stderr and swallowed — content
+// stashing must never fail a sandbox call.
+func (h *Handlers) stashContent(kind, source, intent, body string) string {
+	if h.store == nil || body == "" {
+		return ""
+	}
+	setID := string(core.NewULID(time.Now()))
+	set := &content.ChunkSet{
+		ID:      setID,
+		Kind:    kind,
+		Source:  source,
+		Intent:  intent,
+		Created: time.Now(),
+	}
+	if err := h.store.PutChunkSet(set); err != nil {
+		fmt.Fprintf(os.Stderr, "stashContent put set: %v\n", err)
+		return ""
+	}
+	chunk := &content.Chunk{
+		ID:       string(core.NewULID(time.Now())),
+		ParentID: setID,
+		Index:    0,
+		Kind:     content.ChunkKindText,
+		Body:     body,
+		Created:  time.Now(),
+	}
+	if err := h.store.PutChunk(chunk); err != nil {
+		fmt.Fprintf(os.Stderr, "stashContent put chunk: %v\n", err)
+		return ""
+	}
+	return setID
+}
 
 // redactString returns s with sensitive data scrubbed, or s unchanged if no
 // redactor is configured.
@@ -503,6 +545,7 @@ type ExecResponse struct {
 	Vocabulary []string               `json:"vocabulary,omitempty"`
 	DurationMs int                    `json:"duration_ms"`
 	TimedOut   bool                   `json:"timed_out"`
+	ContentID  string                 `json:"content_id,omitempty"`
 }
 
 // Exec executes code via the sandbox.
@@ -537,15 +580,20 @@ func (h *Handlers) Exec(ctx context.Context, params ExecParams) (*ExecResponse, 
 		"duration": resp.DurationMs,
 	})
 
+	stdout := h.redactString(resp.Stdout)
+	stderr := h.redactString(resp.Stderr)
+	contentID := h.stashContent("exec-stdout", "sandbox.exec", params.Intent, stdout+stderr)
+
 	return &ExecResponse{
 		Exit:       resp.Exit,
-		Stdout:     h.redactString(resp.Stdout),
-		Stderr:     h.redactString(resp.Stderr),
+		Stdout:     stdout,
+		Stderr:     stderr,
 		Summary:    h.redactString(resp.Summary),
 		Matches:    h.redactMatches(resp.Matches),
 		Vocabulary: resp.Vocabulary,
 		DurationMs: resp.DurationMs,
 		TimedOut:   resp.TimedOut,
+		ContentID:  contentID,
 	}, nil
 }
 
@@ -578,6 +626,7 @@ type ReadResponse struct {
 	Matches   []sandbox.ContentMatch `json:"matches,omitempty"`
 	Size      int64                  `json:"size"`
 	ReadBytes int64                  `json:"read_bytes"`
+	ContentID string                 `json:"content_id,omitempty"`
 }
 
 // Read reads a file via the sandbox.
@@ -601,12 +650,16 @@ func (h *Handlers) Read(ctx context.Context, params ReadParams) (*ReadResponse, 
 		"size":       resp.Size,
 	})
 
+	redContent := h.redactString(resp.Content)
+	contentID := h.stashContent("file-read", params.Path, params.Intent, redContent)
+
 	return &ReadResponse{
-		Content:   h.redactString(resp.Content),
+		Content:   redContent,
 		Summary:   h.redactString(resp.Summary),
 		Matches:   h.redactMatches(resp.Matches),
 		Size:      resp.Size,
 		ReadBytes: resp.ReadBytes,
+		ContentID: contentID,
 	}, nil
 }
 
@@ -630,6 +683,7 @@ type FetchResponse struct {
 	Matches    []sandbox.ContentMatch `json:"matches,omitempty"`
 	Vocabulary []string               `json:"vocabulary,omitempty"`
 	TimedOut   bool                   `json:"timed_out"`
+	ContentID  string                 `json:"content_id,omitempty"`
 }
 
 // Fetch fetches a URL via the sandbox.
@@ -661,13 +715,17 @@ func (h *Handlers) Fetch(ctx context.Context, params FetchParams) (*FetchRespons
 		"status": resp.Status,
 	})
 
+	redBody := h.redactString(resp.Body)
+	contentID := h.stashContent("fetch", params.URL, params.Intent, redBody)
+
 	return &FetchResponse{
 		Status:     resp.Status,
 		Headers:    resp.Headers,
-		Body:       h.redactString(resp.Body),
+		Body:       redBody,
 		Summary:    h.redactString(resp.Summary),
 		Matches:    h.redactMatches(resp.Matches),
 		Vocabulary: resp.Vocabulary,
 		TimedOut:   resp.TimedOut,
+		ContentID:  contentID,
 	}, nil
 }
