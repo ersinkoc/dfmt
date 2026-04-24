@@ -142,6 +142,22 @@ func getProject() (string, error) {
 	return proj, nil
 }
 
+// copyFile copies a file from src to dst using io.Copy.
+func copyFile(src, dst string) error {
+	srcF, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer srcF.Close()
+	dstF, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0755)
+	if err != nil {
+		return err
+	}
+	defer dstF.Close()
+	_, err = io.Copy(dstF, srcF)
+	return err
+}
+
 func runInit(args []string) int {
 	var dir string
 	fs := flag.NewFlagSet("init", flag.ContinueOnError)
@@ -174,6 +190,19 @@ func runInit(args []string) int {
 		}
 	}
 
+	// Copy dfmt binary to .dfmt/ for self-contained per-project operation.
+	// This ensures git hooks and Claude Code hooks always use the project's
+	// own dfmt, never an external PATH binary.
+	exePath, err := os.Executable()
+	if err == nil {
+		destBin := filepath.Join(dfmtDir, "dfmt")
+		if err := copyFile(exePath, destBin); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: copy dfmt to .dfmt: %v\n", err)
+		} else {
+			os.Chmod(destBin, 0755)
+		}
+	}
+
 	// Write project-local Claude Code settings to enforce DFMT tools
 	_ = writeProjectClaudeSettings(dir)
 
@@ -188,7 +217,8 @@ func runInit(args []string) int {
 	return 0
 }
 
-// writeProjectClaudeSettings writes .claude/settings.json to enforce DFMT tools.
+// writeProjectClaudeSettings writes .claude/settings.json to enforce DFMT tools
+// and wire session continuity hooks (PreCompact save, SessionStart load).
 func writeProjectClaudeSettings(dir string) error {
 	claudeDir := filepath.Join(dir, ".claude")
 	if err := os.MkdirAll(claudeDir, 0755); err != nil {
@@ -196,8 +226,27 @@ func writeProjectClaudeSettings(dir string) error {
 	}
 	settingsPath := filepath.Join(claudeDir, "settings.json")
 	settingsData := `{
+  "hooks": {
+    "PreCompact": [{
+      "matcher": "",
+      "hooks": [{
+        "type": "command",
+        "command": "cd \"$CLAUDE_PROJECT_PATH\" && .dfmt/dfmt recall --format md 2>/dev/null > .dfmt/last-recall.md || echo '# No recall data' > .dfmt/last-recall.md",
+        "timeout": 30,
+        "statusMessage": "Saving session snapshot for next session..."
+      }]
+    }],
+    "SessionStart": [{
+      "matcher": "",
+      "hooks": [{
+        "type": "command",
+        "command": "if [ -f \"$CLAUDE_PROJECT_PATH/.dfmt/last-recall.md\" ]; then echo '--- Previous session summary ---' && cat \"$CLAUDE_PROJECT_PATH/.dfmt/last-recall.md\" && echo '--- End of previous session ---'; fi",
+        "timeout": 10,
+        "statusMessage": "Loading previous session summary..."
+      }]
+    }]
+  },
   "permissions": {
-    
     "allow": [
       "mcp__dfmt__dfmt.read",
       "mcp__dfmt__dfmt.exec",
@@ -205,7 +254,8 @@ func writeProjectClaudeSettings(dir string) error {
       "mcp__dfmt__dfmt.remember",
       "mcp__dfmt__dfmt.search",
       "mcp__dfmt__dfmt.recall",
-      "mcp__dfmt__dfmt.stats"
+      "mcp__dfmt__dfmt.stats",
+      "Bash(.dfmt/dfmt recall --format md *)"
     ]
   }
 }
