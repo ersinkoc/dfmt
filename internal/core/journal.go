@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 	"time"
 )
@@ -175,58 +176,104 @@ func (j *journalImpl) Append(ctx context.Context, e Event) error {
 }
 
 // Stream reads events from the journal starting at 'from' cursor.
-// An empty 'from' starts from the beginning.
+// An empty 'from' starts from the beginning. Rotated segments
+// (journal.jsonl.<ULID>.jsonl) are streamed before the active file in
+// lexicographic ULID order so callers like RebuildIndexFromJournal and
+// Recall see the full history — without this, anything written before
+// the most recent Rotate() was invisible to readers.
 func (j *journalImpl) Stream(ctx context.Context, from string) (<-chan Event, error) {
-	// Reopen for reading
-	readFile, err := os.Open(j.path)
+	// Verify the active file path is at least open-able (or absent).
+	if _, err := os.Stat(j.path); err != nil && !os.IsNotExist(err) {
+		return nil, fmt.Errorf("stat journal: %w", err)
+	}
+	segments, err := journalSegments(j.path)
 	if err != nil {
-		if os.IsNotExist(err) {
-			ch := make(chan Event)
-			close(ch)
-			return ch, nil
-		}
-		return nil, fmt.Errorf("open for read: %w", err)
+		return nil, fmt.Errorf("enumerate rotated segments: %w", err)
 	}
 
 	ch := make(chan Event, 100)
 	go func() {
 		defer close(ch)
-		defer readFile.Close()
-
-		scanner := bufio.NewScanner(readFile)
-		// Buffer upper bound must match maxEventBytes; Scanner silently skips
-		// lines beyond this, so it doubles as a data-integrity guardrail.
-		scanner.Buffer(make([]byte, 64*1024), scannerBufferMax)
-
 		foundFrom := from == ""
-		for scanner.Scan() {
-			line := scanner.Bytes()
-			if len(line) == 0 {
+		for _, seg := range segments {
+			done, err := streamFile(ctx, seg, ch, &foundFrom, from)
+			if err != nil {
+				// Skip an unreadable segment but continue with the rest —
+				// a single corrupt rotated file shouldn't black out all
+				// subsequent history.
 				continue
 			}
-
-			var e Event
-			if err := json.Unmarshal(line, &e); err != nil {
-				// Skip malformed lines
-				continue
-			}
-
-			if !foundFrom {
-				if e.ID == from {
-					foundFrom = true
-				}
-				continue
-			}
-
-			select {
-			case ch <- e:
-			case <-ctx.Done():
+			if done {
 				return
 			}
 		}
 	}()
 
 	return ch, nil
+}
+
+// journalSegments returns the chronological list of journal files for active
+// path: rotated segments first (sorted by ULID suffix), then the active file.
+// Active file is included even if it doesn't exist yet (streamFile no-ops).
+func journalSegments(activePath string) ([]string, error) {
+	dir := filepath.Dir(activePath)
+	base := filepath.Base(activePath)
+	pattern := filepath.Join(dir, base+".*.jsonl")
+	matches, err := filepath.Glob(pattern)
+	if err != nil {
+		return nil, err
+	}
+	// Glob returns lexicographic order, which is the same as chronological
+	// for ULIDs, but Go's docs don't guarantee that ordering for all
+	// platforms — sort explicitly to be safe.
+	sort.Strings(matches)
+	matches = append(matches, activePath)
+	return matches, nil
+}
+
+// streamFile scans one journal file and forwards events into ch. Returns
+// done=true when ctx cancellation tells us to stop entirely. foundFromPtr
+// is shared across files so the `from` cursor crosses segment boundaries.
+func streamFile(ctx context.Context, path string, ch chan<- Event, foundFromPtr *bool, from string) (done bool, err error) {
+	f, oerr := os.Open(path)
+	if oerr != nil {
+		if os.IsNotExist(oerr) {
+			return false, nil
+		}
+		return false, oerr
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	// Buffer upper bound must match maxEventBytes; Scanner silently skips
+	// lines beyond this, so it doubles as a data-integrity guardrail.
+	scanner.Buffer(make([]byte, 64*1024), scannerBufferMax)
+
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+
+		var e Event
+		if err := json.Unmarshal(line, &e); err != nil {
+			continue
+		}
+
+		if !*foundFromPtr {
+			if e.ID == from {
+				*foundFromPtr = true
+			}
+			continue
+		}
+
+		select {
+		case ch <- e:
+		case <-ctx.Done():
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // StreamN is like Stream but stops after emitting at most n events. Pass n <= 0

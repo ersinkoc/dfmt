@@ -193,13 +193,18 @@ func autoInitProject(projectPath string) error {
 		return fmt.Errorf("write config: %w", err)
 	}
 
-	// Add .dfmt/ to .gitignore if exists
+	// Add .dfmt/ to .gitignore if exists. OpenFile errors must be guarded —
+	// a read-only or ACL-restricted .gitignore (RO mount, Windows deny-write)
+	// previously dereferenced a nil *os.File and panicked the client.
 	gitignorePath := filepath.Join(projectPath, ".gitignore")
 	if content, err := os.ReadFile(gitignorePath); err == nil {
 		if !bytes.Contains(content, []byte(".dfmt/")) {
-			f, _ := os.OpenFile(gitignorePath, os.O_APPEND|os.O_WRONLY, 0644)
-			f.WriteString("\n.dfmt/\n")
-			f.Close()
+			if f, oerr := os.OpenFile(gitignorePath, os.O_APPEND|os.O_WRONLY, 0644); oerr == nil {
+				_, _ = f.WriteString("\n.dfmt/\n")
+				_ = f.Close()
+			} else {
+				fmt.Fprintf(os.Stderr, "warning: append .dfmt/ to %s: %v\n", gitignorePath, oerr)
+			}
 		}
 	}
 
