@@ -298,6 +298,207 @@ func TestRedactWithStatsNoRedaction(t *testing.T) {
 	}
 }
 
+// TestRedactExpandedProviders covers the patterns added when the prior audit
+// flagged that several modern provider key formats reached the journal
+// verbatim (Anthropic, AWS STS/role/group/user, GitHub fine-grained PAT,
+// Slack, Google, Stripe restricted, Discord, Twilio, SendGrid, Mailgun,
+// webhook URLs, DB connection strings).
+//
+// Each case is phrased as prose ("see <secret> in the log") rather than a
+// `NAME=value` shell-export line so the env_export pattern doesn't overwrite
+// the per-provider label with the generic [REDACTED]. (For NAME=value lines
+// of sensitive variables, env_export still does the right thing — see
+// TestRedactEnvExport.) The test asserts the original secret never survives;
+// when a per-provider label IS expected, label is set and asserted too.
+func TestRedactExpandedProviders(t *testing.T) {
+	r := NewRedactor()
+
+	cases := []struct {
+		name   string
+		input  string
+		label  string // expected redaction label (empty = "any redaction is fine, just make sure secret is gone")
+		secret string // substring of the original secret that must NOT survive
+	}{
+		{
+			name:   "anthropic api03 in prose",
+			input:  "the key sk-ant-api03-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789-_-AaBbCc was rotated",
+			label:  "[ANTHROPIC_KEY]",
+			secret: "AbCdEfGhIjKlMnOpQrSt",
+		},
+		{
+			name:   "anthropic admin01 in prose",
+			input:  "rotated sk-ant-admin01-XYZ_123-456_aaaaaaaaaaaaaaaaaaaaaaaaaaa today",
+			label:  "[ANTHROPIC_KEY]",
+			secret: "XYZ_123-456",
+		},
+		{
+			name:   "openai project key in prose",
+			input:  "got sk-proj-Aa1Bb2Cc3Dd4Ee5Ff6Gg7Hh8Ii9Jj0Kk1Ll2Mm3Nn4Oo5Pp6 from billing",
+			label:  "[OPENAI_KEY]",
+			secret: "Aa1Bb2Cc3Dd4",
+		},
+		{
+			name:   "github fine-grained PAT in prose",
+			input:  "ci uses github_pat_11ABCDEFG0AaBbCcDdEeFfGgHhIiJjKkLlMmNnOoPpQqRrSsTtUuVvWwXxYyZz0123456789aabbcc for releases",
+			label:  "[GITHUB_PAT]",
+			secret: "11ABCDEFG0",
+		},
+		{
+			name:   "aws ASIA temp in prose",
+			input:  "session creds ASIAIOSFODNN7EXAMPLE expire soon",
+			label:  "[AWS_KEY]",
+			secret: "ASIAIOSFODNN7EXAMPLE",
+		},
+		{
+			name:   "aws AROA role in prose",
+			input:  "the role id AROAJ2UCCR6FAKE12345 is assumed by the lambda",
+			label:  "[AWS_KEY]",
+			secret: "AROAJ2UCCR6FAKE12345",
+		},
+		{
+			name:   "google api key in prose",
+			input:  "see AIzaSyB-DUMMY1234567890abcdEFGHIJKLMNOpqrs in the maps client",
+			label:  "[GOOGLE_API_KEY]",
+			secret: "AIzaSyB-DUMMY",
+		},
+		{
+			name:   "slack bot token in prose",
+			input:  "header carries xoxb-1234567890-1234567890-AbCdEfGhIjKlMnOpQrStUvWx today",
+			label:  "[SLACK_TOKEN]",
+			secret: "1234567890-AbCd",
+		},
+		{
+			name:   "slack app token in prose",
+			input:  "uses xapp-1-A012ABCDE-1234567890-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa to socket-mode",
+			label:  "[SLACK_TOKEN]",
+			secret: "A012ABCDE",
+		},
+		{
+			name:   "stripe restricted in prose",
+			input:  "saw rk_live_AbCdEfGhIjKlMnOpQrStUvWxYz in the dashboard",
+			label:  "[STRIPE_RK]",
+			secret: "AbCdEfGhIjKlMnOpQrStUvWxYz",
+		},
+		{
+			name:   "stripe test in prose",
+			input:  "the test mode key sk_test_ABCDEFGHIJKLMNOPQRSTUVWX was rotated",
+			label:  "[STRIPE_KEY]",
+			secret: "ABCDEFGHIJKLMNOPQRSTUVWX",
+		},
+		{
+			name:   "discord bot token in prose",
+			// Real-shape Discord bot token: 24-char base64 user-id, dot, 6+ char timestamp, dot, 27+ char hmac.
+			input:  "header Bot MTI3OTk2NjYzNDk1NDM5MTg4OQ.GxYzAB.aabbccddeeffgghhiijjkkllmm0123XX please",
+			label:  "[DISCORD_TOKEN]",
+			secret: "MTI3OTk2NjYzNDk1NDM5MTg4OQ",
+		},
+		{
+			name:   "twilio key in prose",
+			input:  "rotate twilio key SK0123456789abcdef0123456789abcdef in the integrations panel",
+			label:  "[TWILIO_KEY]",
+			secret: "SK0123456789abcdef0123456789abcdef",
+		},
+		{
+			name:   "sendgrid key in prose",
+			input:  "header carries SG.aaaaaaaaaaaaaaaaaaaaaa.bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb today",
+			label:  "[SENDGRID_KEY]",
+			secret: "SG.aaaaaaaaaaaaaaaaaaaaaa.bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		},
+		{
+			name:   "mailgun key in prose",
+			input:  "the mailgun key key-abcdef0123456789abcdef0123456789 was leaked",
+			label:  "[MAILGUN_KEY]",
+			secret: "key-abcdef0123456789abcdef0123456789",
+		},
+		{
+			name:   "slack webhook in prose",
+			input:  "post to https://hooks.slack.com/services/T01ABCDEFGH/B01ABCDEFGH/AbCdEfGhIjKlMnOpQrStUvWxYz for alerts",
+			label:  "[SLACK_WEBHOOK]",
+			secret: "T01ABCDEFGH/B01ABCDEFGH/AbCdEfGhIjKlMnOpQrStUvWxYz",
+		},
+		{
+			name:   "discord webhook in prose",
+			input:  "see https://discord.com/api/webhooks/123456789012345678/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa for details",
+			label:  "[DISCORD_WEBHOOK]",
+			secret: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		},
+		{
+			// db_url_creds: connection-string credentials should be replaced
+			// with [REDACTED] in-place while preserving scheme/host. env_export
+			// also catches the DATABASE_URL=… line as a whole, but we run
+			// db_url_creds first so the per-credential redaction wins on at
+			// least one of the two assertions (that the password is gone).
+			name:   "postgres connection string in prose",
+			input:  "the worker connects to postgres://app_user:s3cr3tP%40ssword@db.internal/prod on boot",
+			label:  "", // env_export not triggered (no NAME=value), so db_url_creds emits its own form
+			secret: "s3cr3tP%40ssword",
+		},
+		{
+			name:   "mongodb+srv connection in prose",
+			input:  "we point at mongodb+srv://reader:HiddenPass1@cluster0.mongodb.net/test for analytics",
+			label:  "",
+			secret: "HiddenPass1",
+		},
+		{
+			name:   "redis with auth in prose",
+			input:  "cache layer redis://default:topsecret@localhost:6379/0 is healthy",
+			label:  "",
+			secret: "topsecret@localhost",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := r.Redact(tc.input)
+			if tc.label != "" && !strings.Contains(got, tc.label) {
+				t.Errorf("Redact(%q) = %q, want to contain label %q", tc.input, got, tc.label)
+			}
+			if strings.Contains(got, tc.secret) {
+				t.Errorf("Redact(%q) = %q, secret %q must not survive redaction", tc.input, got, tc.secret)
+			}
+		})
+	}
+}
+
+// TestRedactExpandedNoFalsePositives ensures the new patterns do not flag
+// strings that look superficially similar but aren't credentials. A pattern
+// that scrubs every string containing "key-" or every URL is worse than no
+// pattern at all.
+func TestRedactExpandedNoFalsePositives(t *testing.T) {
+	r := NewRedactor()
+
+	safe := []string{
+		"see the design doc at https://example.com/path/key-results-q3",
+		"the function returns a sk- error code on failure",
+		"AKIA is the prefix for AWS keys",       // bare prefix only, no 16-char body
+		"my postgres://localhost is up",         // no credentials in URL
+		"connect to mongodb+srv://cluster.foo/", // no credentials
+		"SG.is.a.fine.abbreviation.for.sendgrid", // wrong segment lengths
+	}
+
+	for _, s := range safe {
+		got := r.Redact(s)
+		if got != s {
+			t.Errorf("false positive: Redact(%q) = %q, expected unchanged", s, got)
+		}
+	}
+}
+
+// TestRedactAnthropicBeforeOpenAI confirms ordering: an Anthropic key is
+// labelled [ANTHROPIC_KEY], not [OPENAI_KEY], even though both prefixes
+// start with "sk-".
+func TestRedactAnthropicBeforeOpenAI(t *testing.T) {
+	r := NewRedactor()
+	input := "ANTHROPIC=sk-ant-api03-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789-_-XyZqr0"
+	got := r.Redact(input)
+	if !strings.Contains(got, "[ANTHROPIC_KEY]") {
+		t.Errorf("expected ANTHROPIC label, got %q", got)
+	}
+	if strings.Contains(got, "[OPENAI_KEY]") {
+		t.Errorf("must NOT label Anthropic key as OpenAI: got %q", got)
+	}
+}
+
 func TestStatsFields(t *testing.T) {
 	stats := Stats{
 		RedactedCount: 5,

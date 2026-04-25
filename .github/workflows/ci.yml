@@ -20,10 +20,13 @@ jobs:
     # not block the overall workflow. Linux + Windows remain required.
     continue-on-error: ${{ matrix.os == 'macos-latest' }}
     steps:
-      - uses: actions/checkout@v4
+      # Third-party actions are pinned by full 40-char SHA (with the human tag
+      # preserved as a comment) so a tag rewrite cannot retroactively change
+      # what the workflow runs. Bump SHAs as part of routine dependency review.
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version: ${{ matrix.go }}
           cache: true
@@ -37,14 +40,14 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version: "1.26"
           cache: true
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v7
+        uses: golangci/golangci-lint-action@9fae48acfc02a90574d7c304a1758ef9895495fa # v7
         with:
           version: latest
           args: --timeout=5m

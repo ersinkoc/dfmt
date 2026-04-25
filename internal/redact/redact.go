@@ -22,17 +22,84 @@ type redactPattern struct {
 // The replacement decision (redact vs keep) is made by IsSensitiveKey(NAME) in Redact().
 var envExportLineRegex = regexp.MustCompile(`(?m)^(export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$`)
 
-// Common patterns for sensitive data
+// Common patterns for sensitive data.
+//
+// Ordering matters: more-specific prefixes run BEFORE broader ones so the
+// labels stay accurate. Anthropic (sk-ant-…) runs before OpenAI (sk-…); the
+// AWS prefix list runs before generic_secret. Each regex uses bounded
+// character classes and no nested quantifiers to keep ReplaceAllString linear
+// even on multi-MB inputs (sandbox stdout, journal lines).
 var commonPatterns = []*redactPattern{
-	// API keys and tokens
+	// === API keys and tokens — provider-specific (most specific first) ===
+
+	// Anthropic: sk-ant-api03-…, sk-ant-admin01-…. The body uses dashes,
+	// so it must run BEFORE the OpenAI matcher (which is broadened below
+	// to allow sk-proj-… style keys with dashes too).
+	{name: "anthropic_key", regex: regexp.MustCompile(`sk-ant-[A-Za-z0-9_-]{40,}`), repl: "[ANTHROPIC_KEY]"},
+
+	// OpenAI legacy (sk-XXX) and project (sk-proj-XXX_YYY-ZZZ) keys. Body
+	// is now [A-Za-z0-9_-]{40,} so multi-segment project keys match;
+	// anthropic runs first to claim the sk-ant-* prefix.
+	{name: "openai_key", regex: regexp.MustCompile(`sk-[A-Za-z0-9_-]{40,}`), repl: "[OPENAI_KEY]"},
+
+	// GitHub classic PATs (ghp/gho/ghu/ghs/ghr) and modern fine-grained PATs
+	// (github_pat_…, 82-char body). Both forms catalogued at:
+	// https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/about-authentication-to-github
 	{name: "github_token", regex: regexp.MustCompile(`(ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_]{36,}`), repl: "[GITHUB_TOKEN]"},
-	{name: "openai_key", regex: regexp.MustCompile(`sk-[A-Za-z0-9_]{48,}`), repl: "[OPENAI_KEY]"},
-	{name: "aws_key", regex: regexp.MustCompile(`AKIA[A-Z0-9]{16}`), repl: "[AWS_KEY]"},
+	// Body length is variable in the wild (commonly 70–84 chars including
+	// the version-prefix segment); {59,} is generous enough to catch every
+	// version while still requiring far more entropy than any English word.
+	{name: "github_fine_pat", regex: regexp.MustCompile(`github_pat_[A-Za-z0-9_]{59,}`), repl: "[GITHUB_PAT]"},
+
+	// AWS access key IDs across account/role/group/user/policy/instance-profile
+	// prefixes. The previous regex only matched AKIA (long-term root/IAM user)
+	// and missed ASIA (STS temporary), AGPA, AROA, AIDA, ANPA, AIPA, ANVA,
+	// ABIA, ACCA. See AWS docs "IAM identifiers".
+	{name: "aws_key", regex: regexp.MustCompile(`(AKIA|ASIA|AGPA|AROA|AIDA|ANPA|AIPA|ANVA|ABIA|ACCA)[A-Z0-9]{16}`), repl: "[AWS_KEY]"},
 	// aws_secret: capture a 40-char base64-ish token that follows an AWS secret-key marker.
 	// The prior pattern matched any 40-char token at end-of-line, producing too many false positives.
 	{name: "aws_secret", regex: regexp.MustCompile(`(?i)(aws[_-]?secret[_-]?access[_-]?key|aws[_-]?secret)\s*[:=]\s*['"]?([A-Za-z0-9/+=]{40})['"]?`), repl: "$1: [AWS_SECRET]"},
-	{name: "stripe_key", regex: regexp.MustCompile(`sk_live_[A-Za-z0-9]{24,}`), repl: "[STRIPE_KEY]"},
+
+	// Google API key (Maps, Cloud, etc.): AIza[35 chars].
+	{name: "google_api_key", regex: regexp.MustCompile(`AIza[0-9A-Za-z_-]{35}`), repl: "[GOOGLE_API_KEY]"},
+
+	// Slack: bot/user/admin/refresh tokens (xoxb-, xoxp-, xoxa-, xoxr-, xoxs-)
+	// and app-level tokens (xapp-).
+	{name: "slack_token", regex: regexp.MustCompile(`(xox[abprs]|xapp)-[A-Za-z0-9-]{10,}`), repl: "[SLACK_TOKEN]"},
+
+	// Stripe: secret/test secret keys (sk_live_/sk_test_), tokens (tok_),
+	// and restricted keys (rk_live_/rk_test_).
+	{name: "stripe_key", regex: regexp.MustCompile(`sk_(live|test)_[A-Za-z0-9]{24,}`), repl: "[STRIPE_KEY]"},
+	{name: "stripe_restricted", regex: regexp.MustCompile(`rk_(live|test)_[A-Za-z0-9]{24,}`), repl: "[STRIPE_RK]"},
 	{name: "stripe_token", regex: regexp.MustCompile(`tok_[A-Za-z0-9]{24,}`), repl: "[STRIPE_TOKEN]"},
+
+	// Discord bot tokens: <user-id-base64>.<timestamp>.<hmac>. Each segment
+	// is base64url so [A-Za-z0-9_-] only.
+	{name: "discord_token", regex: regexp.MustCompile(`M[TWN][A-Za-z0-9_-]{23,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{27,}`), repl: "[DISCORD_TOKEN]"},
+
+	// Twilio API key SID (SK + 32 lowercase hex).
+	{name: "twilio_key", regex: regexp.MustCompile(`SK[a-f0-9]{32}`), repl: "[TWILIO_KEY]"},
+
+	// SendGrid: SG.<22>.<43> with literal dots.
+	{name: "sendgrid_key", regex: regexp.MustCompile(`SG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}`), repl: "[SENDGRID_KEY]"},
+
+	// Mailgun private API key: key-<32 hex>.
+	{name: "mailgun_key", regex: regexp.MustCompile(`key-[a-f0-9]{32}`), repl: "[MAILGUN_KEY]"},
+
+	// === Webhook URLs (carry implicit auth secrets) ===
+
+	{name: "slack_webhook", regex: regexp.MustCompile(`https://hooks\.slack\.com/services/T[A-Z0-9]{8,}/B[A-Z0-9]{8,}/[A-Za-z0-9]{24,}`), repl: "[SLACK_WEBHOOK]"},
+	{name: "discord_webhook", regex: regexp.MustCompile(`https://discord(?:app)?\.com/api/webhooks/[0-9]{17,}/[A-Za-z0-9_-]{60,}`), repl: "[DISCORD_WEBHOOK]"},
+
+	// === Database connection strings with inline credentials ===
+	// Captures user:password embedded in URI form. Replaces the credential
+	// portion in-place while preserving scheme/host so the message remains
+	// debuggable. Supported schemes: postgres(ql), mysql, mongodb(+srv),
+	// redis, amqp.
+	{name: "db_url_creds", regex: regexp.MustCompile(`(?i)(postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|amqp)://[^:\s/]+:[^@\s]+@`), repl: "$1://[REDACTED]:[REDACTED]@"},
+
+	// === Generic auth headers / inline assignments (broadest, run last) ===
+
 	{name: "generic_secret", regex: regexp.MustCompile(`(?i)(api[_-]?key|secret[_-]?key|access[_-]?token|auth[_-]?token)\s*[:=]\s*['"]?([A-Za-z0-9_/+=.-]{20,})['"]?`), repl: "$1: [REDACTED]"},
 	{name: "bearer_token", regex: regexp.MustCompile(`(?i)bearer\s+[A-Za-z0-9_.-]{20,}`), repl: "Bearer [REDACTED]"},
 	{name: "basic_auth", regex: regexp.MustCompile(`(?i)basic\s+[A-Za-z0-9_.-]{10,}={0,2}`), repl: "Basic [REDACTED]"},
