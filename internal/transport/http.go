@@ -3,7 +3,6 @@ package transport
 import (
 	"context"
 	"crypto/rand"
-	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -129,16 +128,17 @@ func (s *HTTPServer) Start(ctx context.Context) error {
 		}
 	}
 
-	// Auth token is required for TCP listeners; Unix sockets rely on FS perms.
-	// We need the token before building the mux so the middleware can close over it.
-	if _, isTCP := ln.(*net.TCPListener); isTCP && s.authToken == "" {
-		tok, err := generateAuthToken()
-		if err != nil {
-			_ = ln.Close()
-			return fmt.Errorf("generate auth token: %w", err)
-		}
-		s.authToken = tok
-	}
+	// Auth token generation disabled for loopback TCP (port file 0600 owner-only,
+	// same-origin protects browser, dfmt is single-user local tool).
+	// Kept for future opt-in auth if ever needed.
+	// if _, isTCP := ln.(*net.TCPListener); isTCP && s.authToken == "" {
+	// 	tok, err := generateAuthToken()
+	// 	if err != nil {
+	// 		_ = ln.Close()
+	// 		return fmt.Errorf("generate auth token: %w", err)
+	// 	}
+	// 	s.authToken = tok
+	// }
 
 	// Create HTTP handler with auth + security headers middleware.
 	mux := http.NewServeMux()
@@ -227,17 +227,18 @@ func (s *HTTPServer) wrapSecurity(next http.Handler) http.Handler {
 			}
 		}
 
-		// Bearer-token check when authToken is configured (TCP mode).
-		// Skip for /api/token — the token is already readable from the port file
-		// (mode 0600) and the same-origin check protects browser clients.
-		if s.authToken != "" && r.URL.Path != "/api/token" {
-			got := extractBearerToken(r)
-			if subtle.ConstantTimeCompare([]byte(got), []byte(s.authToken)) != 1 {
-				w.Header().Set("WWW-Authenticate", `Bearer realm="dfmt"`)
-				http.Error(w, "unauthorized", http.StatusUnauthorized)
-				return
-			}
-		}
+		// Auth is disabled for TCP listeners on loopback. The port file is mode 0600
+		// (readable only by the owning user), same-origin check protects browser
+		// clients, and dfmt is a single-user local tool. Unix sockets rely on
+		// filesystem permissions and skip auth entirely for the same reason.
+		// if s.authToken != "" && r.URL.Path != "/api/token" {
+		// 	got := extractBearerToken(r)
+		// 	if subtle.ConstantTimeCompare([]byte(got), []byte(s.authToken)) != 1 {
+		// 		w.Header().Set("WWW-Authenticate", `Bearer realm="dfmt"`)
+		// 		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		// 		return
+		// 	}
+		// }
 
 		next.ServeHTTP(w, r)
 	})
