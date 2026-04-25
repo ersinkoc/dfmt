@@ -135,14 +135,16 @@ func New(projectPath string, cfg *config.Config) (*Daemon, error) {
 
 	// Create server based on platform - use HTTPServer for HTTP support (dashboard, API)
 	var server Server
+	var httpServer *transport.HTTPServer
 	if runtime.GOOS == "windows" {
 		// On Windows, use TCP with HTTPServer for full HTTP support.
 		// Bind to the IPv4 loopback explicitly so we don't race between
 		// ::1 and 127.0.0.1 — the client also dials 127.0.0.1 to avoid
 		// slow IPv6-first fallbacks through "localhost" resolution.
-		httpServer := transport.NewHTTPServer("127.0.0.1:0", handlers)
+		httpServer = transport.NewHTTPServer("127.0.0.1:0", handlers)
 		portFile := filepath.Join(dfmtDir, "port")
 		httpServer.SetPortFile(portFile)
+		httpServer.SetProjectPath(projectPath)
 		server = httpServer
 	} else {
 		// On Unix, use Unix socket with HTTPServer for full HTTP support
@@ -152,7 +154,8 @@ func New(projectPath string, cfg *config.Config) (*Daemon, error) {
 			return nil, fmt.Errorf("create socket listener: %w", err)
 		}
 		os.Chmod(socketPath, 0700)
-		server = transport.NewHTTPServerWithListener(ln, handlers, socketPath)
+		httpServer = transport.NewHTTPServerWithListener(ln, handlers, socketPath)
+		httpServer.SetProjectPath(projectPath)
 	}
 
 	// Optionally construct the filesystem watcher. Start() wires its event channel into the journal.

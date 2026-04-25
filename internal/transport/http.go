@@ -64,7 +64,8 @@ type HTTPServer struct {
 	// reach the port, so we require a random token delivered via the port
 	// file (mode 0600). Empty string means "no auth" — only appropriate for
 	// Unix sockets where filesystem perms already restrict access.
-	authToken string
+	authToken   string
+	projectPath string // Used to filter /api/daemons to only this daemon
 }
 
 // PortFile is the JSON format written to the port file. Clients read this to
@@ -146,6 +147,7 @@ func (s *HTTPServer) Start(ctx context.Context) error {
 	mux.HandleFunc("/dashboard.js", s.handleDashboardJS)
 	mux.HandleFunc("/api/stats", s.handleAPIStats)
 	mux.HandleFunc("/api/daemons", s.handleAPIDaemons)
+	mux.HandleFunc("/api/token", s.handleAPIToken)
 	mux.HandleFunc("/healthz", s.handleHealth)
 	mux.HandleFunc("/readyz", s.handleHealth)
 
@@ -226,7 +228,9 @@ func (s *HTTPServer) wrapSecurity(next http.Handler) http.Handler {
 		}
 
 		// Bearer-token check when authToken is configured (TCP mode).
-		if s.authToken != "" {
+		// Skip for /api/token — the token is already readable from the port file
+		// (mode 0600) and the same-origin check protects browser clients.
+		if s.authToken != "" && r.URL.Path != "/api/token" {
 			got := extractBearerToken(r)
 			if subtle.ConstantTimeCompare([]byte(got), []byte(s.authToken)) != 1 {
 				w.Header().Set("WWW-Authenticate", `Bearer realm="dfmt"`)
@@ -507,6 +511,11 @@ func (s *HTTPServer) SetPortFile(path string) {
 	s.portFile = path
 }
 
+// SetProjectPath sets the project path used to filter /api/daemons responses.
+func (s *HTTPServer) SetProjectPath(path string) {
+	s.projectPath = path
+}
+
 func (s *HTTPServer) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
@@ -601,6 +610,19 @@ func (s *HTTPServer) handleHealth(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte("ok"))
 }
 
+// handleAPIToken returns the bearer token for the dashboard JS. It is not
+// protected by bearer-token auth (the token is already on disk), but the
+// same-origin check still applies — only the dashboard's own origin can fetch
+// it, so a malicious website cannot steal the token via a browser.
+func (s *HTTPServer) handleAPIToken(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]string{"token": s.authToken})
+}
+
 func (s *HTTPServer) handleAPIDaemons(w http.ResponseWriter, r *http.Request) {
 	defer func() {
 		if rec := recover(); rec != nil {
@@ -629,6 +651,19 @@ func (s *HTTPServer) handleAPIDaemons(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_ = json.NewEncoder(w).Encode([]any{})
 		return
+	}
+
+	// Filter to only this daemon's project. Prevents disclosing existence of
+	// other projects' daemons to bearer-token holders (V-4).
+	if s.projectPath != "" {
+		filtered := make([]map[string]any, 0, 1)
+		for _, d := range daemons {
+			if path, ok := d["project_path"].(string); ok && path == s.projectPath {
+				filtered = append(filtered, d)
+				break
+			}
+		}
+		daemons = filtered
 	}
 
 	if err := json.NewEncoder(w).Encode(daemons); err != nil {

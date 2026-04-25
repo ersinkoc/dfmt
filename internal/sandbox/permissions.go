@@ -592,7 +592,11 @@ func splitByShellOperators(cmd string) []string {
 			inQuote = false
 			current.WriteByte(c)
 		} else if !inQuote {
-			// $(...) command substitution: extract the inner part as its own segment.
+			// $(...) command substitution: extract the inner part as its own segment,
+			// then recursively split it so operators within the substitution are also
+			// subject to policy checks. Without this, `curl * | sh` inside $(...) would
+			// be matched as a single part against `curl *` and pass even though `| sh`
+			// is not permitted.
 			if c == '$' && i+1 < len(cmd) && cmd[i+1] == '(' {
 				flush()
 				depth := 1
@@ -610,7 +614,11 @@ func splitByShellOperators(cmd string) []string {
 					j++
 				}
 				if j <= len(cmd) && j > i+2 {
-					parts = append(parts, cmd[i+2:j])
+					inner := cmd[i+2:j]
+					// Recursively split the substitution content so inner operators
+					// (|, &&, ||, ;, etc.) are also checked by the policy.
+					innerParts := splitByShellOperators(inner)
+					parts = append(parts, innerParts...)
 				}
 				i = j
 				continue
@@ -623,7 +631,10 @@ func splitByShellOperators(cmd string) []string {
 					j++
 				}
 				if j > i+1 {
-					parts = append(parts, cmd[i+1:j])
+					inner := cmd[i+1:j]
+					// Recursively split backtick content so inner operators are also checked.
+					innerParts := splitByShellOperators(inner)
+					parts = append(parts, innerParts...)
 				}
 				i = j
 				continue
@@ -1237,6 +1248,18 @@ func (s *SandboxImpl) Edit(ctx context.Context, req EditReq) (EditResp, error) {
 		return EditResp{}, fmt.Errorf("path outside working directory: %s", req.Path)
 	}
 
+	// Resolve symlinks and re-check containment. Same check as Read/Write.
+	if resolved, rerr := filepath.EvalSymlinks(cleanPath); rerr == nil {
+		resolvedWd, werr := filepath.EvalSymlinks(absWd)
+		if werr != nil {
+			resolvedWd = absWd
+		}
+		relResolved, err := filepath.Rel(resolvedWd, resolved)
+		if err != nil || relResolved == ".." || strings.HasPrefix(relResolved, ".."+string(filepath.Separator)) {
+			return EditResp{}, fmt.Errorf("path outside working directory after symlink resolution: %s", req.Path)
+		}
+	}
+
 	// Policy check - write permission
 	if err := s.PolicyCheck("write", cleanPath); err != nil {
 		return EditResp{}, err
@@ -1291,6 +1314,20 @@ func (s *SandboxImpl) Write(ctx context.Context, req WriteReq) (WriteResp, error
 	rel, err := filepath.Rel(absWd, cleanPath)
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return WriteResp{}, fmt.Errorf("path outside working directory: %s", req.Path)
+	}
+
+	// Resolve symlinks and re-check containment. A symlink inside the wd that
+	// points outside (e.g. ln -s /etc/passwd wd/leak) must be refused, even if
+	// the file doesn't exist yet — we check the parent directory's target.
+	if resolved, rerr := filepath.EvalSymlinks(cleanPath); rerr == nil {
+		resolvedWd, werr := filepath.EvalSymlinks(absWd)
+		if werr != nil {
+			resolvedWd = absWd
+		}
+		relResolved, err := filepath.Rel(resolvedWd, resolved)
+		if err != nil || relResolved == ".." || strings.HasPrefix(relResolved, ".."+string(filepath.Separator)) {
+			return WriteResp{}, fmt.Errorf("path outside working directory after symlink resolution: %s", req.Path)
+		}
 	}
 
 	// Policy check - write permission

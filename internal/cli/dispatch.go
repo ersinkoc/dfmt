@@ -249,20 +249,12 @@ func writeProjectClaudeSettings(dir string) error {
 	} else {
 		sessionStart = `if [ -f .dfmt/last-recall.md ]; then echo '--- Previous session summary ---' && cat .dfmt/last-recall.md && echo '--- End of previous session ---'; fi`
 	}
-	// preToolUse blocks native Claude Code tools by exiting code 2, which stops
-	// the tool call before permission rules are evaluated. dfmt MCP tools
-	// (dfmt.exec, dfmt.read, etc.) pass through with exit 0.
-	// Uses python3 if available (most reliable), otherwise grep on the raw JSON.
-	var preToolUse string
-	if isWindows {
-		// Windows: PowerShell parses JSON, blocks Bash/WebFetch/WebSearch.
-		preToolUse = `powershell -Command "$j=[console]::In.ReadToEnd()|ConvertFrom-Json; $t=$j.tool_name; if($t -and $t -notmatch '^dfmt\.' -and $t -match '^(Bash|WebFetch|WebSearch)$'){exit 2}; exit 0"`
-	} else {
-		// Unix: prefer python3, fall back to grep on raw JSON. If python3 is
-		// unavailable the fallback is conservative (allow) since permissions.deny
-		// is still active for Bash/WebFetch/WebSearch.
-		preToolUse = `sh -c 'if command -v python3 >/dev/null 2>&1; then python3 -c "import sys,json; t=json.load(sys.stdin).get(\"tool_name\",\"\"); sys.exit(2 if t and not t.startswith(\"dfmt.\") and t in [\"Bash\",\"WebFetch\",\"WebSearch\"] else 0)"; else echo "{\"tool_name\":\"\"}" | grep -q "\"tool_name\":\"dfmt\." && exit 0; fi'`
-	}
+	// preToolUse is disabled. Native tool blocking is handled entirely by
+	// permissions.deny (Bash, WebFetch, WebSearch below). The prior hook-based
+	// approach caused PowerShell parsing errors on every tool call, which
+	// broke Claude Code sessions. With deny rules in place at the permission
+	// level, the hook adds only latency and failure surface — remove it.
+	// (var preToolUse string // intentionally disabled) — permissions.deny is sufficient
 	type hookCmd struct {
 		Type          string `json:"type"`
 		Command       string `json:"command"`
@@ -281,13 +273,12 @@ func writeProjectClaudeSettings(dir string) error {
 		} `json:"permissions"`
 	}{
 		Hooks: map[string][]hookGroup{
-			"PreToolUse": {{Matcher: "", Hooks: []hookCmd{{Type: "command", Command: preToolUse, Timeout: 5, StatusMessage: "Routing through dfmt sandbox..."}}}},
 			"PreCompact": {{Matcher: "", Hooks: []hookCmd{{Type: "command", Command: preCompact, Timeout: 30, StatusMessage: "Saving session snapshot for next session..."}}}},
 			"SessionStart": {{Matcher: "", Hooks: []hookCmd{{Type: "command", Command: sessionStart, Timeout: 10, StatusMessage: "Loading previous session summary..."}}}},
 		},
 	}
 	// Allow only dfmt MCP tools. Native tools (Bash, Read, Glob, etc.) are not
-	// in the allow list and will be denied by the PreToolUse hook (exit 2) above.
+	// in the allow list and are denied by the permissions.deny list below.
 	settings.Permissions.Allow = []string{
 		"mcp__dfmt__dfmt.exec",
 		"mcp__dfmt__dfmt.read",
@@ -297,8 +288,8 @@ func writeProjectClaudeSettings(dir string) error {
 		"mcp__dfmt__dfmt.recall",
 		"mcp__dfmt__dfmt.stats",
 	}
-	// Explicitly deny the most resource-intensive native tools at the permission
-	// level as a defence-in-depth measure (PreToolUse hook is the primary block).
+	// Deny the most resource-intensive native tools. PreToolUse hook is disabled
+	// (caused PowerShell parsing errors); permissions.deny handles blocking.
 	settings.Permissions.Deny = []string{
 		"Bash",
 		"WebFetch",
