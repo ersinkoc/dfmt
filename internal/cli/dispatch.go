@@ -180,7 +180,11 @@ func runInit(args []string) int {
 	}
 
 	configPath := filepath.Join(dfmtDir, "config.yaml")
-	if err := os.WriteFile(configPath, []byte(config.DefaultConfigYAML()), 0644); err != nil {
+	// 0o600 to match other .dfmt/ artefacts (journal, index, port, content
+	// store, daemon.pid). The 0700 parent dir already gates access on POSIX,
+	// but cp -a / rsync that doesn't preserve directory mode would otherwise
+	// expose the file. See V-5 in security-report/.
+	if err := os.WriteFile(configPath, []byte(config.DefaultConfigYAML()), 0o600); err != nil {
 		fmt.Fprintf(os.Stderr, "error writing config: %v\n", err)
 		return 1
 	}
@@ -190,7 +194,7 @@ func runInit(args []string) int {
 		content, rerr := os.ReadFile(gitignorePath)
 		if rerr != nil {
 			fmt.Fprintf(os.Stderr, "warning: read %s: %v\n", gitignorePath, rerr)
-		} else if !strings.Contains(string(content), ".dfmt/") {
+		} else if !project.IsDfmtIgnored(content) {
 			f, oerr := os.OpenFile(gitignorePath, os.O_APPEND|os.O_WRONLY, 0644)
 			if oerr != nil {
 				fmt.Fprintf(os.Stderr, "warning: open %s for append: %v\n", gitignorePath, oerr)
@@ -1340,7 +1344,9 @@ func configureAgent(agent setup.Agent) error {
 func configureClaudeCode(_ setup.Agent) error {
 	home := setup.HomeDir()
 	claudeDir := filepath.Join(home, ".claude")
-	if err := os.MkdirAll(claudeDir, 0755); err != nil {
+	// 0o700 on first-create. Idempotent for existing dirs (Claude Code may
+	// already own ~/.claude with its own perms — MkdirAll won't change them).
+	if err := os.MkdirAll(claudeDir, 0o700); err != nil {
 		return err
 	}
 
@@ -1390,7 +1396,7 @@ func configureClaudeCode(_ setup.Agent) error {
 func configureCodex(_ setup.Agent) error {
 	home := setup.HomeDir()
 	dir := filepath.Join(home, ".codex")
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
 	return writeMCPConfig(dir, "mcp.json", "codex")
@@ -1399,7 +1405,7 @@ func configureCodex(_ setup.Agent) error {
 func configureCursor(_ setup.Agent) error {
 	home := setup.HomeDir()
 	dir := filepath.Join(home, ".cursor")
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
 	return writeMCPConfig(dir, "mcp.json", "cursor")
@@ -1408,7 +1414,7 @@ func configureCursor(_ setup.Agent) error {
 func configureVSCode(_ setup.Agent) error {
 	home := setup.HomeDir()
 	dir := filepath.Join(home, ".vscode")
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
 	return writeMCPConfig(dir, "mcp.json", "vscode")
@@ -1417,7 +1423,7 @@ func configureVSCode(_ setup.Agent) error {
 func configureGemini(_ setup.Agent) error {
 	home := setup.HomeDir()
 	dir := filepath.Join(home, ".gemini")
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
 	return writeMCPConfig(dir, "mcp.json", "gemini")
@@ -1426,7 +1432,7 @@ func configureGemini(_ setup.Agent) error {
 func configureWindsurf(_ setup.Agent) error {
 	home := setup.HomeDir()
 	dir := filepath.Join(home, ".windsurf")
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
 	return writeMCPConfig(dir, "mcp.json", "windsurf")
@@ -1435,7 +1441,7 @@ func configureWindsurf(_ setup.Agent) error {
 func configureZed(_ setup.Agent) error {
 	home := setup.HomeDir()
 	dir := filepath.Join(home, ".config", "zed")
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
 	return writeMCPConfig(dir, "mcp.json", "zed")
@@ -1444,7 +1450,7 @@ func configureZed(_ setup.Agent) error {
 func configureContinue(_ setup.Agent) error {
 	home := setup.HomeDir()
 	dir := filepath.Join(home, ".config", "continue")
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
 	return writeMCPConfig(dir, "mcp.json", "continue")
@@ -1453,7 +1459,7 @@ func configureContinue(_ setup.Agent) error {
 func configureOpenCode(_ setup.Agent) error {
 	home := setup.HomeDir()
 	dir := filepath.Join(home, ".config", "opencode")
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
 	return writeMCPConfig(dir, "mcp.json", "opencode")

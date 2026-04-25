@@ -31,6 +31,31 @@ const maxEventBytes = 1 << 20 // 1 MiB
 // which is why we refuse to write events larger than this.
 const scannerBufferMax = 1 << 20 // 1 MiB
 
+// journalWarnf emits a warning the operator should see (corrupt-line skips,
+// partial-write recovery). Tests override this var to capture warnings; the
+// production default writes to stderr.
+//
+// See V-9 in security-report/: previously `streamFile` and `scanLastID`
+// silently dropped any line that failed `json.Unmarshal`, leaving no
+// operator-visible trail for journal corruption.
+var journalWarnf = func(format string, args ...any) {
+	fmt.Fprintf(os.Stderr, format, args...)
+}
+
+// snippetForWarn produces a bounded, copy-safe snippet of a journal line for
+// warnings. bufio.Scanner reuses its underlying buffer, so the bytes returned
+// by Bytes() are only valid until the next Scan(); we copy + truncate here.
+func snippetForWarn(line []byte) string {
+	const max = 80
+	if len(line) <= max {
+		return string(line)
+	}
+	out := make([]byte, max+3)
+	copy(out, line[:max])
+	out[max], out[max+1], out[max+2] = '.', '.', '.'
+	return string(out)
+}
+
 // JournalOptions configures the journal.
 type JournalOptions struct {
 	Path     string
@@ -257,6 +282,11 @@ func streamFile(ctx context.Context, path string, ch chan<- Event, foundFromPtr 
 
 		var e Event
 		if err := json.Unmarshal(line, &e); err != nil {
+			// Surface the corruption — silent skips left no trail for
+			// operators when a journal segment was tampered with or
+			// truncated mid-line. See V-9 in security-report/.
+			journalWarnf("warning: journal %s: skip malformed line: %v (snippet=%q)\n",
+				path, err, snippetForWarn(line))
 			continue
 		}
 
@@ -421,6 +451,9 @@ func (j *journalImpl) scanLastID() error {
 		}
 		var e Event
 		if err := json.Unmarshal(line, &e); err != nil {
+			// Same trail-leaving as streamFile — see V-9 in security-report/.
+			journalWarnf("warning: journal %s: skip malformed line during scan: %v (snippet=%q)\n",
+				j.path, err, snippetForWarn(line))
 			continue
 		}
 		last = e

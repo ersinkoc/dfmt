@@ -401,3 +401,90 @@ func TestHTTPServerWritePortFileEmptyDir(t *testing.T) {
 	}
 }
 
+// TestHandleInvalidParams covers V-16: every JSON-RPC method must respond
+// with code -32602 ("Invalid params") when the params field is malformed
+// JSON or the wrong shape. Previously the marshal/unmarshal round-trip
+// silently produced a zero-value params struct and the request slid through
+// to the handler, masking client bugs and producing generic errors.
+func TestHandleInvalidParams(t *testing.T) {
+	idx := core.NewIndex()
+	handlers := NewHandlers(idx, nil, nil)
+	hs := NewHTTPServer(":0", handlers)
+
+	// Each method advertised through the JSON-RPC dispatcher. We send a
+	// params field that is JSON-valid at the outer layer (so it survives
+	// the request decoder) but invalid for the per-method params struct
+	// (a non-object where an object is expected, or wrong field type).
+	cases := []struct {
+		method string
+		params json.RawMessage
+	}{
+		{"dfmt.remember", json.RawMessage(`"not-an-object"`)},
+		{"dfmt.search", json.RawMessage(`{"limit":"not-an-int"}`)},
+		{"dfmt.recall", json.RawMessage(`12345`)},
+		{"dfmt.stats", json.RawMessage(`"oops"`)},
+		{"dfmt.exec", json.RawMessage(`["array","instead","of","object"]`)},
+		{"dfmt.read", json.RawMessage(`{"offset":"not-a-number"}`)},
+		{"dfmt.fetch", json.RawMessage(`{"timeout":{}}`)},
+	}
+	for _, c := range cases {
+		t.Run(c.method, func(t *testing.T) {
+			body, err := json.Marshal(Request{
+				JSONRPC: "2.0",
+				Method:  c.method,
+				Params:  c.params,
+				ID:      1,
+			})
+			if err != nil {
+				t.Fatalf("marshal request: %v", err)
+			}
+			req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+			hs.handle(rec, req)
+
+			var resp Response
+			if uerr := json.Unmarshal(rec.Body.Bytes(), &resp); uerr != nil {
+				t.Fatalf("unmarshal response: %v (body=%s)", uerr, rec.Body.String())
+			}
+			if resp.Error == nil {
+				t.Fatalf("expected JSON-RPC error for malformed params, got result=%v", resp.Result)
+			}
+			if resp.Error.Code != -32602 {
+				t.Errorf("expected code -32602 (Invalid params), got %d (msg=%q)", resp.Error.Code, resp.Error.Message)
+			}
+		})
+	}
+}
+
+// TestHandleEmptyParamsAccepted: empty/absent params must NOT produce -32602.
+// Each method has nullable/optional fields, so a zero-value struct is a valid
+// request shape. This pins the boundary so a future change to decodeRPCParams
+// doesn't accidentally start rejecting empty params.
+func TestHandleEmptyParamsAccepted(t *testing.T) {
+	idx := core.NewIndex()
+	handlers := NewHandlers(idx, nil, nil)
+	hs := NewHTTPServer(":0", handlers)
+
+	for _, method := range []string{"dfmt.search", "dfmt.recall", "dfmt.stats"} {
+		t.Run(method, func(t *testing.T) {
+			body, _ := json.Marshal(Request{
+				JSONRPC: "2.0",
+				Method:  method,
+				ID:      1,
+				// Params field omitted (zero-value json.RawMessage)
+			})
+			req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+			hs.handle(rec, req)
+
+			var resp Response
+			_ = json.Unmarshal(rec.Body.Bytes(), &resp)
+			if resp.Error != nil && resp.Error.Code == -32602 {
+				t.Errorf("empty params should not produce -32602; got err=%v", resp.Error)
+			}
+		})
+	}
+}
+

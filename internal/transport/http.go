@@ -382,11 +382,32 @@ func (s *HTTPServer) handle(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// decodeRPCParams unmarshals req.Params (a json.RawMessage already produced by
+// the outer request decoder) directly into dst. Returns a non-nil Response
+// with JSON-RPC error code -32602 ("Invalid params") on decode failure. Empty
+// or absent params is not an error — callers receive a zero-value struct.
+//
+// Replaces the prior `data, _ := json.Marshal(req.Params); json.Unmarshal(data,
+// &params)` round-trip whose discarded errors silently produced zero-value
+// params on malformed input. See V-16 in security-report/.
+func decodeRPCParams(req Request, dst any) *Response {
+	if len(req.Params) == 0 {
+		return nil
+	}
+	if err := json.Unmarshal(req.Params, dst); err != nil {
+		return &Response{
+			JSONRPC: jsonRPCVersion,
+			ID:      req.ID,
+			Error:   &RPCError{Code: -32602, Message: "Invalid params: " + err.Error()},
+		}
+	}
+	return nil
+}
+
 func (s *HTTPServer) handleRemember(ctx context.Context, req Request) Response {
 	var params RememberParams
-	if req.Params != nil {
-		data, _ := json.Marshal(req.Params)
-		json.Unmarshal(data, &params)
+	if r := decodeRPCParams(req, &params); r != nil {
+		return *r
 	}
 
 	resp, err := s.handlers.Remember(ctx, params)
@@ -402,9 +423,8 @@ func (s *HTTPServer) handleRemember(ctx context.Context, req Request) Response {
 
 func (s *HTTPServer) handleSearch(ctx context.Context, req Request) Response {
 	var params SearchParams
-	if req.Params != nil {
-		data, _ := json.Marshal(req.Params)
-		json.Unmarshal(data, &params)
+	if r := decodeRPCParams(req, &params); r != nil {
+		return *r
 	}
 
 	resp, err := s.handlers.Search(ctx, params)
@@ -420,9 +440,8 @@ func (s *HTTPServer) handleSearch(ctx context.Context, req Request) Response {
 
 func (s *HTTPServer) handleRecall(ctx context.Context, req Request) Response {
 	var params RecallParams
-	if req.Params != nil {
-		data, _ := json.Marshal(req.Params)
-		json.Unmarshal(data, &params)
+	if r := decodeRPCParams(req, &params); r != nil {
+		return *r
 	}
 
 	resp, err := s.handlers.Recall(ctx, params)
@@ -438,9 +457,8 @@ func (s *HTTPServer) handleRecall(ctx context.Context, req Request) Response {
 
 func (s *HTTPServer) handleStats(ctx context.Context, req Request) Response {
 	var params StatsParams
-	if req.Params != nil {
-		data, _ := json.Marshal(req.Params)
-		json.Unmarshal(data, &params)
+	if r := decodeRPCParams(req, &params); r != nil {
+		return *r
 	}
 
 	resp, err := s.handlers.Stats(ctx, params)
@@ -530,8 +548,16 @@ func (s *HTTPServer) handleAPIStats(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var params StatsParams
-	if req.Params != nil {
-		_ = json.Unmarshal(req.Params, &params)
+	if len(req.Params) != 0 {
+		if perr := json.Unmarshal(req.Params, &params); perr != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(Response{
+				JSONRPC: jsonRPCVersion,
+				ID:      req.ID,
+				Error:   &RPCError{Code: -32602, Message: "Invalid params: " + perr.Error()},
+			})
+			return
+		}
 	}
 
 	resp, err := s.handlers.Stats(r.Context(), params)
@@ -596,9 +622,8 @@ func (s *HTTPServer) handleAPIDaemons(w http.ResponseWriter, r *http.Request) {
 
 func (s *HTTPServer) handleExec(ctx context.Context, req Request) Response {
 	var params ExecParams
-	if req.Params != nil {
-		data, _ := json.Marshal(req.Params)
-		json.Unmarshal(data, &params)
+	if r := decodeRPCParams(req, &params); r != nil {
+		return *r
 	}
 
 	resp, err := s.handlers.Exec(ctx, params)
@@ -614,9 +639,8 @@ func (s *HTTPServer) handleExec(ctx context.Context, req Request) Response {
 
 func (s *HTTPServer) handleRead(ctx context.Context, req Request) Response {
 	var params ReadParams
-	if req.Params != nil {
-		data, _ := json.Marshal(req.Params)
-		json.Unmarshal(data, &params)
+	if r := decodeRPCParams(req, &params); r != nil {
+		return *r
 	}
 
 	resp, err := s.handlers.Read(ctx, params)
@@ -632,9 +656,8 @@ func (s *HTTPServer) handleRead(ctx context.Context, req Request) Response {
 
 func (s *HTTPServer) handleFetch(ctx context.Context, req Request) Response {
 	var params FetchParams
-	if req.Params != nil {
-		data, _ := json.Marshal(req.Params)
-		json.Unmarshal(data, &params)
+	if r := decodeRPCParams(req, &params); r != nil {
+		return *r
 	}
 
 	resp, err := s.handlers.Fetch(ctx, params)

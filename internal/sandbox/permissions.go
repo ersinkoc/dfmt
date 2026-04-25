@@ -418,8 +418,12 @@ func extractBaseCommand(cmd string) string {
 
 // shellOperators returns true if cmd contains shell operators that chain commands.
 func hasShellChainOperators(cmd string) bool {
-	// Check for common shell operators that chain commands
-	operators := []string{"&&", "||", ";", "|", ">", ">>", "<", "<<", "\n"}
+	// Check for common shell operators that chain commands. Bare `&` (POSIX
+	// background) is included alongside `&&`: a missing entry here previously
+	// let `git --version & sudo whoami` skip the chain-aware split path so the
+	// trailing `sudo …` rode past the start-anchored deny rules. See V-1 in
+	// security-report/.
+	operators := []string{"&&", "||", "&", ";", "|", ">", ">>", "<", "<<", "\n"}
 	for _, op := range operators {
 		if strings.Contains(cmd, op) {
 			return true
@@ -636,6 +640,18 @@ func splitByShellOperators(cmd string) []string {
 					i++
 					continue
 				}
+			}
+			// Bare `&` (background) chains commands. Keep `&<digit>` attached so
+			// `isRedirectionOperand` can still recognize fragments like `&1`,
+			// `&2` produced by splitting at `>` (e.g. `cmd 2>&1` → ["cmd 2",
+			// "&1"]). See V-1 in security-report/.
+			if c == '&' {
+				if i+1 < len(cmd) && cmd[i+1] >= '0' && cmd[i+1] <= '9' {
+					current.WriteByte(c)
+					continue
+				}
+				flush()
+				continue
 			}
 			if c == ';' || c == '|' || c == '>' || c == '<' || c == '\n' {
 				flush()

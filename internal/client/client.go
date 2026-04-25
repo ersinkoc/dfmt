@@ -188,8 +188,9 @@ func autoInitProject(projectPath string) error {
 		return fmt.Errorf("create .dfmt dir: %w", err)
 	}
 
-	// Write default config
-	if err := os.WriteFile(configPath, []byte(config.DefaultConfigYAML()), 0644); err != nil {
+	// Write default config. 0o600 matches the sibling 0700 .dfmt/ dir and
+	// every other artefact in it; see V-5 in security-report/.
+	if err := os.WriteFile(configPath, []byte(config.DefaultConfigYAML()), 0o600); err != nil {
 		return fmt.Errorf("write config: %w", err)
 	}
 
@@ -198,7 +199,7 @@ func autoInitProject(projectPath string) error {
 	// previously dereferenced a nil *os.File and panicked the client.
 	gitignorePath := filepath.Join(projectPath, ".gitignore")
 	if content, err := os.ReadFile(gitignorePath); err == nil {
-		if !bytes.Contains(content, []byte(".dfmt/")) {
+		if !project.IsDfmtIgnored(content) {
 			if f, oerr := os.OpenFile(gitignorePath, os.O_APPEND|os.O_WRONLY, 0644); oerr == nil {
 				_, _ = f.WriteString("\n.dfmt/\n")
 				_ = f.Close()

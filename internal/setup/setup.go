@@ -172,7 +172,9 @@ func LoadManifest() (*Manifest, error) {
 func SaveManifest(m *Manifest) error {
 	path := ManifestPath()
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	// 0o700 to match the manifest file (0600). Idempotent on existing dirs —
+	// a pre-existing user-managed parent keeps its mode.
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("create manifest dir: %w", err)
 	}
 

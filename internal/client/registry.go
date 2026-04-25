@@ -87,9 +87,11 @@ func (r *Registry) saveNoLock() {
 		entries = append(entries, e)
 	}
 
-	// Ensure directory exists
+	// Ensure directory exists. 0o700 to match the registry file (0600) — the
+	// directory enumerates "~/.dfmt" usage and should not be readable by other
+	// local users on shared hosts.
 	dir := filepath.Dir(r.filePath)
-	os.MkdirAll(dir, 0755)
+	os.MkdirAll(dir, 0o700)
 
 	data, err := json.MarshalIndent(entries, "", "  ")
 	if err != nil {
