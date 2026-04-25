@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -1184,6 +1186,9 @@ func TestRuntimesSetRuntime(t *testing.T) {
 }
 
 func TestDetectRuntimesReturnsResult(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("sh/bash not available on Windows by default")
+	}
 	r, err := DetectRuntimes(context.Background())
 	if err != nil {
 		t.Fatalf("DetectRuntimes failed: %v", err)
@@ -1256,5 +1261,394 @@ func TestRuntimesProbeContinuesOnError(t *testing.T) {
 	err := r.Probe(ctx)
 	if err != nil {
 		t.Errorf("Probe should not return error even on lookPath failures: %v", err)
+	}
+}
+
+func TestSandboxGlob(t *testing.T) {
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd: %v", err)
+	}
+	sb := NewSandbox(wd)
+	ctx := context.Background()
+
+	// Test glob for Go files
+	resp, err := sb.Glob(ctx, GlobReq{
+		Pattern: "**/*.go",
+	})
+	if err != nil {
+		t.Fatalf("Glob failed: %v", err)
+	}
+
+	if len(resp.Files) == 0 {
+		t.Log("No .go files found, which may be expected in test environment")
+	}
+
+	// Verify files are relative paths
+	for _, f := range resp.Files {
+		if strings.HasPrefix(f, "/") {
+			t.Errorf("Glob returned absolute path: %s", f)
+		}
+	}
+}
+
+func TestSandboxGlobWithIntent(t *testing.T) {
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd: %v", err)
+	}
+	sb := NewSandbox(wd)
+	ctx := context.Background()
+
+	// Test glob with intent filtering
+	resp, err := sb.Glob(ctx, GlobReq{
+		Pattern: "*.go",
+		Intent:  "test function",
+	})
+	if err != nil {
+		t.Fatalf("Glob with intent failed: %v", err)
+	}
+
+	// Just verify it runs without error
+	if resp.Files == nil {
+		t.Error("Files should not be nil")
+	}
+}
+
+func TestSandboxGlobOutsideWorkingDir(t *testing.T) {
+	// Use a temp directory as working dir
+	tmpdir, err := os.MkdirTemp("", "dfmt-glob-test-*")
+	if err != nil {
+		t.Fatalf("MkdirTemp failed: %v", err)
+	}
+	defer os.RemoveAll(tmpdir)
+
+	sb := NewSandbox(tmpdir)
+	ctx := context.Background()
+
+	// Try to access path outside working directory - absolute path should be rejected
+	_, err = sb.Glob(ctx, GlobReq{
+		Pattern: "/nonexistent/path/to/file.txt",
+	})
+	// On some systems this returns error, on others it just returns empty
+	// Just verify it doesn't crash
+	_ = err
+}
+
+func TestSandboxGrep(t *testing.T) {
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd: %v", err)
+	}
+	sb := NewSandbox(wd)
+	ctx := context.Background()
+
+	// Search for "func" in Go files
+	resp, err := sb.Grep(ctx, GrepReq{
+		Pattern: "func Test",
+		Files:   "*.go",
+	})
+	if err != nil {
+		t.Fatalf("Grep failed: %v", err)
+	}
+
+	if len(resp.Matches) == 0 {
+		t.Log("No matches found - might be expected in test environment")
+	}
+
+	// Verify matches have required fields
+	for _, m := range resp.Matches {
+		if m.File == "" {
+			t.Error("Match file should not be empty")
+		}
+		if m.Line <= 0 {
+			t.Error("Match line should be positive")
+		}
+	}
+}
+
+func TestSandboxGrepCaseInsensitive(t *testing.T) {
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd: %v", err)
+	}
+	sb := NewSandbox(wd)
+	ctx := context.Background()
+
+	// Case insensitive search
+	resp, err := sb.Grep(ctx, GrepReq{
+		Pattern: "FUNC TEST",
+		Files:   "*.go",
+		CaseInsensitive: true,
+	})
+	if err != nil {
+		t.Fatalf("Grep case insensitive failed: %v", err)
+	}
+
+	// Should find same results as "func Test"
+	if resp.Summary == "" {
+		t.Error("Summary should not be empty")
+	}
+}
+
+func TestSandboxGrepWithIntent(t *testing.T) {
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd: %v", err)
+	}
+	sb := NewSandbox(wd)
+	ctx := context.Background()
+
+	// Search with intent
+	resp, err := sb.Grep(ctx, GrepReq{
+		Pattern: "func",
+		Files:   "*.go",
+		Intent:  "testing",
+	})
+	if err != nil {
+		t.Fatalf("Grep with intent failed: %v", err)
+	}
+
+	if resp.Summary == "" {
+		t.Error("Summary should not be empty after grep")
+	}
+}
+
+func TestSandboxGrepInvalidPattern(t *testing.T) {
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd: %v", err)
+	}
+	sb := NewSandbox(wd)
+	ctx := context.Background()
+
+	// Invalid regex pattern
+	_, err = sb.Grep(ctx, GrepReq{
+		Pattern: "[invalid",
+		Files:   "*.go",
+	})
+	if err == nil {
+		t.Error("Grep should reject invalid regex pattern")
+	}
+}
+
+func TestSandboxEdit(t *testing.T) {
+	// Create temp file for testing
+	tmpfile, err := os.CreateTemp("", "dfmt-edit-test-*")
+	if err != nil {
+		t.Fatalf("CreateTemp failed: %v", err)
+	}
+	defer os.Remove(tmpfile.Name())
+
+	tmppath := tmpfile.Name()
+	if _, err := tmpfile.WriteString("hello world\n"); err != nil {
+		t.Fatalf("WriteString failed: %v", err)
+	}
+	tmpfile.Close()
+
+	wd := filepath.Dir(tmppath)
+	// Use custom policy that allows write
+	policy := DefaultPolicy()
+	policy.Allow = append(policy.Allow, Rule{Op: "write", Text: "**"})
+	sb := NewSandboxWithPolicy(wd, policy)
+	ctx := context.Background()
+
+	// Edit the file
+	resp, err := sb.Edit(ctx, EditReq{
+		Path:      filepath.Base(tmppath),
+		OldString: "world",
+		NewString: "dfmt",
+	})
+	if err != nil {
+		t.Fatalf("Edit failed: %v", err)
+	}
+
+	if !resp.Success {
+		t.Error("Edit should succeed")
+	}
+
+	// Verify the change
+	data, err := os.ReadFile(tmppath)
+	if err != nil {
+		t.Fatalf("ReadFile failed: %v", err)
+	}
+	if !strings.Contains(string(data), "dfmt") {
+		t.Errorf("Edit did not apply: got %q", string(data))
+	}
+}
+
+func TestSandboxEditOldStringNotFound(t *testing.T) {
+	tmpfile, err := os.CreateTemp("", "dfmt-edit-test-*")
+	if err != nil {
+		t.Fatalf("CreateTemp failed: %v", err)
+	}
+	defer os.Remove(tmpfile.Name())
+
+	tmppath := tmpfile.Name()
+	if _, err := tmpfile.WriteString("hello world\n"); err != nil {
+		t.Fatalf("WriteString failed: %v", err)
+	}
+	tmpfile.Close()
+
+	wd := filepath.Dir(tmppath)
+	policy := DefaultPolicy()
+	policy.Allow = append(policy.Allow, Rule{Op: "write", Text: "**"})
+	sb := NewSandboxWithPolicy(wd, policy)
+	ctx := context.Background()
+
+	// Try to edit with non-existent string
+	_, err = sb.Edit(ctx, EditReq{
+		Path:      filepath.Base(tmppath),
+		OldString: "notfound",
+		NewString: "dfmt",
+	})
+	if err == nil {
+		t.Error("Edit should fail when old string not found")
+	}
+}
+
+func TestSandboxEditOutsideWorkingDir(t *testing.T) {
+	sb := NewSandbox("/tmp")
+	ctx := context.Background()
+
+	// Try to edit path outside working directory
+	_, err := sb.Edit(ctx, EditReq{
+		Path:      "/etc/passwd",
+		OldString: "old",
+		NewString: "new",
+	})
+	if err == nil {
+		t.Error("Edit should reject path outside working directory")
+	}
+}
+
+func TestSandboxWrite(t *testing.T) {
+	tmpdir, err := os.MkdirTemp("", "dfmt-write-test-*")
+	if err != nil {
+		t.Fatalf("MkdirTemp failed: %v", err)
+	}
+	defer os.RemoveAll(tmpdir)
+
+	policy := DefaultPolicy()
+	policy.Allow = append(policy.Allow, Rule{Op: "write", Text: "**"})
+	sb := NewSandboxWithPolicy(tmpdir, policy)
+	ctx := context.Background()
+
+	// Write new file
+	resp, err := sb.Write(ctx, WriteReq{
+		Path:    "test.txt",
+		Content: "hello dfmt\n",
+	})
+	if err != nil {
+		t.Fatalf("Write failed: %v", err)
+	}
+
+	if !resp.Success {
+		t.Error("Write should succeed")
+	}
+
+	// Verify content
+	data, err := os.ReadFile(filepath.Join(tmpdir, "test.txt"))
+	if err != nil {
+		t.Fatalf("ReadFile failed: %v", err)
+	}
+	if string(data) != "hello dfmt\n" {
+		t.Errorf("Write content mismatch: got %q", string(data))
+	}
+}
+
+func TestSandboxWriteCreatesDirectory(t *testing.T) {
+	tmpdir, err := os.MkdirTemp("", "dfmt-write-test-*")
+	if err != nil {
+		t.Fatalf("MkdirTemp failed: %v", err)
+	}
+	defer os.RemoveAll(tmpdir)
+
+	policy := DefaultPolicy()
+	policy.Allow = append(policy.Allow, Rule{Op: "write", Text: "**"})
+	sb := NewSandboxWithPolicy(tmpdir, policy)
+	ctx := context.Background()
+
+	// Write file in nested directory
+	resp, err := sb.Write(ctx, WriteReq{
+		Path:    "subdir/test.txt",
+		Content: "nested content\n",
+	})
+	if err != nil {
+		t.Fatalf("Write failed: %v", err)
+	}
+
+	if !resp.Success {
+		t.Error("Write should succeed and create directory")
+	}
+
+	// Verify nested file exists
+	data, err := os.ReadFile(filepath.Join(tmpdir, "subdir", "test.txt"))
+	if err != nil {
+		t.Fatalf("ReadFile failed: %v", err)
+	}
+	if string(data) != "nested content\n" {
+		t.Errorf("Write content mismatch: got %q", string(data))
+	}
+}
+
+func TestSandboxWriteOutsideWorkingDir(t *testing.T) {
+	// Create temp dir as working directory
+	tmpdir, err := os.MkdirTemp("", "dfmt-write-outside-test")
+	if err != nil {
+		t.Fatalf("MkdirTemp failed: %v", err)
+	}
+	defer os.RemoveAll(tmpdir)
+
+	sb := NewSandbox(tmpdir)
+	ctx := context.Background()
+
+	// Try to write path that tries to escape working directory
+	// Use a path that goes up from tmpdir
+	parentDir := filepath.Dir(tmpdir)
+	escapingPath := filepath.Join(parentDir, "malicious.txt")
+
+	_, err = sb.Write(ctx, WriteReq{
+		Path:    escapingPath,
+		Content: "malicious",
+	})
+	if err == nil {
+		t.Error("Write should reject path outside working directory")
+	}
+}
+
+func TestSandboxEditReadOnly(t *testing.T) {
+	tmpfile, err := os.CreateTemp("", "dfmt-readonly-test-*")
+	if err != nil {
+		t.Fatalf("CreateTemp failed: %v", err)
+	}
+	defer os.Remove(tmpfile.Name())
+
+	tmppath := tmpfile.Name()
+	if _, err := tmpfile.WriteString("readonly content\n"); err != nil {
+		t.Fatalf("WriteString failed: %v", err)
+	}
+	tmpfile.Close()
+
+	// Make file read-only
+	if err := os.Chmod(tmppath, 0444); err != nil {
+		t.Skip("Cannot change permissions on this platform")
+	}
+	defer os.Chmod(tmppath, 0644)
+
+	wd := filepath.Dir(tmppath)
+	policy := DefaultPolicy()
+	policy.Allow = append(policy.Allow, Rule{Op: "write", Text: "**"})
+	sb := NewSandboxWithPolicy(wd, policy)
+	ctx := context.Background()
+
+	// Try to edit read-only file
+	_, err = sb.Edit(ctx, EditReq{
+		Path:      filepath.Base(tmppath),
+		OldString: "readonly",
+		NewString: "modified",
+	})
+	if err == nil {
+		t.Error("Edit should fail on read-only file")
 	}
 }

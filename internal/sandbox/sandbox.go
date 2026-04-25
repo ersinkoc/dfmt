@@ -10,6 +10,10 @@ type Sandbox interface {
 	Exec(ctx context.Context, req ExecReq) (ExecResp, error)
 	Read(ctx context.Context, req ReadReq) (ReadResp, error)
 	Fetch(ctx context.Context, req FetchReq) (FetchResp, error)
+	Glob(ctx context.Context, req GlobReq) (GlobResp, error)
+	Grep(ctx context.Context, req GrepReq) (GrepResp, error)
+	Edit(ctx context.Context, req EditReq) (EditResp, error)
+	Write(ctx context.Context, req WriteReq) (WriteResp, error)
 	BatchExec(ctx context.Context, items []any) ([]any, error)
 }
 
@@ -84,6 +88,65 @@ type ContentMatch struct {
 	Score  float64 // Relevance score
 	Source string  // Source file or URL
 	Line   int     // Line number (for files)
+}
+
+// GlobReq is a request to glob files.
+type GlobReq struct {
+	Pattern string // Glob pattern (e.g., "**/*.go")
+	Intent  string // Intent for filtering results
+}
+
+// GlobResp is the response from a glob operation.
+type GlobResp struct {
+	Files   []string        `json:"files"`   // Matched file paths
+	Matches []ContentMatch  `json:"matches"` // Intent-matched excerpts
+}
+
+// GrepReq is a request to grep files.
+type GrepReq struct {
+	Pattern       string `json:"pattern"`        // Search pattern (regex)
+	Files         string `json:"files"`         // File pattern (e.g., "*.go")
+	Intent        string `json:"intent"`         // Intent for filtering results
+	CaseInsensitive bool  `json:"case_insensitive"`
+	Context       int    `json:"context"`        // Lines of context around matches
+}
+
+// GrepResp is the response from a grep operation.
+type GrepResp struct {
+	Matches []GrepMatch   `json:"matches"` // Matches with line numbers
+	Summary string        `json:"summary"`
+}
+
+// GrepMatch represents a single grep match.
+type GrepMatch struct {
+	File    string `json:"file"`    // File path
+	Line    int    `json:"line"`     // Line number
+	Content string `json:"content"` // Line content
+}
+
+// EditReq is a request to edit a file.
+type EditReq struct {
+	Path      string `json:"path"`       // File path
+	OldString string `json:"old_string"` // String to replace
+	NewString string `json:"new_string"` // Replacement string
+}
+
+// EditResp is the response from an edit operation.
+type EditResp struct {
+	Success bool   `json:"success"`
+	Summary string `json:"summary"`
+}
+
+// WriteReq is a request to write a file.
+type WriteReq struct {
+	Path    string `json:"path"`    // File path
+	Content string `json:"content"` // Content to write
+}
+
+// WriteResp is the response from a write operation.
+type WriteResp struct {
+	Success bool   `json:"success"`
+	Summary string `json:"summary"`
 }
 
 // DefaultExecTimeout is the default execution timeout.

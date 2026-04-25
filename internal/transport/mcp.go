@@ -299,6 +299,96 @@ func (m *MCPProtocol) handleToolsList(req *MCPRequest) (*MCPResponse, error) {
 				},
 			},
 		},
+		{
+			Name:        methodGlob,
+			Description: "Glob pattern matching for files. Use this instead of native Glob.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"pattern": map[string]any{
+						"type":        "string",
+						"description": "Glob pattern (e.g., **/*.go, *.txt)",
+					},
+					"intent": map[string]any{
+						"type":        "string",
+						"description": "What you need from the results. Only matching files returned.",
+					},
+				},
+				"required": []string{"pattern"},
+			},
+		},
+		{
+			Name:        methodGrep,
+			Description: "Search for text pattern in files. Use this instead of native Grep.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"pattern": map[string]any{
+						"type":        "string",
+						"description": "Search pattern (regex)",
+					},
+					"files": map[string]any{
+						"type":        "string",
+						"description": "File pattern (e.g., *.go, *.txt)",
+					},
+					"intent": map[string]any{
+						"type":        "string",
+						"description": "What you need from the results. Only matching results returned.",
+					},
+					"case_insensitive": map[string]any{
+						"type":        "boolean",
+						"description": "Case insensitive search",
+						"default":     false,
+					},
+					"context": map[string]any{
+						"type":        "integer",
+						"description": "Lines of context around matches",
+						"default":     0,
+					},
+				},
+				"required": []string{"pattern"},
+			},
+		},
+		{
+			Name:        methodEdit,
+			Description: "Edit a file by replacing text. Use this instead of native Edit.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"path": map[string]any{
+						"type":        "string",
+						"description": "File path to edit",
+					},
+					"old_string": map[string]any{
+						"type":        "string",
+						"description": "The exact string to replace",
+					},
+					"new_string": map[string]any{
+						"type":        "string",
+						"description": "The replacement string",
+					},
+				},
+				"required": []string{"path", "old_string", "new_string"},
+			},
+		},
+		{
+			Name:        methodWrite,
+			Description: "Write content to a file. Use this instead of native Write.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"path": map[string]any{
+						"type":        "string",
+						"description": "File path to write",
+					},
+					"content": map[string]any{
+						"type":        "string",
+						"description": "Content to write to the file",
+					},
+				},
+				"required": []string{"path", "content"},
+			},
+		},
 	}
 
 	return &MCPResponse{
@@ -429,6 +519,66 @@ func (m *MCPProtocol) handleToolsCall(req *MCPRequest) (*MCPResponse, error) {
 			return m.errorResult(req.ID, -32602, err.Error())
 		}
 		result, err := m.handlers.Recall(ctx, args)
+		if err != nil {
+			return m.errorResult(req.ID, -32603, err.Error())
+		}
+		return &MCPResponse{
+			JSONRPC: jsonRPCVersion,
+			Result:  result,
+			ID:      req.ID,
+		}, nil
+
+	case methodGlob:
+		var args GlobParams
+		if err := json.Unmarshal(params.Args, &args); err != nil {
+			return m.errorResult(req.ID, -32602, err.Error())
+		}
+		result, err := m.handlers.Glob(ctx, args)
+		if err != nil {
+			return m.errorResult(req.ID, -32603, err.Error())
+		}
+		return &MCPResponse{
+			JSONRPC: jsonRPCVersion,
+			Result:  result,
+			ID:      req.ID,
+		}, nil
+
+	case methodGrep:
+		var args GrepParams
+		if err := json.Unmarshal(params.Args, &args); err != nil {
+			return m.errorResult(req.ID, -32602, err.Error())
+		}
+		result, err := m.handlers.Grep(ctx, args)
+		if err != nil {
+			return m.errorResult(req.ID, -32603, err.Error())
+		}
+		return &MCPResponse{
+			JSONRPC: jsonRPCVersion,
+			Result:  result,
+			ID:      req.ID,
+		}, nil
+
+	case methodEdit:
+		var args EditParams
+		if err := json.Unmarshal(params.Args, &args); err != nil {
+			return m.errorResult(req.ID, -32602, err.Error())
+		}
+		result, err := m.handlers.Edit(ctx, args)
+		if err != nil {
+			return m.errorResult(req.ID, -32603, err.Error())
+		}
+		return &MCPResponse{
+			JSONRPC: jsonRPCVersion,
+			Result:  result,
+			ID:      req.ID,
+		}, nil
+
+	case methodWrite:
+		var args WriteParams
+		if err := json.Unmarshal(params.Args, &args); err != nil {
+			return m.errorResult(req.ID, -32602, err.Error())
+		}
+		result, err := m.handlers.Write(ctx, args)
 		if err != nil {
 			return m.errorResult(req.ID, -32603, err.Error())
 		}

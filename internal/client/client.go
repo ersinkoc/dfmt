@@ -599,6 +599,118 @@ func (c *Client) Fetch(ctx context.Context, params transport.FetchParams) (*tran
 	return &result, nil
 }
 
+// Glob performs glob pattern matching via the daemon.
+func (c *Client) Glob(ctx context.Context, params transport.GlobParams) (*transport.GlobResponse, error) {
+	body, err := c.doHTTP("/", transport.Request{
+		Method: "glob",
+		Params: mustMarshal(params),
+		ID:     1,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	var resp transport.Response
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, fmt.Errorf("unmarshal response: %w", err)
+	}
+
+	if resp.Error != nil {
+		return nil, fmt.Errorf("rpc error: %s", resp.Error.Message)
+	}
+
+	var result transport.GlobResponse
+	if err := json.Unmarshal(mustMarshal(resp.Result), &result); err != nil {
+		return nil, fmt.Errorf("unmarshal result: %w", err)
+	}
+
+	return &result, nil
+}
+
+// Grep performs text search via the daemon.
+func (c *Client) Grep(ctx context.Context, params transport.GrepParams) (*transport.GrepResponse, error) {
+	body, err := c.doHTTP("/", transport.Request{
+		Method: "grep",
+		Params: mustMarshal(params),
+		ID:     1,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	var resp transport.Response
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, fmt.Errorf("unmarshal response: %w", err)
+	}
+
+	if resp.Error != nil {
+		return nil, fmt.Errorf("rpc error: %s", resp.Error.Message)
+	}
+
+	var result transport.GrepResponse
+	if err := json.Unmarshal(mustMarshal(resp.Result), &result); err != nil {
+		return nil, fmt.Errorf("unmarshal result: %w", err)
+	}
+
+	return &result, nil
+}
+
+// Edit edits a file via the daemon.
+func (c *Client) Edit(ctx context.Context, params transport.EditParams) (*transport.EditResponse, error) {
+	body, err := c.doHTTP("/", transport.Request{
+		Method: "edit",
+		Params: mustMarshal(params),
+		ID:     1,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	var resp transport.Response
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, fmt.Errorf("unmarshal response: %w", err)
+	}
+
+	if resp.Error != nil {
+		return nil, fmt.Errorf("rpc error: %s", resp.Error.Message)
+	}
+
+	var result transport.EditResponse
+	if err := json.Unmarshal(mustMarshal(resp.Result), &result); err != nil {
+		return nil, fmt.Errorf("unmarshal result: %w", err)
+	}
+
+	return &result, nil
+}
+
+// Write writes content to a file via the daemon.
+func (c *Client) Write(ctx context.Context, params transport.WriteParams) (*transport.WriteResponse, error) {
+	body, err := c.doHTTP("/", transport.Request{
+		Method: "write",
+		Params: mustMarshal(params),
+		ID:     1,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	var resp transport.Response
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, fmt.Errorf("unmarshal response: %w", err)
+	}
+
+	if resp.Error != nil {
+		return nil, fmt.Errorf("rpc error: %s", resp.Error.Message)
+	}
+
+	var result transport.WriteResponse
+	if err := json.Unmarshal(mustMarshal(resp.Result), &result); err != nil {
+		return nil, fmt.Errorf("unmarshal result: %w", err)
+	}
+
+	return &result, nil
+}
+
 // doHTTP makes an HTTP JSON-RPC request.
 func (c *Client) doHTTP(method string, req transport.Request) ([]byte, error) {
 	body, err := json.Marshal(req)

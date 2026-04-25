@@ -112,6 +112,7 @@ func DefaultPolicy() Policy {
 			{Op: "read", Text: "**"},
 			{Op: "fetch", Text: "https://*"},
 			{Op: "fetch", Text: "http://*"},
+			{Op: "write", Text: "**"},
 		},
 		Deny: []Rule{
 			{Op: "exec", Text: "sudo *"},
@@ -1019,6 +1020,298 @@ func (s *SandboxImpl) Fetch(ctx context.Context, req FetchReq) (FetchResp, error
 func (s *SandboxImpl) BatchExec(ctx context.Context, items []any) ([]any, error) {
 	// Stub
 	return nil, nil
+}
+
+// Glob implements the Sandbox interface.
+func (s *SandboxImpl) Glob(ctx context.Context, req GlobReq) (GlobResp, error) {
+	// Resolve working directory
+	wd := s.wd
+	if wd == "" {
+		wd = "."
+	}
+
+	absWd, err := filepath.Abs(wd)
+	if err != nil {
+		return GlobResp{}, fmt.Errorf("resolve working directory: %w", err)
+	}
+
+	// Clean and resolve the glob pattern
+	pattern := req.Pattern
+	if !filepath.IsAbs(pattern) {
+		pattern = filepath.Join(absWd, pattern)
+	}
+	pattern = filepath.Clean(pattern)
+
+	// Verify the pattern stays within working directory
+	rel, err := filepath.Rel(absWd, pattern)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return GlobResp{}, fmt.Errorf("pattern outside working directory: %s", req.Pattern)
+	}
+
+	// Policy check on the directory
+	if err := s.PolicyCheck("read", absWd); err != nil {
+		return GlobResp{}, err
+	}
+
+	// Execute glob
+	matches, err := filepath.Glob(pattern)
+	if err != nil {
+		return GlobResp{}, fmt.Errorf("glob pattern: %w", err)
+	}
+
+	// Filter to only files (not directories) and make paths relative
+	var files []string
+	for _, m := range matches {
+		fi, err := os.Stat(m)
+		if err != nil {
+			continue
+		}
+		if !fi.IsDir() {
+			relPath, _ := filepath.Rel(absWd, m)
+			files = append(files, relPath)
+		}
+	}
+
+	// Intent-based filtering
+	var contentMatches []ContentMatch
+	keywords := ExtractKeywords(req.Intent)
+	if len(keywords) > 0 && len(files) > 0 {
+		// Read first few files to find intent matches
+		for _, f := range files {
+			if len(contentMatches) >= 10 {
+				break
+			}
+			fullPath := filepath.Join(absWd, f)
+			data, err := os.ReadFile(fullPath)
+			if err != nil {
+				continue
+			}
+			content := string(data)
+			lineMatches := MatchContent(content, keywords, 3)
+			for _, m := range lineMatches {
+				contentMatches = append(contentMatches, ContentMatch{
+					Text:   m.Text,
+					Score:  m.Score,
+					Source: f,
+					Line:   m.Line,
+				})
+			}
+		}
+	}
+
+	return GlobResp{
+		Files:   files,
+		Matches: contentMatches,
+	}, nil
+}
+
+// Grep implements the Sandbox interface.
+func (s *SandboxImpl) Grep(ctx context.Context, req GrepReq) (GrepResp, error) {
+	// Resolve working directory
+	wd := s.wd
+	if wd == "" {
+		wd = "."
+	}
+
+	absWd, err := filepath.Abs(wd)
+	if err != nil {
+		return GrepResp{}, fmt.Errorf("resolve working directory: %w", err)
+	}
+
+	// Policy check on the directory
+	if err := s.PolicyCheck("read", absWd); err != nil {
+		return GrepResp{}, err
+	}
+
+	// Compile regex pattern
+	var pattern *regexp.Regexp
+	if req.CaseInsensitive {
+		pattern, err = regexp.Compile("(?i)" + req.Pattern)
+	} else {
+		pattern, err = regexp.Compile(req.Pattern)
+	}
+	if err != nil {
+		return GrepResp{}, fmt.Errorf("invalid pattern: %w", err)
+	}
+
+	// Find files to search
+	var filePattern string
+	if req.Files != "" {
+		filePattern = req.Files
+		if !filepath.IsAbs(filePattern) {
+			filePattern = filepath.Join(absWd, filePattern)
+		}
+	} else {
+		filePattern = filepath.Join(absWd, "**", "*")
+	}
+
+	matches, err := filepath.Glob(filePattern)
+	if err != nil {
+		return GrepResp{}, fmt.Errorf("file pattern: %w", err)
+	}
+
+	// Search in files
+	var grepMatches []GrepMatch
+	for _, f := range matches {
+		if len(grepMatches) >= 100 {
+			break
+		}
+		fi, err := os.Stat(f)
+		if err != nil || fi.IsDir() {
+			continue
+		}
+
+		// Check path is within working directory
+		rel, _ := filepath.Rel(absWd, f)
+		if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			continue
+		}
+
+		data, err := os.ReadFile(f)
+		if err != nil {
+			continue
+		}
+
+		lines := strings.Split(string(data), "\n")
+		for lineNum, line := range lines {
+			if pattern.MatchString(line) {
+				relPath, _ := filepath.Rel(absWd, f)
+				grepMatches = append(grepMatches, GrepMatch{
+					File:    relPath,
+					Line:    lineNum + 1,
+					Content: line,
+				})
+				if len(grepMatches) >= 100 {
+					break
+				}
+			}
+		}
+	}
+
+	// Generate summary
+	summary := fmt.Sprintf("Found %d matches in %d files", len(grepMatches), len(matches))
+
+	// Intent-based filtering on matches
+	var filteredMatches []GrepMatch
+	keywords := ExtractKeywords(req.Intent)
+	if len(keywords) > 0 {
+		for _, m := range grepMatches {
+			if MatchContent(m.Content, keywords, 1) != nil {
+				filteredMatches = append(filteredMatches, m)
+			}
+		}
+		if len(filteredMatches) > 0 {
+			summary += fmt.Sprintf(" (filtered by intent: %d matches)", len(filteredMatches))
+			grepMatches = filteredMatches
+		}
+	}
+
+	return GrepResp{
+		Matches: grepMatches,
+		Summary: summary,
+	}, nil
+}
+
+// Edit implements the Sandbox interface.
+func (s *SandboxImpl) Edit(ctx context.Context, req EditReq) (EditResp, error) {
+	wd := s.wd
+	if wd == "" {
+		wd = "."
+	}
+
+	absWd, err := filepath.Abs(wd)
+	if err != nil {
+		return EditResp{}, fmt.Errorf("resolve working directory: %w", err)
+	}
+
+	// Resolve file path
+	cleanPath := req.Path
+	if !filepath.IsAbs(cleanPath) {
+		cleanPath = filepath.Join(absWd, cleanPath)
+	}
+	cleanPath = filepath.Clean(cleanPath)
+
+	// Verify path is within working directory
+	rel, err := filepath.Rel(absWd, cleanPath)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return EditResp{}, fmt.Errorf("path outside working directory: %s", req.Path)
+	}
+
+	// Policy check - write permission
+	if err := s.PolicyCheck("write", cleanPath); err != nil {
+		return EditResp{}, err
+	}
+
+	// Read current content
+	data, err := os.ReadFile(cleanPath)
+	if err != nil {
+		return EditResp{}, fmt.Errorf("read file: %w", err)
+	}
+	content := string(data)
+
+	// Check if old string exists
+	if !strings.Contains(content, req.OldString) {
+		return EditResp{}, fmt.Errorf("old string not found in file: %s", req.Path)
+	}
+
+	// Replace
+	newContent := strings.Replace(content, req.OldString, req.NewString, 1)
+
+	// Write back
+	if err := os.WriteFile(cleanPath, []byte(newContent), 0644); err != nil {
+		return EditResp{}, fmt.Errorf("write file: %w", err)
+	}
+
+	return EditResp{
+		Success: true,
+		Summary: fmt.Sprintf("Replaced string in %s", req.Path),
+	}, nil
+}
+
+// Write implements the Sandbox interface.
+func (s *SandboxImpl) Write(ctx context.Context, req WriteReq) (WriteResp, error) {
+	wd := s.wd
+	if wd == "" {
+		wd = "."
+	}
+
+	absWd, err := filepath.Abs(wd)
+	if err != nil {
+		return WriteResp{}, fmt.Errorf("resolve working directory: %w", err)
+	}
+
+	// Resolve file path
+	cleanPath := req.Path
+	if !filepath.IsAbs(cleanPath) {
+		cleanPath = filepath.Join(absWd, cleanPath)
+	}
+	cleanPath = filepath.Clean(cleanPath)
+
+	// Verify path is within working directory
+	rel, err := filepath.Rel(absWd, cleanPath)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return WriteResp{}, fmt.Errorf("path outside working directory: %s", req.Path)
+	}
+
+	// Policy check - write permission
+	if err := s.PolicyCheck("write", cleanPath); err != nil {
+		return WriteResp{}, err
+	}
+
+	// Ensure parent directory exists
+	if err := os.MkdirAll(filepath.Dir(cleanPath), 0755); err != nil {
+		return WriteResp{}, fmt.Errorf("create directory: %w", err)
+	}
+
+	// Write file
+	if err := os.WriteFile(cleanPath, []byte(req.Content), 0644); err != nil {
+		return WriteResp{}, fmt.Errorf("write file: %w", err)
+	}
+
+	return WriteResp{
+		Success: true,
+		Summary: fmt.Sprintf("Wrote %d bytes to %s", len(req.Content), req.Path),
+	}, nil
 }
 
 // execImpl performs the actual execution.

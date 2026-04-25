@@ -26,6 +26,10 @@ const (
 	methodExec     = "dfmt.exec"
 	methodRead     = "dfmt.read"
 	methodFetch    = "dfmt.fetch"
+	methodGlob     = "dfmt.glob"
+	methodGrep     = "dfmt.grep"
+	methodEdit     = "dfmt.edit"
+	methodWrite    = "dfmt.write"
 	aliasRemember  = "remember"
 	aliasSearch    = "search"
 	aliasRecall    = "recall"
@@ -33,6 +37,10 @@ const (
 	aliasExec      = "exec"
 	aliasRead      = "read"
 	aliasFetch     = "fetch"
+	aliasGlob      = "glob"
+	aliasGrep      = "grep"
+	aliasEdit      = "edit"
+	aliasWrite     = "write"
 )
 
 // HTTPServer is an HTTP server for the transport layer.
@@ -369,6 +377,14 @@ func (s *HTTPServer) handle(w http.ResponseWriter, r *http.Request) {
 		resp = s.handleRead(ctx, req)
 	case methodFetch, aliasFetch:
 		resp = s.handleFetch(ctx, req)
+	case methodGlob, aliasGlob:
+		resp = s.handleGlob(ctx, req)
+	case methodGrep, aliasGrep:
+		resp = s.handleGrep(ctx, req)
+	case methodEdit, aliasEdit:
+		resp = s.handleEdit(ctx, req)
+	case methodWrite, aliasWrite:
+		resp = s.handleWrite(ctx, req)
 	default:
 		resp = Response{
 			JSONRPC: jsonRPCVersion,
@@ -661,6 +677,74 @@ func (s *HTTPServer) handleFetch(ctx context.Context, req Request) Response {
 	}
 
 	resp, err := s.handlers.Fetch(ctx, params)
+	if err != nil {
+		return Response{
+			JSONRPC: jsonRPCVersion,
+			ID:      req.ID,
+			Error:   &RPCError{Code: -32603, Message: err.Error()},
+		}
+	}
+	return Response{JSONRPC: jsonRPCVersion, ID: req.ID, Result: resp}
+}
+
+func (s *HTTPServer) handleGlob(ctx context.Context, req Request) Response {
+	var params GlobParams
+	if r := decodeRPCParams(req, &params); r != nil {
+		return *r
+	}
+
+	resp, err := s.handlers.Glob(ctx, params)
+	if err != nil {
+		return Response{
+			JSONRPC: jsonRPCVersion,
+			ID:      req.ID,
+			Error:   &RPCError{Code: -32603, Message: err.Error()},
+		}
+	}
+	return Response{JSONRPC: jsonRPCVersion, ID: req.ID, Result: resp}
+}
+
+func (s *HTTPServer) handleGrep(ctx context.Context, req Request) Response {
+	var params GrepParams
+	if r := decodeRPCParams(req, &params); r != nil {
+		return *r
+	}
+
+	resp, err := s.handlers.Grep(ctx, params)
+	if err != nil {
+		return Response{
+			JSONRPC: jsonRPCVersion,
+			ID:      req.ID,
+			Error:   &RPCError{Code: -32603, Message: err.Error()},
+		}
+	}
+	return Response{JSONRPC: jsonRPCVersion, ID: req.ID, Result: resp}
+}
+
+func (s *HTTPServer) handleEdit(ctx context.Context, req Request) Response {
+	var params EditParams
+	if r := decodeRPCParams(req, &params); r != nil {
+		return *r
+	}
+
+	resp, err := s.handlers.Edit(ctx, params)
+	if err != nil {
+		return Response{
+			JSONRPC: jsonRPCVersion,
+			ID:      req.ID,
+			Error:   &RPCError{Code: -32603, Message: err.Error()},
+		}
+	}
+	return Response{JSONRPC: jsonRPCVersion, ID: req.ID, Result: resp}
+}
+
+func (s *HTTPServer) handleWrite(ctx context.Context, req Request) Response {
+	var params WriteParams
+	if r := decodeRPCParams(req, &params); r != nil {
+		return *r
+	}
+
+	resp, err := s.handlers.Write(ctx, params)
 	if err != nil {
 		return Response{
 			JSONRPC: jsonRPCVersion,

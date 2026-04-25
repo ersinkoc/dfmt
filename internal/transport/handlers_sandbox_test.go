@@ -19,10 +19,22 @@ type stubSandbox struct {
 	readErr   error
 	fetchResp sandbox.FetchResp
 	fetchErr  error
+	globResp  sandbox.GlobResp
+	globErr   error
+	grepResp  sandbox.GrepResp
+	grepErr   error
+	editResp  sandbox.EditResp
+	editErr   error
+	writeResp sandbox.WriteResp
+	writeErr  error
 
 	lastExecReq  sandbox.ExecReq
 	lastReadReq  sandbox.ReadReq
 	lastFetchReq sandbox.FetchReq
+	lastGlobReq  sandbox.GlobReq
+	lastGrepReq  sandbox.GrepReq
+	lastEditReq  sandbox.EditReq
+	lastWriteReq sandbox.WriteReq
 }
 
 func (s *stubSandbox) Exec(ctx context.Context, req sandbox.ExecReq) (sandbox.ExecResp, error) {
@@ -38,6 +50,26 @@ func (s *stubSandbox) Read(ctx context.Context, req sandbox.ReadReq) (sandbox.Re
 func (s *stubSandbox) Fetch(ctx context.Context, req sandbox.FetchReq) (sandbox.FetchResp, error) {
 	s.lastFetchReq = req
 	return s.fetchResp, s.fetchErr
+}
+
+func (s *stubSandbox) Glob(ctx context.Context, req sandbox.GlobReq) (sandbox.GlobResp, error) {
+	s.lastGlobReq = req
+	return s.globResp, s.globErr
+}
+
+func (s *stubSandbox) Grep(ctx context.Context, req sandbox.GrepReq) (sandbox.GrepResp, error) {
+	s.lastGrepReq = req
+	return s.grepResp, s.grepErr
+}
+
+func (s *stubSandbox) Edit(ctx context.Context, req sandbox.EditReq) (sandbox.EditResp, error) {
+	s.lastEditReq = req
+	return s.editResp, s.editErr
+}
+
+func (s *stubSandbox) Write(ctx context.Context, req sandbox.WriteReq) (sandbox.WriteResp, error) {
+	s.lastWriteReq = req
+	return s.writeResp, s.writeErr
 }
 
 func (s *stubSandbox) BatchExec(ctx context.Context, items []any) ([]any, error) {
@@ -290,6 +322,63 @@ func TestHandlers_Stats_WithEvents(t *testing.T) {
 	}
 }
 
+func TestHandlers_Stats_NativeToolCalls(t *testing.T) {
+	// note events with tool tags (PreToolUse hook captures of native tools)
+	// and tool.exec events (dfmt MCP sandbox calls)
+	now := time.Now()
+	events := []core.Event{
+		{ID: "1", TS: now, Type: core.EventType("note"), Tags: []string{"Bash"}},
+		{ID: "2", TS: now, Type: core.EventType("note"), Tags: []string{"Read"}},
+		{ID: "3", TS: now, Type: core.EventType("note"), Tags: []string{"Bash"}},
+		{ID: "4", TS: now, Type: core.EventType("note"), Tags: []string{"Grep"}},
+		{ID: "5", TS: now, Type: core.EventType("note"), Tags: []string{"note"}},           // not a native tool
+		{ID: "6", TS: now, Type: core.EventType("tool.exec"), Tags: []string{}},           // dfmt MCP
+		{ID: "7", TS: now, Type: core.EventType("tool.exec"), Tags: []string{}},
+		{ID: "8", TS: now, Type: core.EventType("tool.read"), Tags: []string{}},
+	}
+	journal := &mockJournal{events: events}
+	idx := core.NewIndex()
+	h := NewHandlers(idx, journal, nil)
+
+	resp, err := h.Stats(context.Background(), StatsParams{})
+	if err != nil {
+		t.Fatalf("Stats failed: %v", err)
+	}
+
+	// Native tool calls should be tracked by tool name
+	if resp.NativeToolCalls == nil {
+		t.Fatal("NativeToolCalls is nil")
+	}
+	if got := resp.NativeToolCalls["Bash"]; got != 2 {
+		t.Errorf("NativeToolCalls[Bash] = %d, want 2", got)
+	}
+	if got := resp.NativeToolCalls["Read"]; got != 1 {
+		t.Errorf("NativeToolCalls[Read] = %d, want 1", got)
+	}
+	if got := resp.NativeToolCalls["Grep"]; got != 1 {
+		t.Errorf("NativeToolCalls[Grep] = %d, want 1", got)
+	}
+	if _, ok := resp.NativeToolCalls["note"]; ok {
+		t.Error("NativeToolCalls should not contain non-tool tag 'note'")
+	}
+
+	// MCP tool calls should be tracked by type
+	if resp.MCPToolCalls == nil {
+		t.Fatal("MCPToolCalls is nil")
+	}
+	if got := resp.MCPToolCalls["tool.exec"]; got != 2 {
+		t.Errorf("MCPToolCalls[tool.exec] = %d, want 2", got)
+	}
+	if got := resp.MCPToolCalls["tool.read"]; got != 1 {
+		t.Errorf("MCPToolCalls[tool.read] = %d, want 1", got)
+	}
+
+	// Bypass rate: 4 native out of 7 total = 57.14%
+	if resp.NativeToolBypassRate <= 0 {
+		t.Errorf("NativeToolBypassRate = %v, want > 0", resp.NativeToolBypassRate)
+	}
+}
+
 func TestHandlers_Stats_StreamError(t *testing.T) {
 	idx := core.NewIndex()
 	journal := &mockJournal{failSearch: true}
@@ -372,4 +461,173 @@ func TestHandlers_LogEvent_NilJournal(t *testing.T) {
 	h := NewHandlers(idx, nil, nil)
 	// should not panic even with nil journal
 	h.logEvent(context.Background(), "x", "y", map[string]any{"a": 1})
+}
+
+func TestHandlers_Glob_Success(t *testing.T) {
+	idx := core.NewIndex()
+	journal := &mockJournal{}
+	sb := &stubSandbox{
+		globResp: sandbox.GlobResp{
+			Files:   []string{"a.go", "b.go"},
+			Matches: []sandbox.ContentMatch{{Text: "func test", Score: 1}},
+		},
+	}
+	h := NewHandlers(idx, journal, sb)
+
+	resp, err := h.Glob(context.Background(), GlobParams{
+		Pattern: "*.go",
+		Intent:  "test functions",
+	})
+	if err != nil {
+		t.Fatalf("Glob failed: %v", err)
+	}
+	if len(resp.Files) != 2 {
+		t.Errorf("expected 2 files, got %d", len(resp.Files))
+	}
+	if len(journal.events) != 1 {
+		t.Errorf("expected 1 event logged, got %d", len(journal.events))
+	}
+}
+
+func TestHandlers_Glob_Error(t *testing.T) {
+	idx := core.NewIndex()
+	sb := &stubSandbox{globErr: errors.New("pattern error")}
+	h := NewHandlers(idx, &mockJournal{}, sb)
+
+	_, err := h.Glob(context.Background(), GlobParams{Pattern: "*.go"})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+func TestHandlers_Grep_Success(t *testing.T) {
+	idx := core.NewIndex()
+	journal := &mockJournal{}
+	sb := &stubSandbox{
+		grepResp: sandbox.GrepResp{
+			Matches: []sandbox.GrepMatch{
+				{File: "a.go", Line: 10, Content: "func test() {}"},
+				{File: "b.go", Line: 20, Content: "func Test() {}"},
+			},
+			Summary: "Found 2 matches in 2 files",
+		},
+	}
+	h := NewHandlers(idx, journal, sb)
+
+	resp, err := h.Grep(context.Background(), GrepParams{
+		Pattern: "func test",
+		Files:   "*.go",
+		Intent:  "test functions",
+	})
+	if err != nil {
+		t.Fatalf("Grep failed: %v", err)
+	}
+	if len(resp.Matches) != 2 {
+		t.Errorf("expected 2 matches, got %d", len(resp.Matches))
+	}
+	if !strings.Contains(resp.Summary, "2 matches") {
+		t.Errorf("unexpected summary: %s", resp.Summary)
+	}
+	if len(journal.events) != 1 {
+		t.Errorf("expected 1 event logged, got %d", len(journal.events))
+	}
+}
+
+func TestHandlers_Grep_Error(t *testing.T) {
+	idx := core.NewIndex()
+	sb := &stubSandbox{grepErr: errors.New("invalid pattern")}
+	h := NewHandlers(idx, &mockJournal{}, sb)
+
+	_, err := h.Grep(context.Background(), GrepParams{Pattern: "[invalid"})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+func TestHandlers_Edit_Success(t *testing.T) {
+	idx := core.NewIndex()
+	journal := &mockJournal{}
+	sb := &stubSandbox{
+		editResp: sandbox.EditResp{
+			Success: true,
+			Summary: "Replaced string in test.go",
+		},
+	}
+	h := NewHandlers(idx, journal, sb)
+
+	resp, err := h.Edit(context.Background(), EditParams{
+		Path:      "test.go",
+		OldString: "old",
+		NewString: "new",
+	})
+	if err != nil {
+		t.Fatalf("Edit failed: %v", err)
+	}
+	if !resp.Success {
+		t.Error("Edit should succeed")
+	}
+	if sb.lastEditReq.OldString != "old" || sb.lastEditReq.NewString != "new" {
+		t.Errorf("unexpected edit params: %+v", sb.lastEditReq)
+	}
+	if len(journal.events) != 1 {
+		t.Errorf("expected 1 event logged, got %d", len(journal.events))
+	}
+}
+
+func TestHandlers_Edit_Error(t *testing.T) {
+	idx := core.NewIndex()
+	sb := &stubSandbox{editErr: errors.New("not found")}
+	h := NewHandlers(idx, &mockJournal{}, sb)
+
+	_, err := h.Edit(context.Background(), EditParams{
+		Path:      "test.go",
+		OldString: "notfound",
+		NewString: "new",
+	})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+func TestHandlers_Write_Success(t *testing.T) {
+	idx := core.NewIndex()
+	journal := &mockJournal{}
+	sb := &stubSandbox{
+		writeResp: sandbox.WriteResp{
+			Success: true,
+			Summary: "Wrote 100 bytes to new.go",
+		},
+	}
+	h := NewHandlers(idx, journal, sb)
+
+	resp, err := h.Write(context.Background(), WriteParams{
+		Path:    "new.go",
+		Content: "package main\n",
+	})
+	if err != nil {
+		t.Fatalf("Write failed: %v", err)
+	}
+	if !resp.Success {
+		t.Error("Write should succeed")
+	}
+	if sb.lastWriteReq.Path != "new.go" || sb.lastWriteReq.Content != "package main\n" {
+		t.Errorf("unexpected write params: %+v", sb.lastWriteReq)
+	}
+	if len(journal.events) != 1 {
+		t.Errorf("expected 1 event logged, got %d", len(journal.events))
+	}
+}
+
+func TestHandlers_Write_Error(t *testing.T) {
+	idx := core.NewIndex()
+	sb := &stubSandbox{writeErr: errors.New("permission denied")}
+	h := NewHandlers(idx, &mockJournal{}, sb)
+
+	_, err := h.Write(context.Background(), WriteParams{
+		Path:    "/etc/passwd",
+		Content: "malicious",
+	})
+	if err == nil {
+		t.Fatal("expected error")
+	}
 }

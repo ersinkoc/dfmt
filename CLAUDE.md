@@ -16,7 +16,9 @@ This repository is the DFMT project itself. When working on it, you MUST use DFM
 | `Read` | `dfmt.read` | Yes — always provide `intent` |
 | `WebFetch` | `dfmt.fetch` | Yes — always provide `intent` |
 
-### Why This Matters
+### Enforcement note
+
+Claude Code enforces MCP tool usage through instruction files and settings — it has no native mechanism to block or disable its own built-in tools. The rules above work because Claude Code respects CLAUDE.md. Other agents (Cursor, VS Code Copilot, Zed, etc.) may use native tools alongside dfmt's MCP overlay — dfmt's journal still captures events, but token savings depend on the agent choosing dfmt tools.
 
 DFMT is not just a tool — it is the **mandatory proxy layer** for all operations:
 

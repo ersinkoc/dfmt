@@ -77,6 +77,14 @@ func Dispatch(args []string) int {
 		return runRead(remaining)
 	case "fetch":
 		return runFetch(remaining)
+	case "glob":
+		return runGlob(remaining)
+	case "grep":
+		return runGrep(remaining)
+	case "edit":
+		return runEdit(remaining)
+	case "write":
+		return runWrite(remaining)
 	case "mcp":
 		return runMCP(remaining)
 	case "help", "--help", "-h":
@@ -231,7 +239,6 @@ func writeProjectClaudeSettings(dir string) error {
 	settingsPath := filepath.Join(claudeDir, "settings.json")
 	// Hooks use 'dfmt' from PATH (single global installation).
 	// Recall saves to .dfmt/last-recall.md relative to project root.
-	// PreToolUse reads tool_name/tool_input from stdin JSON (works on any shell).
 	isWindows := runtime.GOOS == "windows"
 	// preCompact uses 'dfmt recall --save' so the file is written from Go
 	// with a 0600 mode rather than whatever umask the shell inherits.
@@ -242,7 +249,20 @@ func writeProjectClaudeSettings(dir string) error {
 	} else {
 		sessionStart = `if [ -f .dfmt/last-recall.md ]; then echo '--- Previous session summary ---' && cat .dfmt/last-recall.md && echo '--- End of previous session ---'; fi`
 	}
-	preToolUse := `dfmt capture tool`
+	// preToolUse blocks native Claude Code tools by exiting code 2, which stops
+	// the tool call before permission rules are evaluated. dfmt MCP tools
+	// (dfmt.exec, dfmt.read, etc.) pass through with exit 0.
+	// Uses python3 if available (most reliable), otherwise grep on the raw JSON.
+	var preToolUse string
+	if isWindows {
+		// Windows: PowerShell parses JSON, blocks Bash/WebFetch/WebSearch.
+		preToolUse = `powershell -Command "$j=[console]::In.ReadToEnd()|ConvertFrom-Json; $t=$j.tool_name; if($t -and $t -notmatch '^dfmt\.' -and $t -match '^(Bash|WebFetch|WebSearch)$'){exit 2}; exit 0"`
+	} else {
+		// Unix: prefer python3, fall back to grep on raw JSON. If python3 is
+		// unavailable the fallback is conservative (allow) since permissions.deny
+		// is still active for Bash/WebFetch/WebSearch.
+		preToolUse = `sh -c 'if command -v python3 >/dev/null 2>&1; then python3 -c "import sys,json; t=json.load(sys.stdin).get(\"tool_name\",\"\"); sys.exit(2 if t and not t.startswith(\"dfmt.\") and t in [\"Bash\",\"WebFetch\",\"WebSearch\"] else 0)"; else echo "{\"tool_name\":\"\"}" | grep -q "\"tool_name\":\"dfmt\." && exit 0; fi'`
+	}
 	type hookCmd struct {
 		Type          string `json:"type"`
 		Command       string `json:"command"`
@@ -257,14 +277,17 @@ func writeProjectClaudeSettings(dir string) error {
 		Hooks       map[string][]hookGroup `json:"hooks"`
 		Permissions struct {
 			Allow []string `json:"allow"`
+			Deny  []string `json:"deny,omitempty"`
 		} `json:"permissions"`
 	}{
 		Hooks: map[string][]hookGroup{
-			"PreToolUse": {{Matcher: "", Hooks: []hookCmd{{Type: "command", Command: preToolUse, Timeout: 5, StatusMessage: "Logging tool call..."}}}},
+			"PreToolUse": {{Matcher: "", Hooks: []hookCmd{{Type: "command", Command: preToolUse, Timeout: 5, StatusMessage: "Routing through dfmt sandbox..."}}}},
 			"PreCompact": {{Matcher: "", Hooks: []hookCmd{{Type: "command", Command: preCompact, Timeout: 30, StatusMessage: "Saving session snapshot for next session..."}}}},
 			"SessionStart": {{Matcher: "", Hooks: []hookCmd{{Type: "command", Command: sessionStart, Timeout: 10, StatusMessage: "Loading previous session summary..."}}}},
 		},
 	}
+	// Allow only dfmt MCP tools. Native tools (Bash, Read, Glob, etc.) are not
+	// in the allow list and will be denied by the PreToolUse hook (exit 2) above.
 	settings.Permissions.Allow = []string{
 		"mcp__dfmt__dfmt.exec",
 		"mcp__dfmt__dfmt.read",
@@ -273,6 +296,13 @@ func writeProjectClaudeSettings(dir string) error {
 		"mcp__dfmt__dfmt.search",
 		"mcp__dfmt__dfmt.recall",
 		"mcp__dfmt__dfmt.stats",
+	}
+	// Explicitly deny the most resource-intensive native tools at the permission
+	// level as a defence-in-depth measure (PreToolUse hook is the primary block).
+	settings.Permissions.Deny = []string{
+		"Bash",
+		"WebFetch",
+		"WebSearch",
 	}
 	settingsData, err := json.MarshalIndent(settings, "", "  ")
 	if err != nil {
@@ -1881,6 +1911,222 @@ func runFetch(args []string) int {
 		} else {
 			fmt.Print(fetchResp.Body)
 		}
+	}
+
+	return 0
+}
+
+func runGlob(args []string) int {
+	var intent string
+
+	fs := flag.NewFlagSet("glob", flag.ContinueOnError)
+	fs.StringVar(&intent, "intent", "", "Intent for content filtering")
+	if err := fs.Parse(args); err != nil {
+		if err == flag.ErrHelp {
+			return 0
+		}
+		return 2
+	}
+
+	if fs.NArg() == 0 {
+		fmt.Fprintf(os.Stderr, "error: pattern required\n")
+		return 1
+	}
+	pattern := fs.Arg(0)
+
+	proj, err := getProject()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		return 1
+	}
+
+	cl, err := client.NewClient(proj)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		return 1
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	globResp, err := cl.Glob(ctx, transport.GlobParams{
+		Pattern: pattern,
+		Intent:  intent,
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		return 1
+	}
+
+	if flagJSON {
+		fmt.Println(mustMarshalJSON(globResp))
+	} else {
+		for _, f := range globResp.Files {
+			fmt.Println(f)
+		}
+	}
+
+	return 0
+}
+
+func runGrep(args []string) int {
+	var intent string
+	var files string
+	var caseInsensitive bool
+
+	fs := flag.NewFlagSet("grep", flag.ContinueOnError)
+	fs.StringVar(&intent, "intent", "", "Intent for content filtering")
+	fs.StringVar(&files, "files", "*", "File pattern")
+	fs.BoolVar(&caseInsensitive, "i", false, "Case insensitive")
+	if err := fs.Parse(args); err != nil {
+		if err == flag.ErrHelp {
+			return 0
+		}
+		return 2
+	}
+
+	if fs.NArg() == 0 {
+		fmt.Fprintf(os.Stderr, "error: pattern required\n")
+		return 1
+	}
+	pattern := fs.Arg(0)
+
+	proj, err := getProject()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		return 1
+	}
+
+	cl, err := client.NewClient(proj)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		return 1
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	grepResp, err := cl.Grep(ctx, transport.GrepParams{
+		Pattern:        pattern,
+		Files:         files,
+		Intent:        intent,
+		CaseInsensitive: caseInsensitive,
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		return 1
+	}
+
+	if flagJSON {
+		fmt.Println(mustMarshalJSON(grepResp))
+	} else {
+		for _, m := range grepResp.Matches {
+			fmt.Printf("%s:%d: %s\n", m.File, m.Line, m.Content)
+		}
+	}
+
+	return 0
+}
+
+func runEdit(args []string) int {
+	var oldString string
+
+	fs := flag.NewFlagSet("edit", flag.ContinueOnError)
+	fs.StringVar(&oldString, "old", "", "String to replace (required)")
+	if err := fs.Parse(args); err != nil {
+		if err == flag.ErrHelp {
+			return 0
+		}
+		return 2
+	}
+
+	if fs.NArg() < 2 {
+		fmt.Fprintf(os.Stderr, "error: path and new-string required\n")
+		return 1
+	}
+	path := fs.Arg(0)
+	newString := fs.Arg(1)
+
+	proj, err := getProject()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		return 1
+	}
+
+	cl, err := client.NewClient(proj)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		return 1
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	editResp, err := cl.Edit(ctx, transport.EditParams{
+		Path:      path,
+		OldString: oldString,
+		NewString: newString,
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		return 1
+	}
+
+	if flagJSON {
+		fmt.Println(mustMarshalJSON(editResp))
+	} else {
+		fmt.Println(editResp.Summary)
+	}
+
+	return 0
+}
+
+func runWrite(args []string) int {
+	var content string
+
+	fs := flag.NewFlagSet("write", flag.ContinueOnError)
+	fs.StringVar(&content, "content", "", "Content to write")
+	if err := fs.Parse(args); err != nil {
+		if err == flag.ErrHelp {
+			return 0
+		}
+		return 2
+	}
+
+	if fs.NArg() == 0 {
+		fmt.Fprintf(os.Stderr, "error: path required\n")
+		return 1
+	}
+	path := fs.Arg(0)
+
+	proj, err := getProject()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		return 1
+	}
+
+	cl, err := client.NewClient(proj)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		return 1
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	writeResp, err := cl.Write(ctx, transport.WriteParams{
+		Path:    path,
+		Content: content,
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		return 1
+	}
+
+	if flagJSON {
+		fmt.Println(mustMarshalJSON(writeResp))
+	} else {
+		fmt.Println(writeResp.Summary)
 	}
 
 	return 0

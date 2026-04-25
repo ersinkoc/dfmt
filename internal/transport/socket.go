@@ -179,6 +179,34 @@ func (s *SocketServer) dispatch(ctx context.Context, req *Request) (any, error) 
 		}
 		return s.handlers.Fetch(ctx, params)
 
+	case methodGlob, aliasGlob:
+		var params GlobParams
+		if err := decodeParams(req.Params, &params); err != nil {
+			return nil, err
+		}
+		return s.handlers.Glob(ctx, params)
+
+	case methodGrep, aliasGrep:
+		var params GrepParams
+		if err := decodeParams(req.Params, &params); err != nil {
+			return nil, err
+		}
+		return s.handlers.Grep(ctx, params)
+
+	case methodEdit, aliasEdit:
+		var params EditParams
+		if err := decodeParams(req.Params, &params); err != nil {
+			return nil, err
+		}
+		return s.handlers.Edit(ctx, params)
+
+	case methodWrite, aliasWrite:
+		var params WriteParams
+		if err := decodeParams(req.Params, &params); err != nil {
+			return nil, err
+		}
+		return s.handlers.Write(ctx, params)
+
 	default:
 		return nil, fmt.Errorf("unknown method: %s", req.Method)
 	}

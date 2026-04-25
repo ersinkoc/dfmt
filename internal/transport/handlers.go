@@ -451,6 +451,25 @@ type StatsResponse struct {
 	TotalCachedTokens int     `json:"total_cached_tokens"`
 	TokenSavings      int     `json:"token_savings"`
 	CacheHitRate      float64 `json:"cache_hit_rate"`
+	// Native tool awareness: how many tool calls bypassed dfmt MCP
+	NativeToolCalls       map[string]int `json:"native_tool_calls"`        // count by tool name (Bash, Read, Glob, etc.)
+	MCPToolCalls         map[string]int `json:"mcp_tool_calls"`           // count by MCP tool name (dfmt.exec, dfmt.read, etc.)
+	NativeToolBypassRate float64        `json:"native_tool_bypass_rate"`  // % of tool calls that used native tools
+}
+
+// knownNativeTools is the set of Claude Code built-in tool names captured
+// by the PreToolUse hook and logged as note events with the tool name as tag.
+var knownNativeTools = map[string]struct{}{
+	"Bash": {}, "Read": {}, "Edit": {}, "Write": {}, "Glob": {},
+	"Grep": {}, "WebFetch": {}, "WebSearch": {}, "TaskCreate": {},
+	"TaskUpdate": {}, "TaskDone": {}, "Agent": {}, " класть": {},
+}
+
+// knownMCPTools is the set of dfmt MCP tool names logged by Handlers.logEvent
+// after sandbox execution.
+var knownMCPTools = map[string]struct{}{
+	"dfmt.exec": {}, "dfmt.read": {}, "dfmt.fetch": {},
+	"dfmt.glob": {}, "dfmt.grep": {}, "dfmt.edit": {}, "dfmt.write": {},
 }
 
 // Stats returns aggregated statistics from the journal.
@@ -467,6 +486,8 @@ func (h *Handlers) Stats(ctx context.Context, params StatsParams) (*StatsRespons
 	resp := &StatsResponse{
 		EventsByType:     make(map[string]int),
 		EventsByPriority: make(map[string]int),
+		NativeToolCalls:  make(map[string]int),
+		MCPToolCalls:     make(map[string]int),
 	}
 
 	classifier := core.NewClassifier()
@@ -489,6 +510,18 @@ func (h *Handlers) Stats(ctx context.Context, params StatsParams) (*StatsRespons
 			totalCached += cachedTokens
 		}
 
+		// Track native tool calls via PreToolUse hook (note events with tool tag)
+		if e.Type == core.EvtNote && len(e.Tags) > 0 {
+			if _, ok := knownNativeTools[e.Tags[0]]; ok {
+				resp.NativeToolCalls[e.Tags[0]]++
+			}
+		}
+		// Track dfmt MCP tool calls (tool.exec, tool.read, tool.fetch, tool.glob, tool.grep, tool.edit, tool.write)
+		if e.Type == "tool.exec" || e.Type == "tool.read" || e.Type == "tool.fetch" ||
+			e.Type == "tool.glob" || e.Type == "tool.grep" || e.Type == "tool.edit" || e.Type == "tool.write" {
+			resp.MCPToolCalls[string(e.Type)]++
+		}
+
 		if earliest.IsZero() || e.TS.Before(earliest) {
 			earliest = e.TS
 		}
@@ -504,6 +537,19 @@ func (h *Handlers) Stats(ctx context.Context, params StatsParams) (*StatsRespons
 	resp.TokenSavings = totalCached
 	if totalInput > 0 {
 		resp.CacheHitRate = float64(totalCached) / float64(totalInput) * 100
+	}
+
+	// Compute native tool bypass rate
+	var nativeTotal, mcpTotal int
+	for _, n := range resp.NativeToolCalls {
+		nativeTotal += n
+	}
+	for _, n := range resp.MCPToolCalls {
+		mcpTotal += n
+	}
+	totalToolCalls := nativeTotal + mcpTotal
+	if totalToolCalls > 0 {
+		resp.NativeToolBypassRate = float64(nativeTotal) / float64(totalToolCalls) * 100
 	}
 
 	if !earliest.IsZero() {
@@ -763,6 +809,33 @@ type FetchResponse struct {
 	ContentID  string                 `json:"content_id,omitempty"`
 }
 
+// GlobParams are the parameters for the Glob method.
+type GlobParams struct {
+	Pattern string `json:"pattern"`
+	Intent  string `json:"intent,omitempty"`
+}
+
+// GlobResponse is the response from a glob operation.
+type GlobResponse struct {
+	Files   []string                 `json:"files,omitempty"`
+	Matches []sandbox.ContentMatch   `json:"matches,omitempty"`
+}
+
+// GrepParams are the parameters for the Grep method.
+type GrepParams struct {
+	Pattern        string `json:"pattern"`
+	Files          string `json:"files,omitempty"`
+	Intent         string `json:"intent,omitempty"`
+	CaseInsensitive bool  `json:"case_insensitive,omitempty"`
+	Context        int    `json:"context,omitempty"`
+}
+
+// GrepResponse is the response from a grep operation.
+type GrepResponse struct {
+	Matches []sandbox.GrepMatch `json:"matches,omitempty"`
+	Summary string              `json:"summary,omitempty"`
+}
+
 // Fetch fetches a URL via the sandbox.
 func (h *Handlers) Fetch(ctx context.Context, params FetchParams) (*FetchResponse, error) {
 	h.touch()
@@ -805,5 +878,140 @@ func (h *Handlers) Fetch(ctx context.Context, params FetchParams) (*FetchRespons
 		Vocabulary: resp.Vocabulary,
 		TimedOut:   resp.TimedOut,
 		ContentID:  contentID,
+	}, nil
+}
+
+// Glob performs glob pattern matching via the sandbox.
+func (h *Handlers) Glob(ctx context.Context, params GlobParams) (*GlobResponse, error) {
+	h.touch()
+	req := sandbox.GlobReq{
+		Pattern: params.Pattern,
+		Intent:  params.Intent,
+	}
+
+	resp, err := h.sandbox.Glob(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+
+	h.logEvent(ctx, "tool.glob", params.Intent, map[string]any{
+		"pattern": params.Pattern,
+		"files":   len(resp.Files),
+	})
+
+	return &GlobResponse{
+		Files:   resp.Files,
+		Matches: h.redactMatches(resp.Matches),
+	}, nil
+}
+
+// Grep performs text search via the sandbox.
+func (h *Handlers) Grep(ctx context.Context, params GrepParams) (*GrepResponse, error) {
+	h.touch()
+	req := sandbox.GrepReq{
+		Pattern:        params.Pattern,
+		Files:          params.Files,
+		Intent:         params.Intent,
+		CaseInsensitive: params.CaseInsensitive,
+		Context:        params.Context,
+	}
+
+	resp, err := h.sandbox.Grep(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+
+	h.logEvent(ctx, "tool.grep", params.Intent, map[string]any{
+		"pattern": params.Pattern,
+		"files":   params.Files,
+		"matches": len(resp.Matches),
+	})
+
+	// Redact match content
+	matches := make([]sandbox.GrepMatch, len(resp.Matches))
+	for i, m := range resp.Matches {
+		matches[i] = sandbox.GrepMatch{
+			File:    m.File,
+			Line:    m.Line,
+			Content: h.redactString(m.Content),
+		}
+	}
+
+	return &GrepResponse{
+		Matches: matches,
+		Summary: h.redactString(resp.Summary),
+	}, nil
+}
+
+// EditParams are the parameters for the Edit method.
+type EditParams struct {
+	Path      string `json:"path"`
+	OldString string `json:"old_string"`
+	NewString string `json:"new_string"`
+}
+
+// EditResponse is the response from an edit operation.
+type EditResponse struct {
+	Success bool   `json:"success"`
+	Summary string `json:"summary"`
+}
+
+// WriteParams are the parameters for the Write method.
+type WriteParams struct {
+	Path    string `json:"path"`
+	Content string `json:"content"`
+}
+
+// WriteResponse is the response from a write operation.
+type WriteResponse struct {
+	Success bool   `json:"success"`
+	Summary string `json:"summary"`
+}
+
+// Edit performs an edit on a file via the sandbox.
+func (h *Handlers) Edit(ctx context.Context, params EditParams) (*EditResponse, error) {
+	h.touch()
+	req := sandbox.EditReq{
+		Path:      params.Path,
+		OldString: params.OldString,
+		NewString: params.NewString,
+	}
+
+	resp, err := h.sandbox.Edit(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+
+	h.logEvent(ctx, "tool.edit", params.Path, map[string]any{
+		"path": params.Path,
+	})
+
+	return &EditResponse{
+		Success: resp.Success,
+		Summary: resp.Summary,
+	}, nil
+}
+
+// Write writes content to a file via the sandbox.
+func (h *Handlers) Write(ctx context.Context, params WriteParams) (*WriteResponse, error) {
+	h.touch()
+	req := sandbox.WriteReq{
+		Path:    params.Path,
+		Content: params.Content,
+	}
+
+	resp, err := h.sandbox.Write(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+
+	h.logEvent(ctx, "tool.write", params.Path, map[string]any{
+		"path":    params.Path,
+		"content": params.Content,
+	})
+
+	return &WriteResponse{
+		Success: resp.Success,
+		Summary: resp.Summary,
 	}, nil
 }

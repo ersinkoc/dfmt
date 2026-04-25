@@ -3,6 +3,7 @@ package sandbox
 import (
 	"context"
 	"os"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -235,6 +236,9 @@ func TestExecImplTempFilePath(t *testing.T) {
 
 // TestExecImplExitCodeCapture tests that exit codes are captured correctly.
 func TestExecImplExitCodeCapture(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("sh/bash not available on Windows by default")
+	}
 	rt, ok := runtimes.Get("sh")
 	if !ok || !rt.Available {
 		rt, ok = runtimes.Get("bash")
@@ -306,6 +310,9 @@ func TestExecImplMaxRawBytesTruncation(t *testing.T) {
 
 // TestExecImplDFMTExecEnvPrefix tests that DFMT_EXEC_* env vars are passed through.
 func TestExecImplDFMTExecEnvPrefix(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("sh/bash not available on Windows by default")
+	}
 	rt, ok := runtimes.Get("sh")
 	if !ok || !rt.Available {
 		rt, ok = runtimes.Get("bash")
@@ -342,6 +349,9 @@ func TestExecImplDFMTExecEnvPrefix(t *testing.T) {
 
 // TestExecImplExtraEnv tests that extra env vars are passed through.
 func TestExecImplExtraEnv(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("sh/bash not available on Windows by default")
+	}
 	rt, ok := runtimes.Get("sh")
 	if !ok || !rt.Available {
 		rt, ok = runtimes.Get("bash")
@@ -375,6 +385,9 @@ func TestExecImplExtraEnv(t *testing.T) {
 
 // TestExecImplWorkingDir tests that working directory is set correctly.
 func TestExecImplWorkingDir(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("sh/bash not available on Windows by default")
+	}
 	rt, ok := runtimes.Get("sh")
 	if !ok || !rt.Available {
 		rt, ok = runtimes.Get("bash")
@@ -411,6 +424,9 @@ func TestExecImplWorkingDir(t *testing.T) {
 
 // TestExecImplDefaultTimeout tests that default timeout is applied.
 func TestExecImplDefaultTimeout(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("sh/bash not available on Windows by default")
+	}
 	rt, ok := runtimes.Get("sh")
 	if !ok || !rt.Available {
 		rt, ok = runtimes.Get("bash")
@@ -447,6 +463,9 @@ func TestExecImplDefaultTimeout(t *testing.T) {
 
 // TestExecImplMaxTimeout tests that timeout is capped at MaxExecTimeout.
 func TestExecImplMaxTimeout(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("sh/bash not available on Windows by default")
+	}
 	rt, ok := runtimes.Get("sh")
 	if !ok || !rt.Available {
 		rt, ok = runtimes.Get("bash")
