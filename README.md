@@ -301,13 +301,22 @@ The nine Architecture Decision Records in [docs/adr/](docs/adr/) capture why DFM
 
 DFMT is MIT-licensed, local-only, and has no telemetry. Zero data leaves your machine by design. The daemon binds to `127.0.0.1` only. The Unix socket has `0700` permissions. The event journal is readable by your user account and no one else.
 
-Secret patterns (AWS keys, GitHub/OpenAI/Anthropic/Stripe tokens, JWTs, URL-embedded credentials) are redacted from all stored content — journal, sandbox output, file reads — before persistence. User-configurable patterns via `.dfmt/redact.yaml`.
+Secret patterns are redacted from all stored content — journal, sandbox output, file reads — before persistence. The built-in redactor covers:
+
+- **Cloud / AI providers:** AWS access keys (AKIA, ASIA, AGPA, AROA, AIDA, ANPA, AIPA, ANVA, ABIA, ACCA), AWS secret keys, OpenAI keys (legacy `sk-` and `sk-proj-` project keys), Anthropic keys (`sk-ant-api03-`, `sk-ant-admin01-`), Google API keys (`AIza…`).
+- **Source / CI:** GitHub classic PATs (ghp/gho/ghu/ghs/ghr) and fine-grained PATs (`github_pat_…`), JWTs.
+- **Payments / messaging:** Stripe live and test secret keys (`sk_live_/sk_test_`), restricted keys (`rk_live_/rk_test_`), tokens (`tok_`), Slack bot/user/admin/refresh/app tokens (`xoxb-/xoxp-/xoxa-/xoxr-/xoxs-/xapp-`), Slack and Discord webhook URLs, Discord bot tokens, Twilio API keys, SendGrid keys, Mailgun keys.
+- **Connection strings:** inline `user:password@` credentials in PostgreSQL, MySQL, MongoDB(+srv), Redis(+TLS), AMQP(+TLS) URLs.
+- **Inline forms:** `Bearer …` and `Basic …` headers, `api_key=…` / `secret_key=…` / `access_token=…` / `auth_token=…` assignments, `NAME=value` and `export NAME=value` shell lines where NAME hits the sensitive-key list (password, secret, token, etc.).
+- **Private keys:** full PEM blocks (RSA, EC, DSA, OpenSSH) — header through footer.
+
+User-configurable patterns via `.dfmt/redact.yaml`.
 
 ## Support and bugs
 
 - **Issues:** [github.com/ersinkoc/dfmt/issues](https://github.com/ersinkoc/dfmt/issues)
 - **Discussions:** [github.com/ersinkoc/dfmt/discussions](https://github.com/ersinkoc/dfmt/discussions)
-- **Email:** `info@dfmt.dev
+- **Email:** `info@dfmt.dev`
 
 When filing a bug, run `dfmt bundle` to produce a redacted diagnostic tarball with logs, config, and last 1000 events. Attach it to the issue. The bundle is never transmitted automatically — you control what gets shared.
 
