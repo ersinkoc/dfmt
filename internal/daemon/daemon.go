@@ -95,13 +95,26 @@ func New(projectPath string, cfg *config.Config) (*Daemon, error) {
 		return nil, fmt.Errorf("open journal: %w", err)
 	}
 
-	// Create or load index
+	// Create or load index. When LoadIndexWithCursor signals needsRebuild
+	// (missing/corrupt cursor, tokenizer version bump, or unreadable index),
+	// stream the journal into a fresh index so historical events stay
+	// searchable. Without this, any rebuild signal silently empties search
+	// and recall until new events arrive.
 	indexPath := filepath.Join(dfmtDir, "index.gob")
 	cursorPath := filepath.Join(dfmtDir, "index.cursor")
 
 	index, _, needsRebuild, err := core.LoadIndexWithCursor(indexPath, cursorPath)
 	if err != nil || needsRebuild {
-		index = core.NewIndex()
+		rebuiltIdx, hiID, rerr := core.RebuildIndexFromJournal(context.Background(), journal)
+		if rerr != nil {
+			fmt.Fprintf(os.Stderr, "warning: rebuild index from journal: %v\n", rerr)
+			index = core.NewIndex()
+		} else {
+			index = rebuiltIdx
+			if perr := core.PersistIndex(index, indexPath, hiID); perr != nil {
+				fmt.Fprintf(os.Stderr, "warning: persist rebuilt index: %v\n", perr)
+			}
+		}
 	}
 
 	// Create sandbox

@@ -1,10 +1,39 @@
 package core
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
 )
+
+// RebuildIndexFromJournal streams every event from j into a fresh Index. The
+// returned hiID is the ID of the last event ingested (empty if the journal
+// was empty), suitable for passing to PersistIndex so the next cursor reflects
+// the rebuild.
+//
+// Use when LoadIndexWithCursor returned needsRebuild=true — without this,
+// callers that just took NewIndex() lose the entire historical journal from
+// search/recall until the user generates new events. A tokenizer-version
+// bump is the canonical case the version field was designed to handle.
+func RebuildIndexFromJournal(ctx context.Context, j Journal) (*Index, string, error) {
+	idx := NewIndex()
+	if j == nil {
+		return idx, "", nil
+	}
+	stream, err := j.Stream(ctx, "")
+	if err != nil {
+		return nil, "", err
+	}
+	var hiID string
+	for e := range stream {
+		idx.Add(e)
+		if e.ID > hiID {
+			hiID = e.ID
+		}
+	}
+	return idx, hiID, nil
+}
 
 // TokenizerVersion tracks changes to the tokenizer that require rebuild.
 const TokenizerVersion = 1

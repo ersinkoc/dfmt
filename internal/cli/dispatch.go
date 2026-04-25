@@ -1605,7 +1605,18 @@ func runMCP(_ []string) int {
 	cursorPath := filepath.Join(dfmtDir, "index.cursor")
 	index, _, needsRebuild, err := core.LoadIndexWithCursor(indexPath, cursorPath)
 	if err != nil || needsRebuild || index == nil {
-		index = core.NewIndex()
+		// Replay the journal so a tokenizer-version bump or corrupt cursor
+		// doesn't silently empty the searchable index for this MCP session.
+		if journal != nil {
+			if rebuilt, _, rerr := core.RebuildIndexFromJournal(context.Background(), journal); rerr == nil {
+				index = rebuilt
+			} else {
+				fmt.Fprintf(os.Stderr, "warning: rebuild index from journal: %v\n", rerr)
+				index = core.NewIndex()
+			}
+		} else {
+			index = core.NewIndex()
+		}
 	}
 
 	// Persist index on exit so events ingested during the MCP session survive

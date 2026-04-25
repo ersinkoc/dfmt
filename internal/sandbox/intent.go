@@ -270,3 +270,42 @@ func truncate(s string, maxLen int) string {
 	}
 	return s[:cut] + "..."
 }
+
+// trimPartialRune drops a trailing partial UTF-8 rune if one is present.
+// Use when a hard byte cap may have cut across a multi-byte character —
+// without trimming, encoding/json substitutes U+FFFD for the orphan
+// continuation bytes and the consumer sees a mangled last character.
+func trimPartialRune(s string) string {
+	if s == "" {
+		return s
+	}
+	// Walk back from the end across continuation bytes (10xxxxxx). If the
+	// rune-start byte's expected length exceeds what's actually present at
+	// the tail, the rune is incomplete and must be dropped.
+	end := len(s)
+	cut := end - 1
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	expected := expectedRuneLen(s[cut])
+	if expected == 0 || cut+expected == end {
+		return s
+	}
+	return s[:cut]
+}
+
+// expectedRuneLen returns the byte length implied by the leading byte of a
+// UTF-8 rune, or 0 if b is not a valid rune-start.
+func expectedRuneLen(b byte) int {
+	switch {
+	case b < 0x80:
+		return 1
+	case b&0xE0 == 0xC0:
+		return 2
+	case b&0xF0 == 0xE0:
+		return 3
+	case b&0xF8 == 0xF0:
+		return 4
+	}
+	return 0
+}

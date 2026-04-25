@@ -741,6 +741,12 @@ func (s *SandboxImpl) Read(ctx context.Context, req ReadReq) (ReadResp, error) {
 	}
 
 	content := string(data)
+	// Trim a trailing partial UTF-8 rune when readBudget actually clipped the
+	// file — without this a multi-byte character cut at the boundary reaches
+	// the consumer as invalid UTF-8 (encoding/json emits U+FFFD on marshal).
+	if int64(len(data)) >= readBudget && totalSize-req.Offset > readBudget {
+		content = trimPartialRune(content)
+	}
 
 	// Intent-based filtering
 	keywords := ExtractKeywords(req.Intent)
@@ -1045,7 +1051,11 @@ func (s *SandboxImpl) execImpl(ctx context.Context, req ExecReq, rt Runtime) (Ex
 	// Windows Git Bash outputs UTF-16LE with null bytes; convert to UTF-8
 	output := convertUTF16LEToUTF8(out)
 	if len(output) > MaxRawBytes {
-		output = output[:MaxRawBytes]
+		// Trim a trailing partial UTF-8 rune so encoding/json doesn't emit
+		// U+FFFD for the orphan continuation bytes on >MaxRawBytes outputs
+		// whose boundary falls mid-rune (Turkish gradle/maven, CJK paths
+		// in git log).
+		output = trimPartialRune(output[:MaxRawBytes])
 	}
 
 	// Intent-based filtering
