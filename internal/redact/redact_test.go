@@ -445,6 +445,24 @@ func TestRedactExpandedProviders(t *testing.T) {
 			label:  "",
 			secret: "topsecret@localhost",
 		},
+		{
+			// rediss:// (TLS) — coverage added alongside amqps:// to close the
+			// R14 diff-scan gap. The TLS variants share userinfo shape, so the
+			// regex alternation is rediss? / amqps?.
+			name:   "rediss tls connection in prose",
+			input:  "tls cache rediss://user:tlspass1@redis.internal:6380/2 is healthy",
+			label:  "",
+			secret: "tlspass1@redis",
+		},
+		{
+			// amqps:// (TLS variant of AMQP). The R14 phase A pattern only
+			// listed amqp; adding amqps was flagged as DIFF-002 in the diff
+			// scan and is closed here.
+			name:   "amqps tls connection in prose",
+			input:  "broker amqps://svc:rabbitSecret@rabbit.internal:5671/vhost is up",
+			label:  "",
+			secret: "rabbitSecret@rabbit",
+		},
 	}
 
 	for _, tc := range cases {

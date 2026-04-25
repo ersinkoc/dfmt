@@ -6,6 +6,12 @@ on:
   pull_request:
     branches: [main]
 
+# Default the GITHUB_TOKEN to read-only at the workflow level. CI only needs to
+# check out, build, and test — no write access. Jobs can still upgrade the
+# scope if a future step requires it (none currently do).
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ${{ matrix.os }}

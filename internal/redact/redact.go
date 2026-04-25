@@ -95,8 +95,10 @@ var commonPatterns = []*redactPattern{
 	// Captures user:password embedded in URI form. Replaces the credential
 	// portion in-place while preserving scheme/host so the message remains
 	// debuggable. Supported schemes: postgres(ql), mysql, mongodb(+srv),
-	// redis, amqp.
-	{name: "db_url_creds", regex: regexp.MustCompile(`(?i)(postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|amqp)://[^:\s/]+:[^@\s]+@`), repl: "$1://[REDACTED]:[REDACTED]@"},
+	// redis(s), amqp(s). The TLS variants (rediss, amqps) share the same
+	// userinfo shape and were called out as a coverage gap in the R14 diff
+	// scan.
+	{name: "db_url_creds", regex: regexp.MustCompile(`(?i)(postgres(?:ql)?|mysql|mongodb(?:\+srv)?|rediss?|amqps?)://[^:\s/]+:[^@\s]+@`), repl: "$1://[REDACTED]:[REDACTED]@"},
 
 	// === Generic auth headers / inline assignments (broadest, run last) ===
 
