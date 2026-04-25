@@ -63,6 +63,9 @@ DFMT is not just a tool — it is the **mandatory proxy layer** for all operatio
 | Clean build artifacts and local state | `make clean` |
 | Install to GOPATH/bin | `make install` |
 | Cross-compile release binaries | `make release` |
+| Diagnostic bundle (for bug reports) | `dfmt bundle` |
+| Install git hooks | `dfmt install-hooks` |
+| Shell integration snippet | `dfmt shell-init bash\|zsh\|fish` |
 
 ## Architecture
 
@@ -114,9 +117,11 @@ DFMT is not just a tool — it is the **mandatory proxy layer** for all operatio
 - **Git hooks** (`git.go`) — post-commit, post-checkout, pre-push. **Live (opt-in)**: `dfmt install-hooks` writes the three scripts (embedded in the binary) into `.git/hooks/`, and each script shells out to `dfmt capture git <subcmd>` which calls `client.Remember` so the event lands in the journal via the daemon.
 - **Shell integration** (`shell.go`) — Tracks cwd. **Live (opt-in)**: `dfmt shell-init <bash|zsh|fish>` prints the integration snippet; once sourced, the shell invokes `dfmt capture env.cwd` on every prompt and the event is journaled the same way.
 
-The helper types in `capture/git.go` and `capture/shell.go` are still orphan stubs — the live path goes through the CLI (`dfmt capture ...`) and the transport `Remember` RPC, not those types.
-
 FSWatcher is wired: daemon.Start() launches the watcher and drains its Events() channel into the journal and index (opt-in via `capture.fs.enabled=true`).
+
+### Session memory
+
+Events are prioritized (p1–p4) and sourced (MCP, filesystem watcher, git hook, shell, CLI). When the conversation compacts, `dfmt recall` rebuilds a snapshot under a byte budget — critical events first, dropping lower-tier content if the budget is tight.
 
 ### Agent setup
 
