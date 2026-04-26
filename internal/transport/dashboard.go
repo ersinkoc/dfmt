@@ -99,7 +99,6 @@ select:focus { outline: none; border-color: #00d4ff; }
 // CORS/CSRF and did not carry the per-daemon auth token anyway.
 const DashboardJS = `(function() {
 var errorEl, loadingEl, statsEl, refreshBtn, projectSelect, daemonBadge;
-var authToken = '';
 
 function showError(msg) {
   errorEl.textContent = msg;
@@ -177,30 +176,9 @@ function renderChart(containerId, data) {
   });
 }
 
-async function fetchWithAuth(url, options) {
-  if (authToken) {
-    options = options || {};
-    options.headers = options.headers || {};
-    options.headers['Authorization'] = 'Bearer ' + authToken;
-  }
-  return fetch(url, options);
-}
-
-async function loadAuthToken() {
-  try {
-    var resp = await fetch('/api/token');
-    if (resp.ok) {
-      var data = await resp.json();
-      authToken = data.token || '';
-    }
-  } catch (err) {
-    console.error('Failed to load auth token:', err);
-  }
-}
-
 async function loadDaemons() {
   try {
-    var resp = await fetchWithAuth('/api/daemons');
+    var resp = await fetch('/api/daemons');
     var daemons = await resp.json();
     projectSelect.innerHTML = '';
     if (!daemons || daemons.length === 0) {
@@ -224,7 +202,7 @@ async function loadDaemons() {
 async function loadStats() {
   showLoading();
   try {
-    var resp = await fetchWithAuth('/api/stats', {
+    var resp = await fetch('/api/stats', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({jsonrpc: '2.0', method: 'dfmt.stats', params: {}, id: 1})
@@ -265,10 +243,8 @@ function init() {
   daemonBadge = document.getElementById('daemonBadge');
 
   refreshBtn.addEventListener('click', loadStats);
-  loadAuthToken().then(function() {
-    loadDaemons();
-    loadStats();
-  });
+  loadDaemons();
+  loadStats();
 }
 
 document.addEventListener('DOMContentLoaded', init);

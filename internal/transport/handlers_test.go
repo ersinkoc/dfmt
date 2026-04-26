@@ -1147,7 +1147,7 @@ func TestHTTPServerWritePortFile(t *testing.T) {
 	portFile := tmpDir + "/portfile"
 
 	hs := NewHTTPServer(":8080", nil)
-	err := hs.writePortFile(portFile, 12345, "")
+	err := hs.writePortFile(portFile, 12345)
 	if err != nil {
 		t.Fatalf("writePortFile failed: %v", err)
 	}
@@ -1170,7 +1170,7 @@ func TestHTTPServerWritePortFileCreateDir(t *testing.T) {
 	portFile := tmpDir + "/subdir/portfile"
 
 	hs := NewHTTPServer(":8080", nil)
-	err := hs.writePortFile(portFile, 54321, "")
+	err := hs.writePortFile(portFile, 54321)
 	if err != nil {
 		t.Fatalf("writePortFile failed: %v", err)
 	}

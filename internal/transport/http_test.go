@@ -182,7 +182,7 @@ func TestWritePortFile(t *testing.T) {
 	tmpDir := t.TempDir()
 	portFile := tmpDir + "/.dfmt/port"
 
-	err := hs.writePortFile(portFile, 12345, "tok123")
+	err := hs.writePortFile(portFile, 12345)
 	if err != nil {
 		t.Fatalf("writePortFile failed: %v", err)
 	}
@@ -198,9 +198,6 @@ func TestWritePortFile(t *testing.T) {
 	}
 	if pf.Port != 12345 {
 		t.Errorf("expected port 12345, got %d", pf.Port)
-	}
-	if pf.Token != "tok123" {
-		t.Errorf("expected token tok123, got %q", pf.Token)
 	}
 }
 
@@ -363,7 +360,7 @@ func TestHTTPServerWritePortFileCreatesNestedDir(t *testing.T) {
 	tmpDir := t.TempDir()
 	portFile := tmpDir + "/.dfmt/nested/deep/port"
 
-	err := hs.writePortFile(portFile, 9999, "")
+	err := hs.writePortFile(portFile, 9999)
 	if err != nil {
 		t.Fatalf("writePortFile failed: %v", err)
 	}
@@ -405,7 +402,7 @@ func TestHTTPServerWritePortFileInvalidDir(t *testing.T) {
 		portFile = "NUL:/invalid"
 	}
 
-	err := hs.writePortFile(portFile, 12345, "")
+	err := hs.writePortFile(portFile, 12345)
 	if err == nil {
 		t.Log("writePortFile succeeded (may be allowed on some systems)")
 	}
@@ -417,7 +414,7 @@ func TestHTTPServerWritePortFileEmptyDir(t *testing.T) {
 	hs := NewHTTPServer("127.0.0.1:0", handlers)
 
 	// Empty path should fail
-	err := hs.writePortFile("", 12345, "")
+	err := hs.writePortFile("", 12345)
 	if err == nil {
 		t.Error("writePortFile should fail with empty path")
 	}

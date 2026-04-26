@@ -76,21 +76,14 @@ type HTTPServer struct {
 	// Start/Stop cycle.
 	doneCh chan struct{}
 
-	// authToken is part of the port-file wire format and the /api/token
-	// endpoint contract. It is currently always empty: loopback TCP is
-	// guarded by the port file's 0600 mode plus same-origin checks, and
-	// Unix sockets rely on filesystem permissions. The field is retained so
-	// the wire format stays stable if opt-in auth is ever re-enabled.
-	authToken   string
 	projectPath string // Used to filter /api/daemons to only this daemon
 }
 
-// PortFile is the JSON format written to the port file. Token is currently
-// always empty (see authToken comment); older versions wrote a bare integer
-// and the read path still falls back to that format for compatibility.
+// PortFile is the JSON format written to the port file. Older daemons wrote a
+// bare integer and the read path still falls back to that format for
+// compatibility.
 type PortFile struct {
-	Port  int    `json:"port"`
-	Token string `json:"token"`
+	Port int `json:"port"`
 }
 
 // NewHTTPServer creates a new HTTP server with TCP listener.
@@ -141,11 +134,11 @@ func (s *HTTPServer) Start(ctx context.Context) error {
 	// F-09: Refuse non-loopback TCP binds. The same-origin gate plus port-file
 	// 0600 perms only protect against same-host attackers; a non-loopback bind
 	// exposes unauthenticated JSON-RPC (dfmt.exec, dfmt.write, dfmt.fetch, …)
-	// to the LAN. Bearer-token auth is not currently wired (the authToken
-	// plumbing is dead, see F-22). Until auth is implemented, refuse the bind
-	// rather than silently shipping unauthenticated RPC. Unix sockets and
-	// other non-TCP listeners are gated by filesystem permissions, not this
-	// check.
+	// to the LAN. Bearer-token auth is not implemented (the dead authToken
+	// plumbing was ripped out under F-22). Until auth is wired, refuse the
+	// bind rather than silently shipping unauthenticated RPC. Unix sockets
+	// and other non-TCP listeners are gated by filesystem permissions, not
+	// this check.
 	if addr, ok := ln.Addr().(*net.TCPAddr); ok {
 		if !addr.IP.IsLoopback() {
 			if ownListener {
@@ -162,7 +155,6 @@ func (s *HTTPServer) Start(ctx context.Context) error {
 	mux.HandleFunc("/dashboard.js", s.handleDashboardJS)
 	mux.HandleFunc("/api/stats", s.handleAPIStats)
 	mux.HandleFunc("/api/daemons", s.handleAPIDaemons)
-	mux.HandleFunc("/api/token", s.handleAPIToken)
 	mux.HandleFunc("/healthz", s.handleHealth)
 	mux.HandleFunc("/readyz", s.handleHealth)
 
@@ -176,7 +168,7 @@ func (s *HTTPServer) Start(ctx context.Context) error {
 	}
 
 	if s.portFile != "" && actualPort > 0 {
-		if err := s.writePortFile(s.portFile, actualPort, s.authToken); err != nil {
+		if err := s.writePortFile(s.portFile, actualPort); err != nil {
 			_ = ln.Close()
 			return fmt.Errorf("write port file: %w", err)
 		}
@@ -479,15 +471,15 @@ func (s *HTTPServer) handleStats(ctx context.Context, req Request) Response {
 	return Response{JSONRPC: jsonRPCVersion, ID: req.ID, Result: resp}
 }
 
-// writePortFile writes {"port":...,"token":"..."} to path with mode 0600 so
-// other local users cannot read the daemon's port (and the same-origin gate
-// then keeps cross-origin browser pages out).
-func (s *HTTPServer) writePortFile(path string, port int, token string) error {
+// writePortFile writes {"port":...} to path with mode 0600 so other local
+// users cannot read the daemon's port (and the same-origin gate plus the
+// non-loopback bind refusal keep cross-origin browser pages out).
+func (s *HTTPServer) writePortFile(path string, port int) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
-	data, err := json.Marshal(PortFile{Port: port, Token: token})
+	data, err := json.Marshal(PortFile{Port: port})
 	if err != nil {
 		return err
 	}
@@ -625,19 +617,6 @@ func (s *HTTPServer) handleHealth(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/plain")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte("ok"))
-}
-
-// handleAPIToken returns the auth token for the dashboard JS. Currently
-// always empty (see authToken field comment); the endpoint and dashboard
-// fetch are kept so the contract stays stable if opt-in auth is ever
-// re-enabled. Same-origin check still gates this endpoint.
-func (s *HTTPServer) handleAPIToken(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]string{"token": s.authToken})
 }
 
 func (s *HTTPServer) handleAPIDaemons(w http.ResponseWriter, r *http.Request) {
