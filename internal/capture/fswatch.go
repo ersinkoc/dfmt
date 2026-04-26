@@ -220,21 +220,111 @@ func (w *FSWatcher) shouldIgnore(path string) bool {
 	if err != nil {
 		return false
 	}
+	// Normalize to forward slashes so user-authored patterns ("node_modules/**")
+	// match Windows paths uniformly. filepath.Match's split-on-separator alone
+	// doesn't help when the pattern itself contains a separator.
+	relSlash := filepath.ToSlash(rel)
 
 	for _, pattern := range w.ignore {
-		matched, _ := filepath.Match(pattern, rel)
-		if matched {
+		if matchIgnorePattern(pattern, relSlash) {
 			return true
 		}
-		parts := strings.Split(rel, string(filepath.Separator))
+		// Also test each path component individually so a bare-name pattern
+		// like "*.log" or "node_modules" matches at any depth — preserves
+		// the previous semantics for non-** patterns.
+		parts := strings.Split(relSlash, "/")
 		for _, part := range parts {
-			matched, _ = filepath.Match(pattern, part)
+			matched, _ := filepath.Match(pattern, part)
 			if matched {
 				return true
 			}
 		}
 	}
 
+	return false
+}
+
+// matchIgnorePattern handles glob patterns with "**" support, which
+// stdlib filepath.Match does NOT. The default ignore list ships with
+// patterns like ".dfmt/**", "node_modules/**", and "**/__pycache__"
+// that previously matched NOTHING because filepath.Match treated "**"
+// as two literal stars. This function fixes that:
+//
+//   - "prefix/**" matches the prefix itself or anything under it
+//   - "**/suffix" matches anything ending in /suffix
+//   - "a/**/b"   matches any path with a as ancestor and b as descendant
+//   - other patterns delegate to filepath.Match
+//
+// Without "**" support, enabling fs capture means .dfmt/journal.jsonl
+// changes leak straight back into the watcher and the journal grows
+// unbounded from its own writes — the canonical "infinite loop" bug.
+func matchIgnorePattern(pattern, path string) bool {
+	pattern = filepath.ToSlash(pattern)
+	if !strings.Contains(pattern, "**") {
+		// Try pattern against full path; filepath.Match is path-aware here.
+		matched, _ := filepath.Match(pattern, path)
+		return matched
+	}
+
+	// Suffix form: "**/x" — matches if path ends with "/x" or equals "x".
+	if strings.HasPrefix(pattern, "**/") {
+		suffix := pattern[3:]
+		if !strings.Contains(suffix, "**") {
+			if matched, _ := filepath.Match(suffix, path); matched {
+				return true
+			}
+			if strings.HasSuffix(path, "/"+suffix) {
+				return true
+			}
+			// Try with each tail of path so "**/x.go" matches a/b/x.go
+			parts := strings.Split(path, "/")
+			for i := 0; i < len(parts); i++ {
+				tail := strings.Join(parts[i:], "/")
+				if matched, _ := filepath.Match(suffix, tail); matched {
+					return true
+				}
+			}
+			return false
+		}
+	}
+
+	// Prefix form: "x/**" — matches "x" itself or anything under "x".
+	if strings.HasSuffix(pattern, "/**") {
+		prefix := pattern[:len(pattern)-3]
+		if !strings.Contains(prefix, "**") {
+			if path == prefix {
+				return true
+			}
+			return strings.HasPrefix(path, prefix+"/")
+		}
+	}
+
+	// "a/**/b" form: split on "**" and require each part anchored on a
+	// path segment boundary. Works for the common case in our default list
+	// without pulling in a full regex compiler.
+	parts := strings.Split(pattern, "**")
+	if len(parts) == 2 {
+		pre, post := strings.TrimSuffix(parts[0], "/"), strings.TrimPrefix(parts[1], "/")
+		if !strings.HasPrefix(path, pre) {
+			return false
+		}
+		rest := strings.TrimPrefix(path, pre)
+		rest = strings.TrimPrefix(rest, "/")
+		// Require post matches some suffix of rest.
+		if post == "" {
+			return true
+		}
+		if matched, _ := filepath.Match(post, rest); matched {
+			return true
+		}
+		segs := strings.Split(rest, "/")
+		for i := 0; i < len(segs); i++ {
+			tail := strings.Join(segs[i:], "/")
+			if matched, _ := filepath.Match(post, tail); matched {
+				return true
+			}
+		}
+	}
 	return false
 }
 

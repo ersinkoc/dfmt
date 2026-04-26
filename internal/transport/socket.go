@@ -8,7 +8,10 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 )
+
+var socketReadIdleTimeout = 60 * time.Second
 
 // SocketServer listens on a Unix socket and handles JSON-RPC requests.
 type SocketServer struct {
@@ -45,15 +48,21 @@ func (s *SocketServer) Start(ctx context.Context) error {
 	// Remove existing socket
 	os.Remove(s.path)
 
-	// Listen
-	ln, err := net.Listen("unix", s.path)
+	// Listen with a restrictive umask on Unix so the socket never exists with
+	// broad default permissions before the chmod below runs.
+	ln, err := listenUnixSocket(s.path)
 	if err != nil {
 		s.mu.Unlock()
 		return fmt.Errorf("listen: %w", err)
 	}
 
-	// Set permissions
-	os.Chmod(s.path, 0700)
+	// Set permissions. A failure here is unusual on the platforms where Unix
+	// sockets exist, but if it happens we log so the operator can spot the
+	// regression — silently allowing 0666 perms on the socket would let any
+	// local user dial the daemon.
+	if cerr := os.Chmod(s.path, 0o700); cerr != nil {
+		fmt.Fprintf(os.Stderr, "warning: chmod socket: %v\n", cerr)
+	}
 
 	s.listener = ln
 	s.running = true
@@ -112,6 +121,9 @@ func (s *SocketServer) handleConn(conn net.Conn) {
 	codec := NewCodec(conn)
 
 	for {
+		if socketReadIdleTimeout > 0 {
+			_ = conn.SetReadDeadline(time.Now().Add(socketReadIdleTimeout))
+		}
 		req, err := codec.ReadRequest()
 		if err != nil {
 			return

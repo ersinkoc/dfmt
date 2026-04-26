@@ -7,15 +7,18 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
 // dfmtMCPServerEntry returns the canonical MCP server entry that DFMT writes
-// into Claude Code's ~/.claude.json configuration.
+// into Claude Code's ~/.claude.json configuration. The `command` is resolved
+// to an absolute path (via ResolveDFMTCommand) so the MCP launch does not
+// depend on Claude Code inheriting an up-to-date PATH from its parent shell.
 func dfmtMCPServerEntry() map[string]any {
 	return map[string]any{
 		"type":    "stdio",
-		"command": "dfmt",
+		"command": ResolveDFMTCommand(),
 		"args":    []any{"mcp"},
 		"env":     map[string]any{},
 	}
@@ -96,6 +99,34 @@ func PatchClaudeCodeUserJSON(projectPath string, setUserScopeMCP bool) error {
 		if projects == nil {
 			projects = map[string]any{}
 		}
+
+		// On Windows the filesystem is case-insensitive, but Claude Code keys
+		// `projects` by whatever case the cwd had at the time. Two case
+		// variants of the same path can therefore coexist (e.g. "D:/Codebox"
+		// and "D:/CODEBOX") even though they refer to the same project. PS
+		// JSON parsers refuse such files outright, so collapse the variants
+		// into the canonical key before patching.
+		if runtime.GOOS == "windows" {
+			canonical, _ := projects[key].(map[string]any)
+			if canonical == nil {
+				canonical = map[string]any{}
+			}
+			for existingKey, val := range projects {
+				if existingKey == key || !strings.EqualFold(existingKey, key) {
+					continue
+				}
+				if other, ok := val.(map[string]any); ok {
+					for k, v := range other {
+						if _, has := canonical[k]; !has {
+							canonical[k] = v
+						}
+					}
+				}
+				delete(projects, existingKey)
+			}
+			projects[key] = canonical
+		}
+
 		entry, _ := projects[key].(map[string]any)
 		if entry == nil {
 			entry = map[string]any{}

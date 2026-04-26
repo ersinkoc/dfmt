@@ -3,6 +3,7 @@ package transport
 import (
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/ersinkoc/dfmt/internal/core"
@@ -254,5 +255,50 @@ func TestMCPToolsCall_Recall_InvalidArgs(t *testing.T) {
 	})
 	if resp.Error == nil || resp.Error.Code != -32602 {
 		t.Errorf("expected -32602, got %+v", resp.Error)
+	}
+}
+
+// TestMCPToolsCall_Read_CallToolResultShape locks down the MCP CallToolResult
+// envelope. Returning a bare ReadResponse used to make Claude Code reject the
+// reply with `expected array, received string` because ReadResponse.Content
+// is a string while MCP requires content to be a content-block array.
+func TestMCPToolsCall_Read_CallToolResultShape(t *testing.T) {
+	sb := &stubSandbox{readResp: sandbox.ReadResp{Content: "hello"}}
+	m := newTestMCPProtocol(sb, nil)
+	resp := callTool(t, m, methodRead, ReadParams{Path: "/x"})
+	if resp.Error != nil {
+		t.Fatalf("unexpected error: %+v", resp.Error)
+	}
+	wrapped, ok := resp.Result.(MCPCallToolResult)
+	if !ok {
+		t.Fatalf("Result type = %T, want MCPCallToolResult", resp.Result)
+	}
+	if len(wrapped.Content) == 0 || wrapped.Content[0].Type != "text" {
+		t.Errorf("Content = %+v, want at least one text block", wrapped.Content)
+	}
+	if wrapped.StructuredContent == nil {
+		t.Error("StructuredContent is nil; want original payload")
+	}
+	// The text block must carry the stringified payload so old text-only
+	// clients still see the data.
+	if !strings.Contains(wrapped.Content[0].Text, "hello") {
+		t.Errorf("Content[0].Text = %q, want to contain payload body", wrapped.Content[0].Text)
+	}
+}
+
+// TestMCPToolsCall_Exec_CallToolResultShape — same shape contract for exec.
+func TestMCPToolsCall_Exec_CallToolResultShape(t *testing.T) {
+	sb := &stubSandbox{execResp: sandbox.ExecResp{Exit: 0, Stdout: "ok"}}
+	m := newTestMCPProtocol(sb, nil)
+	resp := callTool(t, m, methodExec, ExecParams{Code: "echo ok"})
+	if resp.Error != nil {
+		t.Fatalf("unexpected error: %+v", resp.Error)
+	}
+	wrapped, ok := resp.Result.(MCPCallToolResult)
+	if !ok {
+		t.Fatalf("Result type = %T, want MCPCallToolResult", resp.Result)
+	}
+	if len(wrapped.Content) == 0 || wrapped.Content[0].Type != "text" {
+		t.Errorf("Content = %+v, want at least one text block", wrapped.Content)
 	}
 }

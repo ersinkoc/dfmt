@@ -63,7 +63,14 @@ select:focus { outline: none; border-color: #00d4ff; }
 <div class="card"><div class="card-value" id="total-events">0</div><div class="card-label">Total Events</div></div>
 <div class="card"><div class="card-value" id="session-duration">-</div><div class="card-label">Session Duration</div></div>
 </div>
-<h2>Token Metrics</h2>
+<h2>MCP Byte Savings</h2>
+<div class="cards">
+<div class="card"><div class="card-value" id="raw-bytes">0</div><div class="card-label">Raw Bytes</div></div>
+<div class="card"><div class="card-value" id="returned-bytes">0</div><div class="card-label">Returned Bytes</div></div>
+<div class="card"><div class="card-value" id="bytes-saved">0</div><div class="card-label">Bytes Saved</div></div>
+<div class="card"><div class="card-value" id="compression-ratio">0%</div><div class="card-label">Compression</div></div>
+</div>
+<h2>LLM Token Metrics</h2>
 <div class="cards">
 <div class="card"><div class="card-value" id="total-input">0</div><div class="card-label">Input Tokens</div></div>
 <div class="card"><div class="card-value" id="total-output">0</div><div class="card-label">Output Tokens</div></div>
@@ -230,6 +237,10 @@ async function loadStats() {
     document.getElementById('total-output').textContent = formatNumber(stats.total_output_tokens || 0);
     document.getElementById('token-savings').textContent = formatNumber(stats.token_savings || 0);
     document.getElementById('cache-hit-rate').textContent = (stats.cache_hit_rate || 0).toFixed(1) + '%';
+    document.getElementById('raw-bytes').textContent = formatNumber(stats.total_raw_bytes || 0);
+    document.getElementById('returned-bytes').textContent = formatNumber(stats.total_returned_bytes || 0);
+    document.getElementById('bytes-saved').textContent = formatNumber(stats.bytes_saved || 0);
+    document.getElementById('compression-ratio').textContent = ((stats.compression_ratio || 0) * 100).toFixed(1) + '%';
     if (stats.session_start && stats.session_end) {
       var start = new Date(stats.session_start);
       var end = new Date(stats.session_end);

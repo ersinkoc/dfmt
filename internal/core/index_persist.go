@@ -18,21 +18,45 @@ import (
 // bump is the canonical case the version field was designed to handle.
 func RebuildIndexFromJournal(ctx context.Context, j Journal) (*Index, string, error) {
 	idx := NewIndex()
-	if j == nil {
-		return idx, "", nil
-	}
-	stream, err := j.Stream(ctx, "")
+	hiID, err := RebuildIndexFromJournalInto(ctx, j, idx)
 	if err != nil {
 		return nil, "", err
 	}
+	return idx, hiID, nil
+}
+
+// RebuildIndexFromJournalInto streams the journal into an existing Index. It
+// exists so the daemon can hand a fresh empty Index to handlers immediately
+// (so the listener can come up on time) and populate it asynchronously,
+// rather than blocking startup behind a 5-10s rebuild that times out the
+// agent's first MCP call. Index is concurrent-safe via its internal RWMutex,
+// so search/recall during rebuild observes a partial-but-growing view
+// instead of "daemon not responding".
+//
+// The context is honored so daemon.Stop can interrupt a long-running rebuild.
+func RebuildIndexFromJournalInto(ctx context.Context, j Journal, idx *Index) (string, error) {
+	if j == nil || idx == nil {
+		return "", nil
+	}
+	stream, err := j.Stream(ctx, "")
+	if err != nil {
+		return "", err
+	}
 	var hiID string
-	for e := range stream {
-		idx.Add(e)
-		if e.ID > hiID {
-			hiID = e.ID
+	for {
+		select {
+		case <-ctx.Done():
+			return hiID, ctx.Err()
+		case e, ok := <-stream:
+			if !ok {
+				return hiID, nil
+			}
+			idx.Add(e)
+			if e.ID > hiID {
+				hiID = e.ID
+			}
 		}
 	}
-	return idx, hiID, nil
 }
 
 // TokenizerVersion tracks changes to the tokenizer that require rebuild.

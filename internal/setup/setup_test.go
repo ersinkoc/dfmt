@@ -425,6 +425,59 @@ files: []
 	}
 }
 
+func TestLoadManifest_RejectsUnknownYAMLFields(t *testing.T) {
+	origHome := os.Getenv("HOME")
+	defer func() {
+		os.Setenv("HOME", origHome)
+	}()
+
+	tmpDir := t.TempDir()
+	os.Setenv("XDG_DATA_HOME", tmpDir)
+
+	dfmtDir := filepath.Join(tmpDir, "dfmt")
+	os.MkdirAll(dfmtDir, 0755)
+	manifestPath := filepath.Join(dfmtDir, "setup-manifest.json")
+
+	yamlContent := `version: 1
+timestamp: "2024-01-01T00:00:00Z"
+unknown_field: true
+`
+	os.WriteFile(manifestPath, []byte(yamlContent), 0644)
+
+	_, err := LoadManifest()
+	if err == nil {
+		t.Fatal("LoadManifest should reject unknown YAML fields")
+	}
+	if !strings.Contains(err.Error(), "field unknown_field not found") {
+		t.Fatalf("expected unknown-field error, got %v", err)
+	}
+}
+
+func TestLoadManifest_RejectsOversizedFile(t *testing.T) {
+	origHome := os.Getenv("HOME")
+	defer func() {
+		os.Setenv("HOME", origHome)
+	}()
+
+	tmpDir := t.TempDir()
+	os.Setenv("XDG_DATA_HOME", tmpDir)
+
+	dfmtDir := filepath.Join(tmpDir, "dfmt")
+	os.MkdirAll(dfmtDir, 0755)
+	manifestPath := filepath.Join(dfmtDir, "setup-manifest.json")
+
+	content := strings.Repeat("# filler\n", (maxManifestBytes/9)+2)
+	os.WriteFile(manifestPath, []byte(content), 0644)
+
+	_, err := LoadManifest()
+	if err == nil {
+		t.Fatal("LoadManifest should reject oversized manifest files")
+	}
+	if !strings.Contains(err.Error(), "too large") {
+		t.Fatalf("expected too-large error, got %v", err)
+	}
+}
+
 func TestLoadManifest_ValidJSONFallbackToYAMLNeverHit(t *testing.T) {
 	// JSON succeeds, so the yaml.Unmarshal branch is never hit.
 	// This test documents that the json-only path is covered.
@@ -449,6 +502,127 @@ func TestLoadManifest_ValidJSONFallbackToYAMLNeverHit(t *testing.T) {
 	}
 	if m.Version != 2 {
 		t.Errorf("Version = %d, want 2", m.Version)
+	}
+}
+
+func TestLoadManifest_RejectsUnknownJSONFields(t *testing.T) {
+	origHome := os.Getenv("HOME")
+	defer func() {
+		os.Setenv("HOME", origHome)
+	}()
+
+	tmpDir := t.TempDir()
+	os.Setenv("XDG_DATA_HOME", tmpDir)
+
+	dfmtDir := filepath.Join(tmpDir, "dfmt")
+	os.MkdirAll(dfmtDir, 0755)
+	manifestPath := filepath.Join(dfmtDir, "setup-manifest.json")
+
+	jsonContent := `{"version": 1, "timestamp": "2024-01-01T00:00:00Z", "unknown_field": true}`
+	os.WriteFile(manifestPath, []byte(jsonContent), 0644)
+
+	_, err := LoadManifest()
+	if err == nil {
+		t.Fatal("LoadManifest should reject unknown JSON fields")
+	}
+	if !strings.Contains(err.Error(), "field unknown_field not found") {
+		t.Fatalf("expected unknown-field error, got %v", err)
+	}
+}
+
+func TestLoadManifest_AcceptsExistingJSONFieldNames(t *testing.T) {
+	origHome := os.Getenv("HOME")
+	defer func() {
+		os.Setenv("HOME", origHome)
+	}()
+
+	tmpDir := t.TempDir()
+	os.Setenv("XDG_DATA_HOME", tmpDir)
+
+	dfmtDir := filepath.Join(tmpDir, "dfmt")
+	os.MkdirAll(dfmtDir, 0755)
+	manifestPath := filepath.Join(dfmtDir, "setup-manifest.json")
+
+	jsonContent := `{"Version":1,"Timestamp":"2024-01-01T00:00:00Z","Agents":[{"AgentID":"codex","Configured":true,"ConfigDir":"C:/tmp/codex"}],"Files":[]}`
+	os.WriteFile(manifestPath, []byte(jsonContent), 0644)
+
+	m, err := LoadManifest()
+	if err != nil {
+		t.Fatalf("LoadManifest should accept existing saved JSON field names: %v", err)
+	}
+	if len(m.Agents) != 1 || m.Agents[0].AgentID != "codex" {
+		t.Fatalf("unexpected manifest agents: %+v", m.Agents)
+	}
+}
+
+func TestLoadManifest_RejectsTrailingJSONValue(t *testing.T) {
+	origHome := os.Getenv("HOME")
+	defer func() {
+		os.Setenv("HOME", origHome)
+	}()
+
+	tmpDir := t.TempDir()
+	os.Setenv("XDG_DATA_HOME", tmpDir)
+
+	dfmtDir := filepath.Join(tmpDir, "dfmt")
+	os.MkdirAll(dfmtDir, 0755)
+	manifestPath := filepath.Join(dfmtDir, "setup-manifest.json")
+
+	content := `{"version": 1, "agents": [], "files": []} {"version": 2}`
+	os.WriteFile(manifestPath, []byte(content), 0644)
+
+	_, err := LoadManifest()
+	if err == nil {
+		t.Fatal("LoadManifest should reject trailing JSON values")
+	}
+}
+
+func TestLoadManifest_RejectsMultipleYAMLDocuments(t *testing.T) {
+	origHome := os.Getenv("HOME")
+	defer func() {
+		os.Setenv("HOME", origHome)
+	}()
+
+	tmpDir := t.TempDir()
+	os.Setenv("XDG_DATA_HOME", tmpDir)
+
+	dfmtDir := filepath.Join(tmpDir, "dfmt")
+	os.MkdirAll(dfmtDir, 0755)
+	manifestPath := filepath.Join(dfmtDir, "setup-manifest.json")
+
+	content := "version: 1\n---\nversion: 2\n"
+	os.WriteFile(manifestPath, []byte(content), 0644)
+
+	_, err := LoadManifest()
+	if err == nil {
+		t.Fatal("LoadManifest should reject multiple YAML documents")
+	}
+	if !strings.Contains(err.Error(), "exactly one document") {
+		t.Fatalf("expected single-document error, got %v", err)
+	}
+}
+
+func TestLoadManifest_AllowsEmptyYAMLManifest(t *testing.T) {
+	origHome := os.Getenv("HOME")
+	defer func() {
+		os.Setenv("HOME", origHome)
+	}()
+
+	tmpDir := t.TempDir()
+	os.Setenv("XDG_DATA_HOME", tmpDir)
+
+	dfmtDir := filepath.Join(tmpDir, "dfmt")
+	os.MkdirAll(dfmtDir, 0755)
+	manifestPath := filepath.Join(dfmtDir, "setup-manifest.json")
+
+	os.WriteFile(manifestPath, nil, 0644)
+
+	m, err := LoadManifest()
+	if err != nil {
+		t.Fatalf("empty manifest should be accepted, got %v", err)
+	}
+	if m == nil {
+		t.Fatal("empty manifest should return a non-nil manifest")
 	}
 }
 

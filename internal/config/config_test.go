@@ -549,3 +549,74 @@ func TestMergeYAMLUnmarshalError(t *testing.T) {
 		t.Error("merge should fail for invalid YAML")
 	}
 }
+
+func TestMergeRejectsUnknownFields(t *testing.T) {
+	cfg := Default()
+
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "unknown.yaml")
+	content := []byte("version: 1\nunknown_top_level: true\n")
+	if err := os.WriteFile(configPath, content, 0644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	err := merge(cfg, configPath)
+	if err == nil {
+		t.Fatal("merge should reject unknown YAML fields")
+	}
+	if !strings.Contains(err.Error(), "field unknown_top_level not found") {
+		t.Fatalf("expected unknown-field error, got %v", err)
+	}
+}
+
+func TestMergeRejectsOversizedConfig(t *testing.T) {
+	cfg := Default()
+
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "large.yaml")
+	content := strings.Repeat("# filler\n", (maxConfigBytes/9)+2)
+	if err := os.WriteFile(configPath, []byte(content), 0644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	err := merge(cfg, configPath)
+	if err == nil {
+		t.Fatal("merge should reject oversized config files")
+	}
+	if !strings.Contains(err.Error(), "too large") {
+		t.Fatalf("expected too-large error, got %v", err)
+	}
+}
+
+func TestMergeRejectsMultipleYAMLDocuments(t *testing.T) {
+	cfg := Default()
+
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "multi.yaml")
+	content := []byte("version: 1\n---\nversion: 1\n")
+	if err := os.WriteFile(configPath, content, 0644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	err := merge(cfg, configPath)
+	if err == nil {
+		t.Fatal("merge should reject multiple YAML documents")
+	}
+	if !strings.Contains(err.Error(), "exactly one YAML document") {
+		t.Fatalf("expected single-document error, got %v", err)
+	}
+}
+
+func TestMergeAllowsEmptyConfig(t *testing.T) {
+	cfg := Default()
+
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "empty.yaml")
+	if err := os.WriteFile(configPath, nil, 0644); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	if err := merge(cfg, configPath); err != nil {
+		t.Fatalf("empty config should be accepted, got %v", err)
+	}
+}

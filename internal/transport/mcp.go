@@ -23,16 +23,21 @@ type MCPTool struct {
 // MCPInitializeResult is the result of initialization.
 type MCPInitializeResult struct {
 	ProtocolVersion string                `json:"protocolVersion"`
-	Capabilities    MCPClientCapabilities `json:"capabilities"`
+	Capabilities    MCPServerCapabilities `json:"capabilities"`
 	ServerInfo      MCPServerInfo         `json:"serverInfo"`
 }
 
-// MCPClientCapabilities represents client capabilities.
-type MCPClientCapabilities struct {
-	Roots struct {
-		ListChanged bool `json:"listChanged"`
-	} `json:"roots"`
-	Sampling struct{} `json:"sampling"`
+// MCPServerCapabilities is what dfmt advertises in the initialize reply.
+// Without a non-empty `tools` field, MCP clients (Claude Code) won't call
+// tools/list and the server appears to expose no tools at all.
+type MCPServerCapabilities struct {
+	Tools MCPToolsCapability `json:"tools"`
+}
+
+// MCPToolsCapability marks the tools capability as present. Empty object
+// is sufficient per spec; listChanged advertises notification support.
+type MCPToolsCapability struct {
+	ListChanged bool `json:"listChanged"`
 }
 
 // MCPServerInfo represents server information.
@@ -47,6 +52,38 @@ type MCPRequest struct {
 	Method  string          `json:"method"`
 	Params  json.RawMessage `json:"params,omitempty"`
 	ID      any             `json:"id,omitempty"`
+}
+
+// MCPContent is one block of an MCP CallToolResult content array. Only the
+// text variant is emitted today; image/resource blocks would be added here.
+type MCPContent struct {
+	Type string `json:"type"`
+	Text string `json:"text,omitempty"`
+}
+
+// MCPCallToolResult is the wire shape MCP clients expect from tools/call.
+// Returning a plain handler struct as `result` makes Claude Code's strict
+// schema validator reject the response — it walks `result.content` looking
+// for a content-block array and trips on, e.g., ReadResponse.Content (string).
+type MCPCallToolResult struct {
+	Content           []MCPContent `json:"content"`
+	StructuredContent any          `json:"structuredContent,omitempty"`
+	IsError           bool         `json:"isError,omitempty"`
+}
+
+// mcpToolResult wraps a handler payload in the MCP CallToolResult envelope.
+// The JSON-stringified payload lives in content[0].text so old text-only
+// clients still see the data; structuredContent surfaces the typed object
+// for clients that prefer it.
+func mcpToolResult(payload any) MCPCallToolResult {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		body = []byte(fmt.Sprintf("%v", payload))
+	}
+	return MCPCallToolResult{
+		Content:           []MCPContent{{Type: "text", Text: string(body)}},
+		StructuredContent: payload,
+	}
 }
 
 // MCPResponse represents an MCP response. The ID field is emitted as
@@ -99,7 +136,9 @@ func (m *MCPProtocol) Handle(req *MCPRequest) (*MCPResponse, error) {
 func (m *MCPProtocol) handleInitialize(req *MCPRequest) (*MCPResponse, error) {
 	result := MCPInitializeResult{
 		ProtocolVersion: config.DefaultMCPProtocolVersion,
-		Capabilities:    MCPClientCapabilities{},
+		Capabilities: MCPServerCapabilities{
+			Tools: MCPToolsCapability{ListChanged: false},
+		},
 		ServerInfo: MCPServerInfo{
 			Name:    "dfmt",
 			Version: "0.1.0",
@@ -116,7 +155,7 @@ func (m *MCPProtocol) handleInitialize(req *MCPRequest) (*MCPResponse, error) {
 func (m *MCPProtocol) handleToolsList(req *MCPRequest) (*MCPResponse, error) {
 	tools := []MCPTool{
 		{
-			Name:        methodExec,
+			Name:        mcpToolExec,
 			Description: "Execute code in sandbox. Returns intent-matched excerpts to save tokens.",
 			InputSchema: map[string]any{
 				"type": "object",
@@ -132,11 +171,12 @@ func (m *MCPProtocol) handleToolsList(req *MCPRequest) (*MCPResponse, error) {
 					},
 					"intent": map[string]any{
 						"type":        "string",
-						"description": "What you need from output. Only matching excerpts returned.",
+						"description": "STRONGLY RECOMMENDED. A short phrase describing what you actually need from the output (e.g. 'failing tests', 'imports', 'error message'). When provided, the response is filtered down to matching excerpts plus a summary, saving 70-90% of tokens vs the raw output. Without intent, large outputs (>4KB) return only a summary and the full bytes are stashed for later retrieval — set return=\"raw\" if you genuinely need the full output.",
 					},
 					"return": map[string]any{
 						"type":        "string",
-						"description": "Return mode: auto, raw, summary, search. Default: auto",
+						"enum":        []string{"auto", "raw", "summary", "search"},
+						"description": "Output mode. 'auto' (default): inline if small, summary+matches if large. 'raw': always inline (full token cost — use only when you need the bytes). 'summary': summary + intent-matches, never inline. 'search': matches + vocabulary only, the most token-efficient mode.",
 						"default":     "auto",
 					},
 					"timeout": map[string]any{
@@ -149,7 +189,7 @@ func (m *MCPProtocol) handleToolsList(req *MCPRequest) (*MCPResponse, error) {
 			},
 		},
 		{
-			Name:        methodRead,
+			Name:        mcpToolRead,
 			Description: "Read file via sandbox. Use this instead of native Read.",
 			InputSchema: map[string]any{
 				"type": "object",
@@ -160,7 +200,7 @@ func (m *MCPProtocol) handleToolsList(req *MCPRequest) (*MCPResponse, error) {
 					},
 					"intent": map[string]any{
 						"type":        "string",
-						"description": "What you need from the file. Only matching excerpts returned.",
+						"description": "STRONGLY RECOMMENDED. A short phrase describing what you need from the file (e.g. 'database config', 'TODO comments', 'exported types'). When provided, the response is filtered to matching excerpts. Without intent, files larger than 4KB return a summary only and the full content is stashed for retrieval; small files always inline.",
 					},
 					"offset": map[string]any{
 						"type":        "integer",
@@ -174,7 +214,8 @@ func (m *MCPProtocol) handleToolsList(req *MCPRequest) (*MCPResponse, error) {
 					},
 					"return": map[string]any{
 						"type":        "string",
-						"description": "Return mode: auto, raw, summary, search. Default: auto",
+						"enum":        []string{"auto", "raw", "summary", "search"},
+						"description": "Output mode. 'auto' (default): inline if small, summary+matches if large. 'raw': always inline (full token cost — use only when you need the bytes). 'summary': summary + intent-matches, never inline. 'search': matches + vocabulary only, the most token-efficient mode.",
 						"default":     "auto",
 					},
 				},
@@ -182,7 +223,7 @@ func (m *MCPProtocol) handleToolsList(req *MCPRequest) (*MCPResponse, error) {
 			},
 		},
 		{
-			Name:        methodFetch,
+			Name:        mcpToolFetch,
 			Description: "Fetch URL via sandbox. Use this instead of native WebFetch.",
 			InputSchema: map[string]any{
 				"type": "object",
@@ -193,7 +234,7 @@ func (m *MCPProtocol) handleToolsList(req *MCPRequest) (*MCPResponse, error) {
 					},
 					"intent": map[string]any{
 						"type":        "string",
-						"description": "What you need from the response. Only matching excerpts returned.",
+						"description": "STRONGLY RECOMMENDED. A short phrase describing what you need from the response (e.g. 'API rate limits', 'auth endpoints', 'error codes'). When provided, the response is filtered to matching excerpts. Without intent, responses larger than 4KB return a summary only and the full body is stashed.",
 					},
 					"method": map[string]any{
 						"type":        "string",
@@ -202,7 +243,8 @@ func (m *MCPProtocol) handleToolsList(req *MCPRequest) (*MCPResponse, error) {
 					},
 					"return": map[string]any{
 						"type":        "string",
-						"description": "Return mode: auto, raw, summary, search. Default: auto",
+						"enum":        []string{"auto", "raw", "summary", "search"},
+						"description": "Output mode. 'auto' (default): inline if small, summary+matches if large. 'raw': always inline (full token cost — use only when you need the bytes). 'summary': summary + intent-matches, never inline. 'search': matches + vocabulary only, the most token-efficient mode.",
 						"default":     "auto",
 					},
 					"timeout": map[string]any{
@@ -215,7 +257,7 @@ func (m *MCPProtocol) handleToolsList(req *MCPRequest) (*MCPResponse, error) {
 			},
 		},
 		{
-			Name:        methodRemember,
+			Name:        mcpToolRemember,
 			Description: "Record an LLM interaction with token usage for session tracking",
 			InputSchema: map[string]any{
 				"type": "object",
@@ -257,7 +299,7 @@ func (m *MCPProtocol) handleToolsList(req *MCPRequest) (*MCPResponse, error) {
 			},
 		},
 		{
-			Name:        methodStats,
+			Name:        mcpToolStats,
 			Description: "Get token savings statistics for the session",
 			InputSchema: map[string]any{
 				"type":       "object",
@@ -265,7 +307,7 @@ func (m *MCPProtocol) handleToolsList(req *MCPRequest) (*MCPResponse, error) {
 			},
 		},
 		{
-			Name:        methodSearch,
+			Name:        mcpToolSearch,
 			Description: "Search session events",
 			InputSchema: map[string]any{
 				"type": "object",
@@ -283,7 +325,7 @@ func (m *MCPProtocol) handleToolsList(req *MCPRequest) (*MCPResponse, error) {
 			},
 		},
 		{
-			Name:        methodRecall,
+			Name:        mcpToolRecall,
 			Description: "Build a session snapshot with token budget",
 			InputSchema: map[string]any{
 				"type": "object",
@@ -300,7 +342,7 @@ func (m *MCPProtocol) handleToolsList(req *MCPRequest) (*MCPResponse, error) {
 			},
 		},
 		{
-			Name:        methodGlob,
+			Name:        mcpToolGlob,
 			Description: "Glob pattern matching for files. Use this instead of native Glob.",
 			InputSchema: map[string]any{
 				"type": "object",
@@ -318,7 +360,7 @@ func (m *MCPProtocol) handleToolsList(req *MCPRequest) (*MCPResponse, error) {
 			},
 		},
 		{
-			Name:        methodGrep,
+			Name:        mcpToolGrep,
 			Description: "Search for text pattern in files. Use this instead of native Grep.",
 			InputSchema: map[string]any{
 				"type": "object",
@@ -350,7 +392,7 @@ func (m *MCPProtocol) handleToolsList(req *MCPRequest) (*MCPResponse, error) {
 			},
 		},
 		{
-			Name:        methodEdit,
+			Name:        mcpToolEdit,
 			Description: "Edit a file by replacing text. Use this instead of native Edit.",
 			InputSchema: map[string]any{
 				"type": "object",
@@ -372,7 +414,7 @@ func (m *MCPProtocol) handleToolsList(req *MCPRequest) (*MCPResponse, error) {
 			},
 		},
 		{
-			Name:        methodWrite,
+			Name:        mcpToolWrite,
 			Description: "Write content to a file. Use this instead of native Write.",
 			InputSchema: map[string]any{
 				"type": "object",
@@ -422,8 +464,12 @@ func (m *MCPProtocol) handleToolsCall(req *MCPRequest) (*MCPResponse, error) {
 	}
 
 	ctx := context.Background()
+	// Accept both the MCP-spec-compliant underscored names (mcpToolXxx) and
+	// the legacy dotted methodXxx names. Old `mcp__dfmt__dfmt.exec` allow
+	// rules in user settings.json and any client still calling the dotted
+	// name keep working.
 	switch params.Name {
-	case methodExec:
+	case mcpToolExec, methodExec:
 		var args ExecParams
 		if err := json.Unmarshal(params.Args, &args); err != nil {
 			return m.errorResult(req.ID, -32602, err.Error())
@@ -434,11 +480,11 @@ func (m *MCPProtocol) handleToolsCall(req *MCPRequest) (*MCPResponse, error) {
 		}
 		return &MCPResponse{
 			JSONRPC: jsonRPCVersion,
-			Result:  result,
+			Result:  mcpToolResult(result),
 			ID:      req.ID,
 		}, nil
 
-	case methodRead:
+	case mcpToolRead, methodRead:
 		var args ReadParams
 		if err := json.Unmarshal(params.Args, &args); err != nil {
 			return m.errorResult(req.ID, -32602, err.Error())
@@ -449,11 +495,11 @@ func (m *MCPProtocol) handleToolsCall(req *MCPRequest) (*MCPResponse, error) {
 		}
 		return &MCPResponse{
 			JSONRPC: jsonRPCVersion,
-			Result:  result,
+			Result:  mcpToolResult(result),
 			ID:      req.ID,
 		}, nil
 
-	case methodFetch:
+	case mcpToolFetch, methodFetch:
 		var args FetchParams
 		if err := json.Unmarshal(params.Args, &args); err != nil {
 			return m.errorResult(req.ID, -32602, err.Error())
@@ -464,11 +510,11 @@ func (m *MCPProtocol) handleToolsCall(req *MCPRequest) (*MCPResponse, error) {
 		}
 		return &MCPResponse{
 			JSONRPC: jsonRPCVersion,
-			Result:  result,
+			Result:  mcpToolResult(result),
 			ID:      req.ID,
 		}, nil
 
-	case methodRemember:
+	case mcpToolRemember, methodRemember:
 		var args RememberParams
 		if err := json.Unmarshal(params.Args, &args); err != nil {
 			return m.errorResult(req.ID, -32602, err.Error())
@@ -479,11 +525,11 @@ func (m *MCPProtocol) handleToolsCall(req *MCPRequest) (*MCPResponse, error) {
 		}
 		return &MCPResponse{
 			JSONRPC: jsonRPCVersion,
-			Result:  result,
+			Result:  mcpToolResult(result),
 			ID:      req.ID,
 		}, nil
 
-	case methodStats:
+	case mcpToolStats, methodStats:
 		var args StatsParams
 		if params.Args != nil {
 			json.Unmarshal(params.Args, &args)
@@ -494,11 +540,11 @@ func (m *MCPProtocol) handleToolsCall(req *MCPRequest) (*MCPResponse, error) {
 		}
 		return &MCPResponse{
 			JSONRPC: jsonRPCVersion,
-			Result:  result,
+			Result:  mcpToolResult(result),
 			ID:      req.ID,
 		}, nil
 
-	case methodSearch:
+	case mcpToolSearch, methodSearch:
 		var args SearchParams
 		if err := json.Unmarshal(params.Args, &args); err != nil {
 			return m.errorResult(req.ID, -32602, err.Error())
@@ -509,11 +555,11 @@ func (m *MCPProtocol) handleToolsCall(req *MCPRequest) (*MCPResponse, error) {
 		}
 		return &MCPResponse{
 			JSONRPC: jsonRPCVersion,
-			Result:  result,
+			Result:  mcpToolResult(result),
 			ID:      req.ID,
 		}, nil
 
-	case methodRecall:
+	case mcpToolRecall, methodRecall:
 		var args RecallParams
 		if err := json.Unmarshal(params.Args, &args); err != nil {
 			return m.errorResult(req.ID, -32602, err.Error())
@@ -524,11 +570,11 @@ func (m *MCPProtocol) handleToolsCall(req *MCPRequest) (*MCPResponse, error) {
 		}
 		return &MCPResponse{
 			JSONRPC: jsonRPCVersion,
-			Result:  result,
+			Result:  mcpToolResult(result),
 			ID:      req.ID,
 		}, nil
 
-	case methodGlob:
+	case mcpToolGlob, methodGlob:
 		var args GlobParams
 		if err := json.Unmarshal(params.Args, &args); err != nil {
 			return m.errorResult(req.ID, -32602, err.Error())
@@ -539,11 +585,11 @@ func (m *MCPProtocol) handleToolsCall(req *MCPRequest) (*MCPResponse, error) {
 		}
 		return &MCPResponse{
 			JSONRPC: jsonRPCVersion,
-			Result:  result,
+			Result:  mcpToolResult(result),
 			ID:      req.ID,
 		}, nil
 
-	case methodGrep:
+	case mcpToolGrep, methodGrep:
 		var args GrepParams
 		if err := json.Unmarshal(params.Args, &args); err != nil {
 			return m.errorResult(req.ID, -32602, err.Error())
@@ -554,11 +600,11 @@ func (m *MCPProtocol) handleToolsCall(req *MCPRequest) (*MCPResponse, error) {
 		}
 		return &MCPResponse{
 			JSONRPC: jsonRPCVersion,
-			Result:  result,
+			Result:  mcpToolResult(result),
 			ID:      req.ID,
 		}, nil
 
-	case methodEdit:
+	case mcpToolEdit, methodEdit:
 		var args EditParams
 		if err := json.Unmarshal(params.Args, &args); err != nil {
 			return m.errorResult(req.ID, -32602, err.Error())
@@ -569,11 +615,11 @@ func (m *MCPProtocol) handleToolsCall(req *MCPRequest) (*MCPResponse, error) {
 		}
 		return &MCPResponse{
 			JSONRPC: jsonRPCVersion,
-			Result:  result,
+			Result:  mcpToolResult(result),
 			ID:      req.ID,
 		}, nil
 
-	case methodWrite:
+	case mcpToolWrite, methodWrite:
 		var args WriteParams
 		if err := json.Unmarshal(params.Args, &args); err != nil {
 			return m.errorResult(req.ID, -32602, err.Error())
@@ -584,7 +630,7 @@ func (m *MCPProtocol) handleToolsCall(req *MCPRequest) (*MCPResponse, error) {
 		}
 		return &MCPResponse{
 			JSONRPC: jsonRPCVersion,
-			Result:  result,
+			Result:  mcpToolResult(result),
 			ID:      req.ID,
 		}, nil
 

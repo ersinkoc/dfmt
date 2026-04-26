@@ -178,45 +178,10 @@ func runInit(args []string) int {
 		dir, _ = os.Getwd()
 	}
 
-	dfmtDir := filepath.Join(dir, ".dfmt")
-	// 0700 matches journal/content dir permissions — indexed events, raw
-	// tool output, and redact patterns all live under .dfmt, and must not
-	// be world- or group-readable on shared hosts.
-	if err := os.MkdirAll(dfmtDir, 0o700); err != nil {
-		fmt.Fprintf(os.Stderr, "error creating .dfmt: %v\n", err)
+	if err := ensureProjectInitialized(dir); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		return 1
 	}
-
-	configPath := filepath.Join(dfmtDir, "config.yaml")
-	// 0o600 to match other .dfmt/ artefacts (journal, index, port, content
-	// store, daemon.pid). The 0700 parent dir already gates access on POSIX,
-	// but cp -a / rsync that doesn't preserve directory mode would otherwise
-	// expose the file. See V-5 in security-report/.
-	if err := os.WriteFile(configPath, []byte(config.DefaultConfigYAML()), 0o600); err != nil {
-		fmt.Fprintf(os.Stderr, "error writing config: %v\n", err)
-		return 1
-	}
-
-	gitignorePath := filepath.Join(dir, ".gitignore")
-	if _, err := os.Stat(gitignorePath); err == nil {
-		content, rerr := os.ReadFile(gitignorePath)
-		if rerr != nil {
-			fmt.Fprintf(os.Stderr, "warning: read %s: %v\n", gitignorePath, rerr)
-		} else if !project.IsDfmtIgnored(content) {
-			f, oerr := os.OpenFile(gitignorePath, os.O_APPEND|os.O_WRONLY, 0644)
-			if oerr != nil {
-				fmt.Fprintf(os.Stderr, "warning: open %s for append: %v\n", gitignorePath, oerr)
-			} else {
-				if _, werr := f.WriteString("\n.dfmt/\n"); werr != nil {
-					fmt.Fprintf(os.Stderr, "warning: append to %s: %v\n", gitignorePath, werr)
-				}
-				_ = f.Close()
-			}
-		}
-	}
-
-	// Write project-local Claude Code settings to enforce DFMT tools
-	_ = writeProjectClaudeSettings(dir)
 
 	// Mark this project as trusted in ~/.claude.json so Claude Code doesn't
 	// re-prompt and the dfmt MCP server is attached to this project. Failure
@@ -229,80 +194,240 @@ func runInit(args []string) int {
 	return 0
 }
 
-// writeProjectClaudeSettings writes .claude/settings.json to enforce DFMT tools
-// and wire session continuity hooks (PreCompact save, SessionStart load).
+// ensureProjectInitialized makes dir into a usable DFMT project. It is
+// idempotent and never destructive: existing config.yaml, .gitignore content,
+// and Claude settings.json are preserved. Called from `dfmt init` (explicit)
+// and from `dfmt mcp` startup (auto-init for any folder Claude is opened in).
+//
+// Steps (each is no-op if already satisfied):
+//   - create .dfmt/ (0700)
+//   - write .dfmt/config.yaml with defaults if missing
+//   - append .dfmt/ line to existing .gitignore if not already ignored
+//   - merge dfmt entries into .claude/settings.json (skipped in user home)
+func ensureProjectInitialized(dir string) error {
+	dfmtDir := filepath.Join(dir, ".dfmt")
+	// 0700 matches journal/content dir permissions — indexed events, raw
+	// tool output, and redact patterns all live under .dfmt, and must not
+	// be world- or group-readable on shared hosts.
+	if err := os.MkdirAll(dfmtDir, 0o700); err != nil {
+		return fmt.Errorf("create %s: %w", dfmtDir, err)
+	}
+
+	// 0o600 to match other .dfmt/ artefacts. Only write when missing so a
+	// user-customised config.yaml is never clobbered on re-run / auto-init.
+	configPath := filepath.Join(dfmtDir, "config.yaml")
+	if _, err := os.Stat(configPath); os.IsNotExist(err) {
+		if werr := os.WriteFile(configPath, []byte(config.DefaultConfigYAML()), 0o600); werr != nil {
+			return fmt.Errorf("write %s: %w", configPath, werr)
+		}
+	} else if err != nil {
+		return fmt.Errorf("stat %s: %w", configPath, err)
+	}
+
+	// Append `.dfmt/` to .gitignore only if a .gitignore already exists.
+	// Don't create one — that's the user's call. Idempotent: skip if our
+	// entry is already present.
+	gitignorePath := filepath.Join(dir, ".gitignore")
+	if content, rerr := os.ReadFile(gitignorePath); rerr == nil {
+		if !project.IsDfmtIgnored(content) {
+			f, oerr := os.OpenFile(gitignorePath, os.O_APPEND|os.O_WRONLY, 0o644)
+			if oerr != nil {
+				fmt.Fprintf(os.Stderr, "warning: open %s for append: %v\n", gitignorePath, oerr)
+			} else {
+				if _, werr := f.WriteString("\n.dfmt/\n"); werr != nil {
+					fmt.Fprintf(os.Stderr, "warning: append to %s: %v\n", gitignorePath, werr)
+				}
+				_ = f.Close()
+			}
+		}
+	} else if !os.IsNotExist(rerr) {
+		fmt.Fprintf(os.Stderr, "warning: read %s: %v\n", gitignorePath, rerr)
+	}
+
+	// writeProjectClaudeSettings is itself merge-safe and refuses to write
+	// to ~/.claude/settings.json. Failure is non-fatal — surface as warning
+	// so the operator can fix permissions/ACL issues.
+	if err := writeProjectClaudeSettings(dir); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: write project Claude settings: %v\n", err)
+	}
+	return nil
+}
+
+// writeProjectClaudeSettings merges DFMT's tool-enforcement entries into a
+// project-local .claude/settings.json. It NEVER overwrites the file: existing
+// hooks, permissions, and unknown keys are preserved. dfmt-owned entries are
+// added only when missing.
+//
+// User-scope is off-limits: if dir resolves to the user's home directory, the
+// function is a no-op. dfmt's permissions/deny rules only make sense inside an
+// initialised project, and clobbering ~/.claude/settings.json would destroy
+// the user's global Claude Code configuration.
 func writeProjectClaudeSettings(dir string) error {
+	if isUserHome(dir) {
+		return nil
+	}
+
 	claudeDir := filepath.Join(dir, ".claude")
-	if err := os.MkdirAll(claudeDir, 0755); err != nil {
+	if err := os.MkdirAll(claudeDir, 0o755); err != nil {
 		return err
 	}
 	settingsPath := filepath.Join(claudeDir, "settings.json")
-	// Hooks use 'dfmt' from PATH (single global installation).
-	// Recall saves to .dfmt/last-recall.md relative to project root.
-	isWindows := runtime.GOOS == "windows"
-	// preCompact uses 'dfmt recall --save' so the file is written from Go
-	// with a 0600 mode rather than whatever umask the shell inherits.
+
+	cfg := map[string]any{}
+	if data, err := os.ReadFile(settingsPath); err == nil {
+		if trimmed := strings.TrimSpace(string(data)); trimmed != "" {
+			if uerr := json.Unmarshal(data, &cfg); uerr != nil {
+				return fmt.Errorf("parse %s: %w", settingsPath, uerr)
+			}
+		}
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("read %s: %w", settingsPath, err)
+	}
+
 	preCompact := `dfmt recall --save --format md`
 	var sessionStart string
-	if isWindows {
+	if runtime.GOOS == "windows" {
 		sessionStart = `if (Test-Path .dfmt/last-recall.md) { Write-Host '--- Previous session summary ---'; Get-Content .dfmt/last-recall.md; Write-Host '--- End of previous session ---' }`
 	} else {
 		sessionStart = `if [ -f .dfmt/last-recall.md ]; then echo '--- Previous session summary ---' && cat .dfmt/last-recall.md && echo '--- End of previous session ---'; fi`
 	}
-	// preToolUse is disabled. Native tool blocking is handled entirely by
-	// permissions.deny (Bash, WebFetch, WebSearch below). The prior hook-based
-	// approach caused PowerShell parsing errors on every tool call, which
-	// broke Claude Code sessions. With deny rules in place at the permission
-	// level, the hook adds only latency and failure surface — remove it.
-	// (var preToolUse string // intentionally disabled) — permissions.deny is sufficient
-	type hookCmd struct {
-		Type          string `json:"type"`
-		Command       string `json:"command"`
-		Timeout       int    `json:"timeout"`
-		StatusMessage string `json:"statusMessage"`
-	}
-	type hookGroup struct {
-		Matcher string     `json:"matcher"`
-		Hooks   []hookCmd  `json:"hooks"`
-	}
-	settings := struct {
-		Hooks       map[string][]hookGroup `json:"hooks"`
-		Permissions struct {
-			Allow []string `json:"allow"`
-			Deny  []string `json:"deny,omitempty"`
-		} `json:"permissions"`
-	}{
-		Hooks: map[string][]hookGroup{
-			"PreCompact": {{Matcher: "", Hooks: []hookCmd{{Type: "command", Command: preCompact, Timeout: 30, StatusMessage: "Saving session snapshot for next session..."}}}},
-			"SessionStart": {{Matcher: "", Hooks: []hookCmd{{Type: "command", Command: sessionStart, Timeout: 10, StatusMessage: "Loading previous session summary..."}}}},
-		},
-	}
-	// Allow only dfmt MCP tools. Native tools (Bash, Read, Glob, etc.) are not
-	// in the allow list and are denied by the permissions.deny list below.
-	settings.Permissions.Allow = []string{
-		"mcp__dfmt__dfmt.exec",
-		"mcp__dfmt__dfmt.read",
-		"mcp__dfmt__dfmt.fetch",
-		"mcp__dfmt__dfmt.remember",
-		"mcp__dfmt__dfmt.search",
-		"mcp__dfmt__dfmt.recall",
-		"mcp__dfmt__dfmt.stats",
-	}
-	// Deny the most resource-intensive native tools. PreToolUse hook is disabled
-	// (caused PowerShell parsing errors); permissions.deny handles blocking.
-	settings.Permissions.Deny = []string{
-		"Bash",
-		"WebFetch",
-		"WebSearch",
-	}
-	settingsData, err := json.MarshalIndent(settings, "", "  ")
+	mergeClaudeHook(cfg, "PreCompact", preCompact, 30, "Saving session snapshot for next session...")
+	mergeClaudeHook(cfg, "SessionStart", sessionStart, 10, "Loading previous session summary...")
+
+	// MCP tool names changed from dotted (dfmt.exec) to underscored
+	// (dfmt_exec) so Claude Code's MCP client (regex
+	// ^[a-zA-Z][a-zA-Z0-9_-]*$) accepts them. The legacy dotted entries
+	// would just be dead permission strings — Claude Code never receives
+	// the dotted tools from tools/list, so it never offers them.
+	mergeClaudePermission(cfg, "allow", []string{
+		"mcp__dfmt__dfmt_exec",
+		"mcp__dfmt__dfmt_read",
+		"mcp__dfmt__dfmt_fetch",
+		"mcp__dfmt__dfmt_remember",
+		"mcp__dfmt__dfmt_search",
+		"mcp__dfmt__dfmt_recall",
+		"mcp__dfmt__dfmt_stats",
+		"mcp__dfmt__dfmt_glob",
+		"mcp__dfmt__dfmt_grep",
+		"mcp__dfmt__dfmt_edit",
+		"mcp__dfmt__dfmt_write",
+	})
+	mergeClaudePermission(cfg, "deny", []string{"Bash", "WebFetch", "WebSearch"})
+
+	out, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
 		return err
 	}
-	settingsData = append(settingsData, '\n')
+	out = append(out, '\n')
+
+	tmp, err := os.CreateTemp(claudeDir, ".settings.json.dfmt-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	cleanup := func() { _ = os.Remove(tmpPath) }
+	if _, err := tmp.Write(out); err != nil {
+		_ = tmp.Close()
+		cleanup()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		cleanup()
+		return err
+	}
 	// 0600: this file grants MCP tool permissions. An attacker who can read
 	// or race-write it controls what dfmt is launched with on next session.
-	return os.WriteFile(settingsPath, settingsData, 0o600)
+	_ = os.Chmod(tmpPath, 0o600)
+	if err := os.Rename(tmpPath, settingsPath); err != nil {
+		cleanup()
+		return err
+	}
+	return nil
+}
+
+// isUserHome reports whether dir resolves to the current user's home
+// directory. Used to refuse writing user-scope ~/.claude/settings.json.
+func isUserHome(dir string) bool {
+	home := setup.HomeDir()
+	if home == "" {
+		return false
+	}
+	absDir, err := filepath.Abs(dir)
+	if err != nil {
+		return false
+	}
+	absHome, err := filepath.Abs(home)
+	if err != nil {
+		return false
+	}
+	return strings.EqualFold(filepath.Clean(absDir), filepath.Clean(absHome))
+}
+
+// mergeClaudeHook adds a dfmt hook to cfg["hooks"][eventName] only if no
+// existing hook in that event already runs the same command. All other hooks
+// (user-defined or otherwise) are preserved verbatim.
+func mergeClaudeHook(cfg map[string]any, eventName, command string, timeoutSecs int, statusMsg string) {
+	hooks, _ := cfg["hooks"].(map[string]any)
+	if hooks == nil {
+		hooks = map[string]any{}
+	}
+	groups, _ := hooks[eventName].([]any)
+	for _, g := range groups {
+		grp, _ := g.(map[string]any)
+		if grp == nil {
+			continue
+		}
+		inner, _ := grp["hooks"].([]any)
+		for _, h := range inner {
+			hc, _ := h.(map[string]any)
+			if hc == nil {
+				continue
+			}
+			if cmd, _ := hc["command"].(string); cmd == command {
+				return
+			}
+		}
+	}
+	newGroup := map[string]any{
+		"matcher": "",
+		"hooks": []any{
+			map[string]any{
+				"type":          "command",
+				"command":       command,
+				"timeout":       timeoutSecs,
+				"statusMessage": statusMsg,
+			},
+		},
+	}
+	hooks[eventName] = append(groups, newGroup)
+	cfg["hooks"] = hooks
+}
+
+// mergeClaudePermission adds dfmt entries to cfg["permissions"][key] without
+// duplicating anything already present and without removing entries the user
+// added themselves.
+func mergeClaudePermission(cfg map[string]any, key string, additions []string) {
+	perms, _ := cfg["permissions"].(map[string]any)
+	if perms == nil {
+		perms = map[string]any{}
+	}
+	existing, _ := perms[key].([]any)
+	seen := make(map[string]bool, len(existing))
+	for _, v := range existing {
+		if s, ok := v.(string); ok {
+			seen[s] = true
+		}
+	}
+	for _, add := range additions {
+		if !seen[add] {
+			existing = append(existing, add)
+			seen[add] = true
+		}
+	}
+	if len(existing) > 0 {
+		perms[key] = existing
+	}
+	cfg["permissions"] = perms
 }
 
 func runRemember(args []string) int {
@@ -660,25 +785,53 @@ func runStop(_ []string) int {
 	// orphaned. Windows os.Interrupt is a no-op (syscall.Signal is not
 	// supported for arbitrary PIDs), so we invoke taskkill there.
 	pidPath := filepath.Join(proj, ".dfmt", "daemon.pid")
-	if pidData, err := os.ReadFile(pidPath); err == nil {
-		var pid int
+	pidData, perr := os.ReadFile(pidPath)
+	var pid int
+	if perr == nil {
 		fmt.Sscanf(string(pidData), "%d", &pid)
-		if pid > 0 {
-			signalStopProcess(pid)
-			fmt.Printf("Sent stop signal to PID %d\n", pid)
-			// Wait up to 5s for the daemon to terminate before cleaning up
-			// files it may still be writing to.
-			deadline := time.Now().Add(5 * time.Second)
-			for time.Now().Before(deadline) {
-				if !client.DaemonRunning(proj) {
-					break
-				}
-				time.Sleep(100 * time.Millisecond)
+	}
+	if pid > 0 {
+		signalStopProcess(pid, false)
+		fmt.Printf("Sent stop signal to PID %d\n", pid)
+		// Wait up to 5s for graceful shutdown.
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			if !client.DaemonRunning(proj) {
+				break
 			}
+			time.Sleep(100 * time.Millisecond)
 		}
 	}
 
-	// Now safe to remove state files.
+	// Verify the daemon actually died before clearing state. The previous
+	// behavior — unconditionally removing pid/lock/socket after 5s —
+	// produced a port-conflict scenario when a hung daemon refused to
+	// terminate: the next start would acquire the lock and bind a new
+	// listener while the old daemon was still running on the same port,
+	// causing intermittent "daemon not responding" errors with no obvious
+	// cause. We now escalate to a forced kill and retry the wait. If the
+	// daemon STILL refuses to die (kernel-mode hang, zombied parent), we
+	// surface a clear error and leave the state files alone so the user
+	// can investigate manually.
+	if pid > 0 && client.DaemonRunning(proj) {
+		fmt.Printf("Daemon still running after graceful stop; escalating to forced kill\n")
+		signalStopProcess(pid, true)
+		deadline := time.Now().Add(3 * time.Second)
+		for time.Now().Before(deadline) {
+			if !client.DaemonRunning(proj) {
+				break
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+		if client.DaemonRunning(proj) {
+			fmt.Fprintf(os.Stderr,
+				"error: daemon (PID %d) refused to stop. State files left intact.\n"+
+					"Manual recovery: kill the process and re-run `dfmt stop`.\n", pid)
+			return 1
+		}
+	}
+
+	// Daemon is gone — now safe to remove state files.
 	_ = os.Remove(pidPath)
 	_ = os.Remove(filepath.Join(proj, ".dfmt", "lock"))
 	_ = os.Remove(project.SocketPath(proj))
@@ -689,14 +842,35 @@ func runStop(_ []string) int {
 
 // signalStopProcess asks the OS to terminate pid. Implemented per-platform
 // because os.Process.Signal(os.Interrupt) is a no-op on Windows.
-func signalStopProcess(pid int) {
+//
+// When force is true we escalate: SIGKILL on Unix, taskkill /F on Windows.
+// Without force, we ask politely (SIGINT / taskkill without /F) so the
+// daemon can run its Stop() handler — flushing the journal, persisting the
+// index, releasing the lock cleanly. Force is only invoked after a graceful
+// attempt has timed out.
+func signalStopProcess(pid int, force bool) {
 	if runtime.GOOS == "windows" {
-		_ = exec.Command("taskkill", "/PID", fmt.Sprintf("%d", pid), "/T").Run()
+		args := []string{"/PID", fmt.Sprintf("%d", pid), "/T"}
+		if force {
+			args = append(args, "/F")
+		}
+		_ = exec.Command("taskkill", args...).Run()
 		return
 	}
-	if process, err := os.FindProcess(pid); err == nil {
-		_ = process.Signal(os.Interrupt)
+	process, err := os.FindProcess(pid)
+	if err != nil {
+		return
 	}
+	// os.Kill is the cross-platform alias for SIGKILL on Unix; on Windows
+	// the os.Signal interface is satisfied but Process.Signal returns an
+	// error (taskkill /F path above is what actually kills on Windows).
+	// Using os.Kill instead of syscall.SIGKILL keeps this file buildable
+	// on Windows where syscall.SIGKILL is not defined.
+	sig := os.Signal(os.Interrupt)
+	if force {
+		sig = os.Kill
+	}
+	_ = process.Signal(sig)
 }
 
 func runList(_ []string) int {
@@ -761,31 +935,147 @@ func runDoctor(args []string) int {
 		dir, _ = os.Getwd()
 	}
 
-	checks := []struct {
-		name  string
-		check func() bool
-	}{
-		{"Project exists", func() bool {
-			_, err := project.Discover(dir)
-			return err == nil
+	dfmtDir := filepath.Join(dir, ".dfmt")
+	pidPath := filepath.Join(dfmtDir, "daemon.pid")
+	portPath := filepath.Join(dfmtDir, "port")
+	journalPath := filepath.Join(dfmtDir, "journal.jsonl")
+	indexPath := filepath.Join(dfmtDir, "index.gob")
+	lockPath := filepath.Join(dfmtDir, "lock")
+
+	// Pre-compute liveness once so all checks see a consistent view —
+	// otherwise a daemon that exits mid-doctor would produce contradictory
+	// "running but stale lock" output.
+	daemonAlive := client.DaemonRunning(dir)
+
+	type check struct {
+		name string
+		fn   func() (ok bool, detail string)
+	}
+
+	checks := []check{
+		{"Project exists", func() (bool, string) {
+			p, err := project.Discover(dir)
+			if err != nil {
+				return false, err.Error()
+			}
+			return true, p
 		}},
-		{"Config valid", func() bool {
+		{"Config valid", func() (bool, string) {
 			cfg, err := config.Load(dir)
-			return err == nil && cfg != nil
+			if err != nil {
+				return false, err.Error()
+			}
+			if cfg == nil {
+				return false, "config nil"
+			}
+			return true, fmt.Sprintf("durability=%s", cfg.Storage.Durability)
+		}},
+		{".dfmt directory", func() (bool, string) {
+			fi, err := os.Stat(dfmtDir)
+			if err != nil {
+				return false, err.Error()
+			}
+			if !fi.IsDir() {
+				return false, ".dfmt is not a directory"
+			}
+			return true, ""
+		}},
+		{"Journal openable", func() (bool, string) {
+			if _, err := os.Stat(journalPath); os.IsNotExist(err) {
+				return true, "(none yet — created on first event)"
+			}
+			f, err := os.Open(journalPath)
+			if err != nil {
+				return false, err.Error()
+			}
+			_ = f.Close()
+			return true, ""
+		}},
+		{"Index file readable", func() (bool, string) {
+			fi, err := os.Stat(indexPath)
+			if os.IsNotExist(err) {
+				return true, "(none yet — built on first daemon start)"
+			}
+			if err != nil {
+				return false, err.Error()
+			}
+			f, err := os.Open(indexPath)
+			if err != nil {
+				return false, err.Error()
+			}
+			_ = f.Close()
+			return true, fmt.Sprintf("%d bytes", fi.Size())
+		}},
+		{"Port file consistent with daemon liveness", func() (bool, string) {
+			if _, err := os.Stat(portPath); os.IsNotExist(err) {
+				if daemonAlive {
+					return false, "daemon is alive but port file missing"
+				}
+				return true, "(no daemon, no port file — OK)"
+			}
+			if !daemonAlive {
+				return false, "stale port file from crashed daemon (will be overwritten on next start)"
+			}
+			return true, ""
+		}},
+		{"PID file consistent with daemon liveness", func() (bool, string) {
+			data, err := os.ReadFile(pidPath)
+			if os.IsNotExist(err) {
+				if daemonAlive {
+					return false, "daemon is alive but PID file missing"
+				}
+				return true, "(no daemon, no PID file — OK)"
+			}
+			if err != nil {
+				return false, err.Error()
+			}
+			var pid int
+			fmt.Sscanf(string(data), "%d", &pid)
+			if pid <= 0 {
+				return false, "PID file is malformed"
+			}
+			if !daemonAlive {
+				return false, fmt.Sprintf("stale PID %d (process not running; auto-cleaned on next start)", pid)
+			}
+			return true, fmt.Sprintf("PID %d", pid)
+		}},
+		{"Lock file consistent with daemon liveness", func() (bool, string) {
+			if _, err := os.Stat(lockPath); os.IsNotExist(err) {
+				return true, "(no lock — OK)"
+			}
+			if daemonAlive {
+				return true, "(held by running daemon)"
+			}
+			// Lock file present, daemon dead: try to acquire it. If we
+			// can, the OS released the flock when the daemon died — the
+			// file is benign and a fresh daemon will reuse it. If we can
+			// NOT acquire, something else is holding it; the next Start
+			// will fail.
+			lock, lerr := daemon.AcquireLock(dir)
+			if lerr == nil {
+				_ = lock.Release()
+				return true, "(orphan file, but flock released — next start will reclaim)"
+			}
+			return false, fmt.Sprintf("lock held by another process: %v", lerr)
 		}},
 	}
 
 	allOk := true
 	for _, c := range checks {
-		if c.check() {
-			fmt.Printf("✓ %s\n", c.name)
-		} else {
-			fmt.Printf("✗ %s\n", c.name)
+		ok, detail := c.fn()
+		marker := "✓"
+		if !ok {
+			marker = "✗"
 			allOk = false
+		}
+		if detail != "" {
+			fmt.Printf("%s %s — %s\n", marker, c.name, detail)
+		} else {
+			fmt.Printf("%s %s\n", marker, c.name)
 		}
 	}
 
-	if client.DaemonRunning(dir) {
+	if daemonAlive {
 		fmt.Println("[i] Daemon running")
 	} else {
 		fmt.Println("[i] Daemon stopped (auto-starts on next command)")
@@ -885,15 +1175,25 @@ func runStats(args []string) int {
 			fmt.Println()
 		}
 
-		// Token metrics
+		// LLM token metrics — only meaningful when callers wire usage through dfmt_remember.
 		if resp.TotalInputTokens > 0 || resp.TotalOutputTokens > 0 || resp.TokenSavings > 0 {
-			fmt.Println("Token Metrics:")
+			fmt.Println("LLM Token Metrics (from dfmt_remember):")
 			fmt.Printf("  Input Tokens:  %d\n", resp.TotalInputTokens)
 			fmt.Printf("  Output Tokens: %d\n", resp.TotalOutputTokens)
 			fmt.Printf("  Cache Savings: %d\n", resp.TokenSavings)
 			if resp.CacheHitRate > 0 {
 				fmt.Printf("  Cache Hit Rate: %.1f%%\n", resp.CacheHitRate)
 			}
+			fmt.Println()
+		}
+
+		// MCP byte savings — automatic from sandbox tool calls.
+		if resp.TotalRawBytes > 0 {
+			fmt.Println("MCP Byte Savings (from intent-filtered tool calls):")
+			fmt.Printf("  Raw Bytes:        %d\n", resp.TotalRawBytes)
+			fmt.Printf("  Returned Bytes:   %d\n", resp.TotalReturnedBytes)
+			fmt.Printf("  Bytes Saved:      %d\n", resp.BytesSaved)
+			fmt.Printf("  Compression:      %.1f%%\n", resp.CompressionRatio*100)
 			fmt.Println()
 		}
 
@@ -1053,7 +1353,7 @@ func buildCaptureParams(args []string) (transport.RememberParams, error) {
 				isBranch = args[3]
 			}
 			return transport.RememberParams{
-				Type:     string(core.EvtGitCheckout),
+				Type: string(core.EvtGitCheckout),
 				// Match the classifier default (PriP2) so rendered tier
 				// labels agree with Recall sort order.
 				Priority: string(core.PriP2),
@@ -1373,23 +1673,30 @@ func configureClaudeCode(_ setup.Agent) error {
 
 	// Write MCP config
 	mcpPath := filepath.Join(claudeDir, "mcp.json")
-	setup.BackupFile(mcpPath)
+	if err := setup.BackupFile(mcpPath); err != nil {
+		return fmt.Errorf("backup %s: %w", mcpPath, err)
+	}
 
 	mcpConfig := map[string]any{
 		"mcpServers": map[string]any{
 			"dfmt": map[string]any{
-				"command": "dfmt",
+				"command": setup.ResolveDFMTCommand(),
 				"args":    []string{"mcp"},
 			},
 		},
 	}
 	data, _ := json.MarshalIndent(mcpConfig, "", "  ")
 	// 0600: mcp.json tells the host what command to launch as an MCP server.
-	_ = os.WriteFile(mcpPath, data, 0o600)
+	if err := os.WriteFile(mcpPath, data, 0o600); err != nil {
+		return fmt.Errorf("write %s: %w", mcpPath, err)
+	}
 
 	// Update manifest
-	m, _ := setup.LoadManifest()
-	m.Files = append(m.Files, setup.FileEntry{
+	m, err := setup.LoadManifest()
+	if err != nil {
+		return fmt.Errorf("load manifest: %w", err)
+	}
+	m.AddFile(setup.FileEntry{
 		Path:    mcpPath,
 		Agent:   "claude-code",
 		Version: "1",
@@ -1409,7 +1716,9 @@ func configureClaudeCode(_ setup.Agent) error {
 		fmt.Fprintf(os.Stderr, "warning: patch ~/.claude.json: %v\n", err)
 	}
 	m.RecordAgent("claude-code", claudeDir)
-	setup.SaveManifest(m)
+	if err := setup.SaveManifest(m); err != nil {
+		return fmt.Errorf("save manifest: %w", err)
+	}
 
 	return nil
 }
@@ -1488,19 +1797,14 @@ func configureOpenCode(_ setup.Agent) error {
 
 func writeMCPConfig(dir, filename, agentID string) error {
 	mcpPath := filepath.Join(dir, filename)
-	setup.BackupFile(mcpPath)
-
-	cmd := "dfmt"
-	if path, err := exec.LookPath("dfmt"); err == nil {
-		cmd = path
-	} else if ex, err := os.Executable(); err == nil {
-		cmd = ex
+	if err := setup.BackupFile(mcpPath); err != nil {
+		return fmt.Errorf("backup %s: %w", mcpPath, err)
 	}
 
 	mcpConfig := map[string]any{
 		"mcpServers": map[string]any{
 			"dfmt": map[string]any{
-				"command": cmd,
+				"command": setup.ResolveDFMTCommand(),
 				"args":    []string{"mcp"},
 			},
 		},
@@ -1510,14 +1814,19 @@ func writeMCPConfig(dir, filename, agentID string) error {
 		return err
 	}
 
-	m, _ := setup.LoadManifest()
-	m.Files = append(m.Files, setup.FileEntry{
+	m, err := setup.LoadManifest()
+	if err != nil {
+		return fmt.Errorf("load manifest: %w", err)
+	}
+	m.AddFile(setup.FileEntry{
 		Path:    mcpPath,
 		Agent:   agentID,
 		Version: "1",
 	})
 	m.RecordAgent(agentID, dir)
-	setup.SaveManifest(m)
+	if err := setup.SaveManifest(m); err != nil {
+		return fmt.Errorf("save manifest: %w", err)
+	}
 
 	return nil
 }
@@ -1601,55 +1910,93 @@ func runExec(args []string) int {
 }
 
 func runMCP(_ []string) int {
-	// MCP over stdio - read MCP JSON-RPC from stdin, write to stdout
-	proj, err := getProject()
-	if err != nil {
-		proj, _ = os.Getwd()
+	// MCP over stdio - read MCP JSON-RPC from stdin, write to stdout.
+	//
+	// Project resolution: getProject() walks up looking for .dfmt/ or .git/.
+	// When neither is found we deliberately do NOT fall back to cwd-as-project
+	// — that previously scattered .dfmt/journal.jsonl, index.gob and
+	// config.yaml into wherever Claude Code happened to spawn dfmt
+	// (typically ~). Instead we run in degraded mode: sandbox tools
+	// (exec/read/fetch/glob/grep/edit/write) keep working since they only
+	// need a working directory, and memory tools (remember/search/recall/
+	// stats) return "no project" at handler level via nil-journal guards.
+	proj, projErr := getProject()
+	if projErr != nil {
+		proj = ""
 	}
 
-	// Ensure .dfmt directory exists (0700 — see runInit comment).
-	dfmtDir := filepath.Join(proj, ".dfmt")
-	_ = os.MkdirAll(dfmtDir, 0o700)
-
-	// Ensure project-level Claude Code settings enforce DFMT tools
-	_ = writeProjectClaudeSettings(proj)
-
-	// Open journal from disk (same as daemon)
-	journalPath := filepath.Join(dfmtDir, "journal.jsonl")
-	journalOpts := core.JournalOptions{
-		Path:     journalPath,
-		MaxBytes: 10 * 1024 * 1024,
-		Durable:  true,
-		BatchMS:  100,
-		Compress: true,
-	}
-	journal, err := core.OpenJournal(journalPath, journalOpts)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "warning: open journal: %v\n", err)
-	}
-	// Load or create index
-	indexPath := filepath.Join(dfmtDir, "index.gob")
-	cursorPath := filepath.Join(dfmtDir, "index.cursor")
-	index, _, needsRebuild, err := core.LoadIndexWithCursor(indexPath, cursorPath)
-	if err != nil || needsRebuild || index == nil {
-		// Replay the journal so a tokenizer-version bump or corrupt cursor
-		// doesn't silently empty the searchable index for this MCP session.
-		if journal != nil {
-			if rebuilt, _, rerr := core.RebuildIndexFromJournal(context.Background(), journal); rerr == nil {
-				index = rebuilt
-			} else {
-				fmt.Fprintf(os.Stderr, "warning: rebuild index from journal: %v\n", rerr)
-				index = core.NewIndex()
-			}
-		} else {
-			index = core.NewIndex()
+	// Sandbox needs a cwd regardless of project status — inherit from the
+	// process when there's no project so relative paths still resolve.
+	sandboxWD := proj
+	if sandboxWD == "" {
+		if cwd, gerr := os.Getwd(); gerr == nil {
+			sandboxWD = cwd
 		}
+	}
+
+	var (
+		journal   core.Journal
+		index     *core.Index
+		indexPath string
+	)
+
+	if proj != "" {
+		// Auto-init the project on every MCP startup. Same idempotent
+		// steps as `dfmt init`. Failure of any single step is non-fatal.
+		if ierr := ensureProjectInitialized(proj); ierr != nil {
+			fmt.Fprintf(os.Stderr, "warning: auto-init %s: %v\n", proj, ierr)
+		}
+		dfmtDir := filepath.Join(proj, ".dfmt")
+
+		journalPath := filepath.Join(dfmtDir, "journal.jsonl")
+		journalOpts := core.JournalOptions{
+			Path:     journalPath,
+			MaxBytes: 10 * 1024 * 1024,
+			Durable:  true,
+			BatchMS:  100,
+			Compress: true,
+		}
+		j, jerr := core.OpenJournal(journalPath, journalOpts)
+		if jerr != nil {
+			fmt.Fprintf(os.Stderr, "warning: open journal: %v\n", jerr)
+		}
+		journal = j
+
+		indexPath = filepath.Join(dfmtDir, "index.gob")
+		cursorPath := filepath.Join(dfmtDir, "index.cursor")
+		idx, _, needsRebuild, lerr := core.LoadIndexWithCursor(indexPath, cursorPath)
+		if lerr != nil || needsRebuild || idx == nil {
+			// Replay the journal so a tokenizer-version bump or corrupt cursor
+			// doesn't silently empty the searchable index for this MCP session.
+			var rebuilt *core.Index
+			var rerr error
+			if journal != nil {
+				func() {
+					defer func() {
+						if r := recover(); r != nil {
+							rerr = fmt.Errorf("panic during rebuild: %v", r)
+						}
+					}()
+					rebuilt, _, rerr = core.RebuildIndexFromJournal(context.Background(), journal)
+				}()
+			}
+			if rebuilt != nil && rerr == nil {
+				idx = rebuilt
+			} else {
+				if rerr != nil {
+					fmt.Fprintf(os.Stderr, "warning: rebuild index from journal: %v\n", rerr)
+				}
+				idx = core.NewIndex()
+			}
+		}
+		index = idx
+	} else {
+		fmt.Fprintln(os.Stderr, "dfmt mcp: no project found — running in degraded mode (sandbox tools only). Open dfmt from a project root or set DFMT_PROJECT to enable memory tools.")
 	}
 
 	// Persist index on exit so events ingested during the MCP session survive
 	// into the next run. The journal is the durable source of truth, but the
-	// in-memory index would otherwise be rebuilt from scratch every session
-	// (the prior deferred journal.Close was the only persistence step).
+	// in-memory index would otherwise be rebuilt from scratch every session.
 	defer func() {
 		if journal != nil {
 			if hiID, cerr := journal.Checkpoint(context.Background()); cerr == nil {
@@ -1667,7 +2014,7 @@ func runMCP(_ []string) int {
 	}()
 
 	// Create sandbox and handlers
-	sb := sandbox.NewSandbox(proj)
+	sb := sandbox.NewSandbox(sandboxWD)
 	handlers := transport.NewHandlers(index, journal, sb)
 	handlers.SetProject(proj)
 	mcp := transport.NewMCPProtocol(handlers)
@@ -1744,8 +2091,32 @@ func runMCP(_ []string) int {
 			continue
 		}
 
-		// Handle via MCP protocol
-		resp, _ := mcp.Handle(&req)
+		// Handle via MCP protocol with panic recovery. Without this guard a
+		// nil-deref or out-of-bounds inside any handler would tear down the
+		// entire stdio loop and the agent would silently lose all dfmt tools
+		// mid-session — exactly the "MCP fail olunca patlayan sistem" failure
+		// mode this project exists to prevent.
+		var resp *transport.MCPResponse
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					fmt.Fprintf(os.Stderr, "mcp handle panic recovered: %v\n", r)
+					if req.ID != nil {
+						resp = &transport.MCPResponse{
+							JSONRPC: "2.0",
+							Error: &transport.RPCError{
+								Code:    -32603,
+								Message: fmt.Sprintf("Internal error: %v", r),
+							},
+							ID: req.ID,
+						}
+					}
+					// Notifications (req.ID == nil) get no response on panic;
+					// per JSON-RPC 2.0 they never get one.
+				}
+			}()
+			resp, _ = mcp.Handle(&req)
+		}()
 
 		// JSON-RPC notifications (no ID) yield a nil response and MUST NOT
 		// produce any bytes on stdout — writing {} or null would confuse
@@ -1998,9 +2369,9 @@ func runGrep(args []string) int {
 	defer cancel()
 
 	grepResp, err := cl.Grep(ctx, transport.GrepParams{
-		Pattern:        pattern,
-		Files:         files,
-		Intent:        intent,
+		Pattern:         pattern,
+		Files:           files,
+		Intent:          intent,
 		CaseInsensitive: caseInsensitive,
 	})
 	if err != nil {

@@ -231,6 +231,11 @@ linters:
       - path: 'internal/core/bm25\.go$|internal/core/trigram\.go$|internal/sandbox/permissions\.go$'
         linters:
           - gocritic
+      # golangci-lint v2.1.5 typecheck loader misreads the filename stem as a
+      # package name on these GOOS-suffixed files. go build/vet/test all pass.
+      - path: 'internal/transport/socket_umask_(unix|windows)\.go$'
+        linters:
+          - typecheck
 
 lint:
   issues:

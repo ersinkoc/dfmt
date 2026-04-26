@@ -1,7 +1,10 @@
 package config
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"time"
@@ -10,6 +13,8 @@ import (
 )
 
 const durabilityBatched = "batched"
+
+const maxConfigBytes = 64 << 10
 
 // DefaultMCPProtocolVersion is the default MCP protocol version.
 const DefaultMCPProtocolVersion = "2024-11-05"
@@ -200,7 +205,7 @@ func globalConfigPath() string {
 
 // merge reads a YAML file and merges its values into cfg.
 func merge(cfg *Config, path string) error {
-	data, err := os.ReadFile(path)
+	data, err := readConfigFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil // Skip missing files
@@ -208,7 +213,40 @@ func merge(cfg *Config, path string) error {
 		return err
 	}
 
-	return yaml.Unmarshal(data, cfg)
+	return decodeConfigYAML(data, cfg)
+}
+
+func decodeConfigYAML(data []byte, cfg *Config) error {
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
+	if err := dec.Decode(cfg); err != nil {
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
+		return err
+	}
+	var extra any
+	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
+		return fmt.Errorf("config file must contain exactly one YAML document")
+	}
+	return nil
+}
+
+func readConfigFile(path string) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	data, err := io.ReadAll(io.LimitReader(f, maxConfigBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxConfigBytes {
+		return nil, fmt.Errorf("config file too large: exceeds %d bytes", maxConfigBytes)
+	}
+	return data, nil
 }
 
 // ParseDuration parses a duration string.

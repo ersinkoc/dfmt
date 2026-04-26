@@ -38,6 +38,13 @@ type Daemon struct {
 	handlers    *transport.Handlers
 	redactor    *redact.Redactor
 	fswatcher   *capture.FSWatcher
+	lock        *LockFile // exclusive singleton lock; nil only between New and Start
+
+	indexPath       string             // .dfmt/index.gob — needed for async persist after rebuild
+	needsRebuild    bool               // set in New(); Start() spawns rebuild goroutine if true
+	rebuildCtx      context.Context    // cancel target for the rebuild goroutine
+	rebuildStop     context.CancelFunc // stops the rebuild on Stop()
+	rebuildComplete atomic.Bool        // true once async rebuild finished without cancellation
 
 	running        atomic.Bool  // Use atomic for race-free access
 	lastActivityNs atomic.Int64 // UnixNano of last inbound RPC; drives idle monitor
@@ -103,18 +110,21 @@ func New(projectPath string, cfg *config.Config) (*Daemon, error) {
 	indexPath := filepath.Join(dfmtDir, "index.gob")
 	cursorPath := filepath.Join(dfmtDir, "index.cursor")
 
+	// Load whatever's on disk; rebuild (when required) is deferred to Start()
+	// so the listener can come up immediately. The previous synchronous
+	// rebuild here blocked daemon.New() for seconds on large journals — long
+	// enough that the auto-start retry budget (~3.9s) ran out and the agent's
+	// first MCP call failed with "daemon not responding" while the daemon
+	// was actually still in the middle of rebuilding.
 	index, _, needsRebuild, err := core.LoadIndexWithCursor(indexPath, cursorPath)
-	if err != nil || needsRebuild {
-		rebuiltIdx, hiID, rerr := core.RebuildIndexFromJournal(context.Background(), journal)
-		if rerr != nil {
-			fmt.Fprintf(os.Stderr, "warning: rebuild index from journal: %v\n", rerr)
-			index = core.NewIndex()
-		} else {
-			index = rebuiltIdx
-			if perr := core.PersistIndex(index, indexPath, hiID); perr != nil {
-				fmt.Fprintf(os.Stderr, "warning: persist rebuilt index: %v\n", perr)
-			}
-		}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: load index: %v\n", err)
+		needsRebuild = true
+	}
+	if index == nil || needsRebuild {
+		// Tokenizer-version bump or corrupt index: start fresh so we don't
+		// mix differently-tokenized postings, and let Start() fill it.
+		index = core.NewIndex()
 	}
 
 	// Create sandbox
@@ -170,15 +180,17 @@ func New(projectPath string, cfg *config.Config) (*Daemon, error) {
 	}
 
 	d := &Daemon{
-		projectPath: projectPath,
-		config:      cfg,
-		index:       index,
-		journal:     journal,
-		server:      server,
-		handlers:    handlers,
-		redactor:    redact.NewRedactor(),
-		fswatcher:   fswatcher,
-		shutdownCh:  make(chan struct{}),
+		projectPath:  projectPath,
+		config:       cfg,
+		index:        index,
+		indexPath:    indexPath,
+		needsRebuild: needsRebuild,
+		journal:      journal,
+		server:       server,
+		handlers:     handlers,
+		redactor:     redact.NewRedactor(),
+		fswatcher:    fswatcher,
+		shutdownCh:   make(chan struct{}),
 	}
 	d.lastActivityNs.Store(time.Now().UnixNano())
 	handlers.SetActivityFn(d.Touch)
@@ -193,10 +205,24 @@ func New(projectPath string, cfg *config.Config) (*Daemon, error) {
 //
 // The running flag is flipped with CompareAndSwap so two concurrent Start
 // calls do not both proceed to bind the listener.
+//
+// Before binding anything, we acquire the project-level singleton lock. On
+// Windows the previous behavior was that two daemons could happily coexist
+// (each bound 127.0.0.1:0 to a different ephemeral port and the port file
+// got overwritten by whichever wrote last) — exactly the "bir sürü daemon"
+// failure mode. AcquireLock used to be dead code; calling it here makes it
+// real.
 func (d *Daemon) Start(ctx context.Context) error {
 	if !d.running.CompareAndSwap(false, true) {
 		return fmt.Errorf("daemon already running")
 	}
+
+	lock, lerr := AcquireLock(d.projectPath)
+	if lerr != nil {
+		d.running.Store(false)
+		return fmt.Errorf("acquire singleton lock: %w", lerr)
+	}
+	d.lock = lock
 
 	serverStarted := false
 	fswatcherStarted := false
@@ -234,6 +260,17 @@ func (d *Daemon) Start(ctx context.Context) error {
 			}
 		}
 
+		// Spawn the deferred index rebuild AFTER the listener is up, so the
+		// agent's first MCP call doesn't time out behind a multi-second
+		// journal replay. Search/recall during rebuild operate on a partial
+		// index (Index has internal RWMutex) — degraded but responsive,
+		// strictly better than "daemon not responding".
+		if d.needsRebuild {
+			d.rebuildCtx, d.rebuildStop = context.WithCancel(context.Background())
+			d.wg.Add(1)
+			go d.rebuildIndexAsync()
+		}
+
 		// Start idle monitor
 		d.startIdleMonitor(ctx)
 
@@ -243,13 +280,25 @@ func (d *Daemon) Start(ctx context.Context) error {
 
 	if startErr != nil {
 		// Partial-start cleanup: tear down anything we already brought up so
-		// the next Start can rebind the port/socket and no fswatch goroutine
-		// is leaked.
+		// the next Start can rebind the port/socket and no fswatch / rebuild
+		// goroutine is leaked.
 		if fswatcherStarted && d.fswatcher != nil {
 			_ = d.fswatcher.Stop(ctx)
 		}
+		// Cancel the rebuild goroutine if it was already spawned (panic in
+		// startIdleMonitor or register would land here with rebuildStop set).
+		if d.rebuildStop != nil {
+			d.rebuildStop()
+		}
+		// Wait for any goroutine we Add()ed to drain before returning, so a
+		// failed Start doesn't leak background workers.
+		d.wg.Wait()
 		if serverStarted {
 			_ = d.server.Stop(ctx)
+		}
+		if d.lock != nil {
+			_ = d.lock.Release()
+			d.lock = nil
 		}
 		d.running.Store(false)
 		return startErr
@@ -302,19 +351,41 @@ func (d *Daemon) Stop(ctx context.Context) error {
 			_ = d.fswatcher.Stop(ctx)
 		}
 
-		// (4) Wait for consumeFSWatch to finish draining before touching the
-		// journal. This is the fix for the Stop-ordering race where
-		// consumeFSWatch could call journal.Append on a closed journal.
+		// Cancel any in-flight async rebuild. Without this, Stop would block
+		// on d.wg.Wait until the rebuild finished naturally — potentially
+		// many seconds on a large journal — even though the user wants to
+		// shut down NOW.
+		if d.rebuildStop != nil {
+			d.rebuildStop()
+		}
+
+		// (4) Wait for consumeFSWatch and the async rebuild to finish before
+		// touching the journal. This is the fix for the Stop-ordering race
+		// where consumeFSWatch (or rebuild) could call journal.Append /
+		// journal.Stream on a closed journal.
 		d.wg.Wait()
 
 		// (5) Persist the index while the journal is still open for Checkpoint.
+		//
+		// Skip persist if an async rebuild was in flight and got cancelled
+		// before completing. In that case d.index holds events only up to
+		// some Y, but journal.Checkpoint returns the latest event ID X > Y,
+		// and writing a cursor that says "indexed up to X" would lie — next
+		// start would skip rebuild and search would silently miss events
+		// (Y, X]. Letting the cursor stay where it was lets the next daemon
+		// detect needsRebuild and replay correctly.
 		indexPath := filepath.Join(d.projectPath, ".dfmt", "index.gob")
-		hiID, err := d.journal.Checkpoint(ctx)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "warning: checkpoint failed: %v\n", err)
-		}
-		if perr := core.PersistIndex(d.index, indexPath, hiID); perr != nil {
-			fmt.Fprintf(os.Stderr, "warning: persist index: %v\n", perr)
+		skipPersist := d.needsRebuild && !d.rebuildComplete.Load()
+		if skipPersist {
+			fmt.Println("Skipping index persist — async rebuild was incomplete; next start will replay journal")
+		} else {
+			hiID, err := d.journal.Checkpoint(ctx)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "warning: checkpoint failed: %v\n", err)
+			}
+			if perr := core.PersistIndex(d.index, indexPath, hiID); perr != nil {
+				fmt.Fprintf(os.Stderr, "warning: persist index: %v\n", perr)
+			}
 		}
 
 		// (6) Stop the server.
@@ -332,9 +403,47 @@ func (d *Daemon) Stop(ctx context.Context) error {
 		pidPath := filepath.Join(d.projectPath, ".dfmt", "daemon.pid")
 		_ = os.Remove(pidPath)
 		d.unregister()
+		// Release the singleton lock LAST so a fresh daemon spawned the
+		// instant Stop returns can bind cleanly. Releasing too early would
+		// let a racing daemon acquire the lock before the listener is fully
+		// torn down → port-already-in-use on the new daemon's bind.
+		if d.lock != nil {
+			_ = d.lock.Release()
+			d.lock = nil
+		}
 		fmt.Println("DFMT daemon stopped")
 	})
 	return retErr
+}
+
+// rebuildIndexAsync replays the journal into d.index in the background.
+// Tracked in d.wg so Stop can wait for it before persisting / closing the
+// journal. Cancellation via d.rebuildCtx lets Stop interrupt a slow rebuild
+// without leaking a goroutine. Panic recovery here matches the synchronous
+// path in New() — a corrupt event must not crash the daemon.
+func (d *Daemon) rebuildIndexAsync() {
+	defer d.wg.Done()
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Fprintf(os.Stderr, "warning: index rebuild panic recovered: %v\n", r)
+		}
+	}()
+
+	hiID, err := core.RebuildIndexFromJournalInto(d.rebuildCtx, d.journal, d.index)
+	if err != nil {
+		// Cancellation is expected on shutdown; only surface real errors.
+		// rebuildComplete stays false so Stop knows the persisted cursor
+		// would lie about which events are indexed — see Stop's persist
+		// guard below.
+		if d.rebuildCtx.Err() == nil {
+			fmt.Fprintf(os.Stderr, "warning: index rebuild: %v\n", err)
+		}
+		return
+	}
+	if perr := core.PersistIndex(d.index, d.indexPath, hiID); perr != nil {
+		fmt.Fprintf(os.Stderr, "warning: persist rebuilt index: %v\n", perr)
+	}
+	d.rebuildComplete.Store(true)
 }
 
 // consumeFSWatch drains events from the filesystem watcher into the journal and index.

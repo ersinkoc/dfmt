@@ -1,8 +1,8 @@
 package sandbox
 
 import (
-	"context"
 	"container/list"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"regexp/syntax"
 	"runtime"
 	"strings"
 	"sync"
@@ -20,6 +21,12 @@ import (
 )
 
 const langBash = "bash"
+
+const (
+	maxGrepPatternBytes  = 4096
+	maxGrepPatternNodes  = 1024
+	maxGrepRepeatNesting = 3
+)
 
 // Policy represents a security policy for sandbox operations.
 type Policy struct {
@@ -127,9 +134,37 @@ func DefaultPolicy() Policy {
 			{Op: "exec", Text: "dfmt"},
 			{Op: "exec", Text: "dfmt *"},
 			{Op: "read", Text: ".env*"},
+			{Op: "read", Text: "**/.env*"},
 			{Op: "read", Text: "**/secrets/**"},
 			{Op: "read", Text: "**/id_rsa"},
 			{Op: "read", Text: "**/id_*"},
+			// Mirror the read denies into write/edit. Without these, an agent
+			// blocked from reading .env can still create or overwrite it —
+			// destroying user secrets or planting backdoor values. The audit
+			// (N4) flagged the broad "write **" allow as the loophole.
+			{Op: "write", Text: ".env*"},
+			{Op: "write", Text: "**/.env*"},
+			{Op: "write", Text: "**/secrets/**"},
+			{Op: "write", Text: "**/id_rsa"},
+			{Op: "write", Text: "**/id_*"},
+			{Op: "edit", Text: ".env*"},
+			{Op: "edit", Text: "**/.env*"},
+			{Op: "edit", Text: "**/secrets/**"},
+			{Op: "edit", Text: "**/id_rsa"},
+			{Op: "edit", Text: "**/id_*"},
+			// Protect dfmt's own state from agent corruption. Editing journal
+			// files would let an agent rewrite its own audit trail.
+			{Op: "write", Text: ".dfmt/**"},
+			{Op: "write", Text: "**/.dfmt/**"},
+			{Op: "edit", Text: ".dfmt/**"},
+			{Op: "edit", Text: "**/.dfmt/**"},
+			// Protect the git repository from accidental corruption — agents
+			// have no business editing pack files, refs, or HEAD directly.
+			// Use `git` commands via Exec for repo changes.
+			{Op: "write", Text: ".git/**"},
+			{Op: "write", Text: "**/.git/**"},
+			{Op: "edit", Text: ".git/**"},
+			{Op: "edit", Text: "**/.git/**"},
 			// SSRF: block cloud metadata and file:// explicitly. Network-level
 			// guards (loopback, RFC1918, link-local) are also applied in Fetch().
 			{Op: "fetch", Text: "http://169.254.169.254/*"},
@@ -497,9 +532,16 @@ func isEnvAssignment(token string) bool {
 
 // Exec implements the Sandbox interface.
 func (s *SandboxImpl) Exec(ctx context.Context, req ExecReq) (ExecResp, error) {
+	// Default to bash when caller omits the language. The MCP schema documents
+	// "bash" as the default, but the JSON-RPC layer forwards an empty string
+	// when the client omits the field — without this the runtime lookup below
+	// fails with "runtime not available:" (empty after the colon).
+	if req.Lang == "" {
+		req.Lang = langBash
+	}
 	// Policy check - for shell commands, check each chained command
 	cmd := req.Code
-	isLangPrefix := req.Lang != "" && req.Lang != "sh" && req.Lang != langBash
+	isLangPrefix := req.Lang != "sh" && req.Lang != langBash
 	if isLangPrefix {
 		cmd = req.Lang + " " + cmd
 	}
@@ -614,7 +656,7 @@ func splitByShellOperators(cmd string) []string {
 					j++
 				}
 				if j <= len(cmd) && j > i+2 {
-					inner := cmd[i+2:j]
+					inner := cmd[i+2 : j]
 					// Recursively split the substitution content so inner operators
 					// (|, &&, ||, ;, etc.) are also checked by the policy.
 					innerParts := splitByShellOperators(inner)
@@ -631,7 +673,7 @@ func splitByShellOperators(cmd string) []string {
 					j++
 				}
 				if j > i+1 {
-					inner := cmd[i+1:j]
+					inner := cmd[i+1 : j]
 					// Recursively split backtick content so inner operators are also checked.
 					innerParts := splitByShellOperators(inner)
 					parts = append(parts, innerParts...)
@@ -687,6 +729,12 @@ const MaxSandboxReadBytes = 4 * 1024 * 1024 // 4 MiB
 func (s *SandboxImpl) Read(ctx context.Context, req ReadReq) (ReadResp, error) {
 	// Clean the path to prevent directory traversal
 	cleanPath := filepath.Clean(req.Path)
+
+	// Reject null bytes — Go's os.Open rejects them on Windows but on Unix they
+	// are valid filename characters, so explicit rejection is defense-in-depth.
+	if strings.IndexByte(cleanPath, 0) >= 0 {
+		return ReadResp{}, fmt.Errorf("path contains null byte")
+	}
 
 	// Resolve to an absolute path and require it to sit inside the working
 	// directory. Both relative and absolute inputs go through the same check,
@@ -776,30 +824,17 @@ func (s *SandboxImpl) Read(ctx context.Context, req ReadReq) (ReadResp, error) {
 		content = trimPartialRune(content)
 	}
 
-	// Intent-based filtering
-	keywords := ExtractKeywords(req.Intent)
-	if len(keywords) > 0 {
-		matches := MatchContent(content, keywords, 10)
-		if len(matches) > 0 {
-			return ReadResp{
-				Matches:   matches,
-				Summary:   GenerateSummary(content, keywords),
-				Size:      totalSize,
-				ReadBytes: int64(len(content)),
-			}, nil
-		}
-		return ReadResp{
-			Content:   content,
-			Summary:   GenerateSummary(content, keywords),
-			Size:      totalSize,
-			ReadBytes: int64(len(content)),
-		}, nil
-	}
+	// Apply unified return-policy filter; see ApplyReturnPolicy for rules.
+	// RawContent preserves the full bytes for the content store.
+	filtered := ApplyReturnPolicy(content, req.Intent, req.Return)
 
 	return ReadResp{
-		Content:   content,
-		Size:      totalSize,
-		ReadBytes: int64(len(content)),
+		Content:    filtered.Body,
+		RawContent: content,
+		Matches:    filtered.Matches,
+		Summary:    filtered.Summary,
+		Size:       totalSize,
+		ReadBytes:  int64(len(content)),
 	}, nil
 }
 
@@ -998,32 +1033,18 @@ func (s *SandboxImpl) Fetch(ctx context.Context, req FetchReq) (FetchResp, error
 
 	content := string(body)
 
-	// Intent-based filtering
-	keywords := ExtractKeywords(req.Intent)
-	if len(keywords) > 0 {
-		matches := MatchContent(content, keywords, 10)
-		if len(matches) > 0 {
-			return FetchResp{
-				Status:     resp.StatusCode,
-				Headers:    headers,
-				Matches:    matches,
-				Summary:    GenerateSummary(content, keywords),
-				Vocabulary: ExtractVocabulary(content),
-			}, nil
-		}
-		return FetchResp{
-			Status:     resp.StatusCode,
-			Headers:    headers,
-			Body:       content,
-			Summary:    GenerateSummary(content, keywords),
-			Vocabulary: ExtractVocabulary(content),
-		}, nil
-	}
+	// Apply unified return-policy filter; see ApplyReturnPolicy for rules.
+	// RawBody preserves the full bytes for the content store.
+	filtered := ApplyReturnPolicy(content, req.Intent, req.Return)
 
 	return FetchResp{
-		Status:  resp.StatusCode,
-		Headers: headers,
-		Body:    content,
+		Status:     resp.StatusCode,
+		Headers:    headers,
+		Body:       filtered.Body,
+		RawBody:    content,
+		Matches:    filtered.Matches,
+		Summary:    filtered.Summary,
+		Vocabulary: filtered.Vocabulary,
 	}, nil
 }
 
@@ -1110,10 +1131,27 @@ func (s *SandboxImpl) Glob(ctx context.Context, req GlobReq) (GlobResp, error) {
 		}
 	}
 
-	return GlobResp{
+	// Cap inline file list. A glob like "**/*" on a large repo can return tens
+	// of thousands of paths — inlining that defeats the project's purpose.
+	// Beyond the cap, agents must narrow the pattern or use Grep with intent.
+	const maxGlobInlineFiles = 500
+	totalFiles := len(files)
+	if len(files) > maxGlobInlineFiles {
+		files = files[:maxGlobInlineFiles]
+	}
+
+	resp := GlobResp{
 		Files:   files,
 		Matches: contentMatches,
-	}, nil
+	}
+	if totalFiles > maxGlobInlineFiles {
+		// Use Matches as a side channel to surface the truncation; consumers
+		// already display Matches in their summary.
+		resp.Matches = append(resp.Matches, ContentMatch{
+			Text: fmt.Sprintf("(truncated: %d more files not shown; refine pattern)", totalFiles-maxGlobInlineFiles),
+		})
+	}
+	return resp, nil
 }
 
 // Grep implements the Sandbox interface.
@@ -1134,7 +1172,13 @@ func (s *SandboxImpl) Grep(ctx context.Context, req GrepReq) (GrepResp, error) {
 		return GrepResp{}, err
 	}
 
-	// Compile regex pattern
+	if err := validateGrepPattern(req.Pattern); err != nil {
+		return GrepResp{}, err
+	}
+
+	// Compile regex pattern. Go's regexp engine is RE2-based and linear-time;
+	// the validator above bounds compile/match resource use for very large or
+	// deeply repetitive user-provided patterns.
 	var pattern *regexp.Regexp
 	if req.CaseInsensitive {
 		pattern, err = regexp.Compile("(?i)" + req.Pattern)
@@ -1217,10 +1261,61 @@ func (s *SandboxImpl) Grep(ctx context.Context, req GrepReq) (GrepResp, error) {
 		}
 	}
 
+	// Trim per-line content so a regex matching very long lines (minified JS,
+	// log dumps) doesn't push the response into the megabytes — grep is meant
+	// for navigation, not bulk extraction.
+	const maxGrepLineBytes = 200
+	for i := range grepMatches {
+		if len(grepMatches[i].Content) > maxGrepLineBytes {
+			grepMatches[i].Content = truncate(grepMatches[i].Content, maxGrepLineBytes)
+		}
+	}
+
 	return GrepResp{
 		Matches: grepMatches,
 		Summary: summary,
 	}, nil
+}
+
+func validateGrepPattern(pattern string) error {
+	if len(pattern) > maxGrepPatternBytes {
+		return fmt.Errorf("grep pattern too large: %d bytes exceeds %d", len(pattern), maxGrepPatternBytes)
+	}
+
+	re, err := syntax.Parse(pattern, syntax.Perl)
+	if err != nil {
+		return fmt.Errorf("invalid pattern: %w", err)
+	}
+
+	nodes, repeatDepth := grepPatternComplexity(re, 0)
+	if nodes > maxGrepPatternNodes {
+		return fmt.Errorf("grep pattern too complex: %d nodes exceeds %d", nodes, maxGrepPatternNodes)
+	}
+	if repeatDepth > maxGrepRepeatNesting {
+		return fmt.Errorf("grep pattern repeat nesting too deep: %d exceeds %d", repeatDepth, maxGrepRepeatNesting)
+	}
+	return nil
+}
+
+func grepPatternComplexity(re *syntax.Regexp, repeatDepth int) (nodes int, maxRepeatDepth int) {
+	if re == nil {
+		return 0, repeatDepth
+	}
+	nodes = 1
+	childRepeatDepth := repeatDepth
+	switch re.Op {
+	case syntax.OpStar, syntax.OpPlus, syntax.OpQuest, syntax.OpRepeat:
+		childRepeatDepth++
+	}
+	maxRepeatDepth = childRepeatDepth
+	for _, sub := range re.Sub {
+		subNodes, subRepeatDepth := grepPatternComplexity(sub, childRepeatDepth)
+		nodes += subNodes
+		if subRepeatDepth > maxRepeatDepth {
+			maxRepeatDepth = subRepeatDepth
+		}
+	}
+	return nodes, maxRepeatDepth
 }
 
 // Edit implements the Sandbox interface.
@@ -1241,6 +1336,11 @@ func (s *SandboxImpl) Edit(ctx context.Context, req EditReq) (EditResp, error) {
 		cleanPath = filepath.Join(absWd, cleanPath)
 	}
 	cleanPath = filepath.Clean(cleanPath)
+	// Reject null bytes — Go's os.Open rejects them on Windows but on Unix
+	// they are valid filename characters, so explicit rejection is defense-in-depth.
+	if strings.IndexByte(cleanPath, 0) >= 0 {
+		return EditResp{}, fmt.Errorf("path contains null byte")
+	}
 
 	// Verify path is within working directory
 	rel, err := filepath.Rel(absWd, cleanPath)
@@ -1280,8 +1380,14 @@ func (s *SandboxImpl) Edit(ctx context.Context, req EditReq) (EditResp, error) {
 	// Replace
 	newContent := strings.Replace(content, req.OldString, req.NewString, 1)
 
-	// Write back
-	if err := os.WriteFile(cleanPath, []byte(newContent), 0644); err != nil {
+	// Write back, preserving original mode where possible. We re-stat instead
+	// of trusting WriteFile's perm arg (which only takes effect on create) so
+	// a 0600 secrets file edited by an agent keeps its 0600 mode.
+	mode := os.FileMode(0o600)
+	if fi, ferr := os.Stat(cleanPath); ferr == nil {
+		mode = fi.Mode().Perm()
+	}
+	if err := os.WriteFile(cleanPath, []byte(newContent), mode); err != nil {
 		return EditResp{}, fmt.Errorf("write file: %w", err)
 	}
 
@@ -1309,6 +1415,11 @@ func (s *SandboxImpl) Write(ctx context.Context, req WriteReq) (WriteResp, error
 		cleanPath = filepath.Join(absWd, cleanPath)
 	}
 	cleanPath = filepath.Clean(cleanPath)
+	// Reject null bytes — Go's os.Open rejects them on Windows but on Unix
+	// they are valid filename characters, so explicit rejection is defense-in-depth.
+	if strings.IndexByte(cleanPath, 0) >= 0 {
+		return WriteResp{}, fmt.Errorf("path contains null byte")
+	}
 
 	// Verify path is within working directory
 	rel, err := filepath.Rel(absWd, cleanPath)
@@ -1335,13 +1446,21 @@ func (s *SandboxImpl) Write(ctx context.Context, req WriteReq) (WriteResp, error
 		return WriteResp{}, err
 	}
 
-	// Ensure parent directory exists
-	if err := os.MkdirAll(filepath.Dir(cleanPath), 0755); err != nil {
+	// Ensure parent directory exists. Use 0o700 so newly-created intermediate
+	// directories aren't world-readable on multi-user hosts. The .dfmt
+	// directory itself is 0o700 — sandbox writes follow the same hygiene.
+	if err := os.MkdirAll(filepath.Dir(cleanPath), 0o700); err != nil {
 		return WriteResp{}, fmt.Errorf("create directory: %w", err)
 	}
 
-	// Write file
-	if err := os.WriteFile(cleanPath, []byte(req.Content), 0644); err != nil {
+	// Write file with owner-only permissions for new files. If the file
+	// already exists, preserve its mode (an agent shouldn't widen access on
+	// an existing file by overwriting it).
+	mode := os.FileMode(0o600)
+	if fi, ferr := os.Stat(cleanPath); ferr == nil {
+		mode = fi.Mode().Perm()
+	}
+	if err := os.WriteFile(cleanPath, []byte(req.Content), mode); err != nil {
 		return WriteResp{}, fmt.Errorf("write file: %w", err)
 	}
 
@@ -1404,31 +1523,20 @@ func (s *SandboxImpl) execImpl(ctx context.Context, req ExecReq, rt Runtime) (Ex
 		output = trimPartialRune(output[:MaxRawBytes])
 	}
 
-	// Intent-based filtering
-	keywords := ExtractKeywords(req.Intent)
-	if len(keywords) > 0 {
-		matches := MatchContent(output, keywords, 10)
-		if len(matches) > 0 {
-			return ExecResp{
-				Exit:       exitCode,
-				Matches:    matches,
-				Summary:    GenerateSummary(output, keywords),
-				Vocabulary: ExtractVocabulary(output),
-				DurationMs: int(time.Since(start).Milliseconds()),
-			}, nil
-		}
-		return ExecResp{
-			Exit:       exitCode,
-			Stdout:     output,
-			Summary:    GenerateSummary(output, keywords),
-			Vocabulary: ExtractVocabulary(output),
-			DurationMs: int(time.Since(start).Milliseconds()),
-		}, nil
-	}
+	// Apply the return-policy filter. This is the single point that decides
+	// whether to inline output or return excerpts; per-handler ad-hoc logic
+	// was the source of the empty-intent → full-output token leak.
+	// RawStdout carries the pre-filter bytes so the transport layer can stash
+	// them into the content store regardless of what the policy dropped.
+	filtered := ApplyReturnPolicy(output, req.Intent, req.Return)
 
 	return ExecResp{
 		Exit:       exitCode,
-		Stdout:     output,
+		Stdout:     filtered.Body,
+		RawStdout:  output,
+		Matches:    filtered.Matches,
+		Summary:    filtered.Summary,
+		Vocabulary: filtered.Vocabulary,
 		DurationMs: int(time.Since(start).Milliseconds()),
 	}, nil
 }
@@ -1545,20 +1653,20 @@ var (
 		"PERL5",
 	}
 	sandboxBlockedEnvNames = map[string]struct{}{
-		"PATH":            {},
-		"IFS":             {},
-		"BASH_ENV":        {},
-		"ENV":             {},
-		"PS4":             {},
-		"PROMPT_COMMAND":  {},
-		"HOME":            {},
-		"USER":            {},
-		"USERPROFILE":     {},
-		"APPDATA":         {},
-		"LOCALAPPDATA":    {},
-		"PATHEXT":         {},
-		"COMSPEC":         {},
-		"SYSTEMROOT":      {},
+		"PATH":           {},
+		"IFS":            {},
+		"BASH_ENV":       {},
+		"ENV":            {},
+		"PS4":            {},
+		"PROMPT_COMMAND": {},
+		"HOME":           {},
+		"USER":           {},
+		"USERPROFILE":    {},
+		"APPDATA":        {},
+		"LOCALAPPDATA":   {},
+		"PATHEXT":        {},
+		"COMSPEC":        {},
+		"SYSTEMROOT":     {},
 	}
 )
 

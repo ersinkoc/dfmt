@@ -249,13 +249,17 @@ func autoInitProject(projectPath string) error {
   },
   "permissions": {
     "allow": [
-      "mcp__dfmt__dfmt.exec",
-      "mcp__dfmt__dfmt.read",
-      "mcp__dfmt__dfmt.fetch",
-      "mcp__dfmt__dfmt.remember",
-      "mcp__dfmt__dfmt.search",
-      "mcp__dfmt__dfmt.recall",
-      "mcp__dfmt__dfmt.stats"
+      "mcp__dfmt__dfmt_exec",
+      "mcp__dfmt__dfmt_read",
+      "mcp__dfmt__dfmt_fetch",
+      "mcp__dfmt__dfmt_remember",
+      "mcp__dfmt__dfmt_search",
+      "mcp__dfmt__dfmt_recall",
+      "mcp__dfmt__dfmt_stats",
+      "mcp__dfmt__dfmt_glob",
+      "mcp__dfmt__dfmt_grep",
+      "mcp__dfmt__dfmt_edit",
+      "mcp__dfmt__dfmt_write"
     ]
   }
 }

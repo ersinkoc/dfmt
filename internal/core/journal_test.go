@@ -1644,27 +1644,27 @@ func TestOpenJournalMkdirAllSucceeds(t *testing.T) {
 	}
 }
 
-func TestPeriodicSyncTicker(t *testing.T) {
+func TestPeriodicSyncLoop(t *testing.T) {
 	tmpDir := t.TempDir()
 	journalPath := filepath.Join(tmpDir, "sync.journal")
 
-	// Non-durable journal should have sync ticker
+	// Non-durable journal should have a background sync loop.
 	j, err := OpenJournal(journalPath, JournalOptions{Durable: false})
 	if err != nil {
 		t.Fatalf("OpenJournal failed: %v", err)
 	}
-	if j.(*journalImpl).syncTicker == nil {
-		t.Error("expected syncTicker to be set for non-durable journal")
+	if j.(*journalImpl).syncStop == nil || j.(*journalImpl).syncDone == nil {
+		t.Error("expected sync loop channels to be set for non-durable journal")
 	}
 	j.Close()
 
-	// Durable journal should not have sync ticker
+	// Durable journal syncs each append and should not start the loop.
 	j2, err := OpenJournal(journalPath, JournalOptions{Durable: true})
 	if err != nil {
 		t.Fatalf("OpenJournal failed: %v", err)
 	}
-	if j2.(*journalImpl).syncTicker != nil {
-		t.Error("expected syncTicker to be nil for durable journal")
+	if j2.(*journalImpl).syncStop != nil || j2.(*journalImpl).syncDone != nil {
+		t.Error("expected sync loop channels to be nil for durable journal")
 	}
 	j2.Close()
 }

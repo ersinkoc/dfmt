@@ -245,6 +245,69 @@ func ExtractVocabulary(content string) []string {
 	return vocab
 }
 
+// FilteredOutput is the result of applying a return-policy + intent filter
+// to a raw body. The token-saving rule: only one of Body or
+// (Summary+Matches+Vocabulary) is meaningful for any given response — the
+// full raw body is never duplicated alongside its own excerpt.
+type FilteredOutput struct {
+	Body       string         // raw body, populated only when policy inlines
+	Summary    string         // human-readable summary
+	Matches    []ContentMatch // intent-matched excerpts
+	Vocabulary []string       // distinctive-term vocabulary
+}
+
+// ApplyReturnPolicy is the single source of truth for how sandbox tools
+// balance inline output against excerpts. It exists because the previous
+// per-handler ad-hoc logic leaked the full body in three default cases:
+//
+//  1. empty intent -> full body inlined (the common case for naive agents)
+//  2. intent provided but no matches -> full body inlined as fallback
+//  3. "return" parameter parsed but never read
+//
+// Policy:
+//
+//	"raw"     - inline body, no excerpts. Agent pays full token cost.
+//	"search"  - matches + vocabulary only. No body, no summary.
+//	"summary" - summary + matches + vocabulary. Never inlines body.
+//	"auto"/"" - inline body iff len(body) <= InlineThreshold;
+//	            otherwise summary + matches + vocabulary, body dropped.
+//
+// This makes the *default* path (auto + empty intent + large output) save
+// tokens, instead of silently falling through to "return everything".
+// Callers that need raw bytes must opt-in via Return: "raw".
+func ApplyReturnPolicy(content, intent, returnMode string) FilteredOutput {
+	keywords := ExtractKeywords(intent)
+	var matches []ContentMatch
+	if len(keywords) > 0 {
+		matches = MatchContent(content, keywords, 10)
+	}
+
+	out := FilteredOutput{}
+
+	switch returnMode {
+	case "raw":
+		out.Body = content
+		return out
+	case "search":
+		out.Matches = matches
+		out.Vocabulary = ExtractVocabulary(content)
+		return out
+	case "summary":
+		out.Summary = GenerateSummary(content, keywords)
+		out.Matches = matches
+		out.Vocabulary = ExtractVocabulary(content)
+		return out
+	default: // "auto" or ""
+		if len(content) <= InlineThreshold {
+			out.Body = content
+		}
+		out.Summary = GenerateSummary(content, keywords)
+		out.Matches = matches
+		out.Vocabulary = ExtractVocabulary(content)
+		return out
+	}
+}
+
 // truncate shortens s to at most maxLen bytes, appending "..." when it had
 // to cut. The cut is backed up to a rune boundary so non-ASCII summaries
 // (Turkish, CJK, accented Latin) don't end mid-rune — encoding/json would

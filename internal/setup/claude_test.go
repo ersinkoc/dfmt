@@ -80,8 +80,9 @@ func TestPatchClaudeCodeUserJSON_MissingFile_ProjectScope(t *testing.T) {
 	if !ok {
 		t.Fatalf("projects[%s].mcpServers.dfmt missing", key)
 	}
-	if dfmt["command"] != "dfmt" || dfmt["type"] != "stdio" {
-		t.Errorf("mcp entry wrong: %#v", dfmt)
+	wantCmd := ResolveDFMTCommand()
+	if dfmt["command"] != wantCmd || dfmt["type"] != "stdio" {
+		t.Errorf("mcp entry wrong: %#v (want command=%q type=stdio)", dfmt, wantCmd)
 	}
 }
 
@@ -156,8 +157,9 @@ func TestPatchClaudeCodeUserJSON_UserScopeOnly(t *testing.T) {
 	if !ok {
 		t.Fatalf("mcpServers.dfmt missing")
 	}
-	if dfmt["command"] != "dfmt" {
-		t.Errorf("command = %v, want dfmt", dfmt["command"])
+	wantCmd := ResolveDFMTCommand()
+	if dfmt["command"] != wantCmd {
+		t.Errorf("command = %v, want %q", dfmt["command"], wantCmd)
 	}
 	args, _ := dfmt["args"].([]any)
 	if len(args) != 1 || args[0] != "mcp" {
@@ -257,6 +259,78 @@ func TestPatchClaudeCodeUserJSON_EmptyFileTreatedAsEmptyObject(t *testing.T) {
 	}
 	cfg := readClaudeJSON(t, home)
 	_ = getMap(t, cfg, "mcpServers", "dfmt")
+}
+
+// On Windows the filesystem is case-insensitive but ~/.claude.json may end
+// up with two case-variant keys for the same project. Patching must collapse
+// them into the canonical key so PowerShell's case-insensitive JSON parser
+// stops choking on the file.
+func TestPatchClaudeCodeUserJSON_CollapsesWindowsCaseVariants(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("case-variant collapsing is Windows-only")
+	}
+	home := t.TempDir()
+	setHome(t, home)
+
+	projectPath := `D:\Codebox\PROJECTS\demo`
+	canonical := normalizeProjectKey(projectPath) // "D:/Codebox/PROJECTS/demo"
+	variant := strings.ToUpper(canonical[:2]) + strings.ReplaceAll(canonical[2:], "Codebox", "CODEBOX")
+	if variant == canonical {
+		t.Fatalf("variant key not distinct from canonical: %q", canonical)
+	}
+
+	initial := map[string]any{
+		"projects": map[string]any{
+			variant: map[string]any{
+				"hasTrustDialogAccepted": true,
+				"customKept":             "stay",
+			},
+			canonical: map[string]any{
+				"customNew": "also-stay",
+			},
+		},
+	}
+	data, err := json.Marshal(initial)
+	if err != nil {
+		t.Fatalf("marshal seed: %v", err)
+	}
+	claudePath := filepath.Join(home, ".claude.json")
+	if err := os.WriteFile(claudePath, data, 0600); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	if err := PatchClaudeCodeUserJSON(projectPath, false); err != nil {
+		t.Fatalf("patch: %v", err)
+	}
+
+	cfg := readClaudeJSON(t, home)
+	projects := getMap(t, cfg, "projects")
+
+	// Variant key must be gone.
+	if _, ok := projects[variant]; ok {
+		t.Errorf("variant key %q still present after patch", variant)
+	}
+	// Canonical key must hold the merged entry.
+	merged, ok := projects[canonical].(map[string]any)
+	if !ok {
+		t.Fatalf("canonical key %q missing after patch", canonical)
+	}
+	if merged["customKept"] != "stay" {
+		t.Errorf("variant-only field dropped: customKept = %v", merged["customKept"])
+	}
+	if merged["customNew"] != "also-stay" {
+		t.Errorf("canonical-only field dropped: customNew = %v", merged["customNew"])
+	}
+	// Trust flags must be set.
+	for _, flag := range []string{
+		"hasTrustDialogAccepted",
+		"hasClaudeMdExternalIncludesApproved",
+		"hasClaudeMdExternalIncludesWarningShown",
+	} {
+		if v, _ := merged[flag].(bool); !v {
+			t.Errorf("flag %s = %v, want true", flag, merged[flag])
+		}
+	}
 }
 
 func TestNormalizeProjectKey(t *testing.T) {

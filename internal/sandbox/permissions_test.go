@@ -149,6 +149,37 @@ func TestExecImplBashPath(t *testing.T) {
 	}
 }
 
+// TestExecImplDefaultLang verifies that an empty Lang falls back to bash so
+// MCP clients that omit the field don't see "runtime not available:" (with
+// nothing after the colon — the giveaway that req.Lang was "").
+func TestExecImplDefaultLang(t *testing.T) {
+	rt, ok := runtimes.Get("bash")
+	if !ok || !rt.Available {
+		t.Skip("bash not available on this system")
+	}
+	_ = rt
+
+	policy := Policy{
+		Version: 1,
+		Allow: []Rule{
+			{Op: "exec", Text: "*"},
+		},
+	}
+	sb := NewSandboxWithPolicyAndRuntimes("/tmp", policy, runtimes)
+	ctx := context.Background()
+
+	resp, err := sb.Exec(ctx, ExecReq{
+		Code: "echo default-lang",
+		// Lang intentionally empty.
+	})
+	if err != nil {
+		t.Fatalf("Exec with empty Lang failed: %v", err)
+	}
+	if !strings.Contains(resp.Stdout, "default-lang") {
+		t.Errorf("Stdout = %q, want to contain 'default-lang'", resp.Stdout)
+	}
+}
+
 // TestExecImplShPath tests execImpl with sh language.
 func TestExecImplShPath(t *testing.T) {
 	rt, ok := runtimes.Get("sh")
@@ -292,10 +323,14 @@ func TestExecImplMaxRawBytesTruncation(t *testing.T) {
 	ctx := context.Background()
 
 	// Generate output larger than MaxRawBytes (256KB)
-	// Create a string of approximately 300KB
+	// Create a string of approximately 400KB. Return: "raw" opts into inline
+	// body so we can assert the truncation count on Stdout — without it the
+	// auto-policy drops Stdout for any output above InlineThreshold and we'd
+	// only see the truncation through RawStdout (an internal stash field).
 	resp, err := sb.Exec(ctx, ExecReq{
-		Code: "printf 'A%.0s' {1..400000}",
-		Lang: "bash",
+		Code:   "printf 'A%.0s' {1..400000}",
+		Lang:   "bash",
+		Return: "raw",
 	})
 	if err != nil {
 		t.Fatalf("Exec failed: %v", err)
@@ -943,6 +978,32 @@ func TestRegexMatchErrorBranch(t *testing.T) {
 	}
 }
 
+func TestGrepRejectsOversizedPattern(t *testing.T) {
+	sb := NewSandbox(t.TempDir())
+	_, err := sb.Grep(context.Background(), GrepReq{
+		Pattern: strings.Repeat("a", maxGrepPatternBytes+1),
+	})
+	if err == nil {
+		t.Fatal("expected oversized grep pattern to be rejected")
+	}
+	if !strings.Contains(err.Error(), "too large") {
+		t.Fatalf("expected too-large error, got %v", err)
+	}
+}
+
+func TestGrepRejectsDeepRepeatNesting(t *testing.T) {
+	sb := NewSandbox(t.TempDir())
+	_, err := sb.Grep(context.Background(), GrepReq{
+		Pattern: "(((a+)*)*)*",
+	})
+	if err == nil {
+		t.Fatal("expected deeply nested repeat pattern to be rejected")
+	}
+	if !strings.Contains(err.Error(), "repeat nesting") {
+		t.Fatalf("expected repeat-nesting error, got %v", err)
+	}
+}
+
 func TestWriteTempFileMultipleLangs(t *testing.T) {
 	tmpDir := t.TempDir()
 	origTmpDir := os.Getenv("TMPDIR")
@@ -1056,5 +1117,30 @@ func TestBackgroundOperatorQuotedAmpersandIgnored(t *testing.T) {
 	if len(parts) != 1 {
 		t.Errorf("splitByShellOperators(%q) split into %d parts (%#v); want 1 — quoted & is not a chain",
 			`echo "a & b"`, len(parts), parts)
+	}
+}
+
+// TestNullByteInPath verifies that Read, Write, and Edit reject paths containing
+// a null byte. On Unix, null bytes are valid filename characters, so explicit
+// rejection is defense-in-depth (Go's os.Open rejects them on Windows).
+func TestNullByteInPath(t *testing.T) {
+	policy := Policy{Version: 1, Allow: []Rule{{Op: "read", Text: "**"}, {Op: "write", Text: "**"}, {Op: "edit", Text: "**"}}, Deny: nil}
+	sb := NewSandboxWithPolicyAndRuntimes(t.TempDir(), policy, runtimes)
+	ctx := context.Background()
+
+	for _, op := range []string{"Read", "Write", "Edit"} {
+		pathWithNull := "/tmp/foo\x00bar.txt"
+		var err error
+		switch op {
+		case "Read":
+			_, err = sb.Read(ctx, ReadReq{Path: pathWithNull})
+		case "Write":
+			_, err = sb.Write(ctx, WriteReq{Path: pathWithNull, Content: "test"})
+		case "Edit":
+			_, err = sb.Edit(ctx, EditReq{Path: pathWithNull, OldString: "x", NewString: "y"})
+		}
+		if err == nil {
+			t.Errorf("%s with null byte in path = nil, want error containing 'null byte'", op)
+		}
 	}
 }

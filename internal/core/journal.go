@@ -86,8 +86,8 @@ type journalImpl struct {
 	maxBytes     int64
 	compress     bool
 	hiCursor     string
-	syncTicker   *time.Ticker
-	syncCh       <-chan time.Time
+	syncStop     chan struct{}
+	syncDone     chan struct{}
 	closed       bool
 }
 
@@ -114,18 +114,17 @@ func OpenJournal(path string, opt JournalOptions) (Journal, error) {
 		compress: opt.Compress,
 	}
 
-	// Start periodic sync ticker for batched (non-durable) mode. Interval is
-	// driven by JournalOptions.BatchMS when set, falling back to 30s which is
-	// the historical default when callers leave the field zero.
+	// Configure periodic sync for batched (non-durable) mode. The loop starts
+	// after existing-file recovery succeeds so a failed OpenJournal does not
+	// leave a goroutine behind.
+	var batchInterval time.Duration
 	if !opt.Durable {
-		interval := 30 * time.Second
+		batchInterval = 30 * time.Second
 		if opt.BatchMS > 0 {
-			interval = time.Duration(opt.BatchMS) * time.Millisecond
+			batchInterval = time.Duration(opt.BatchMS) * time.Millisecond
 		}
-		j.syncInterval = interval
+		j.syncInterval = batchInterval
 		j.lastSync = time.Now()
-		j.syncTicker = time.NewTicker(interval)
-		j.syncCh = j.syncTicker.C
 	}
 
 	// Find the last ULID in the file
@@ -134,6 +133,12 @@ func OpenJournal(path string, opt JournalOptions) (Journal, error) {
 			f.Close()
 			return nil, fmt.Errorf("scan last id: %w", err)
 		}
+	}
+
+	if batchInterval > 0 {
+		j.syncStop = make(chan struct{})
+		j.syncDone = make(chan struct{})
+		go j.periodicSync(batchInterval, j.syncStop, j.syncDone)
 	}
 
 	return j, nil
@@ -169,24 +174,6 @@ func (j *journalImpl) Append(ctx context.Context, e Event) error {
 		}
 	}
 
-	// Periodic sync in batched mode. A non-blocking select on syncCh alone
-	// misses ticks under steady high-rate writes (Go's time.Ticker only
-	// buffers one value; any tick fired while no one was reading is
-	// silently dropped). Track lastSync so we also catch up if we drifted
-	// past the interval.
-	if j.syncCh != nil {
-		drained := false
-		select {
-		case <-j.syncCh:
-			drained = true
-		default:
-		}
-		if drained || (j.syncInterval > 0 && time.Since(j.lastSync) >= j.syncInterval) {
-			_ = j.file.Sync()
-			j.lastSync = time.Now()
-		}
-	}
-
 	if _, err := j.file.Write(data); err != nil {
 		return fmt.Errorf("write: %w", err)
 	}
@@ -198,6 +185,26 @@ func (j *journalImpl) Append(ctx context.Context, e Event) error {
 
 	j.hiCursor = e.ID
 	return nil
+}
+
+func (j *journalImpl) periodicSync(interval time.Duration, stop <-chan struct{}, done chan<- struct{}) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	defer close(done)
+
+	for {
+		select {
+		case <-ticker.C:
+			j.mu.Lock()
+			if !j.closed {
+				_ = j.file.Sync()
+				j.lastSync = time.Now()
+			}
+			j.mu.Unlock()
+		case <-stop:
+			return
+		}
+	}
 }
 
 // Stream reads events from the journal starting at 'from' cursor.
@@ -406,18 +413,32 @@ func (j *journalImpl) Rotate(ctx context.Context) error {
 
 // Close closes the journal.
 func (j *journalImpl) Close() error {
-	j.mu.Lock()
-	defer j.mu.Unlock()
+	var syncStop chan struct{}
+	var syncDone chan struct{}
 
-	// Stop the sync ticker
-	if j.syncTicker != nil {
-		j.syncTicker.Stop()
-		j.syncTicker = nil
-		j.syncCh = nil
+	j.mu.Lock()
+
+	// Stop the background sync loop. Capture the channels while locked, then
+	// wait after unlocking so Close cannot deadlock with a sync already waiting
+	// for j.mu.
+	if j.syncStop != nil {
+		syncStop = j.syncStop
+		syncDone = j.syncDone
+		j.syncStop = nil
+		j.syncDone = nil
 	}
 
 	// Mark as closed to prevent further operations
 	j.closed = true
+	j.mu.Unlock()
+
+	if syncStop != nil {
+		close(syncStop)
+		<-syncDone
+	}
+
+	j.mu.Lock()
+	defer j.mu.Unlock()
 
 	// Sync before close
 	if err := j.file.Sync(); err != nil {

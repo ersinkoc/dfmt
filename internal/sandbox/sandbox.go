@@ -28,9 +28,18 @@ type ExecReq struct {
 }
 
 // ExecResp is the response from an exec operation.
+//
+// Stdout is what the agent should see (after the return-policy filter has
+// optionally replaced large output with summary+matches). RawStdout is the
+// full pre-filter output the daemon stashes into the content store so the
+// agent can fetch the raw bytes later via the chunk-set ID. The two fields
+// were previously the same; that meant when the policy dropped Stdout for a
+// large output, the content store ended up storing nothing — the chunk set
+// ID was a pointer to empty bytes.
 type ExecResp struct {
 	Exit       int            // Exit code
-	Stdout     string         // Inline output if small
+	Stdout     string         // Filtered output for the client (may be empty when policy excludes it)
+	RawStdout  string         // Full pre-filter output for content stashing; never sent to the client
 	Stderr     string         // Inline error output if small
 	ChunkSet   string         // Chunk set ID if output was chunked
 	Summary    string         // Human-readable summary
@@ -49,14 +58,17 @@ type ReadReq struct {
 	Return string // "auto" | "raw" | "summary" | "search"
 }
 
-// ReadResp is the response from a read operation.
+// ReadResp is the response from a read operation. Content is filtered for
+// the client; RawContent is the full pre-filter content for stashing. See
+// ExecResp for the rationale.
 type ReadResp struct {
-	Content   string         // Inline content if small
-	ChunkSet  string         // Chunk set ID if content was chunked
-	Summary   string         // Human-readable summary
-	Matches   []ContentMatch // Intent-matched excerpts
-	Size      int64          // Total file size
-	ReadBytes int64          // Bytes actually read
+	Content    string         // Filtered content for the client
+	RawContent string         // Full pre-filter content for stashing; never sent to the client
+	ChunkSet   string         // Chunk set ID if content was chunked
+	Summary    string         // Human-readable summary
+	Matches    []ContentMatch // Intent-matched excerpts
+	Size       int64          // Total file size
+	ReadBytes  int64          // Bytes actually read
 }
 
 // FetchReq is a request to fetch a URL.
@@ -70,11 +82,14 @@ type FetchReq struct {
 	Timeout time.Duration
 }
 
-// FetchResp is the response from a fetch operation.
+// FetchResp is the response from a fetch operation. Body is filtered for the
+// client; RawBody is the full pre-filter body for stashing. See ExecResp for
+// the rationale.
 type FetchResp struct {
 	Status     int // HTTP status code
 	Headers    map[string]string
-	Body       string         // Inline body if small
+	Body       string         // Filtered body for the client
+	RawBody    string         // Full pre-filter body for stashing; never sent to the client
 	ChunkSet   string         // Chunk set ID if body was chunked
 	Summary    string         // Human-readable summary
 	Matches    []ContentMatch // Intent-matched excerpts

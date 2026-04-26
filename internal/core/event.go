@@ -73,6 +73,14 @@ const (
 	KeyCacheHit     = "cache_hit"     // bool - cache hit occurred
 )
 
+// MCP byte-tracking keys for sandbox tool calls. Populated automatically by
+// Exec/Read/Fetch — measure what the agent context would have consumed without
+// intent filtering vs what was actually returned.
+const (
+	KeyRawBytes      = "raw_bytes"      // int - pre-filter (post-redact) output size
+	KeyReturnedBytes = "returned_bytes" // int - bytes actually returned to caller
+)
+
 // Event represents a single event in the journal.
 type Event struct {
 	ID       string         `json:"id"`

@@ -253,6 +253,28 @@ func TestSocketServer_HandleConn_ReadError(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 }
 
+func TestSocketServer_HandleConn_IdleTimeout(t *testing.T) {
+	oldTimeout := socketReadIdleTimeout
+	socketReadIdleTimeout = 20 * time.Millisecond
+	defer func() { socketReadIdleTimeout = oldTimeout }()
+
+	serverConn, clientConn := net.Pipe()
+	defer clientConn.Close()
+
+	server := &SocketServer{handlers: &Handlers{}}
+	done := make(chan struct{})
+	go func() {
+		server.handleConn(serverConn)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("idle socket connection did not close after read deadline")
+	}
+}
+
 func TestSocketServer_Serve_ContextCancellation(t *testing.T) {
 	if os.PathSeparator == '\\' {
 		t.Skip("skipping Unix socket tests on Windows")

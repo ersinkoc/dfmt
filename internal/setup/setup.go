@@ -1,15 +1,50 @@
 package setup
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
 )
+
+const maxManifestBytes = 256 << 10
+
+// ResolveDFMTCommand returns the command string to embed in MCP `command`
+// fields written into agent configs. Resolution order:
+//
+//  1. exec.LookPath("dfmt") -- absolute path of whichever dfmt is first on PATH.
+//     This is the right answer when the user just installed via dev.ps1/install.sh
+//     because PATH includes the canonical install directory.
+//  2. os.Executable() -- absolute path of the currently running binary. Used
+//     when dfmt is invoked from a directory that isn't on PATH (rare; e.g.
+//     freshly built `./dfmt setup` from the repo root).
+//  3. Literal "dfmt" -- last-resort relative fallback. The agent will need
+//     dfmt on its PATH at launch time for this to work.
+//
+// Writing absolute paths makes MCP launches PATH-independent: the agent
+// (Claude Code, Cursor, etc.) spawns the exact binary we resolved at setup
+// time even if its login shell ends up with a different PATH.
+func ResolveDFMTCommand() string {
+	if path, err := exec.LookPath("dfmt"); err == nil && path != "" {
+		if abs, aerr := filepath.Abs(path); aerr == nil {
+			return abs
+		}
+		return path
+	}
+	if ex, err := os.Executable(); err == nil && ex != "" {
+		return ex
+	}
+	return "dfmt"
+}
 
 // HomeDir returns the user's home directory, respecting HOME env var for testability.
 // On Windows, $HOME is ignored unless it's a native absolute path — git-bash/MSYS
@@ -57,6 +92,54 @@ type FileEntry struct {
 	Path    string `yaml:"path"`
 	Agent   string `yaml:"agent"`
 	Version string `yaml:"version"`
+}
+
+// samePath compares two filesystem paths for equality. On Windows the
+// underlying filesystem is case-insensitive, so the comparison is too;
+// on Unix-like systems it is exact.
+func samePath(a, b string) bool {
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(a, b)
+	}
+	return a == b
+}
+
+// AddFile upserts a FileEntry into the manifest, replacing any existing
+// entry that targets the same Path. Without this, every `dfmt setup`
+// run would append a fresh row per agent and the manifest would grow
+// unboundedly across re-runs.
+func (m *Manifest) AddFile(entry FileEntry) {
+	for i, existing := range m.Files {
+		if samePath(existing.Path, entry.Path) {
+			m.Files[i] = entry
+			return
+		}
+	}
+	m.Files = append(m.Files, entry)
+}
+
+// dedupFiles collapses any duplicate-Path entries that may have accumulated
+// from older dfmt versions that blindly appended on every setup run. The
+// last entry wins so the most recent agent/version metadata is preserved.
+func dedupFiles(files []FileEntry) []FileEntry {
+	if len(files) < 2 {
+		return files
+	}
+	out := make([]FileEntry, 0, len(files))
+	for _, f := range files {
+		replaced := false
+		for i, existing := range out {
+			if samePath(existing.Path, f.Path) {
+				out[i] = f
+				replaced = true
+				break
+			}
+		}
+		if !replaced {
+			out = append(out, f)
+		}
+	}
+	return out
 }
 
 // RecordAgent bumps the manifest timestamp and upserts an AgentEntry
@@ -150,7 +233,7 @@ func ManifestPath() string {
 // LoadManifest loads the setup manifest.
 func LoadManifest() (*Manifest, error) {
 	path := ManifestPath()
-	data, err := os.ReadFile(path)
+	data, err := readManifestFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return &Manifest{Version: 1}, nil
@@ -160,12 +243,59 @@ func LoadManifest() (*Manifest, error) {
 
 	var m Manifest
 	// Try JSON first, fall back to YAML
-	if err := json.Unmarshal(data, &m); err != nil {
-		if err := yaml.Unmarshal(data, &m); err != nil {
+	if err := decodeManifestJSON(data, &m); err != nil {
+		if err := decodeManifestYAML(data, &m); err != nil {
 			return nil, err
 		}
 	}
+	m.Files = dedupFiles(m.Files)
 	return &m, nil
+}
+
+func decodeManifestJSON(data []byte, m *Manifest) error {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(m); err != nil {
+		return err
+	}
+	var extra any
+	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
+		return fmt.Errorf("manifest JSON must contain exactly one value")
+	}
+	return nil
+}
+
+func decodeManifestYAML(data []byte, m *Manifest) error {
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
+	if err := dec.Decode(m); err != nil {
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
+		return err
+	}
+	var extra any
+	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
+		return fmt.Errorf("manifest YAML must contain exactly one document")
+	}
+	return nil
+}
+
+func readManifestFile(path string) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	data, err := io.ReadAll(io.LimitReader(f, maxManifestBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxManifestBytes {
+		return nil, fmt.Errorf("manifest file too large: exceeds %d bytes", maxManifestBytes)
+	}
+	return data, nil
 }
 
 // SaveManifest writes the setup manifest.

@@ -21,7 +21,40 @@ import (
 
 func TestMain(m *testing.M) {
 	os.Setenv("DFMT_DISABLE_AUTOSTART", "1")
-	os.Exit(m.Run())
+
+	// Isolate HOME/USERPROFILE so tests that reach setup.PatchClaudeCodeUserJSON
+	// (via Dispatch "init"/"setup") never write to the real ~/.claude.json.
+	// Why: prior runs leaked TestDispatchInitWithExistingDfmt* and
+	// /proc/invalid/path entries into the developer's user config.
+	// How to apply: any new test in this package automatically inherits the
+	// redirect — no per-test plumbing required.
+	isolatedHome, err := os.MkdirTemp("", "dfmt-cli-test-home-*")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "TestMain: create isolated home: %v\n", err)
+		os.Exit(1)
+	}
+	origHome, hadHome := os.LookupEnv("HOME")
+	origProfile, hadProfile := os.LookupEnv("USERPROFILE")
+	os.Setenv("HOME", isolatedHome)
+	os.Setenv("USERPROFILE", isolatedHome)
+
+	code := m.Run()
+
+	// Restore so a parent process that re-uses this env (e.g. `go test`
+	// driver) does not see empty values. Tests that os.Unsetenv("HOME")
+	// internally only affect their own scope; this catches the global state.
+	if hadHome {
+		os.Setenv("HOME", origHome)
+	} else {
+		os.Unsetenv("HOME")
+	}
+	if hadProfile {
+		os.Setenv("USERPROFILE", origProfile)
+	} else {
+		os.Unsetenv("USERPROFILE")
+	}
+	_ = os.RemoveAll(isolatedHome)
+	os.Exit(code)
 }
 
 func TestDispatchEmptyArgs(t *testing.T) {
@@ -786,6 +819,242 @@ func TestRunInitCreatesClaudeSettings(t *testing.T) {
 	if len(allow) == 0 {
 		t.Error("allow list is empty")
 	}
+}
+
+func TestEnsureProjectInitializedIdempotentAndPreservesConfig(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// First call: cold start — should create everything.
+	if err := ensureProjectInitialized(tmpDir); err != nil {
+		t.Fatalf("first ensure: %v", err)
+	}
+
+	dfmtDir := filepath.Join(tmpDir, ".dfmt")
+	if _, err := os.Stat(dfmtDir); err != nil {
+		t.Fatalf(".dfmt/ not created: %v", err)
+	}
+	configPath := filepath.Join(dfmtDir, "config.yaml")
+	if _, err := os.Stat(configPath); err != nil {
+		t.Fatalf("config.yaml not created: %v", err)
+	}
+
+	// Customize the config — second call MUST NOT overwrite it.
+	customConfig := []byte("# user customisation\nversion: 99\n")
+	if err := os.WriteFile(configPath, customConfig, 0o600); err != nil {
+		t.Fatalf("write custom config: %v", err)
+	}
+
+	// Seed a .gitignore that already has a leading entry. After the first
+	// call we should see `.dfmt/` appended; after the second, no duplicate.
+	gitignorePath := filepath.Join(tmpDir, ".gitignore")
+	if err := os.WriteFile(gitignorePath, []byte("node_modules\n"), 0o644); err != nil {
+		t.Fatalf("write .gitignore: %v", err)
+	}
+
+	// Second call: warm start — must be idempotent.
+	if err := ensureProjectInitialized(tmpDir); err != nil {
+		t.Fatalf("second ensure: %v", err)
+	}
+
+	got, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read config after second ensure: %v", err)
+	}
+	if string(got) != string(customConfig) {
+		t.Errorf("config.yaml clobbered on re-run\nwant:\n%s\ngot:\n%s", customConfig, got)
+	}
+
+	// Third call: ensure no duplicate `.dfmt/` line in .gitignore.
+	if err := ensureProjectInitialized(tmpDir); err != nil {
+		t.Fatalf("third ensure: %v", err)
+	}
+	gi, err := os.ReadFile(gitignorePath)
+	if err != nil {
+		t.Fatalf("read .gitignore: %v", err)
+	}
+	if c := strings.Count(string(gi), ".dfmt/"); c != 1 {
+		t.Errorf(".dfmt/ appeared %d times in .gitignore, want 1\ncontents:\n%s", c, gi)
+	}
+}
+
+func TestWriteProjectClaudeSettingsPreservesUserContent(t *testing.T) {
+	tmpDir := t.TempDir()
+	claudeDir := filepath.Join(tmpDir, ".claude")
+	if err := os.MkdirAll(claudeDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	settingsPath := filepath.Join(claudeDir, "settings.json")
+	original := map[string]any{
+		"theme":      "dark-mode",
+		"statusLine": map[string]any{"type": "command", "command": "my-status"},
+		"hooks": map[string]any{
+			"PreCompact": []any{
+				map[string]any{
+					"matcher": "",
+					"hooks": []any{
+						map[string]any{
+							"type":    "command",
+							"command": "my-custom-precompact",
+							"timeout": 5,
+						},
+					},
+				},
+			},
+			"UserPromptSubmit": []any{
+				map[string]any{
+					"matcher": "",
+					"hooks": []any{
+						map[string]any{
+							"type":    "command",
+							"command": "my-prompt-hook",
+						},
+					},
+				},
+			},
+		},
+		"permissions": map[string]any{
+			"allow": []any{"Read", "MyCustomTool"},
+			"deny":  []any{"SomeBadTool"},
+		},
+	}
+	originalBytes, err := json.MarshalIndent(original, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if err := os.WriteFile(settingsPath, originalBytes, 0o600); err != nil {
+		t.Fatalf("seed settings.json: %v", err)
+	}
+
+	if err := writeProjectClaudeSettings(tmpDir); err != nil {
+		t.Fatalf("writeProjectClaudeSettings: %v", err)
+	}
+
+	data, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatalf("read merged settings: %v", err)
+	}
+	var merged map[string]any
+	if err := json.Unmarshal(data, &merged); err != nil {
+		t.Fatalf("invalid JSON after merge: %v", err)
+	}
+
+	if got, _ := merged["theme"].(string); got != "dark-mode" {
+		t.Errorf("theme = %q, want dark-mode (user value clobbered)", got)
+	}
+	if _, ok := merged["statusLine"]; !ok {
+		t.Error("statusLine missing — user key dropped")
+	}
+
+	mergedHooks, _ := merged["hooks"].(map[string]any)
+	if mergedHooks == nil {
+		t.Fatal("hooks missing")
+	}
+	if _, ok := mergedHooks["UserPromptSubmit"]; !ok {
+		t.Error("UserPromptSubmit hook lost — unrelated event dropped")
+	}
+	preCompact, _ := mergedHooks["PreCompact"].([]any)
+	foundCustom, foundDfmt := false, false
+	for _, g := range preCompact {
+		grp, _ := g.(map[string]any)
+		inner, _ := grp["hooks"].([]any)
+		for _, h := range inner {
+			hc, _ := h.(map[string]any)
+			cmd, _ := hc["command"].(string)
+			if cmd == "my-custom-precompact" {
+				foundCustom = true
+			}
+			if strings.Contains(cmd, "dfmt recall --save") {
+				foundDfmt = true
+			}
+		}
+	}
+	if !foundCustom {
+		t.Error("user PreCompact hook lost")
+	}
+	if !foundDfmt {
+		t.Error("dfmt PreCompact hook not added")
+	}
+
+	perms, _ := merged["permissions"].(map[string]any)
+	allow, _ := perms["allow"].([]any)
+	if !containsString(allow, "MyCustomTool") {
+		t.Error("user allow entry lost")
+	}
+	if !containsString(allow, "Read") {
+		t.Error("user allow entry 'Read' lost")
+	}
+	if !containsString(allow, "mcp__dfmt__dfmt_exec") {
+		t.Error("dfmt allow entry not added")
+	}
+	deny, _ := perms["deny"].([]any)
+	if !containsString(deny, "SomeBadTool") {
+		t.Error("user deny entry lost")
+	}
+	if !containsString(deny, "Bash") {
+		t.Error("dfmt deny entry not added")
+	}
+}
+
+func TestWriteProjectClaudeSettingsIdempotent(t *testing.T) {
+	tmpDir := t.TempDir()
+	if err := writeProjectClaudeSettings(tmpDir); err != nil {
+		t.Fatalf("first write: %v", err)
+	}
+	settingsPath := filepath.Join(tmpDir, ".claude", "settings.json")
+	first, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatalf("read first: %v", err)
+	}
+
+	if err := writeProjectClaudeSettings(tmpDir); err != nil {
+		t.Fatalf("second write: %v", err)
+	}
+	second, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatalf("read second: %v", err)
+	}
+	if string(first) != string(second) {
+		t.Errorf("settings.json changed on idempotent re-run\nfirst:\n%s\nsecond:\n%s", first, second)
+	}
+}
+
+func TestWriteProjectClaudeSettingsRefusesUserHome(t *testing.T) {
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+	if runtime.GOOS == "windows" {
+		t.Setenv("USERPROFILE", fakeHome)
+	}
+
+	preexisting := []byte(`{"theme":"user-theme"}`)
+	claudeDir := filepath.Join(fakeHome, ".claude")
+	if err := os.MkdirAll(claudeDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	settingsPath := filepath.Join(claudeDir, "settings.json")
+	if err := os.WriteFile(settingsPath, preexisting, 0o600); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	if err := writeProjectClaudeSettings(fakeHome); err != nil {
+		t.Fatalf("writeProjectClaudeSettings: %v", err)
+	}
+
+	got, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatalf("read after: %v", err)
+	}
+	if string(got) != string(preexisting) {
+		t.Errorf("user-home settings.json was modified\nbefore: %s\nafter:  %s", preexisting, got)
+	}
+}
+
+func containsString(list []any, want string) bool {
+	for _, v := range list {
+		if s, ok := v.(string); ok && s == want {
+			return true
+		}
+	}
+	return false
 }
 
 func TestRunDoctorNoDir(t *testing.T) {

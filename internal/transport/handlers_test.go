@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -632,6 +633,17 @@ func TestMCPProtocolHandleToolsList(t *testing.T) {
 	if len(tools) != 11 {
 		t.Errorf("len(tools) = %d, want 11", len(tools))
 	}
+
+	// Regression: every emitted tool name must match the MCP spec regex
+	// ^[a-zA-Z][a-zA-Z0-9_-]*$. Dots silently drop the entire tools/list
+	// in Claude Code's MCP client, leaving the server "connected" with no
+	// callable tools. See http.go mcpToolXxx constants.
+	mcpName := regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_-]*$`)
+	for _, tool := range tools {
+		if !mcpName.MatchString(tool.Name) {
+			t.Errorf("tool name %q is not MCP-spec compliant (^[a-zA-Z][a-zA-Z0-9_-]*$)", tool.Name)
+		}
+	}
 }
 
 func TestMCPProtocolHandleUnknownMethod(t *testing.T) {
@@ -1198,22 +1210,30 @@ func TestMCPTool(t *testing.T) {
 	}
 }
 
-func TestMCPClientCapabilities(t *testing.T) {
-	caps := MCPClientCapabilities{}
-	caps.Roots.ListChanged = true
+func TestMCPServerCapabilities(t *testing.T) {
+	caps := MCPServerCapabilities{
+		Tools: MCPToolsCapability{ListChanged: true},
+	}
 
 	data, err := json.Marshal(caps)
 	if err != nil {
 		t.Fatalf("Marshal failed: %v", err)
 	}
 
-	var decoded MCPClientCapabilities
+	// MCP clients (Claude Code) require a non-empty `tools` key in the
+	// initialize reply or they won't issue tools/list. Guard against a
+	// future refactor that quietly drops it.
+	if !bytes.Contains(data, []byte(`"tools"`)) {
+		t.Fatalf("server capabilities must advertise tools, got %s", data)
+	}
+
+	var decoded MCPServerCapabilities
 	if err := json.Unmarshal(data, &decoded); err != nil {
 		t.Fatalf("Unmarshal failed: %v", err)
 	}
 
-	if !decoded.Roots.ListChanged {
-		t.Error("ListChanged should be true")
+	if !decoded.Tools.ListChanged {
+		t.Error("Tools.ListChanged should be true")
 	}
 }
 

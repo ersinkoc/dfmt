@@ -2,8 +2,6 @@ package transport
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -11,13 +9,16 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"time"
 )
 
 const (
 	jsonRPCVersion = "2.0"
+	// methodXxx are the JSON-RPC method names accepted on the HTTP and socket
+	// transports. They use dot namespacing for historical reasons and remain
+	// stable for back-compat — any existing client posting `dfmt.exec` keeps
+	// working.
 	methodRemember = "dfmt.remember"
 	methodSearch   = "dfmt.search"
 	methodRecall   = "dfmt.recall"
@@ -40,6 +41,22 @@ const (
 	aliasGrep      = "grep"
 	aliasEdit      = "edit"
 	aliasWrite     = "write"
+	// mcpToolXxx are the names exposed over the MCP stdio transport. The MCP
+	// spec restricts tool names to ^[a-zA-Z][a-zA-Z0-9_-]*$ — dots are
+	// rejected by Claude Code's MCP client, which silently drops every tool
+	// from tools/list if dot-named, leaving the server "connected" with no
+	// callable tools.
+	mcpToolRemember = "dfmt_remember"
+	mcpToolSearch   = "dfmt_search"
+	mcpToolRecall   = "dfmt_recall"
+	mcpToolStats    = "dfmt_stats"
+	mcpToolExec     = "dfmt_exec"
+	mcpToolRead     = "dfmt_read"
+	mcpToolFetch    = "dfmt_fetch"
+	mcpToolGlob     = "dfmt_glob"
+	mcpToolGrep     = "dfmt_grep"
+	mcpToolEdit     = "dfmt_edit"
+	mcpToolWrite    = "dfmt_write"
 )
 
 // HTTPServer is an HTTP server for the transport layer.
@@ -59,28 +76,21 @@ type HTTPServer struct {
 	// Start/Stop cycle.
 	doneCh chan struct{}
 
-	// authToken guards TCP listeners. On loopback TCP any local process can
-	// reach the port, so we require a random token delivered via the port
-	// file (mode 0600). Empty string means "no auth" — only appropriate for
-	// Unix sockets where filesystem perms already restrict access.
+	// authToken is part of the port-file wire format and the /api/token
+	// endpoint contract. It is currently always empty: loopback TCP is
+	// guarded by the port file's 0600 mode plus same-origin checks, and
+	// Unix sockets rely on filesystem permissions. The field is retained so
+	// the wire format stays stable if opt-in auth is ever re-enabled.
 	authToken   string
 	projectPath string // Used to filter /api/daemons to only this daemon
 }
 
-// PortFile is the JSON format written to the port file. Clients read this to
-// discover the TCP port AND the auth token. Older versions wrote a bare
-// integer; we fall back to that format on the read side for compatibility.
+// PortFile is the JSON format written to the port file. Token is currently
+// always empty (see authToken comment); older versions wrote a bare integer
+// and the read path still falls back to that format for compatibility.
 type PortFile struct {
 	Port  int    `json:"port"`
 	Token string `json:"token"`
-}
-
-func generateAuthToken() (string, error) {
-	var b [32]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		return "", err
-	}
-	return base64.RawURLEncoding.EncodeToString(b[:]), nil
 }
 
 // NewHTTPServer creates a new HTTP server with TCP listener.
@@ -128,19 +138,7 @@ func (s *HTTPServer) Start(ctx context.Context) error {
 		}
 	}
 
-	// Auth token generation disabled for loopback TCP (port file 0600 owner-only,
-	// same-origin protects browser, dfmt is single-user local tool).
-	// Kept for future opt-in auth if ever needed.
-	// if _, isTCP := ln.(*net.TCPListener); isTCP && s.authToken == "" {
-	// 	tok, err := generateAuthToken()
-	// 	if err != nil {
-	// 		_ = ln.Close()
-	// 		return fmt.Errorf("generate auth token: %w", err)
-	// 	}
-	// 	s.authToken = tok
-	// }
-
-	// Create HTTP handler with auth + security headers middleware.
+	// Create HTTP handler with same-origin + security headers middleware.
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.handle)
 	mux.HandleFunc("/dashboard", s.handleDashboard)
@@ -202,24 +200,19 @@ func (s *HTTPServer) Start(ctx context.Context) error {
 	return nil
 }
 
-// wrapSecurity applies:
-//   - Bearer token auth for TCP listeners (health endpoint excluded).
-//   - CSRF / Origin defense for state-changing paths on the dashboard API
-//     (rejects cross-origin browser requests).
+// wrapSecurity rejects cross-origin browser requests to non-dashboard
+// endpoints (the dashboard HTML is same-origin so legitimate XHRs never
+// carry a foreign Origin) and sets minimal security response headers.
+// Health endpoints bypass the origin check so readiness probes work.
 func (s *HTTPServer) wrapSecurity(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Always set minimal security headers on every response.
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 
-		// Allow health endpoints without auth so readiness probes work.
 		if r.URL.Path == "/healthz" || r.URL.Path == "/readyz" {
 			next.ServeHTTP(w, r)
 			return
 		}
 
-		// Reject browser cross-origin requests to non-dashboard endpoints.
-		// The dashboard HTML is served same-origin, so legitimate dashboard
-		// XHRs won't carry a foreign Origin.
 		if origin := r.Header.Get("Origin"); origin != "" {
 			if !s.isAllowedOrigin(origin) {
 				http.Error(w, "cross-origin request rejected", http.StatusForbidden)
@@ -227,32 +220,8 @@ func (s *HTTPServer) wrapSecurity(next http.Handler) http.Handler {
 			}
 		}
 
-		// Auth is disabled for TCP listeners on loopback. The port file is mode 0600
-		// (readable only by the owning user), same-origin check protects browser
-		// clients, and dfmt is a single-user local tool. Unix sockets rely on
-		// filesystem permissions and skip auth entirely for the same reason.
-		// if s.authToken != "" && r.URL.Path != "/api/token" {
-		// 	got := extractBearerToken(r)
-		// 	if subtle.ConstantTimeCompare([]byte(got), []byte(s.authToken)) != 1 {
-		// 		w.Header().Set("WWW-Authenticate", `Bearer realm="dfmt"`)
-		// 		http.Error(w, "unauthorized", http.StatusUnauthorized)
-		// 		return
-		// 	}
-		// }
-
 		next.ServeHTTP(w, r)
 	})
-}
-
-func extractBearerToken(r *http.Request) string {
-	// Prefer Authorization: Bearer <token>
-	if h := r.Header.Get("Authorization"); h != "" {
-		if strings.HasPrefix(strings.ToLower(h), "bearer ") {
-			return strings.TrimSpace(h[len("bearer "):])
-		}
-	}
-	// Fallback: X-DFMT-Token (convenient for curl).
-	return strings.TrimSpace(r.Header.Get("X-DFMT-Token"))
 }
 
 func (s *HTTPServer) isAllowedOrigin(origin string) bool {
@@ -494,7 +463,8 @@ func (s *HTTPServer) handleStats(ctx context.Context, req Request) Response {
 }
 
 // writePortFile writes {"port":...,"token":"..."} to path with mode 0600 so
-// other local users cannot read the auth token.
+// other local users cannot read the daemon's port (and the same-origin gate
+// then keeps cross-origin browser pages out).
 func (s *HTTPServer) writePortFile(path string, port int, token string) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -504,7 +474,36 @@ func (s *HTTPServer) writePortFile(path string, port int, token string) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0o600)
+	// Write atomically via tmp + rename so a concurrent client never reads a
+	// truncated or empty port file. Without this, the old code's
+	// os.WriteFile (truncate-then-write) had a window where Connect() could
+	// observe a 0-byte file and bail with "empty port file" before the bytes
+	// landed — manifesting as "daemon not responding" on slow Windows hosts.
+	tmp, err := os.CreateTemp(dir, ".port.tmp-*")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	if _, werr := tmp.Write(data); werr != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpName)
+		return werr
+	}
+	if cerr := tmp.Close(); cerr != nil {
+		_ = os.Remove(tmpName)
+		return cerr
+	}
+	if err := os.Chmod(tmpName, 0o600); err != nil {
+		_ = os.Remove(tmpName)
+		return err
+	}
+	// On Windows, os.Rename fails if the target exists. Remove then rename.
+	_ = os.Remove(path)
+	if err := os.Rename(tmpName, path); err != nil {
+		_ = os.Remove(tmpName)
+		return err
+	}
+	return nil
 }
 
 // SetPortFile sets the path to write the chosen port.
@@ -611,10 +610,10 @@ func (s *HTTPServer) handleHealth(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte("ok"))
 }
 
-// handleAPIToken returns the bearer token for the dashboard JS. It is not
-// protected by bearer-token auth (the token is already on disk), but the
-// same-origin check still applies — only the dashboard's own origin can fetch
-// it, so a malicious website cannot steal the token via a browser.
+// handleAPIToken returns the auth token for the dashboard JS. Currently
+// always empty (see authToken field comment); the endpoint and dashboard
+// fetch are kept so the contract stays stable if opt-in auth is ever
+// re-enabled. Same-origin check still gates this endpoint.
 func (s *HTTPServer) handleAPIToken(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -654,8 +653,8 @@ func (s *HTTPServer) handleAPIDaemons(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Filter to only this daemon's project. Prevents disclosing existence of
-	// other projects' daemons to bearer-token holders (V-4).
+	// Filter to only this daemon's project. Prevents disclosing the existence
+	// of other projects' daemons to whoever can reach this loopback port (V-4).
 	if s.projectPath != "" {
 		filtered := make([]map[string]any, 0, 1)
 		for _, d := range daemons {

@@ -254,6 +254,105 @@ func TestHandlers_Fetch_Error(t *testing.T) {
 	}
 }
 
+// TestHandlers_ByteSavings_Logged checks that Exec/Read/Fetch attach
+// raw_bytes and returned_bytes to their journal events, and that Stats
+// aggregates them into BytesSaved/CompressionRatio.
+func TestHandlers_ByteSavings_Logged(t *testing.T) {
+	idx := core.NewIndex()
+	journal := &mockJournal{}
+	rawStdout := strings.Repeat("x", 10_000) // 10 KB raw
+	rawContent := strings.Repeat("y", 4_000)
+	rawBody := strings.Repeat("z", 2_000)
+	sb := &stubSandbox{
+		execResp: sandbox.ExecResp{
+			Exit: 0, Stdout: "tiny", RawStdout: rawStdout,
+			Summary: "trimmed",
+			Matches: []sandbox.ContentMatch{{Text: "m"}},
+		},
+		readResp: sandbox.ReadResp{
+			Content: "head", RawContent: rawContent,
+			Summary: "trimmed", Size: int64(len(rawContent)), ReadBytes: int64(len(rawContent)),
+		},
+		fetchResp: sandbox.FetchResp{
+			Status: 200, Body: "ok", RawBody: rawBody,
+			Summary: "trimmed",
+		},
+	}
+	h := NewHandlers(idx, journal, sb)
+	ctx := context.Background()
+
+	if _, err := h.Exec(ctx, ExecParams{Code: "x", Intent: "i"}); err != nil {
+		t.Fatalf("Exec failed: %v", err)
+	}
+	if _, err := h.Read(ctx, ReadParams{Path: "/p", Intent: "i"}); err != nil {
+		t.Fatalf("Read failed: %v", err)
+	}
+	if _, err := h.Fetch(ctx, FetchParams{URL: "https://x", Intent: "i"}); err != nil {
+		t.Fatalf("Fetch failed: %v", err)
+	}
+
+	if len(journal.events) != 3 {
+		t.Fatalf("expected 3 events, got %d", len(journal.events))
+	}
+	wantRaw := map[string]int{
+		"tool.exec":  len(rawStdout),
+		"tool.read":  len(rawContent),
+		"tool.fetch": len(rawBody),
+	}
+	for _, ev := range journal.events {
+		raw, okR := getInt(ev.Data, core.KeyRawBytes)
+		ret, okT := getInt(ev.Data, core.KeyReturnedBytes)
+		if !okR || !okT {
+			t.Fatalf("event %s missing byte fields: %+v", ev.Type, ev.Data)
+		}
+		if want := wantRaw[string(ev.Type)]; raw != want {
+			t.Errorf("%s raw_bytes = %d, want %d", ev.Type, raw, want)
+		}
+		if ret >= raw {
+			t.Errorf("%s returned_bytes (%d) should be < raw_bytes (%d)", ev.Type, ret, raw)
+		}
+	}
+
+	stats, err := h.Stats(ctx, StatsParams{})
+	if err != nil {
+		t.Fatalf("Stats failed: %v", err)
+	}
+	totalRaw := len(rawStdout) + len(rawContent) + len(rawBody)
+	if stats.TotalRawBytes != totalRaw {
+		t.Errorf("TotalRawBytes = %d, want %d", stats.TotalRawBytes, totalRaw)
+	}
+	if stats.BytesSaved <= 0 {
+		t.Errorf("BytesSaved = %d, want positive", stats.BytesSaved)
+	}
+	if stats.CompressionRatio <= 0 || stats.CompressionRatio > 1 {
+		t.Errorf("CompressionRatio = %v, want 0<r<=1", stats.CompressionRatio)
+	}
+	if stats.TotalRawBytes-stats.BytesSaved != stats.TotalReturnedBytes {
+		t.Errorf("invariant broken: raw - saved != returned (%d - %d != %d)",
+			stats.TotalRawBytes, stats.BytesSaved, stats.TotalReturnedBytes)
+	}
+}
+
+func TestAcquireLimiterHonorsContext(t *testing.T) {
+	sem := make(chan struct{}, 1)
+	release, err := acquireLimiter(context.Background(), sem)
+	if err != nil {
+		t.Fatalf("first acquire failed: %v", err)
+	}
+	defer release()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+
+	_, err = acquireLimiter(ctx, sem)
+	if err == nil {
+		t.Fatal("expected limiter acquire to fail when context expires")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected deadline exceeded, got %v", err)
+	}
+}
+
 func TestHandlers_Stats_Empty(t *testing.T) {
 	idx := core.NewIndex()
 	journal := &mockJournal{}
@@ -331,8 +430,8 @@ func TestHandlers_Stats_NativeToolCalls(t *testing.T) {
 		{ID: "2", TS: now, Type: core.EventType("note"), Tags: []string{"Read"}},
 		{ID: "3", TS: now, Type: core.EventType("note"), Tags: []string{"Bash"}},
 		{ID: "4", TS: now, Type: core.EventType("note"), Tags: []string{"Grep"}},
-		{ID: "5", TS: now, Type: core.EventType("note"), Tags: []string{"note"}},           // not a native tool
-		{ID: "6", TS: now, Type: core.EventType("tool.exec"), Tags: []string{}},           // dfmt MCP
+		{ID: "5", TS: now, Type: core.EventType("note"), Tags: []string{"note"}}, // not a native tool
+		{ID: "6", TS: now, Type: core.EventType("tool.exec"), Tags: []string{}},  // dfmt MCP
 		{ID: "7", TS: now, Type: core.EventType("tool.exec"), Tags: []string{}},
 		{ID: "8", TS: now, Type: core.EventType("tool.read"), Tags: []string{}},
 	}

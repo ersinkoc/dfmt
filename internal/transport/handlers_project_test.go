@@ -2,6 +2,8 @@ package transport
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 
 	"github.com/ersinkoc/dfmt/internal/core"
@@ -68,4 +70,46 @@ func TestHandlersSetProjectIsOverridable(t *testing.T) {
 	if journal.events[1].Project != "proj-b" {
 		t.Errorf("second event Project = %q, want proj-b", journal.events[1].Project)
 	}
+}
+
+// Regression: when dfmt mcp runs outside any project (no .dfmt/ or .git/ in
+// the cwd ancestry), runMCP constructs handlers with a nil journal/index so
+// that no project state leaks into the user home dir. The four memory tools
+// (Remember/Recall/Stats/Stream) must surface a clear "no project" error
+// instead of nil-deref panicking. Sandbox tools (exec/read/fetch/glob/grep/
+// edit/write) are intentionally NOT covered here — they don't touch the
+// journal and continue working in degraded mode.
+func TestHandlersDegradedModeNoProject(t *testing.T) {
+	h := NewHandlers(nil, nil, nil)
+
+	t.Run("Remember", func(t *testing.T) {
+		_, err := h.Remember(context.Background(), RememberParams{Type: "note", Source: "t"})
+		if !errors.Is(err, errNoProject) {
+			t.Fatalf("Remember err = %v, want errNoProject", err)
+		}
+		if !strings.Contains(err.Error(), "no dfmt project") {
+			t.Errorf("error message = %q, want it to mention 'no dfmt project'", err.Error())
+		}
+	})
+
+	t.Run("Recall", func(t *testing.T) {
+		_, err := h.Recall(context.Background(), RecallParams{Budget: 1024})
+		if !errors.Is(err, errNoProject) {
+			t.Fatalf("Recall err = %v, want errNoProject", err)
+		}
+	})
+
+	t.Run("Stats", func(t *testing.T) {
+		_, err := h.Stats(context.Background(), StatsParams{})
+		if !errors.Is(err, errNoProject) {
+			t.Fatalf("Stats err = %v, want errNoProject", err)
+		}
+	})
+
+	t.Run("Stream", func(t *testing.T) {
+		_, err := h.Stream(context.Background(), StreamParams{})
+		if !errors.Is(err, errNoProject) {
+			t.Fatalf("Stream err = %v, want errNoProject", err)
+		}
+	})
 }

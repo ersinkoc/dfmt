@@ -12,9 +12,9 @@ This repository is the DFMT project itself. When working on it, you MUST use DFM
 
 | Native Tool | DFMT Replacement | Required `intent`? |
 |-------------|------------------|-------------------|
-| `Bash` | `dfmt.exec` | Yes — always provide `intent` |
-| `Read` | `dfmt.read` | Yes — always provide `intent` |
-| `WebFetch` | `dfmt.fetch` | Yes — always provide `intent` |
+| `Bash` | `dfmt_exec` | Yes — always provide `intent` |
+| `Read` | `dfmt_read` | Yes — always provide `intent` |
+| `WebFetch` | `dfmt_fetch` | Yes — always provide `intent` |
 
 ### Enforcement note
 
@@ -36,7 +36,7 @@ DFMT is not just a tool — it is the **mandatory proxy layer** for all operatio
 | Tool times out | Retry once with shorter intent, then report |
 | Tool unavailable | Report to user immediately |
 
-**NEVER do this**: `Failed to use dfmt.exec, falling back to native Bash`
+**NEVER do this**: `Failed to use dfmt_exec, falling back to native Bash`
 
 ### Rules
 
@@ -44,13 +44,15 @@ DFMT is not just a tool — it is the **mandatory proxy layer** for all operatio
 2. **Intent Required**: Every DFMT call MUST include `intent` describing exactly what you need from the output. Without `intent`, you get raw output — defeating token savings.
 3. **On DFMT Failure**: If a DFMT tool errors, report the error to the user. Do NOT silently fall back to native tools.
 4. **Token Savings**: DFMT returns intent-matched excerpts, not full output. The `intent` field is what makes this work.
-5. **Session Memory**: After significant operations, use `dfmt.remember` to log the interaction.
+5. **Session Memory**: After significant operations, use `dfmt_remember` to log the interaction.
 
 ### Examples
 
-- Read file: `dfmt.read(path="README.md", intent="installation steps")`
-- Run tests: `dfmt.exec(code="go test ./...", intent="failing tests")`
-- Fetch docs: `dfmt.fetch(url="...", intent="API auth endpoints")`
+- Read a file — `dfmt_read` with `path="README.md"` and `intent="installation steps"`.
+- Run tests — `dfmt_exec` with `code="go test ./..."` and `intent="failing tests"`.
+- Fetch docs — `dfmt_fetch` with `url="..."` and `intent="API auth endpoints"`.
+
+> Tool names use underscores (`dfmt_exec`) not dots — MCP spec restricts tool names to `^[a-zA-Z][a-zA-Z0-9_-]*$`. The HTTP/socket JSON-RPC transports still accept the legacy dotted names (`dfmt.exec`) for back-compat with non-MCP clients.
 
 ## Common commands
 

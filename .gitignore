@@ -51,6 +51,11 @@ coverage.html
 *.bak
 *.backup
 
+# === Dev-only build/test scripts (never commit) ===
+/run-build-test.*
+/build-test.ps1
+/run-go-mod-tidy.go
+
 .dmft/
 .project/
 # Claude Code per-session harness
