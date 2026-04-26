@@ -1508,7 +1508,7 @@ func TestCodecWriteResponseSetVersion(t *testing.T) {
 
 func TestHTTPServerStartAlreadyRunning(t *testing.T) {
 	handlers := &Handlers{}
-	hs := NewHTTPServer(":0", handlers)
+	hs := NewHTTPServer("127.0.0.1:0", handlers)
 
 	hs.mu.Lock()
 	hs.running = true

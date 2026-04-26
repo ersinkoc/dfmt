@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/ersinkoc/dfmt/internal/core"
@@ -16,7 +17,7 @@ import (
 func TestHTTPServerStopNotRunning(t *testing.T) {
 	idx := core.NewIndex()
 	handlers := NewHandlers(idx, nil, nil)
-	hs := NewHTTPServer(":0", handlers)
+	hs := NewHTTPServer("127.0.0.1:0", handlers)
 
 	if err := hs.Stop(context.Background()); err != nil {
 		t.Errorf("Stop on not-running server failed: %v", err)
@@ -26,7 +27,7 @@ func TestHTTPServerStopNotRunning(t *testing.T) {
 func TestHTTPServerStartAndStop(t *testing.T) {
 	idx := core.NewIndex()
 	handlers := NewHandlers(idx, nil, nil) // nil journal for testing
-	hs := NewHTTPServer(":0", handlers)
+	hs := NewHTTPServer("127.0.0.1:0", handlers)
 
 	ctx := context.Background()
 	err := hs.Start(ctx)
@@ -47,7 +48,7 @@ func TestHTTPServerStartAndStop(t *testing.T) {
 func TestHTTPServerStartTwice(t *testing.T) {
 	idx := core.NewIndex()
 	handlers := NewHandlers(idx, nil, nil)
-	hs := NewHTTPServer(":0", handlers)
+	hs := NewHTTPServer("127.0.0.1:0", handlers)
 
 	ctx := context.Background()
 	if err := hs.Start(ctx); err != nil {
@@ -61,10 +62,31 @@ func TestHTTPServerStartTwice(t *testing.T) {
 	}
 }
 
+// TestHTTPServerStartRefusesNonLoopbackBind covers F-09: a non-loopback bind
+// would expose unauthenticated JSON-RPC (dfmt.exec, dfmt.write, dfmt.fetch)
+// to the LAN because bearer-token auth is not currently wired. Start() must
+// refuse rather than silently shipping an unauthenticated public endpoint.
+func TestHTTPServerStartRefusesNonLoopbackBind(t *testing.T) {
+	idx := core.NewIndex()
+	handlers := NewHandlers(idx, nil, nil)
+	// "0.0.0.0:0" binds to all interfaces; net.Listen succeeds and Addr() is
+	// the unspecified IP, which IsLoopback() rejects.
+	hs := NewHTTPServer("0.0.0.0:0", handlers)
+	ctx := context.Background()
+	err := hs.Start(ctx)
+	if err == nil {
+		_ = hs.Stop(context.Background())
+		t.Fatal("Start() must refuse non-loopback bind")
+	}
+	if !strings.Contains(err.Error(), "non-loopback") {
+		t.Errorf("Start() error = %q; want to contain 'non-loopback'", err.Error())
+	}
+}
+
 func TestHTTPServerStartPortFileWriteError(t *testing.T) {
 	idx := core.NewIndex()
 	handlers := NewHandlers(idx, nil, nil)
-	hs := NewHTTPServer(":0", handlers)
+	hs := NewHTTPServer("127.0.0.1:0", handlers)
 
 	// Set a port file path that cannot be written
 	portFile := "/proc/invalid_port_file_dfmt_test/port"
@@ -88,7 +110,7 @@ func TestHTTPServerStartPortFileWriteError(t *testing.T) {
 func TestHandleMethodNotAllowed(t *testing.T) {
 	idx := core.NewIndex()
 	handlers := NewHandlers(idx, nil, nil)
-	hs := NewHTTPServer(":0", handlers)
+	hs := NewHTTPServer("127.0.0.1:0", handlers)
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	rec := httptest.NewRecorder()
@@ -103,7 +125,7 @@ func TestHandleMethodNotAllowed(t *testing.T) {
 func TestHandleParseError(t *testing.T) {
 	idx := core.NewIndex()
 	handlers := NewHandlers(idx, nil, nil)
-	hs := NewHTTPServer(":0", handlers)
+	hs := NewHTTPServer("127.0.0.1:0", handlers)
 
 	// Invalid JSON should return parse error
 	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader([]byte("invalid json")))
@@ -126,7 +148,7 @@ func TestHandleParseError(t *testing.T) {
 func TestHandleUnknownMethod(t *testing.T) {
 	idx := core.NewIndex()
 	handlers := NewHandlers(idx, nil, nil)
-	hs := NewHTTPServer(":0", handlers)
+	hs := NewHTTPServer("127.0.0.1:0", handlers)
 
 	reqBody := Request{
 		JSONRPC: "2.0",
@@ -155,7 +177,7 @@ func TestHandleUnknownMethod(t *testing.T) {
 func TestWritePortFile(t *testing.T) {
 	idx := core.NewIndex()
 	handlers := NewHandlers(idx, nil, nil)
-	hs := NewHTTPServer(":0", handlers)
+	hs := NewHTTPServer("127.0.0.1:0", handlers)
 
 	tmpDir := t.TempDir()
 	portFile := tmpDir + "/.dfmt/port"
@@ -185,7 +207,7 @@ func TestWritePortFile(t *testing.T) {
 func TestSetPortFile(t *testing.T) {
 	idx := core.NewIndex()
 	handlers := NewHandlers(idx, nil, nil)
-	hs := NewHTTPServer(":0", handlers)
+	hs := NewHTTPServer("127.0.0.1:0", handlers)
 
 	hs.SetPortFile("/test/portfile")
 
@@ -203,7 +225,7 @@ func TestHTTPServerHandleWithSessionID(t *testing.T) {
 func TestHandleReadBodyError(t *testing.T) {
 	idx := core.NewIndex()
 	handlers := NewHandlers(idx, nil, nil)
-	hs := NewHTTPServer(":0", handlers)
+	hs := NewHTTPServer("127.0.0.1:0", handlers)
 
 	// Create a request that will fail to read body
 	req := httptest.NewRequest(http.MethodPost, "/", &errorReader{})
@@ -222,7 +244,7 @@ func TestHandleReadBodyError(t *testing.T) {
 func TestHandleJSONUnmarshalError(t *testing.T) {
 	idx := core.NewIndex()
 	handlers := NewHandlers(idx, nil, nil)
-	hs := NewHTTPServer(":0", handlers)
+	hs := NewHTTPServer("127.0.0.1:0", handlers)
 
 	// Valid JSON but missing required fields - will unmarshal but have empty method
 	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader([]byte(`{"not":"a request"}`)))
@@ -247,7 +269,7 @@ func TestHandleRememberError(t *testing.T) {
 	idx := core.NewIndex()
 	journal := &mockJournal{failRemember: true}
 	handlers := NewHandlers(idx, journal, nil)
-	hs := NewHTTPServer(":0", handlers)
+	hs := NewHTTPServer("127.0.0.1:0", handlers)
 
 	params := mustMarshalParams(map[string]any{"type": "note", "source": "test"})
 	reqBody := Request{
@@ -278,7 +300,7 @@ func TestHandleSearchError(t *testing.T) {
 	// This test verifies the success path
 	idx := core.NewIndex()
 	handlers := NewHandlers(idx, nil, nil)
-	hs := NewHTTPServer(":0", handlers)
+	hs := NewHTTPServer("127.0.0.1:0", handlers)
 
 	params := mustMarshalParams(map[string]any{"query": "test"})
 	reqBody := Request{
@@ -308,7 +330,7 @@ func TestHandleRecallError(t *testing.T) {
 	idx := core.NewIndex()
 	journal := &mockJournal{failRecall: true}
 	handlers := NewHandlers(idx, journal, nil)
-	hs := NewHTTPServer(":0", handlers)
+	hs := NewHTTPServer("127.0.0.1:0", handlers)
 
 	params := mustMarshalParams(map[string]any{"budget": 100})
 	reqBody := Request{
@@ -336,7 +358,7 @@ func TestHandleRecallError(t *testing.T) {
 func TestHTTPServerWritePortFileCreatesNestedDir(t *testing.T) {
 	idx := core.NewIndex()
 	handlers := NewHandlers(idx, nil, nil)
-	hs := NewHTTPServer(":0", handlers)
+	hs := NewHTTPServer("127.0.0.1:0", handlers)
 
 	tmpDir := t.TempDir()
 	portFile := tmpDir + "/.dfmt/nested/deep/port"
@@ -373,7 +395,7 @@ func (e *errorReader) Read(p []byte) (n int, err error) {
 func TestHTTPServerWritePortFileInvalidDir(t *testing.T) {
 	idx := core.NewIndex()
 	handlers := NewHandlers(idx, nil, nil)
-	hs := NewHTTPServer(":0", handlers)
+	hs := NewHTTPServer("127.0.0.1:0", handlers)
 
 	// Try to write to an invalid path that can't be created
 	// On Unix, /proc is not writable; on Windows, a path with invalid chars
@@ -392,7 +414,7 @@ func TestHTTPServerWritePortFileInvalidDir(t *testing.T) {
 func TestHTTPServerWritePortFileEmptyDir(t *testing.T) {
 	idx := core.NewIndex()
 	handlers := NewHandlers(idx, nil, nil)
-	hs := NewHTTPServer(":0", handlers)
+	hs := NewHTTPServer("127.0.0.1:0", handlers)
 
 	// Empty path should fail
 	err := hs.writePortFile("", 12345, "")
@@ -409,7 +431,7 @@ func TestHTTPServerWritePortFileEmptyDir(t *testing.T) {
 func TestHandleInvalidParams(t *testing.T) {
 	idx := core.NewIndex()
 	handlers := NewHandlers(idx, nil, nil)
-	hs := NewHTTPServer(":0", handlers)
+	hs := NewHTTPServer("127.0.0.1:0", handlers)
 
 	// Each method advertised through the JSON-RPC dispatcher. We send a
 	// params field that is JSON-valid at the outer layer (so it survives
@@ -464,7 +486,7 @@ func TestHandleInvalidParams(t *testing.T) {
 func TestHandleEmptyParamsAccepted(t *testing.T) {
 	idx := core.NewIndex()
 	handlers := NewHandlers(idx, nil, nil)
-	hs := NewHTTPServer(":0", handlers)
+	hs := NewHTTPServer("127.0.0.1:0", handlers)
 
 	for _, method := range []string{"dfmt.search", "dfmt.recall", "dfmt.stats"} {
 		t.Run(method, func(t *testing.T) {

@@ -19,7 +19,7 @@ import (
 func newTestHTTPServerWithSandbox(sb sandbox.Sandbox) *HTTPServer {
 	idx := core.NewIndex()
 	handlers := NewHandlers(idx, &mockJournal{}, sb)
-	return NewHTTPServer(":0", handlers)
+	return NewHTTPServer("127.0.0.1:0", handlers)
 }
 
 func doRPC(t *testing.T, hs *HTTPServer, method string, params any) Response {
@@ -134,7 +134,7 @@ func TestHTTPHandle_Stats_Error(t *testing.T) {
 	idx := core.NewIndex()
 	journal := &mockJournal{failSearch: true}
 	handlers := NewHandlers(idx, journal, nil)
-	hs := NewHTTPServer(":0", handlers)
+	hs := NewHTTPServer("127.0.0.1:0", handlers)
 
 	resp := doRPC(t, hs, "dfmt.stats", StatsParams{})
 	if resp.Error == nil {
@@ -228,7 +228,7 @@ func TestHTTPHandleAPIStats_HandlerError(t *testing.T) {
 	idx := core.NewIndex()
 	journal := &mockJournal{failSearch: true}
 	handlers := NewHandlers(idx, journal, nil)
-	hs := NewHTTPServer(":0", handlers)
+	hs := NewHTTPServer("127.0.0.1:0", handlers)
 
 	body, _ := json.Marshal(Request{JSONRPC: jsonRPCVersion, ID: 1, Method: "stats"})
 	req := httptest.NewRequest(http.MethodPost, "/api/stats", bytes.NewReader(body))

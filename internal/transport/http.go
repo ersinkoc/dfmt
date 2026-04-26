@@ -138,6 +138,23 @@ func (s *HTTPServer) Start(ctx context.Context) error {
 		}
 	}
 
+	// F-09: Refuse non-loopback TCP binds. The same-origin gate plus port-file
+	// 0600 perms only protect against same-host attackers; a non-loopback bind
+	// exposes unauthenticated JSON-RPC (dfmt.exec, dfmt.write, dfmt.fetch, …)
+	// to the LAN. Bearer-token auth is not currently wired (the authToken
+	// plumbing is dead, see F-22). Until auth is implemented, refuse the bind
+	// rather than silently shipping unauthenticated RPC. Unix sockets and
+	// other non-TCP listeners are gated by filesystem permissions, not this
+	// check.
+	if addr, ok := ln.Addr().(*net.TCPAddr); ok {
+		if !addr.IP.IsLoopback() {
+			if ownListener {
+				_ = ln.Close()
+			}
+			return fmt.Errorf("non-loopback HTTP bind refused: listener bound to %s — bearer-token auth not implemented (F-09)", addr.IP.String())
+		}
+	}
+
 	// Create HTTP handler with same-origin + security headers middleware.
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.handle)
