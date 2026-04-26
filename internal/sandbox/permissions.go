@@ -431,7 +431,47 @@ func (s *SandboxImpl) PolicyCheck(op, text string) error {
 	return nil
 }
 
+// stripExeSuffixFromLeadingWord strips a Windows-style `.exe` suffix from the
+// first word of cmd so a single policy rule like `go *` covers both `go test`
+// and `go.exe test`. The rest of the command (arguments, redirections,
+// chains) is returned verbatim. Mirrors extractBaseCommand's behavior for the
+// full-command policy paths in Exec.
+func stripExeSuffixFromLeadingWord(cmd string) string {
+	leadingSpaces := 0
+	for leadingSpaces < len(cmd) && (cmd[leadingSpaces] == ' ' || cmd[leadingSpaces] == '\t') {
+		leadingSpaces++
+	}
+	rest := cmd[leadingSpaces:]
+	inQuote := false
+	quoteChar := byte(0)
+	end := len(rest)
+	for i := 0; i < len(rest); i++ {
+		c := rest[i]
+		if !inQuote && (c == '"' || c == '\'') {
+			inQuote = true
+			quoteChar = c
+		} else if inQuote && c == quoteChar {
+			inQuote = false
+		} else if !inQuote && (c == ' ' || c == '\t') {
+			end = i
+			break
+		}
+	}
+	leading := rest[:end]
+	if len(leading) > 4 && strings.EqualFold(leading[len(leading)-4:], ".exe") {
+		return cmd[:leadingSpaces] + leading[:len(leading)-4] + rest[end:]
+	}
+	return cmd
+}
+
 // extractBaseCommand extracts the base command (first word) from a shell command.
+//
+// On Windows the actual binary carries an `.exe` suffix (`go.exe`, `node.exe`),
+// but the policy allow-list rules are written suffix-free (`go`, `node`). To
+// keep a single rule covering both invocation styles, a trailing `.exe` (case-
+// insensitive) is stripped from the returned base. Filesystem case-sensitivity
+// makes this the right call: NTFS treats `Go.exe`, `GO.EXE`, and `go.exe` as
+// the same file, so the policy comparison must too.
 func extractBaseCommand(cmd string) string {
 	// Remove leading/trailing whitespace
 	cmd = strings.TrimSpace(cmd)
@@ -439,6 +479,7 @@ func extractBaseCommand(cmd string) string {
 	// Handle quoted strings - find first unquoted space
 	inQuote := false
 	quoteChar := byte(0)
+	base := cmd
 	for i := 0; i < len(cmd); i++ {
 		if !inQuote && (cmd[i] == '"' || cmd[i] == '\'') {
 			inQuote = true
@@ -446,10 +487,14 @@ func extractBaseCommand(cmd string) string {
 		} else if inQuote && cmd[i] == quoteChar {
 			inQuote = false
 		} else if !inQuote && cmd[i] == ' ' {
-			return cmd[:i]
+			base = cmd[:i]
+			break
 		}
 	}
-	return cmd
+	if len(base) > 4 && strings.EqualFold(base[len(base)-4:], ".exe") {
+		base = base[:len(base)-4]
+	}
+	return base
 }
 
 // shellOperators returns true if cmd contains shell operators that chain commands.
@@ -546,6 +591,11 @@ func (s *SandboxImpl) Exec(ctx context.Context, req ExecReq) (ExecResp, error) {
 		cmd = req.Lang + " " + cmd
 	}
 
+	// Normalize a Windows-style `.exe` suffix off the leading word so a single
+	// rule like `go *` covers both `go ...` and `go.exe ...`. extractBaseCommand
+	// already strips for base-only checks; this covers the full-command paths.
+	cmdForPolicy := stripExeSuffixFromLeadingWord(cmd)
+
 	// For shell commands with operators, check the full command chain first
 	// against deny rules to catch dangerous patterns like "; rm -rf /" or "| sh"
 	if hasShellChainOperators(cmd) {
@@ -556,7 +606,7 @@ func (s *SandboxImpl) Exec(ctx context.Context, req ExecReq) (ExecResp, error) {
 			return ExecResp{}, fmt.Errorf("operation denied by policy: %s: base command '%s' not allowed", cmd, baseCmd)
 		}
 		// Second check: does the full command match any deny rule?
-		if !s.policy.Evaluate("exec", cmd) {
+		if !s.policy.Evaluate("exec", cmdForPolicy) {
 			return ExecResp{}, fmt.Errorf("operation denied by policy: %s: %v", cmd, "blocked by deny rule")
 		}
 		// Third check: each individual command (defense in depth)
@@ -583,12 +633,12 @@ func (s *SandboxImpl) Exec(ctx context.Context, req ExecReq) (ExecResp, error) {
 	} else if isLangPrefix {
 		// For non-shell single commands, check the full command with lang prefix
 		// e.g., "python script.py" against "python *"
-		if err := s.PolicyCheck("exec", cmd); err != nil {
+		if err := s.PolicyCheck("exec", cmdForPolicy); err != nil {
 			return ExecResp{}, err
 		}
 	} else {
 		// For shell single commands, check the full command
-		if err := s.PolicyCheck("exec", cmd); err != nil {
+		if err := s.PolicyCheck("exec", cmdForPolicy); err != nil {
 			return ExecResp{}, err
 		}
 	}

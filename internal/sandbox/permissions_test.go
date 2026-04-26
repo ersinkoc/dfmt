@@ -818,6 +818,51 @@ func TestPolicyEvaluateWithEmptyAllow(t *testing.T) {
 	}
 }
 
+// TestExtractBaseCommandStripsExeSuffix asserts the Windows-specific behavior
+// that lets a single allow-list rule (`go`) cover both `go` and `go.exe`. NTFS
+// is case-insensitive so the strip is too.
+func TestExtractBaseCommandStripsExeSuffix(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		{"go.exe test ./...", "go"},
+		{"go test ./...", "go"},
+		{"GO.EXE version", "GO"},
+		{"Git.Exe status", "Git"},
+		{"node.exe -v", "node"},
+		{"python.exe script.py", "python"},
+		{"go.exe", "go"},
+		{"git", "git"},
+		// `.exe` appearing in args must not be stripped.
+		{"echo .exe", "echo"},
+		{"ls go.exe", "ls"},
+		// Too short to be a `.exe` binary — left untouched.
+		{".exe", ".exe"},
+		{"a.exe", "a"},
+	}
+	for _, c := range cases {
+		got := extractBaseCommand(c.in)
+		if got != c.want {
+			t.Errorf("extractBaseCommand(%q) = %q; want %q", c.in, got, c.want)
+		}
+	}
+}
+
+// TestExecGoExeAllowed end-to-end: `go.exe …` must reach the runtime path
+// rather than being denied by policy because of the .exe suffix.
+func TestExecGoExeAllowed(t *testing.T) {
+	sb := NewSandbox(t.TempDir())
+	ctx := context.Background()
+
+	// We don't care if the runtime is available — just that policy doesn't deny.
+	// On systems without `go` on PATH the runtime layer reports its own error,
+	// distinct from "denied by policy".
+	_, err := sb.Exec(ctx, ExecReq{Code: "go.exe version", Lang: "bash"})
+	if err != nil && strings.Contains(err.Error(), "denied by policy") {
+		t.Errorf("Exec(go.exe version) wrongly denied by policy: %v", err)
+	}
+}
+
 // TestPolicyEvaluateDenyFirst tests that deny rules are checked before allow.
 func TestPolicyEvaluateDenyFirst(t *testing.T) {
 	policy := Policy{
