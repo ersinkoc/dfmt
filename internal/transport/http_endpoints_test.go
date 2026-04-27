@@ -265,7 +265,13 @@ func TestHTTPHandleAPIDaemons_NoRegistry(t *testing.T) {
 	}
 }
 
-func TestHTTPHandleAPIDaemons_WithRegistry(t *testing.T) {
+// TestHTTPHandleAPIDaemons_FailsClosedWhenProjectPathUnset covers F-16.
+// When the server has no projectPath set (test harness, future caller that
+// forgot SetProjectPath, integrator subclass), the previous filter logic
+// dropped to the unfiltered branch and returned every daemon on the host —
+// disclosing the existence of unrelated projects to whoever can reach this
+// loopback port. The fix is fail-closed: empty list rather than full list.
+func TestHTTPHandleAPIDaemons_FailsClosedWhenProjectPathUnset(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("HOME", tmp)
 	t.Setenv("USERPROFILE", tmp)
@@ -274,13 +280,53 @@ func TestHTTPHandleAPIDaemons_WithRegistry(t *testing.T) {
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	entries := []map[string]any{{"project": "/p", "port": 9999}}
+	entries := []map[string]any{
+		{"project_path": "/proj/a", "port": 9001},
+		{"project_path": "/proj/b", "port": 9002},
+	}
+	data, _ := json.Marshal(entries)
+	if err := os.WriteFile(filepath.Join(dir, "daemons.json"), data, 0644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	hs := newTestHTTPServerWithSandbox(nil) // projectPath left empty
+	req := httptest.NewRequest(http.MethodGet, "/api/daemons", nil)
+	rec := httptest.NewRecorder()
+
+	hs.handleAPIDaemons(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := strings.TrimSpace(rec.Body.String())
+	if body != "[]" {
+		t.Errorf("projectPath unset should fail closed; want '[]' got %q", body)
+	}
+}
+
+// TestHTTPHandleAPIDaemons_FiltersToOwnProject confirms that when
+// projectPath is set, only the matching entry is returned — the sibling to
+// the F-16 fail-closed case.
+func TestHTTPHandleAPIDaemons_FiltersToOwnProject(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	t.Setenv("USERPROFILE", tmp)
+
+	dir := filepath.Join(tmp, ".dfmt")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	entries := []map[string]any{
+		{"project_path": "/proj/a", "port": 9001},
+		{"project_path": "/proj/b", "port": 9002},
+	}
 	data, _ := json.Marshal(entries)
 	if err := os.WriteFile(filepath.Join(dir, "daemons.json"), data, 0644); err != nil {
 		t.Fatalf("write: %v", err)
 	}
 
 	hs := newTestHTTPServerWithSandbox(nil)
+	hs.SetProjectPath("/proj/b")
 	req := httptest.NewRequest(http.MethodGet, "/api/daemons", nil)
 	rec := httptest.NewRecorder()
 
@@ -291,7 +337,10 @@ func TestHTTPHandleAPIDaemons_WithRegistry(t *testing.T) {
 		t.Fatalf("unmarshal: %v", err)
 	}
 	if len(got) != 1 {
-		t.Errorf("expected 1 entry, got %d", len(got))
+		t.Fatalf("want 1 entry filtered to /proj/b, got %d", len(got))
+	}
+	if path, _ := got[0]["project_path"].(string); path != "/proj/b" {
+		t.Errorf("filter returned wrong entry: %+v", got[0])
 	}
 }
 

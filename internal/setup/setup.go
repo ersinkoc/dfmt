@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/ersinkoc/dfmt/internal/safefs"
 )
 
 const maxManifestBytes = 256 << 10
@@ -321,8 +323,17 @@ func SaveManifest(m *Manifest) error {
 // BackupFile writes a .dfmt.bak sibling of path. If one already exists, the
 // existing backup is preserved (rolled to .dfmt.bak.<unix-nano>) so a second
 // setup run can't clobber the pristine copy captured on the first run.
+//
+// safefs.WriteFile gates the write on a Lstat-walk that refuses any symlink
+// in the parent path or at the backup target itself — closes F-07 (attacker
+// plants `path.dfmt.bak -> /etc/cron.d/x` so that BackupFile writes the
+// original config contents into the symlink target).
 func BackupFile(path string) error {
-	data, err := os.ReadFile(path)
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return fmt.Errorf("resolve backup source: %w", err)
+	}
+	data, err := os.ReadFile(absPath)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil
@@ -330,7 +341,7 @@ func BackupFile(path string) error {
 		return err
 	}
 
-	backup := path + ".dfmt.bak"
+	backup := absPath + ".dfmt.bak"
 	if _, statErr := os.Stat(backup); statErr == nil {
 		rolled := fmt.Sprintf("%s.%d", backup, time.Now().UnixNano())
 		if renameErr := os.Rename(backup, rolled); renameErr != nil {
@@ -340,8 +351,8 @@ func BackupFile(path string) error {
 	// Preserve the source mode if we can stat it; otherwise default to 0600
 	// so a backup of a previously-0600 file isn't suddenly world-readable.
 	mode := os.FileMode(0o600)
-	if fi, ferr := os.Stat(path); ferr == nil {
+	if fi, ferr := os.Stat(absPath); ferr == nil {
 		mode = fi.Mode().Perm()
 	}
-	return os.WriteFile(backup, data, mode)
+	return safefs.WriteFile(filepath.Dir(absPath), backup, data, mode)
 }

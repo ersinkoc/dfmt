@@ -3,6 +3,7 @@ package redact
 import (
 	"regexp"
 	"strings"
+	"unicode"
 )
 
 // Redactor handles PII and sensitive data redaction.
@@ -56,9 +57,24 @@ var commonPatterns = []*redactPattern{
 	// and missed ASIA (STS temporary), AGPA, AROA, AIDA, ANPA, AIPA, ANVA,
 	// ABIA, ACCA. See AWS docs "IAM identifiers".
 	{name: "aws_key", regex: regexp.MustCompile(`(AKIA|ASIA|AGPA|AROA|AIDA|ANPA|AIPA|ANVA|ABIA|ACCA)[A-Z0-9]{16}`), repl: "[AWS_KEY]"},
-	// aws_secret: capture a 40-char base64-ish token that follows an AWS secret-key marker.
-	// The prior pattern matched any 40-char token at end-of-line, producing too many false positives.
-	{name: "aws_secret", regex: regexp.MustCompile(`(?i)(aws[_-]?secret[_-]?access[_-]?key|aws[_-]?secret)\s*[:=]\s*['"]?([A-Za-z0-9/+=]{40})['"]?`), repl: "$1: [AWS_SECRET]"},
+	// aws_secret: 40-char base64 token following an AWS-secret marker.
+	//
+	// F-13: The prior pattern required the marker pattern `aws_secret` (with
+	// or without underscores/dashes) AND a single `:` or `=` AND optional
+	// quotes — all on the same line. Real-world AWS credential dumps fail
+	// that shape:
+	//   - YAML / multi-line config:  `aws_secret_access_key:\n  XXX…40 chars`
+	//   - JSON pretty-print:         `"SecretAccessKey": "XXX…40 chars"`
+	//   - AWS CLI tabular output:    `secret_access_key  XXX…40 chars` (whitespace, no `:` or `=`)
+	//   - `secretAccessKey` / `SecretAccessKey` camelCase without `aws_` prefix
+	//
+	// Fix: marker accepts the broader family (aws prefix optional, `access`
+	// segment optional, separator-tolerant); marker→value gap allows up to
+	// 80 chars of *any* non-base64 character (covers `:`, `=`, quotes,
+	// whitespace, newlines, indentation, json `: "`); value still pinned
+	// at exactly 40 chars of base64 with a non-base64 / end-of-string
+	// boundary so longer secrets aren't truncated to a 40-char "match".
+	{name: "aws_secret", regex: regexp.MustCompile(`(?i)((?:aws[_-]?)?secret(?:[_-]?access)?[_-]?key)([^A-Za-z0-9+/]{1,80})([A-Za-z0-9/+=]{40})(?:[^A-Za-z0-9/+=]|$)`), repl: "$1$2[AWS_SECRET]"},
 
 	// Google API key (Maps, Cloud, etc.): AIza[35 chars].
 	{name: "google_api_key", regex: regexp.MustCompile(`AIza[0-9A-Za-z_-]{35}`), repl: "[GOOGLE_API_KEY]"},
@@ -103,8 +119,14 @@ var commonPatterns = []*redactPattern{
 	// === Generic auth headers / inline assignments (broadest, run last) ===
 
 	{name: "generic_secret", regex: regexp.MustCompile(`(?i)(api[_-]?key|secret[_-]?key|access[_-]?token|auth[_-]?token)\s*[:=]\s*['"]?([A-Za-z0-9_/+=.-]{20,})['"]?`), repl: "$1: [REDACTED]"},
-	{name: "bearer_token", regex: regexp.MustCompile(`(?i)bearer\s+[A-Za-z0-9_.-]{20,}`), repl: "Bearer [REDACTED]"},
-	{name: "basic_auth", regex: regexp.MustCompile(`(?i)basic\s+[A-Za-z0-9_.-]{10,}={0,2}`), repl: "Basic [REDACTED]"},
+	// F-12: char classes widened to cover the full base64 alphabet.
+	// Prior `[A-Za-z0-9_.-]` matched only the URL-safe subset; RFC 6750
+	// `b64token` allows `_.~+/` plus trailing `=` padding, and Basic auth
+	// (RFC 7617) base64-encodes `user:pass` which routinely contains `+`,
+	// `/`, and `=`. Without `+/=` the regex stopped at the first special
+	// char and the rest of the credential leaked verbatim.
+	{name: "bearer_token", regex: regexp.MustCompile(`(?i)bearer\s+[A-Za-z0-9_.+/~-]{20,}={0,2}`), repl: "Bearer [REDACTED]"},
+	{name: "basic_auth", regex: regexp.MustCompile(`(?i)basic\s+[A-Za-z0-9_.+/~-]{10,}={0,2}`), repl: "Basic [REDACTED]"},
 
 	// env_export is handled in Redact() via ReplaceAllStringFunc so the var
 	// name can be matched against IsSensitiveKey() instead of a brittle regex.
@@ -252,20 +274,117 @@ func (r *Redactor) AddPattern(name, pattern, repl string) error {
 	return nil
 }
 
+// sensitiveTokens lists keywords that indicate sensitive content when they
+// appear as a *whole token* (split on non-alphanumeric and camelCase
+// boundaries). Word-boundary matching avoids false positives like `MONKEY`
+// (contains "key" as substring) or `PATH` (contains "pat") that the prior
+// pure-substring implementation flagged. Keep tokens lowercase; the matcher
+// lowercases input before lookup.
+//
+// Notably absent: bare "key". Standalone "key" produces too many false
+// positives (`PRIMARY_KEY`, `KEY_VALUE_STORE`, `cookie_keyset`); the
+// sensitive forms (`api_key`, `private_key`, `apikey`, …) are caught via
+// sensitiveCompounds below.
+var sensitiveTokens = map[string]bool{
+	"password":    true,
+	"passwd":      true,
+	"pwd":         true,
+	"secret":      true,
+	"token":       true,
+	"auth":        true,
+	"jwt":         true,
+	"bearer":      true,
+	"credential":  true,
+	"credentials": true,
+	"cred":        true,
+	"creds":       true,
+	"pat":         true, // Personal Access Token; bounded so `path` does not match
+	"private":     true,
+	"session":     true,
+	"apikey":      true, // single-token form (`apikey`, `ApiKey` post-tokenize)
+}
+
+// sensitiveCompounds lists multi-word substrings whose presence anywhere in
+// the lowercased key signals sensitive content. These cover compound forms
+// that may not split into a sensitive token on their own (e.g., `apikey`
+// combined into one chunk after lowercasing, or `oauth` which tokenizes to
+// the meaningless `oauth` token without a useful component).
+var sensitiveCompounds = []string{
+	"apikey",
+	"api_key",
+	"access_token",
+	"refresh_token",
+	"session_token",
+	"private_key",
+	"secret_key",
+	"access_key",
+	"signing_key",
+	"auth_key",
+	"oauth",
+}
+
 // IsSensitiveKey returns true if the key name suggests sensitive data.
+//
+// Closes F-20: the previous pure-substring implementation produced false
+// positives on `MONKEY`/`PRIMARY_KEY` (matched bare "key") and missed
+// `cred`/`pat`/`pwd`. Current logic:
+//   - Lowercased compound substring match (`api_key`, `oauth`, …).
+//   - Word-boundary token match against `sensitiveTokens` after splitting on
+//     non-alphanumeric runes AND camelCase transitions.
 func IsSensitiveKey(key string) bool {
 	lower := strings.ToLower(key)
-	sensitive := []string{
-		"password", "passwd", "secret", "token", "api_key", "apikey",
-		"access_token", "refresh_token", "auth", "credential", "private",
-		"key", "session", "jwt", "bearer",
+	for _, c := range sensitiveCompounds {
+		if strings.Contains(lower, c) {
+			return true
+		}
 	}
-	for _, s := range sensitive {
-		if strings.Contains(lower, s) {
+	for _, t := range tokenizeKey(key) {
+		if sensitiveTokens[t] {
 			return true
 		}
 	}
 	return false
+}
+
+// tokenizeKey splits a key name into lowercase tokens by non-alphanumeric
+// boundaries AND camelCase transitions. Examples:
+//
+//	"password"      -> ["password"]
+//	"MONKEY"        -> ["monkey"]            (no boundary inside an all-caps run)
+//	"PRIMARY_KEY"   -> ["primary","key"]
+//	"ApiKey"        -> ["api","key"]         (lower→upper boundary)
+//	"OAuthToken"    -> ["o","auth","token"]  (UPPER→Upperlower boundary then lower→upper)
+//	"id123name"     -> ["id","123","name"]   (letter↔digit boundary)
+func tokenizeKey(s string) []string {
+	var tokens []string
+	var buf []rune
+	flush := func() {
+		if len(buf) > 0 {
+			tokens = append(tokens, strings.ToLower(string(buf)))
+			buf = buf[:0]
+		}
+	}
+	runes := []rune(s)
+	for i, r := range runes {
+		if !unicode.IsLetter(r) && !unicode.IsDigit(r) {
+			flush()
+			continue
+		}
+		if i > 0 {
+			prev := runes[i-1]
+			switch {
+			case unicode.IsLower(prev) && unicode.IsUpper(r):
+				flush()
+			case i+1 < len(runes) && unicode.IsUpper(prev) && unicode.IsUpper(r) && unicode.IsLower(runes[i+1]):
+				flush()
+			case (unicode.IsLetter(prev) && unicode.IsDigit(r)) || (unicode.IsDigit(prev) && unicode.IsLetter(r)):
+				flush()
+			}
+		}
+		buf = append(buf, r)
+	}
+	flush()
+	return tokens
 }
 
 // Stats represents redaction statistics.

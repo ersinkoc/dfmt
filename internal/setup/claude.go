@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+
+	"github.com/ersinkoc/dfmt/internal/safefs"
 )
 
 // dfmtMCPServerEntry returns the canonical MCP server entry that DFMT writes
@@ -156,11 +158,13 @@ func PatchClaudeCodeUserJSON(projectPath string, setUserScopeMCP bool) error {
 	// writer does. Keep parity.
 	out = append(out, '\n')
 
-	// Back up the original (pre-DFMT) file exactly once.
+	// Back up the original (pre-DFMT) file exactly once. safefs.WriteFile
+	// refuses if backupPath or any parent is a symlink (closes the F-07
+	// pristine-backup symlink-plant variant against ~/.claude.json.dfmt.bak).
 	backupPath := path + ".dfmt.bak"
 	if existed {
 		if _, statErr := os.Stat(backupPath); os.IsNotExist(statErr) {
-			if werr := os.WriteFile(backupPath, raw, 0600); werr != nil {
+			if werr := safefs.WriteFile(filepath.Dir(path), backupPath, raw, 0600); werr != nil {
 				return fmt.Errorf("write backup %s: %w", backupPath, werr)
 			}
 		} else if statErr != nil && !os.IsNotExist(statErr) {

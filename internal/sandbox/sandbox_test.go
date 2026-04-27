@@ -66,9 +66,9 @@ func TestGlobMatch(t *testing.T) {
 		{"git *", "gitk", false},
 		{"npm *", "npm install", true},
 		// Note: rm -rf * in path-style (globMatchDefault) doesn't match / because * doesn't match /
-		{"rm -rf *", "rm -rf /", false},      // path-style: * doesn't match /
-		{"rm -rf /*", "rm -rf /", false},     // /* requires non-empty segment
-		{"rm -rf /*", "rm -rf /home", true},   // catches dangerous children
+		{"rm -rf *", "rm -rf /", false},     // path-style: * doesn't match /
+		{"rm -rf /*", "rm -rf /", false},    // /* requires non-empty segment
+		{"rm -rf /*", "rm -rf /home", true}, // catches dangerous children
 		{"**", "anything", true},
 	}
 
@@ -93,10 +93,10 @@ func TestGlobMatchWithExec(t *testing.T) {
 		{"git *", "gitk", false},
 		{"npm *", "npm install", true},
 		// Shell-style: * matches / so rm -rf * DOES match rm -rf /
-		{"rm -rf *", "rm -rf /", true},       // shell-style: * matches /
+		{"rm -rf *", "rm -rf /", true}, // shell-style: * matches /
 		// /* requires non-empty segment after /, so / doesn't match but /home does
-		{"rm -rf /*", "rm -rf /", false},     // /* requires non-empty segment
-		{"rm -rf /*", "rm -rf /home", true},  // /home has segment after /
+		{"rm -rf /*", "rm -rf /", false},    // /* requires non-empty segment
+		{"rm -rf /*", "rm -rf /home", true}, // /home has segment after /
 	}
 
 	for _, tt := range tests {
@@ -1377,8 +1377,8 @@ func TestSandboxGrepCaseInsensitive(t *testing.T) {
 
 	// Case insensitive search
 	resp, err := sb.Grep(ctx, GrepReq{
-		Pattern: "FUNC TEST",
-		Files:   "*.go",
+		Pattern:         "FUNC TEST",
+		Files:           "*.go",
 		CaseInsensitive: true,
 	})
 	if err != nil {
@@ -1429,6 +1429,179 @@ func TestSandboxGrepInvalidPattern(t *testing.T) {
 	})
 	if err == nil {
 		t.Error("Grep should reject invalid regex pattern")
+	}
+}
+
+// TestEdit_FiresEditOpDenyRules covers F-29: explicit `Op: "edit"` deny
+// rules in a user policy must actually block Edit. Pre-fix, Edit only
+// invoked PolicyCheck("write", …) so edit-named rules were dead even if
+// the user crafted them deliberately.
+func TestEdit_FiresEditOpDenyRules(t *testing.T) {
+	tmp := t.TempDir()
+	target := filepath.Join(tmp, "secret.txt")
+	if err := os.WriteFile(target, []byte("hello"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Custom policy: explicit allow for write+edit, then ONLY an edit-op
+	// deny on the path. If PolicyCheck("edit", …) is wired correctly this
+	// is enough to refuse the Edit.
+	policy := Policy{
+		Version: 1,
+		Allow: []Rule{
+			{Op: "write", Text: "**"},
+			{Op: "edit", Text: "**"},
+		},
+		Deny: []Rule{
+			{Op: "edit", Text: "**/secret.txt"},
+		},
+	}
+	sb := NewSandboxWithPolicy(tmp, policy)
+	_, err := sb.Edit(context.Background(), EditReq{
+		Path:      "secret.txt",
+		OldString: "hello",
+		NewString: "leaked",
+	})
+	if err == nil {
+		t.Fatal("Edit should be denied by edit-op deny rule")
+	}
+	if !strings.Contains(err.Error(), "denied by policy") {
+		t.Errorf("want policy denial, got: %v", err)
+	}
+	// File must be unchanged.
+	got, _ := os.ReadFile(target)
+	if string(got) != "hello" {
+		t.Errorf("file content mutated despite denial: %q", got)
+	}
+}
+
+// TestNormalizeFetchURLForPolicy covers F-28: PolicyCheck("fetch", …) must
+// see scheme + host in lowercase form so deny patterns like
+// `http://169.254.169.254/*` and `https://metadata.google.internal/*`
+// match URLs that came in with mixed case (a common bypass shape against
+// case-sensitive denylists).
+func TestNormalizeFetchURLForPolicy(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{"HTTPS://EVIL.COM/path", "https://evil.com/path"},
+		{"Http://Metadata.Google.Internal/x", "http://metadata.google.internal/x"},
+		{"https://example.com/CASE/Sensitive/Path", "https://example.com/CASE/Sensitive/Path"},
+		{"HTTPS://169.254.169.254/latest/", "https://169.254.169.254/latest/"},
+	}
+	for _, c := range cases {
+		got := normalizeFetchURLForPolicy(c.in)
+		if got != c.want {
+			t.Errorf("normalizeFetchURLForPolicy(%q) = %q; want %q", c.in, got, c.want)
+		}
+	}
+	// And the integration: DefaultPolicy denies cloud metadata; uppercase
+	// host must still be denied via the normalize step.
+	sb := NewSandbox(t.TempDir())
+	if err := sb.PolicyCheck("fetch", normalizeFetchURLForPolicy("HTTP://METADATA.GOOGLE.INTERNAL/foo")); err == nil {
+		t.Error("metadata host with uppercase must be denied by default policy")
+	}
+}
+
+// TestGlobMatch_NormalizesPathSeparatorsForAllPathOps covers F-03: the
+// `read **/.env*` deny pattern (and its write/edit twins) must match a
+// Windows backslash path like `C:\proj\.env`. Pre-fix, only `read` was
+// normalized, so an agent on Windows could write/edit through the deny
+// list because the pattern's `/` never matched the path's `\`.
+func TestGlobMatch_NormalizesPathSeparatorsForAllPathOps(t *testing.T) {
+	cases := []struct {
+		op      string
+		pattern string
+		text    string
+		want    bool
+	}{
+		// Backslash paths must match forward-slash patterns for every path-op.
+		{"read", "**/.env*", `C:\proj\.env`, true},
+		{"write", "**/.env*", `C:\proj\.env`, true},
+		{"edit", "**/.env*", `C:\proj\.env`, true},
+		{"read", "**/id_rsa", `C:\Users\x\id_rsa`, true},
+		{"write", "**/id_rsa", `C:\Users\x\id_rsa`, true},
+		{"edit", "**/secrets/**", `C:\proj\secrets\token.txt`, true},
+		// Plain forward-slash paths still match (no regression).
+		{"write", "**/.env*", "/proj/.env", true},
+		{"read", "**/.env*", "proj/.env.local", true},
+		// Exec is shell-style and must NOT have its text normalized — we
+		// don't want `git\branch` (literal backslash arg) to be reparsed.
+		{"exec", "git *", "git status", true},
+	}
+	for _, c := range cases {
+		got := globMatch(c.pattern, c.text, c.op)
+		if got != c.want {
+			t.Errorf("globMatch(%q, %q, %q) = %v; want %v", c.pattern, c.text, c.op, got, c.want)
+		}
+	}
+}
+
+// TestSandboxGlobEnforcesPerFileReadPolicy covers F-02: a deny rule like
+// `read .env*` must keep dfmt_glob from listing the file even when the
+// glob pattern would otherwise match it. Without per-match PolicyCheck,
+// the agent learns the path (and existence) of a denied file, leaking
+// what direct dfmt_read would refuse to surface.
+func TestSandboxGlobEnforcesPerFileReadPolicy(t *testing.T) {
+	tmp := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tmp, "safe.txt"), []byte("ok"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmp, ".env"), []byte("API_KEY=sk-secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sb := NewSandbox(tmp) // default policy denies read .env*
+	resp, err := sb.Glob(context.Background(), GlobReq{Pattern: "*"})
+	if err != nil {
+		t.Fatalf("Glob: %v", err)
+	}
+	for _, f := range resp.Files {
+		if strings.Contains(f, ".env") {
+			t.Errorf("Glob surfaced denied file %q; per-file PolicyCheck not enforced", f)
+		}
+	}
+	// Sanity: the allowed file is present.
+	var sawSafe bool
+	for _, f := range resp.Files {
+		if filepath.Base(f) == "safe.txt" {
+			sawSafe = true
+		}
+	}
+	if !sawSafe {
+		t.Errorf("Glob unexpectedly dropped allowed file safe.txt; got Files=%v", resp.Files)
+	}
+}
+
+// TestSandboxGrepEnforcesPerFileReadPolicy covers F-02 from the grep angle:
+// `dfmt_grep "API_KEY" --files "**/*"` must NOT surface secrets out of files
+// that the read deny-list refuses (`.env`, `secrets/**`, `id_rsa`, etc.).
+// Pre-fix, the directory-level PolicyCheck only refused if the wd itself
+// was denied, so per-file deny rules were dead in the grep path.
+func TestSandboxGrepEnforcesPerFileReadPolicy(t *testing.T) {
+	tmp := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tmp, "code.go"), []byte("// no secret here\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	const secret = "API_KEY=sk-DO-NOT-LEAK"
+	if err := os.WriteFile(filepath.Join(tmp, ".env"), []byte(secret+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sb := NewSandbox(tmp)
+	resp, err := sb.Grep(context.Background(), GrepReq{
+		Pattern: "API_KEY",
+		Files:   "*",
+	})
+	if err != nil {
+		t.Fatalf("Grep: %v", err)
+	}
+	for _, m := range resp.Matches {
+		if strings.Contains(m.File, ".env") {
+			t.Errorf("Grep returned match from denied file %q", m.File)
+		}
+		if strings.Contains(m.Content, "sk-DO-NOT-LEAK") {
+			t.Errorf("Grep leaked secret content via %q: %q", m.File, m.Content)
+		}
 	}
 }
 

@@ -18,6 +18,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/ersinkoc/dfmt/internal/safefs"
 )
 
 const langBash = "bash"
@@ -120,6 +122,11 @@ func DefaultPolicy() Policy {
 			{Op: "fetch", Text: "https://*"},
 			{Op: "fetch", Text: "http://*"},
 			{Op: "write", Text: "**"},
+			// Edit goes through PolicyCheck for both "write" and "edit"
+			// (F-29) so the explicit `edit` deny rules below actually fire.
+			// The default-allow band must mirror write or every Edit call
+			// would deny under a default policy.
+			{Op: "edit", Text: "**"},
 		},
 		Deny: []Rule{
 			{Op: "exec", Text: "sudo *"},
@@ -220,21 +227,27 @@ func LoadPolicy(path string) (*Policy, error) {
 
 // globMatch does simple glob matching (* matches any number of chars).
 // For exec operations, * matches anything (shell-style).
-// For read/fetch operations, * doesn't match / (path-style).
+// For read/write/edit/fetch operations, * doesn't match / (path-style).
 func globMatch(pattern, text string, op string) bool {
-	// Normalize Windows path separators for path-based ops so rules written
-	// with forward slashes (e.g. "**/id_rsa") still match `C:\Users\x\id_rsa`.
-	if op == "read" {
+	// Normalize Windows path separators for every path-style op so rules
+	// written with forward slashes (e.g. "**/id_rsa", "**/.env*") match
+	// `C:\Users\x\id_rsa` and `C:\proj\.env` on Windows. F-03 closure: the
+	// previous version normalized only the read op, so an agent on Windows
+	// could write through the deny list because `**/.env*` did not match
+	// the backslash-separated cleanPath. Fetch URLs already use forward
+	// slashes, so ToSlash is a no-op there but kept for symmetry. Exec text
+	// is a shell command (not a path) and must NOT be normalized.
+	if op != "exec" {
 		text = filepath.ToSlash(text)
 		pattern = filepath.ToSlash(pattern)
 	}
 	// For exec operations, use shell-style globbing where * matches anything including /
-	// For read/fetch, * doesn't match / (path segments)
+	// For path-style ops, * doesn't match / (path segments)
 	if op == "exec" {
 		regex := globToRegexShell(pattern)
 		return regexMatch(regex, text)
 	}
-	// Convert glob pattern to regex for read/fetch (path-based)
+	// Convert glob pattern to regex for path-style ops
 	regex := globToRegex(pattern)
 	return regexMatch(regex, text)
 }
@@ -939,6 +952,26 @@ func (s *SandboxImpl) Read(ctx context.Context, req ReadReq) (ReadResp, error) {
 // MaxFetchBodyBytes caps the size of an HTTP response body that Fetch will read.
 const MaxFetchBodyBytes = 8 * 1024 * 1024 // 8 MiB
 
+// normalizeFetchURLForPolicy returns rawURL with its scheme and host
+// lowercased so case-insensitive match succeeds against deny rules written
+// in conventional lowercase form. Path/query stay as-is (paths may be
+// case-sensitive on the target server). On parse failure rawURL is
+// returned unchanged — PolicyCheck will deny obviously malformed URLs
+// either way and assertFetchURLAllowed re-parses for the SSRF check.
+func normalizeFetchURLForPolicy(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return rawURL
+	}
+	if u.Scheme != "" {
+		u.Scheme = strings.ToLower(u.Scheme)
+	}
+	if u.Host != "" {
+		u.Host = strings.ToLower(u.Host)
+	}
+	return u.String()
+}
+
 // assertFetchURLAllowed refuses URLs that target loopback, private, link-local,
 // multicast, or cloud metadata ranges. Call on the initial URL and again on
 // every redirect.
@@ -1020,8 +1053,14 @@ var ErrBlockedHost = errors.New("host blocked by SSRF policy")
 
 // Fetch implements the Sandbox interface.
 func (s *SandboxImpl) Fetch(ctx context.Context, req FetchReq) (FetchResp, error) {
-	// Policy check
-	if err := s.PolicyCheck("fetch", req.URL); err != nil {
+	// Policy check. URLs are normalized first so deny rules like
+	// `http://169.254.169.254/*` match `HTTP://169.254.169.254/foo`. The
+	// scheme and host components are case-insensitive per RFC 3986; the
+	// path portion stays case-sensitive (paths can be case-sensitive on
+	// real servers). Closes F-28: pre-fix, an attacker could try
+	// `HTTPS://metadata.google.internal/...` and the cloud-metadata deny
+	// glob would never fire because the regex compare was byte-for-byte.
+	if err := s.PolicyCheck("fetch", normalizeFetchURLForPolicy(req.URL)); err != nil {
 		return FetchResp{}, err
 	}
 
@@ -1189,17 +1228,26 @@ func (s *SandboxImpl) Glob(ctx context.Context, req GlobReq) (GlobResp, error) {
 		return GlobResp{}, fmt.Errorf("glob pattern: %w", err)
 	}
 
-	// Filter to only files (not directories) and make paths relative
+	// Filter to only files (not directories), drop anything the read policy
+	// denies (F-02: a deny rule like `read **/.env*` must keep dfmt_glob from
+	// surfacing the file's existence — otherwise the agent learns the path
+	// even when the eventual Read would refuse), and make paths relative.
+	// Filtering is silent: callers are not told *which* paths were withheld,
+	// only that the result list is shorter than a raw glob would produce.
 	var files []string
 	for _, m := range matches {
 		fi, err := os.Stat(m)
 		if err != nil {
 			continue
 		}
-		if !fi.IsDir() {
-			relPath, _ := filepath.Rel(absWd, m)
-			files = append(files, relPath)
+		if fi.IsDir() {
+			continue
 		}
+		if perr := s.PolicyCheck("read", m); perr != nil {
+			continue
+		}
+		relPath, _ := filepath.Rel(absWd, m)
+		files = append(files, relPath)
 	}
 
 	// Intent-based filtering
@@ -1317,6 +1365,15 @@ func (s *SandboxImpl) Grep(ctx context.Context, req GrepReq) (GrepResp, error) {
 		// Check path is within working directory
 		rel, _ := filepath.Rel(absWd, f)
 		if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			continue
+		}
+
+		// F-02: deny-rule enforcement. The directory-level PolicyCheck above
+		// only blocks if the wd itself is denied; per-file rules like
+		// `read **/.env*` need to be applied here, before reading the file.
+		// Without this, dfmt_grep "API_KEY" --files "**/*" surfaces secrets
+		// that direct `dfmt_read .env` would refuse.
+		if perr := s.PolicyCheck("read", f); perr != nil {
 			continue
 		}
 
@@ -1446,20 +1503,25 @@ func (s *SandboxImpl) Edit(ctx context.Context, req EditReq) (EditResp, error) {
 		return EditResp{}, fmt.Errorf("path outside working directory: %s", req.Path)
 	}
 
-	// Resolve symlinks and re-check containment. Same check as Read/Write.
-	if resolved, rerr := filepath.EvalSymlinks(cleanPath); rerr == nil {
-		resolvedWd, werr := filepath.EvalSymlinks(absWd)
-		if werr != nil {
-			resolvedWd = absWd
-		}
-		relResolved, err := filepath.Rel(resolvedWd, resolved)
-		if err != nil || relResolved == ".." || strings.HasPrefix(relResolved, ".."+string(filepath.Separator)) {
-			return EditResp{}, fmt.Errorf("path outside working directory after symlink resolution: %s", req.Path)
-		}
+	// Refuse if any path segment beneath wd is a symlink (closes F-04 for the
+	// Edit path, including the target-missing case where the previous
+	// EvalSymlinks-only gate returned without checking).
+	if err := safefs.CheckNoSymlinks(absWd, cleanPath); err != nil {
+		return EditResp{}, fmt.Errorf("path symlink check: %w", err)
 	}
 
-	// Policy check - write permission
+	// Policy check — Edit is both a write and an edit. Run BOTH checks so
+	// that:
+	//   - existing `Op: "write"` deny rules continue to protect Edit calls
+	//     (they have always done so via this code path);
+	//   - explicit `Op: "edit"` deny rules in user policies actually fire
+	//     (closes F-29: the DefaultPolicy carries `edit` mirrors of every
+	//     `write` deny but Edit only invoked PolicyCheck("write"), making
+	//     the `edit` rules dead in the default config).
 	if err := s.PolicyCheck("write", cleanPath); err != nil {
+		return EditResp{}, err
+	}
+	if err := s.PolicyCheck("edit", cleanPath); err != nil {
 		return EditResp{}, err
 	}
 
@@ -1485,7 +1547,7 @@ func (s *SandboxImpl) Edit(ctx context.Context, req EditReq) (EditResp, error) {
 	if fi, ferr := os.Stat(cleanPath); ferr == nil {
 		mode = fi.Mode().Perm()
 	}
-	if err := os.WriteFile(cleanPath, []byte(newContent), mode); err != nil {
+	if err := safefs.WriteFile(absWd, cleanPath, []byte(newContent), mode); err != nil {
 		return EditResp{}, fmt.Errorf("write file: %w", err)
 	}
 
@@ -1525,18 +1587,14 @@ func (s *SandboxImpl) Write(ctx context.Context, req WriteReq) (WriteResp, error
 		return WriteResp{}, fmt.Errorf("path outside working directory: %s", req.Path)
 	}
 
-	// Resolve symlinks and re-check containment. A symlink inside the wd that
-	// points outside (e.g. ln -s /etc/passwd wd/leak) must be refused, even if
-	// the file doesn't exist yet — we check the parent directory's target.
-	if resolved, rerr := filepath.EvalSymlinks(cleanPath); rerr == nil {
-		resolvedWd, werr := filepath.EvalSymlinks(absWd)
-		if werr != nil {
-			resolvedWd = absWd
-		}
-		relResolved, err := filepath.Rel(resolvedWd, resolved)
-		if err != nil || relResolved == ".." || strings.HasPrefix(relResolved, ".."+string(filepath.Separator)) {
-			return WriteResp{}, fmt.Errorf("path outside working directory after symlink resolution: %s", req.Path)
-		}
+	// Refuse if any path segment beneath wd is a symlink (closes F-04). The
+	// previous EvalSymlinks-only gate skipped the check entirely when the
+	// target file didn't exist, which let an attacker plant
+	// `wd/leak -> /etc/cron.d/x` and then have the agent write through it.
+	// safefs.CheckNoSymlinks Lstat-walks each component so missing-leaf
+	// cases still reject symlinked parents.
+	if err := safefs.CheckNoSymlinks(absWd, cleanPath); err != nil {
+		return WriteResp{}, fmt.Errorf("path symlink check: %w", err)
 	}
 
 	// Policy check - write permission
@@ -1558,7 +1616,7 @@ func (s *SandboxImpl) Write(ctx context.Context, req WriteReq) (WriteResp, error
 	if fi, ferr := os.Stat(cleanPath); ferr == nil {
 		mode = fi.Mode().Perm()
 	}
-	if err := os.WriteFile(cleanPath, []byte(req.Content), mode); err != nil {
+	if err := safefs.WriteFile(absWd, cleanPath, []byte(req.Content), mode); err != nil {
 		return WriteResp{}, fmt.Errorf("write file: %w", err)
 	}
 
@@ -1601,24 +1659,49 @@ func (s *SandboxImpl) execImpl(ctx context.Context, req ExecReq, rt Runtime) (Ex
 	cmd.Dir = s.wd
 	cmd.Env = buildEnv(req.Env)
 
-	out, err := cmd.Output()
-	exitCode := 0
+	// F-10: bound the in-memory subprocess buffer at MaxRawBytes via a
+	// streamed read on StdoutPipe + LimitReader, so a `find / -name "*"`
+	// doesn't OOM the daemon. The previous cmd.Output() buffered the
+	// entire output and only truncated post-hoc. After we hit the cap,
+	// drain the pipe to /dev/null so the subprocess can exit cleanly
+	// rather than blocking on a full pipe.
+	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
+		return ExecResp{}, err
+	}
+	if err := cmd.Start(); err != nil {
+		return ExecResp{}, err
+	}
+	out, readErr := io.ReadAll(io.LimitReader(stdout, MaxRawBytes))
+	// Always drain the rest of stdout so a noisy subprocess can finish
+	// and Wait() returns. Discard errors here — the subprocess exit
+	// status is what matters.
+	_, _ = io.Copy(io.Discard, stdout)
+	waitErr := cmd.Wait()
+	if readErr != nil {
+		return ExecResp{}, readErr
+	}
+	exitCode := 0
+	if waitErr != nil {
+		if exitErr, ok := waitErr.(*exec.ExitError); ok {
 			exitCode = exitErr.ExitCode()
 		} else {
-			return ExecResp{}, err
+			return ExecResp{}, waitErr
 		}
 	}
 
 	// Windows Git Bash outputs UTF-16LE with null bytes; convert to UTF-8
 	output := convertUTF16LEToUTF8(out)
-	if len(output) > MaxRawBytes {
+	if len(output) >= MaxRawBytes {
 		// Trim a trailing partial UTF-8 rune so encoding/json doesn't emit
 		// U+FFFD for the orphan continuation bytes on >MaxRawBytes outputs
 		// whose boundary falls mid-rune (Turkish gradle/maven, CJK paths
-		// in git log).
-		output = trimPartialRune(output[:MaxRawBytes])
+		// in git log). The LimitReader above already capped at MaxRawBytes;
+		// this slice + trim guards the post-UTF16-conversion size.
+		if len(output) > MaxRawBytes {
+			output = output[:MaxRawBytes]
+		}
+		output = trimPartialRune(output)
 	}
 
 	// Apply the return-policy filter. This is the single point that decides

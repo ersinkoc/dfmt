@@ -34,6 +34,121 @@ func TestRedact(t *testing.T) {
 	}
 }
 
+// TestRedact_AWSSecretCrossLineAndCamelCase covers F-13. The prior pattern
+// required marker and value on the same line and only matched marker
+// variants prefixed with `aws_`. Real AWS credential dumps land in YAML,
+// JSON, or tabular AWS CLI output where the marker and the 40-char base64
+// value sit on separate lines — and `SecretAccessKey` / `secretAccessKey`
+// camelCase forms have no `aws_` prefix. The widened pattern matches all
+// these layouts; the 40-char value bound + non-base64 boundary keeps
+// false positives bounded.
+func TestRedact_AWSSecretCrossLineAndCamelCase(t *testing.T) {
+	r := NewRedactor()
+
+	// 40-char base64 stand-in. Mixing `+/=` makes sure the value class
+	// regex isn't accidentally narrower than the AWS spec.
+	const value = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY" // exactly 40 chars
+
+	if got := len(value); got != 40 {
+		t.Fatalf("test fixture broken: value len = %d, want 40", got)
+	}
+
+	cases := []struct {
+		name  string
+		input string
+	}{
+		{"yaml-cross-line", "aws_secret_access_key:\n  " + value + "\n"},
+		{"json-pretty-print", "{\n  \"SecretAccessKey\": \"" + value + "\"\n}"},
+		{"cli-tabular", "secret_access_key   " + value + "\n"},
+		{"camelCase-no-prefix", "secretAccessKey: " + value},
+		{"PascalCase-no-prefix", "SecretAccessKey = " + value},
+		{"yaml-deep-indent", "credentials:\n  aws:\n    secret_access_key:\n      " + value + "\n"},
+		{"backtick-quoted", "secret_key=`" + value + "`"},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := r.Redact(c.input)
+			if strings.Contains(got, value) {
+				t.Errorf("AWS secret leaked: redact(%q) = %q", c.input, got)
+			}
+			// Either marker is acceptable — `[AWS_SECRET]` from the aws_secret
+			// rule, or `[REDACTED]` from env_export when the value is in
+			// `KEY=VALUE` shape and `IsSensitiveKey` claims it. What matters
+			// is that the 40-char base64 didn't survive.
+			if !strings.Contains(got, "[AWS_SECRET]") && !strings.Contains(got, "[REDACTED]") {
+				t.Errorf("no redaction marker present: redact(%q) = %q", c.input, got)
+			}
+		})
+	}
+}
+
+// TestRedact_AWSSecretFalsePositiveBounds documents the boundary behaviour:
+// a 40-char base64 with NO marker nearby, or a 41-char base64, must NOT be
+// classified as an AWS secret (avoids false positives on JWT segments,
+// random hashes, etc.).
+func TestRedact_AWSSecretFalsePositiveBounds(t *testing.T) {
+	r := NewRedactor()
+	cases := []struct {
+		name  string
+		input string
+	}{
+		// No marker at all — should not be flagged as aws_secret.
+		{"bare-40char-base64", "abcdefghijklmnopqrstuvwxyz0123456789ABCD"},
+		// 41 chars — value boundary should reject (still 40 chars at most).
+		{"41-char-no-marker", "abcdefghijklmnopqrstuvwxyz0123456789ABCDE"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := r.Redact(c.input)
+			if strings.Contains(got, "[AWS_SECRET]") {
+				t.Errorf("false positive: redact(%q) = %q tagged AWS_SECRET", c.input, got)
+			}
+		})
+	}
+}
+
+// TestRedact_BearerBasicCoversBase64SpecialChars covers F-12. The prior
+// char class `[A-Za-z0-9_.-]` excluded `+`, `/`, and `=` — so a bearer or
+// basic token containing those (which is routine for real base64 output)
+// matched only up to the first special char, leaving the rest of the
+// credential in the redacted output. The fix widens the class to the full
+// base64 alphabet plus `~` (RFC 6750 b64token).
+func TestRedact_BearerBasicCoversBase64SpecialChars(t *testing.T) {
+	r := NewRedactor()
+
+	cases := []struct {
+		name     string
+		input    string
+		mustLack string // any substring of the original token leaking is a fail
+	}{
+		// `+` mid-token: prior regex truncated at `+`, leaking `DEF+ghiJKL...`.
+		{"bearer-with-plus", "Authorization: Bearer abcDEF+ghiJKLmnoPQR456", "DEF+ghiJKL"},
+		// `/` mid-token (URL-unsafe base64).
+		{"bearer-with-slash", "Authorization: Bearer abcDEFghi/jklMNOpqr456", "/jklMNO"},
+		// Trailing `=` padding.
+		{"bearer-with-padding", "Authorization: Bearer abcDEFghiJKLmnoPQR456==", "PQR456=="},
+		// Base64 of `user:supersecretpassword` includes `+`.
+		{"basic-base64-plus", "Authorization: Basic dXNlcjpzdXBlcg+pass+more", "+pass+more"},
+		// Basic with both `/` and `=`.
+		{"basic-base64-slash-eq", "Authorization: Basic dXNlcjpwYXNz/ABCDEFG==", "/ABCDEFG=="},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := r.Redact(c.input)
+			if strings.Contains(got, c.mustLack) {
+				t.Errorf("token tail leaked: redact(%q) = %q (must not contain %q)", c.input, got, c.mustLack)
+			}
+			// Sanity: the marker word ("Bearer" / "Basic") plus REDACTED
+			// should still be present so observability isn't lost.
+			if !strings.Contains(got, "[REDACTED]") {
+				t.Errorf("redacted output missing [REDACTED] marker: %q", got)
+			}
+		})
+	}
+}
+
 func TestRedactEnvExport(t *testing.T) {
 	r := NewRedactor()
 
@@ -153,14 +268,45 @@ func TestIsSensitiveKey(t *testing.T) {
 		key       string
 		sensitive bool
 	}{
+		// Existing positives — must keep matching.
 		{"password", true},
 		{"api_key", true},
 		{"secret", true},
 		{"token", true},
 		{"private", true},
+		// Existing negatives — must keep NOT matching.
 		{"username", false},
 		{"email", false},
 		{"name", false},
+
+		// F-20: previously false negatives — must now match.
+		{"pwd", true},
+		{"pwd_hash", true},
+		{"cred", true},
+		{"creds", true},
+		{"cred_id", true},
+		{"pat", true},      // Personal Access Token
+		{"pat_token", true}, // both tokens hit
+		{"oauth_token", true},
+		{"OAuthToken", true},
+		{"ApiKey", true},
+		{"apikey", true},
+		{"PrivateKey", true},
+		{"AccessToken", true},
+		{"sessionToken", true},
+		{"refresh_token", true},
+		{"signing_key", true},
+
+		// F-20: previously false positives — must now NOT match.
+		{"MONKEY", false},        // contained "key" as substring
+		{"monkey", false},
+		{"PRIMARY_KEY", false},   // DB primary key, not a secret
+		{"key_value_store", false},
+		{"keystore", false},
+		{"path", false},          // contains "pat"
+		{"PATH", false},
+		{"mypath", false},
+		{"keyboard", false},
 	}
 
 	for _, tt := range tests {
@@ -168,6 +314,39 @@ func TestIsSensitiveKey(t *testing.T) {
 			got := IsSensitiveKey(tt.key)
 			if got != tt.sensitive {
 				t.Errorf("IsSensitiveKey(%q) = %v, want %v", tt.key, got, tt.sensitive)
+			}
+		})
+	}
+}
+
+// TestTokenizeKey covers the camelCase + boundary splitter that backs
+// IsSensitiveKey. Pinning the splits explicitly so future changes don't
+// silently regress F-20's false-positive elimination.
+func TestTokenizeKey(t *testing.T) {
+	cases := []struct {
+		in   string
+		want []string
+	}{
+		{"password", []string{"password"}},
+		{"MONKEY", []string{"monkey"}},
+		{"PRIMARY_KEY", []string{"primary", "key"}},
+		{"ApiKey", []string{"api", "key"}},
+		{"OAuthToken", []string{"o", "auth", "token"}},
+		{"HTTPRequest", []string{"http", "request"}},
+		{"id123name", []string{"id", "123", "name"}},
+		{"", nil},
+		{"___", nil},
+	}
+	for _, c := range cases {
+		t.Run(c.in, func(t *testing.T) {
+			got := tokenizeKey(c.in)
+			if len(got) != len(c.want) {
+				t.Fatalf("tokenizeKey(%q) = %v, want %v", c.in, got, c.want)
+			}
+			for i := range got {
+				if got[i] != c.want[i] {
+					t.Errorf("tokenizeKey(%q)[%d] = %q, want %q", c.in, i, got[i], c.want[i])
+				}
 			}
 		})
 	}

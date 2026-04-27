@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -476,6 +477,101 @@ func TestHandleInvalidParams(t *testing.T) {
 	}
 }
 
+// TestHTTPServerRejectsForeignHostHeader covers F-17: the loopback HTTP
+// listener must reject requests whose Host header doesn't name the listener
+// itself. Without this, a same-host attacker (or DNS-rebinding browser) can
+// drive POSTs to JSON-RPC endpoints by lying about Host while the connection
+// reaches the loopback port — the same-origin Origin check only fires when
+// the browser actually sets Origin. The Host check is a parallel defense
+// that doesn't depend on the client setting Origin.
+//
+// Allowed: literal listener address, `localhost:<port>`, `[::1]:<port>`.
+// Rejected: any other Host. Health endpoints bypass the check.
+func TestHTTPServerRejectsForeignHostHeader(t *testing.T) {
+	idx := core.NewIndex()
+	handlers := NewHandlers(idx, nil, nil)
+	hs := NewHTTPServer("127.0.0.1:0", handlers)
+
+	if err := hs.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer hs.Stop(context.Background())
+
+	addr, ok := hs.listener.Addr().(*net.TCPAddr)
+	if !ok {
+		t.Fatalf("listener not TCP: %T", hs.listener.Addr())
+	}
+
+	cases := []struct {
+		name       string
+		host       string
+		path       string
+		wantStatus int
+	}{
+		{"listener-addr", addr.String(), "/", http.StatusMethodNotAllowed},
+		{"localhost-port", fmt.Sprintf("localhost:%d", addr.Port), "/", http.StatusMethodNotAllowed},
+		{"ipv6-loopback-port", fmt.Sprintf("[::1]:%d", addr.Port), "/", http.StatusMethodNotAllowed},
+		{"foreign-host", "attacker.com", "/", http.StatusForbidden},
+		{"foreign-host-with-port", "attacker.com:8080", "/", http.StatusForbidden},
+		{"healthz-bypasses-host-check", "attacker.com", "/healthz", http.StatusOK},
+		{"readyz-bypasses-host-check", "attacker.com", "/readyz", http.StatusOK},
+	}
+
+	url := fmt.Sprintf("http://%s", addr.String())
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			req, err := http.NewRequest(http.MethodGet, url+c.path, nil)
+			if err != nil {
+				t.Fatalf("new request: %v", err)
+			}
+			req.Host = c.host
+
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatalf("do: %v", err)
+			}
+			defer resp.Body.Close()
+
+			if resp.StatusCode != c.wantStatus {
+				t.Errorf("status = %d, want %d (host=%q path=%q)", resp.StatusCode, c.wantStatus, c.host, c.path)
+			}
+		})
+	}
+}
+
+// TestIsAllowedHost_UnixSocketBypass: when the listener is not TCP (e.g. a
+// Unix-domain socket), there is no DNS-rebinding vector — connection access
+// is gated by filesystem permissions. isAllowedHost must accept any value.
+func TestIsAllowedHost_UnixSocketBypass(t *testing.T) {
+	idx := core.NewIndex()
+	handlers := NewHandlers(idx, nil, nil)
+
+	tmp := t.TempDir()
+	sockPath := filepathJoin(tmp, "dfmt.sock")
+	ln, err := net.Listen("unix", sockPath)
+	if err != nil {
+		t.Skipf("unix socket not supported on this platform: %v", err)
+	}
+	defer ln.Close()
+
+	hs := NewHTTPServerWithListener(ln, handlers, sockPath)
+	if !hs.isAllowedHost("any-host-at-all.example.com") {
+		t.Error("Unix-socket transport must accept any Host header")
+	}
+	if !hs.isAllowedHost("") {
+		t.Error("Unix-socket transport must accept empty Host header")
+	}
+}
+
+// filepathJoin avoids importing path/filepath into this test file just for
+// one call site.
+func filepathJoin(dir, name string) string {
+	if strings.HasSuffix(dir, string(os.PathSeparator)) {
+		return dir + name
+	}
+	return dir + string(os.PathSeparator) + name
+}
+
 // TestHandleEmptyParamsAccepted: empty/absent params must NOT produce -32602.
 // Each method has nullable/optional fields, so a zero-value struct is a valid
 // request shape. This pins the boundary so a future change to decodeRPCParams
@@ -506,4 +602,3 @@ func TestHandleEmptyParamsAccepted(t *testing.T) {
 		})
 	}
 }
-

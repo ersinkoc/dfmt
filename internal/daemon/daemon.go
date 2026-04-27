@@ -3,7 +3,6 @@ package daemon
 import (
 	"context"
 	"fmt"
-	"net"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -18,6 +17,7 @@ import (
 	"github.com/ersinkoc/dfmt/internal/core"
 	"github.com/ersinkoc/dfmt/internal/project"
 	"github.com/ersinkoc/dfmt/internal/redact"
+	"github.com/ersinkoc/dfmt/internal/safefs"
 	"github.com/ersinkoc/dfmt/internal/sandbox"
 	"github.com/ersinkoc/dfmt/internal/transport"
 )
@@ -157,13 +157,20 @@ func New(projectPath string, cfg *config.Config) (*Daemon, error) {
 		httpServer.SetProjectPath(projectPath)
 		server = httpServer
 	} else {
-		// On Unix, use Unix socket with HTTPServer for full HTTP support
+		// On Unix, use Unix socket with HTTPServer for full HTTP support.
+		// transport.ListenUnixSocket applies a 0o077 umask for the duration
+		// of bind(2) so the socket file is never world-readable in the
+		// window before chmod (closes F-05). Surface chmod errors to the
+		// operator — silently allowing 0666 perms on the socket would let
+		// any local user dial the daemon.
 		socketPath := project.SocketPath(projectPath)
-		ln, err := net.Listen("unix", socketPath)
+		ln, err := transport.ListenUnixSocket(socketPath)
 		if err != nil {
 			return nil, fmt.Errorf("create socket listener: %w", err)
 		}
-		os.Chmod(socketPath, 0700)
+		if cerr := os.Chmod(socketPath, 0o700); cerr != nil {
+			fmt.Fprintf(os.Stderr, "warning: chmod socket: %v\n", cerr)
+		}
 		httpServer = transport.NewHTTPServerWithListener(ln, handlers, socketPath)
 		httpServer.SetProjectPath(projectPath)
 	}
@@ -243,9 +250,16 @@ func (d *Daemon) Start(ctx context.Context) error {
 
 		// Write PID file; a write failure is non-fatal (status/list commands
 		// degrade gracefully) but must surface to the operator via stderr.
-		pidPath := filepath.Join(d.projectPath, ".dfmt", "daemon.pid")
+		// safefs.WriteFile refuses if .dfmt/ or daemon.pid is a symlink — closes
+		// F-08 (attacker plants daemon.pid -> /etc/cron.d/x before daemon
+		// start, host PID gets injected into the symlink target).
+		absProject, perr := filepath.Abs(d.projectPath)
+		if perr != nil {
+			absProject = d.projectPath
+		}
+		pidPath := filepath.Join(absProject, ".dfmt", "daemon.pid")
 		pidData := fmt.Sprintf("%d\n", os.Getpid())
-		if err := os.WriteFile(pidPath, []byte(pidData), 0o600); err != nil {
+		if err := safefs.WriteFile(absProject, pidPath, []byte(pidData), 0o600); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: write pid file: %v\n", err)
 		}
 

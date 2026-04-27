@@ -2,6 +2,8 @@ package transport
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"sort"
@@ -25,6 +27,14 @@ type Handlers struct {
 
 	execSem  chan struct{}
 	fetchSem chan struct{}
+	// readSem bounds concurrent local-file read paths (Read, Glob, Grep).
+	// writeSem bounds Edit and Write so an agent that reaches the loopback
+	// port cannot DoS the daemon by spamming concurrent mutations. Depths
+	// are sized for an interactive single-user host: enough headroom for
+	// realistic agent burstiness, not enough to thrash the disk if the
+	// agent (or a prompt-injected loop) goes pathological. See F-19.
+	readSem  chan struct{}
+	writeSem chan struct{}
 
 	mu       sync.RWMutex
 	project  string
@@ -53,6 +63,8 @@ func NewHandlers(index *core.Index, journal core.Journal, sb sandbox.Sandbox) *H
 		redactor: redact.NewRedactor(),
 		execSem:  make(chan struct{}, 4),
 		fetchSem: make(chan struct{}, 8),
+		readSem:  make(chan struct{}, 8),
+		writeSem: make(chan struct{}, 4),
 	}
 }
 
@@ -279,14 +291,30 @@ func (h *Handlers) Remember(ctx context.Context, params RememberParams) (*Rememb
 		}
 	}
 
+	// F-21: server-side override of Source and Priority. Both are
+	// agent-controllable on the wire; without this the agent (or a prompt-
+	// injected loop running through it) could write events claiming source
+	// "githook" or "fswatch" and priority "p1" — exactly the bands `dfmt
+	// recall` keeps under tight budget. The agent IS calling via MCP, so
+	// Source is a fact, not a parameter. p1 is reserved for non-agent
+	// paths (decisions logged by the operator, incident events). Anything
+	// outside the agent-allowed band is coerced to p3.
+	priority := core.Priority(params.Priority)
+	switch priority {
+	case core.PriP2, core.PriP3, core.PriP4:
+		// keep
+	default:
+		priority = core.PriP3
+	}
+
 	// Create event
 	e := core.Event{
 		ID:       string(core.NewULID(time.Now())),
 		TS:       time.Now(),
 		Project:  h.getProject(),
 		Type:     core.EventType(params.Type),
-		Priority: core.Priority(params.Priority),
-		Source:   core.Source(params.Source),
+		Priority: priority,
+		Source:   core.SrcMCP,
 		Actor:    params.Actor,
 		Data:     h.redactData(data),
 		Refs:     params.Refs,
@@ -779,11 +807,11 @@ func (h *Handlers) Exec(ctx context.Context, params ExecParams) (*ExecResponse, 
 	// Log the invocation. Code goes in redacted because secrets leak through
 	// command lines far more often than through stdout.
 	h.logEvent(ctx, "tool.exec", params.Intent, map[string]any{
-		"code":               params.Code,
-		"lang":               params.Lang,
-		"exit":               resp.Exit,
-		"duration":           resp.DurationMs,
-		core.KeyRawBytes:     rawBytes,
+		"code":                params.Code,
+		"lang":                params.Lang,
+		"exit":                resp.Exit,
+		"duration":            resp.DurationMs,
+		core.KeyRawBytes:      rawBytes,
 		core.KeyReturnedBytes: returnedBytes,
 	})
 
@@ -835,6 +863,11 @@ type ReadResponse struct {
 // Read reads a file via the sandbox.
 func (h *Handlers) Read(ctx context.Context, params ReadParams) (*ReadResponse, error) {
 	h.touch()
+	release, err := acquireLimiter(ctx, h.readSem)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	req := sandbox.ReadReq{
 		Path:   params.Path,
 		Intent: params.Intent,
@@ -999,6 +1032,11 @@ func (h *Handlers) Fetch(ctx context.Context, params FetchParams) (*FetchRespons
 // Glob performs glob pattern matching via the sandbox.
 func (h *Handlers) Glob(ctx context.Context, params GlobParams) (*GlobResponse, error) {
 	h.touch()
+	release, err := acquireLimiter(ctx, h.readSem)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	req := sandbox.GlobReq{
 		Pattern: params.Pattern,
 		Intent:  params.Intent,
@@ -1023,6 +1061,11 @@ func (h *Handlers) Glob(ctx context.Context, params GlobParams) (*GlobResponse, 
 // Grep performs text search via the sandbox.
 func (h *Handlers) Grep(ctx context.Context, params GrepParams) (*GrepResponse, error) {
 	h.touch()
+	release, err := acquireLimiter(ctx, h.readSem)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	req := sandbox.GrepReq{
 		Pattern:         params.Pattern,
 		Files:           params.Files,
@@ -1086,6 +1129,11 @@ type WriteResponse struct {
 // Edit performs an edit on a file via the sandbox.
 func (h *Handlers) Edit(ctx context.Context, params EditParams) (*EditResponse, error) {
 	h.touch()
+	release, err := acquireLimiter(ctx, h.writeSem)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	req := sandbox.EditReq{
 		Path:      params.Path,
 		OldString: params.OldString,
@@ -1110,6 +1158,11 @@ func (h *Handlers) Edit(ctx context.Context, params EditParams) (*EditResponse, 
 // Write writes content to a file via the sandbox.
 func (h *Handlers) Write(ctx context.Context, params WriteParams) (*WriteResponse, error) {
 	h.touch()
+	release, err := acquireLimiter(ctx, h.writeSem)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	req := sandbox.WriteReq{
 		Path:    params.Path,
 		Content: params.Content,
@@ -1120,9 +1173,16 @@ func (h *Handlers) Write(ctx context.Context, params WriteParams) (*WriteRespons
 		return nil, err
 	}
 
+	// F-11: do NOT journal raw `params.Content`. Every dfmt_write of a
+	// secrets-laden file (env, config, key) would otherwise land verbatim in
+	// the journal — only pattern-redacted, not sanitised. A truncated SHA-256
+	// plus byte count keeps the audit trail (same write detectable across
+	// time) without exposing the payload.
+	sum := sha256.Sum256([]byte(params.Content))
 	h.logEvent(ctx, "tool.write", params.Path, map[string]any{
-		"path":    params.Path,
-		"content": params.Content,
+		"path":          params.Path,
+		"bytes":         len(params.Content),
+		"content_sha16": hex.EncodeToString(sum[:8]),
 	})
 
 	return &WriteResponse{

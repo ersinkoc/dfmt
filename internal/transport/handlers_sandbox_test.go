@@ -730,3 +730,120 @@ func TestHandlers_Write_Error(t *testing.T) {
 		t.Fatal("expected error")
 	}
 }
+
+// TestHandlers_Write_SemaphoreBoundsConcurrency covers F-19: an agent that
+// reaches the loopback port must not be able to DoS the daemon by spamming
+// concurrent dfmt_write calls. writeSem caps in-flight Write+Edit at 4; the
+// 5th caller must observe context-deadline-exceeded when the queue is full
+// and the deadline fires before any in-flight call completes.
+func TestHandlers_Write_SemaphoreBoundsConcurrency(t *testing.T) {
+	gate := make(chan struct{})
+	// blockingSandbox waits on `gate` inside Write, simulating slow filesystem
+	// I/O. All other methods of stubSandbox are inherited via embedding.
+	sb := &blockingSandbox{stubSandbox: stubSandbox{
+		writeResp: sandbox.WriteResp{Success: true, Summary: "ok"},
+	}, gate: gate}
+	h := NewHandlers(core.NewIndex(), &mockJournal{}, sb)
+
+	// writeSem capacity is 4; launch exactly that many blocked goroutines so
+	// the semaphore is saturated.
+	const writeSemCap = 4
+	started := make(chan struct{}, writeSemCap)
+	done := make(chan struct{}, writeSemCap)
+	for i := 0; i < writeSemCap; i++ {
+		go func() {
+			started <- struct{}{}
+			_, _ = h.Write(context.Background(), WriteParams{Path: "x", Content: "x"})
+			done <- struct{}{}
+		}()
+	}
+	// Wait for all 4 to enter Write (and acquire the sem).
+	for i := 0; i < writeSemCap; i++ {
+		select {
+		case <-started:
+		case <-time.After(2 * time.Second):
+			t.Fatal("timeout waiting for blocked writers to start")
+		}
+	}
+	// Give the goroutines a moment to actually call into the sandbox stub.
+	time.Sleep(50 * time.Millisecond)
+
+	// 5th caller with a short deadline must time out at the semaphore.
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	_, err := h.Write(ctx, WriteParams{Path: "x", Content: "x"})
+	if err == nil {
+		t.Fatal("expected semaphore to block the 5th writer; got success")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("want context.DeadlineExceeded, got: %v", err)
+	}
+
+	// Release the blocked writers and ensure they complete.
+	close(gate)
+	for i := 0; i < writeSemCap; i++ {
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Fatal("timeout waiting for writers to finish after gate release")
+		}
+	}
+}
+
+// blockingSandbox embeds stubSandbox and overrides Write to block until the
+// shared gate is closed — used to saturate the writeSem in F-19's test.
+type blockingSandbox struct {
+	stubSandbox
+	gate chan struct{}
+}
+
+func (b *blockingSandbox) Write(ctx context.Context, req sandbox.WriteReq) (sandbox.WriteResp, error) {
+	select {
+	case <-b.gate:
+	case <-ctx.Done():
+		return sandbox.WriteResp{}, ctx.Err()
+	}
+	return b.stubSandbox.Write(ctx, req)
+}
+
+// TestHandlers_Write_DoesNotJournalRawContent covers F-11: the tool.write log
+// event must NOT carry the raw file contents, since `dfmt_write` of a secrets
+// file (.env, key, config) would otherwise end up verbatim in the journal.
+// A SHA-256 prefix + byte count keep the audit trail; the secret stays out.
+func TestHandlers_Write_DoesNotJournalRawContent(t *testing.T) {
+	idx := core.NewIndex()
+	journal := &mockJournal{}
+	sb := &stubSandbox{
+		writeResp: sandbox.WriteResp{Success: true, Summary: "wrote"},
+	}
+	h := NewHandlers(idx, journal, sb)
+
+	const secret = "API_KEY=sk-live-DO-NOT-LEAK-THIS-VALUE"
+	_, err := h.Write(context.Background(), WriteParams{
+		Path:    ".env",
+		Content: secret,
+	})
+	if err != nil {
+		t.Fatalf("Write failed: %v", err)
+	}
+	if len(journal.events) != 1 {
+		t.Fatalf("expected 1 journal event, got %d", len(journal.events))
+	}
+	ev := journal.events[0]
+	if ev.Type != "tool.write" {
+		t.Fatalf("expected tool.write event, got %q", ev.Type)
+	}
+	// The raw secret must NOT appear anywhere in the event Data.
+	for k, v := range ev.Data {
+		if s, ok := v.(string); ok && strings.Contains(s, secret) {
+			t.Errorf("event Data[%q] leaks raw content: %q", k, s)
+		}
+	}
+	// The hash prefix and byte count must be present.
+	if _, ok := ev.Data["content_sha16"]; !ok {
+		t.Error("event Data missing content_sha16")
+	}
+	if got := ev.Data["bytes"]; got != len(secret) {
+		t.Errorf("event Data bytes = %v; want %d", got, len(secret))
+	}
+}

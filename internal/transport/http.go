@@ -211,14 +211,22 @@ func (s *HTTPServer) Start(ctx context.Context) error {
 
 // wrapSecurity rejects cross-origin browser requests to non-dashboard
 // endpoints (the dashboard HTML is same-origin so legitimate XHRs never
-// carry a foreign Origin) and sets minimal security response headers.
-// Health endpoints bypass the origin check so readiness probes work.
+// carry a foreign Origin), validates the Host header against the listener
+// (closes F-17: defends against DNS-rebinding where the browser would
+// send `Host: attacker.com` after the rebind), and sets minimal security
+// response headers. Health endpoints bypass the origin/host checks so
+// readiness probes work.
 func (s *HTTPServer) wrapSecurity(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 
 		if r.URL.Path == "/healthz" || r.URL.Path == "/readyz" {
 			next.ServeHTTP(w, r)
+			return
+		}
+
+		if !s.isAllowedHost(r.Host) {
+			http.Error(w, "host header rejected", http.StatusForbidden)
 			return
 		}
 
@@ -247,6 +255,38 @@ func (s *HTTPServer) isAllowedOrigin(origin string) bool {
 		return false
 	}
 	return origin == want
+}
+
+// isAllowedHost validates the request's Host header against the listener.
+// On TCP, the Host must be the literal listener address (e.g.
+// `127.0.0.1:54321`) or `localhost:<port>` — both are safe ways to dial a
+// loopback daemon, anything else (including arbitrary attacker domains
+// post-DNS-rebind) is rejected. On Unix-socket transports the Host header
+// is whatever the HTTP client put there; the connection itself is gated
+// by filesystem permissions so we accept any value.
+func (s *HTTPServer) isAllowedHost(host string) bool {
+	if s.listener == nil {
+		return false
+	}
+	addr, ok := s.listener.Addr().(*net.TCPAddr)
+	if !ok {
+		// Non-TCP listener (Unix socket): no DNS rebinding vector.
+		return true
+	}
+	want := addr.String()
+	if host == want {
+		return true
+	}
+	// Allow `localhost:<port>` as a parallel form, since browsers and
+	// curl reach 127.0.0.1 either way.
+	if host == fmt.Sprintf("localhost:%d", addr.Port) {
+		return true
+	}
+	// Allow `[::1]:<port>` for clients that prefer IPv6.
+	if host == fmt.Sprintf("[::1]:%d", addr.Port) {
+		return true
+	}
+	return false
 }
 
 // Stop stops the HTTP server.
@@ -651,16 +691,25 @@ func (s *HTTPServer) handleAPIDaemons(w http.ResponseWriter, r *http.Request) {
 
 	// Filter to only this daemon's project. Prevents disclosing the existence
 	// of other projects' daemons to whoever can reach this loopback port (V-4).
-	if s.projectPath != "" {
-		filtered := make([]map[string]any, 0, 1)
-		for _, d := range daemons {
-			if path, ok := d["project_path"].(string); ok && path == s.projectPath {
-				filtered = append(filtered, d)
-				break
-			}
-		}
-		daemons = filtered
+	//
+	// F-16: fail CLOSED, not open. If projectPath was never set (test harness,
+	// future caller that forgets SetProjectPath, integrator subclass), return
+	// an empty list rather than the full host-wide registry. The cost of a
+	// false-empty response is tiny (the dashboard shows "no daemons");
+	// the cost of a fail-open is leaking every other project on the box to
+	// any same-host reader.
+	if s.projectPath == "" {
+		_ = json.NewEncoder(w).Encode([]any{})
+		return
 	}
+	filtered := make([]map[string]any, 0, 1)
+	for _, d := range daemons {
+		if path, ok := d["project_path"].(string); ok && path == s.projectPath {
+			filtered = append(filtered, d)
+			break
+		}
+	}
+	daemons = filtered
 
 	if err := json.NewEncoder(w).Encode(daemons); err != nil {
 		fmt.Fprintf(os.Stderr, "encode daemons: %v\n", err)

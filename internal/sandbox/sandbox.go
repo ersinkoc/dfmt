@@ -113,29 +113,29 @@ type GlobReq struct {
 
 // GlobResp is the response from a glob operation.
 type GlobResp struct {
-	Files   []string        `json:"files"`   // Matched file paths
-	Matches []ContentMatch  `json:"matches"` // Intent-matched excerpts
+	Files   []string       `json:"files"`   // Matched file paths
+	Matches []ContentMatch `json:"matches"` // Intent-matched excerpts
 }
 
 // GrepReq is a request to grep files.
 type GrepReq struct {
-	Pattern       string `json:"pattern"`        // Search pattern (regex)
-	Files         string `json:"files"`         // File pattern (e.g., "*.go")
-	Intent        string `json:"intent"`         // Intent for filtering results
-	CaseInsensitive bool  `json:"case_insensitive"`
-	Context       int    `json:"context"`        // Lines of context around matches
+	Pattern         string `json:"pattern"` // Search pattern (regex)
+	Files           string `json:"files"`   // File pattern (e.g., "*.go")
+	Intent          string `json:"intent"`  // Intent for filtering results
+	CaseInsensitive bool   `json:"case_insensitive"`
+	Context         int    `json:"context"` // Lines of context around matches
 }
 
 // GrepResp is the response from a grep operation.
 type GrepResp struct {
-	Matches []GrepMatch   `json:"matches"` // Matches with line numbers
-	Summary string        `json:"summary"`
+	Matches []GrepMatch `json:"matches"` // Matches with line numbers
+	Summary string      `json:"summary"`
 }
 
 // GrepMatch represents a single grep match.
 type GrepMatch struct {
 	File    string `json:"file"`    // File path
-	Line    int    `json:"line"`     // Line number
+	Line    int    `json:"line"`    // Line number
 	Content string `json:"content"` // Line content
 }
 

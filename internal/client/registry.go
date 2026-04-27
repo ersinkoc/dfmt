@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/ersinkoc/dfmt/internal/project"
+	"github.com/ersinkoc/dfmt/internal/safefs"
 )
 
 // DaemonEntry represents a running daemon in the registry.
@@ -91,7 +92,9 @@ func (r *Registry) saveNoLock() {
 	// directory enumerates "~/.dfmt" usage and should not be readable by other
 	// local users on shared hosts.
 	dir := filepath.Dir(r.filePath)
-	os.MkdirAll(dir, 0o700)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return
+	}
 
 	data, err := json.MarshalIndent(entries, "", "  ")
 	if err != nil {
@@ -100,8 +103,10 @@ func (r *Registry) saveNoLock() {
 
 	// 0600: the registry enumerates every project path the user has ever
 	// opened with DFMT — a privacy leak worth closing off from other local
-	// users.
-	_ = os.WriteFile(r.filePath, data, 0o600)
+	// users. Atomic tmp+rename closes F-25 (concurrent registration from
+	// two daemons starting up simultaneously) and CheckNoSymlinks closes
+	// the symlink-plant attack.
+	_ = safefs.WriteFileAtomic(dir, r.filePath, data, 0o600)
 }
 
 // Register adds a daemon to the registry.

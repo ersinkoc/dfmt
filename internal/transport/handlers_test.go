@@ -1632,6 +1632,54 @@ func TestHandlersRememberWithActor(t *testing.T) {
 	}
 }
 
+// TestHandlersRemember_OverridesSourceAndPriority covers F-21: a prompt-
+// injected agent must not be able to write events claiming to come from
+// `githook` / `fswatch` (so they survive Recall's source-based budgeting)
+// or with priority `p1` (the band reserved for operator-logged decisions
+// and incidents). Both fields are agent-controllable on the wire; the
+// server-side override forces Source=mcp and coerces non-{p2,p3,p4}
+// priorities to p3.
+func TestHandlersRemember_OverridesSourceAndPriority(t *testing.T) {
+	cases := []struct {
+		name       string
+		inSource   string
+		inPriority string
+		wantSource core.Source
+		wantPrio   core.Priority
+	}{
+		{"spoofed githook becomes mcp", "githook", "p2", core.SrcMCP, core.PriP2},
+		{"spoofed fswatch becomes mcp", "fswatch", "p3", core.SrcMCP, core.PriP3},
+		{"empty source becomes mcp", "", "p4", core.SrcMCP, core.PriP4},
+		{"p1 coerced to p3", "mcp", "p1", core.SrcMCP, core.PriP3},
+		{"empty priority defaults p3", "mcp", "", core.SrcMCP, core.PriP3},
+		{"garbage priority coerced p3", "mcp", "p9", core.SrcMCP, core.PriP3},
+		{"capital P2 coerced p3", "mcp", "P2", core.SrcMCP, core.PriP3},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			journal := &mockJournal{}
+			h := NewHandlers(core.NewIndex(), journal, nil)
+			if _, err := h.Remember(context.Background(), RememberParams{
+				Type:     "note",
+				Source:   c.inSource,
+				Priority: c.inPriority,
+			}); err != nil {
+				t.Fatalf("Remember: %v", err)
+			}
+			if len(journal.events) != 1 {
+				t.Fatalf("want 1 event, got %d", len(journal.events))
+			}
+			ev := journal.events[0]
+			if ev.Source != c.wantSource {
+				t.Errorf("Source = %q; want %q", ev.Source, c.wantSource)
+			}
+			if ev.Priority != c.wantPrio {
+				t.Errorf("Priority = %q; want %q", ev.Priority, c.wantPrio)
+			}
+		})
+	}
+}
+
 func TestHandlersSearchDefaultLimit(t *testing.T) {
 	idx := core.NewIndex()
 	h := NewHandlers(idx, nil, nil)
