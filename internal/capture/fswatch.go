@@ -3,6 +3,7 @@ package capture
 import (
 	"context"
 	"os"
+	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -258,11 +259,17 @@ func (w *FSWatcher) shouldIgnore(path string) bool {
 // Without "**" support, enabling fs capture means .dfmt/journal.jsonl
 // changes leak straight back into the watcher and the journal grows
 // unbounded from its own writes — the canonical "infinite loop" bug.
-func matchIgnorePattern(pattern, path string) bool {
+func matchIgnorePattern(pattern, target string) bool {
 	pattern = filepath.ToSlash(pattern)
+	// Use stdlib path.Match (slash-only) instead of filepath.Match. On
+	// Windows, filepath.Match treats the OS separator (\) as the glob
+	// separator and lets `*` cross `/` because `/` is a non-separator
+	// from its perspective — that's why `*.swp` was matching `src/foo.swp`
+	// on Windows when the test (and the comment in the default ignore
+	// list) expected anchored-to-root behavior. path.Match uses `/` on
+	// every OS and matches the documented intent of these globs.
 	if !strings.Contains(pattern, "**") {
-		// Try pattern against full path; filepath.Match is path-aware here.
-		matched, _ := filepath.Match(pattern, path)
+		matched, _ := path.Match(pattern, target)
 		return matched
 	}
 
@@ -270,17 +277,17 @@ func matchIgnorePattern(pattern, path string) bool {
 	if strings.HasPrefix(pattern, "**/") {
 		suffix := pattern[3:]
 		if !strings.Contains(suffix, "**") {
-			if matched, _ := filepath.Match(suffix, path); matched {
+			if matched, _ := path.Match(suffix, target); matched {
 				return true
 			}
-			if strings.HasSuffix(path, "/"+suffix) {
+			if strings.HasSuffix(target, "/"+suffix) {
 				return true
 			}
 			// Try with each tail of path so "**/x.go" matches a/b/x.go
-			parts := strings.Split(path, "/")
+			parts := strings.Split(target, "/")
 			for i := 0; i < len(parts); i++ {
 				tail := strings.Join(parts[i:], "/")
-				if matched, _ := filepath.Match(suffix, tail); matched {
+				if matched, _ := path.Match(suffix, tail); matched {
 					return true
 				}
 			}
@@ -292,10 +299,10 @@ func matchIgnorePattern(pattern, path string) bool {
 	if strings.HasSuffix(pattern, "/**") {
 		prefix := pattern[:len(pattern)-3]
 		if !strings.Contains(prefix, "**") {
-			if path == prefix {
+			if target == prefix {
 				return true
 			}
-			return strings.HasPrefix(path, prefix+"/")
+			return strings.HasPrefix(target, prefix+"/")
 		}
 	}
 
@@ -305,22 +312,22 @@ func matchIgnorePattern(pattern, path string) bool {
 	parts := strings.Split(pattern, "**")
 	if len(parts) == 2 {
 		pre, post := strings.TrimSuffix(parts[0], "/"), strings.TrimPrefix(parts[1], "/")
-		if !strings.HasPrefix(path, pre) {
+		if !strings.HasPrefix(target, pre) {
 			return false
 		}
-		rest := strings.TrimPrefix(path, pre)
+		rest := strings.TrimPrefix(target, pre)
 		rest = strings.TrimPrefix(rest, "/")
 		// Require post matches some suffix of rest.
 		if post == "" {
 			return true
 		}
-		if matched, _ := filepath.Match(post, rest); matched {
+		if matched, _ := path.Match(post, rest); matched {
 			return true
 		}
 		segs := strings.Split(rest, "/")
 		for i := 0; i < len(segs); i++ {
 			tail := strings.Join(segs[i:], "/")
-			if matched, _ := filepath.Match(post, tail); matched {
+			if matched, _ := path.Match(post, tail); matched {
 				return true
 			}
 		}

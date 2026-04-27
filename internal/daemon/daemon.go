@@ -226,6 +226,15 @@ func (d *Daemon) Start(ctx context.Context) error {
 
 	lock, lerr := AcquireLock(d.projectPath)
 	if lerr != nil {
+		// New() opened the journal; lock contention means this Daemon will
+		// never reach Stop's normal cleanup path (Stop short-circuits when
+		// running=false). Close the journal explicitly so Windows doesn't
+		// hold the file open and refuse the test's TempDir RemoveAll. Also
+		// covers the production case where a CLI invocation fails Start
+		// against an already-running daemon and must not leak handles.
+		if d.journal != nil {
+			_ = d.journal.Close()
+		}
 		d.running.Store(false)
 		return fmt.Errorf("acquire singleton lock: %w", lerr)
 	}
