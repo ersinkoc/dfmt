@@ -1248,15 +1248,23 @@ func runDoctor(args []string) int {
 }
 
 // checkAgentWireUp prints one line per detected agent describing whether
-// the manifest-recorded MCP config files are still on disk, plus a final
-// line confirming the dfmt binary that agents launch is itself reachable.
-// Returns false if any check failed so runDoctor can flip its exit code.
+// the manifest-recorded MCP config files are still on disk AND whether
+// the recorded MCP `command` path matches the binary running this very
+// `dfmt doctor` invocation. Returns false if any check failed so
+// runDoctor can flip its exit code.
 //
-// The function is intentionally additive — printed AFTER the project-state
-// checks so the existing output remains stable for users who script around
-// it. We don't parse each agent's MCP config (formats vary; brittle) — the
-// presence of the manifest-tracked file plus the live binary path are the
-// 80% signal that catches the most common real breakages.
+// Three failure modes per agent now surface separately:
+//
+//  1. Manifest file missing on disk          → ✗ with `missing: <path>`.
+//  2. File present, mcpServers.dfmt absent   → ✗ with `dfmt entry missing`.
+//  3. File present, mcpServers.dfmt.command  → ✗ with `command stale`.
+//     points at a different binary
+//
+// Mode 3 is the silent-rot case the previous version of this check
+// couldn't see: a user reinstalls dfmt to a different path, every
+// agent's config still points at the old binary, doctor reported
+// "all good" while every agent actually fails to launch the MCP
+// server on its next restart.
 func checkAgentWireUp() bool {
 	allOk := true
 	agents := setup.Detect()
@@ -1273,6 +1281,8 @@ func checkAgentWireUp() bool {
 		}
 	}
 
+	expectedCmd := setup.ResolveDFMTCommand()
+
 	fmt.Println()
 	fmt.Println("AI agent wire-up:")
 	for _, a := range agents {
@@ -1284,42 +1294,123 @@ func checkAgentWireUp() bool {
 		}
 		missing := 0
 		var missingPaths []string
+		var stalePaths []string // present but command path is wrong
 		for _, f := range files {
 			if _, err := os.Stat(f.Path); err != nil {
 				missing++
 				missingPaths = append(missingPaths, f.Path)
+				continue
+			}
+			// File on disk — try to verify the embedded command path. We
+			// only inspect *.json files; settings.json and hooks files in
+			// other formats just get the presence check.
+			if !strings.HasSuffix(strings.ToLower(f.Path), ".json") {
+				continue
+			}
+			ok, found := verifyMCPCommandPath(f.Path, expectedCmd)
+			if !ok {
+				stalePaths = append(stalePaths, fmt.Sprintf("%s (found: %s)", f.Path, found))
 			}
 		}
-		if missing > 0 {
+		switch {
+		case missing > 0:
 			fmt.Printf("✗ %s — %d/%d files missing (run `dfmt setup --force` to restore)\n",
 				a.Name, missing, len(files))
 			for _, p := range missingPaths {
 				fmt.Printf("    missing: %s\n", p)
 			}
 			allOk = false
-		} else {
+		case len(stalePaths) > 0:
+			fmt.Printf("✗ %s — %d file(s) in place but command path stale (run `dfmt setup --force`)\n",
+				a.Name, len(files))
+			for _, p := range stalePaths {
+				fmt.Printf("    stale: %s\n", p)
+			}
+			fmt.Printf("    expected: %s\n", expectedCmd)
+			allOk = false
+		default:
 			fmt.Printf("✓ %s — %d file(s) in place\n", a.Name, len(files))
 		}
 	}
 
-	// The dfmt binary the agents are configured to launch must still
-	// exist. ResolveDFMTCommand returns the binary running this command —
-	// if it can't be stat'd, something is dramatically wrong (deleted
-	// while running). The more common case the manifest-file check above
-	// catches: agents configured with the OLD binary path but the user
-	// rebuilt to a NEW path. A future enhancement can parse each agent's
-	// config and compare; for now, surfacing the resolved path so the
-	// user can eyeball-compare against their agent config is enough.
-	cmd := setup.ResolveDFMTCommand()
-	if _, err := os.Stat(cmd); err != nil {
+	// Final sanity: the binary running this doctor pass must itself be
+	// stat-able. If it isn't we're in surreal territory (the binary was
+	// deleted while running) — surface it loudly because every above
+	// "✓ command matches" line just compared agents to a binary that
+	// vanished.
+	if _, err := os.Stat(expectedCmd); err != nil {
 		fmt.Printf("✗ DFMT binary — %s not stat-able (%v); rebuild + `dfmt setup --force`\n",
-			cmd, err)
+			expectedCmd, err)
 		allOk = false
 	} else {
-		fmt.Printf("✓ DFMT binary — %s\n", cmd)
+		fmt.Printf("✓ DFMT binary — %s\n", expectedCmd)
 	}
 
 	return allOk
+}
+
+// verifyMCPCommandPath reads an MCP config file and confirms the command
+// stored under mcpServers.dfmt.command resolves to the same on-disk binary
+// as expectedCmd. The comparison is case-insensitive on Windows (NTFS is
+// case-preserving but case-insensitive — agents and dfmt may write the
+// same path with different casing) and tolerant of unresolved symlinks
+// (we compare the raw strings after a Clean, not a stat-based identity).
+//
+// Returns:
+//   - ok=true, found="" when the paths match.
+//   - ok=true, found="" when the file is present but doesn't carry an
+//     mcpServers.dfmt entry that we can examine. We treat that as "out
+//     of scope" rather than failure — settings.json, hooks files, and
+//     other manifest-tracked files don't all carry MCP entries.
+//   - ok=false, found=<actual> on a real mismatch.
+//   - ok=false, found="<read error>" / "<json error>" if the file can't
+//     be parsed; we still surface it so the user knows something's
+//     wrong.
+func verifyMCPCommandPath(path, expectedCmd string) (bool, string) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false, fmt.Sprintf("<read error: %v>", err)
+	}
+	if len(data) == 0 {
+		// Empty file — defensive: not a configured MCP file.
+		return true, ""
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return false, fmt.Sprintf("<json parse error: %v>", err)
+	}
+	servers, _ := raw["mcpServers"].(map[string]any)
+	if servers == nil {
+		// File doesn't host MCP servers (e.g., a settings.json with hooks
+		// only). Out of scope for this check.
+		return true, ""
+	}
+	dfmtEntry, _ := servers["dfmt"].(map[string]any)
+	if dfmtEntry == nil {
+		// File has mcpServers but no dfmt — explicit gap.
+		return false, "<dfmt entry missing>"
+	}
+	gotCmd, _ := dfmtEntry["command"].(string)
+	if gotCmd == "" {
+		return false, "<command field missing>"
+	}
+	if pathsEqual(gotCmd, expectedCmd) {
+		return true, ""
+	}
+	return false, gotCmd
+}
+
+// pathsEqual normalises two filesystem paths and compares them. Windows
+// NTFS is case-insensitive; on POSIX paths must match byte-for-byte.
+// We Clean both sides so trailing-slash and "/." quirks don't trigger
+// a false stale report.
+func pathsEqual(a, b string) bool {
+	a = filepath.Clean(a)
+	b = filepath.Clean(b)
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(a, b)
+	}
+	return a == b
 }
 
 func runTask(args []string) int {

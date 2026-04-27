@@ -1,8 +1,10 @@
 package cli
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/ersinkoc/dfmt/internal/setup"
@@ -216,6 +218,152 @@ func TestRunDoctorIncludesAgentSection(t *testing.T) {
 	if code != 0 && code != 1 {
 		t.Errorf("doctor: got %d, want 0 or 1", code)
 	}
+}
+
+// TestVerifyMCPCommandPath_Match covers the canonical success case: the
+// MCP config carries an mcpServers.dfmt.command field whose value
+// path-equals the expected binary.
+func TestVerifyMCPCommandPath_Match(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "mcp.json")
+	expected := filepath.Join(tmp, "dfmt.exe")
+	cfg := `{
+  "mcpServers": {
+    "dfmt": {
+      "command": ` + jsonString(expected) + `,
+      "args": ["mcp"]
+    }
+  }
+}`
+	if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {
+		t.Fatalf("write cfg: %v", err)
+	}
+	ok, found := verifyMCPCommandPath(cfgPath, expected)
+	if !ok {
+		t.Errorf("expected ok=true, got ok=%v found=%q", ok, found)
+	}
+}
+
+// TestVerifyMCPCommandPath_Stale covers the headline new failure mode:
+// the file IS in place, but its mcpServers.dfmt.command points at a
+// stale binary path. The function must return ok=false with the actual
+// path so the doctor output can show what the file currently says.
+func TestVerifyMCPCommandPath_Stale(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "mcp.json")
+	stale := filepath.Join(tmp, "old", "dfmt.exe")
+	expected := filepath.Join(tmp, "new", "dfmt.exe")
+	cfg := `{"mcpServers":{"dfmt":{"command":` + jsonString(stale) + `,"args":["mcp"]}}}`
+	if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {
+		t.Fatalf("write cfg: %v", err)
+	}
+	ok, found := verifyMCPCommandPath(cfgPath, expected)
+	if ok {
+		t.Error("stale path should report ok=false")
+	}
+	// The stale path may have been Cleaned by the file path APIs, so
+	// just check the substring is present.
+	if !strings.Contains(found, "old") {
+		t.Errorf("expected stale path to mention 'old', got %q", found)
+	}
+}
+
+// TestVerifyMCPCommandPath_DfmtEntryMissing covers the case where the
+// config file has mcpServers but no dfmt entry — i.e., dfmt was
+// uninstalled or someone wiped the key. Still a wire-up failure.
+func TestVerifyMCPCommandPath_DfmtEntryMissing(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "mcp.json")
+	if err := os.WriteFile(cfgPath, []byte(`{"mcpServers":{"other":{"command":"x"}}}`), 0o600); err != nil {
+		t.Fatalf("write cfg: %v", err)
+	}
+	ok, found := verifyMCPCommandPath(cfgPath, "/anything")
+	if ok {
+		t.Error("missing dfmt entry should report ok=false")
+	}
+	if found == "" {
+		t.Error("expected a 'dfmt entry missing' detail string")
+	}
+}
+
+// TestVerifyMCPCommandPath_NoMCPServers covers files that simply don't
+// host MCP servers (e.g., a Claude Code settings.json carrying only
+// hooks). The function must return ok=true so the doctor doesn't flag
+// out-of-scope files.
+func TestVerifyMCPCommandPath_NoMCPServers(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "settings.json")
+	if err := os.WriteFile(cfgPath, []byte(`{"hooks":{"PreCompact":[]}}`), 0o600); err != nil {
+		t.Fatalf("write cfg: %v", err)
+	}
+	ok, found := verifyMCPCommandPath(cfgPath, "/anything")
+	if !ok {
+		t.Errorf("file without mcpServers should be out-of-scope (ok=true), got ok=%v found=%q", ok, found)
+	}
+}
+
+// TestVerifyMCPCommandPath_MalformedJSON ensures parse errors surface as
+// ok=false with a useful detail string instead of crashing or being
+// silently ignored. A corrupt config means dfmt will fail to launch —
+// the user should see something.
+func TestVerifyMCPCommandPath_MalformedJSON(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "bad.json")
+	if err := os.WriteFile(cfgPath, []byte("{ this is not json"), 0o600); err != nil {
+		t.Fatalf("write cfg: %v", err)
+	}
+	ok, found := verifyMCPCommandPath(cfgPath, "/anything")
+	if ok {
+		t.Error("malformed JSON should report ok=false")
+	}
+	if !strings.Contains(found, "json parse error") {
+		t.Errorf("expected parse-error detail, got %q", found)
+	}
+}
+
+// TestVerifyMCPCommandPath_EmptyFile covers a defensive branch: a file
+// that exists but is zero bytes is treated as "out of scope" rather
+// than parse failure. Some agents create empty placeholder files
+// before the user has wired anything up.
+func TestVerifyMCPCommandPath_EmptyFile(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := filepath.Join(tmp, "empty.json")
+	if err := os.WriteFile(cfgPath, nil, 0o600); err != nil {
+		t.Fatalf("write empty: %v", err)
+	}
+	ok, _ := verifyMCPCommandPath(cfgPath, "/anything")
+	if !ok {
+		t.Error("empty file should be out-of-scope (ok=true)")
+	}
+}
+
+// TestPathsEqual covers the helper directly — Windows case-insensitive
+// vs POSIX exact-match. We can't actually flip GOOS, but the cases
+// below exercise both branches based on whatever runtime.GOOS the
+// test binary was built for.
+func TestPathsEqual(t *testing.T) {
+	if !pathsEqual("/usr/local/bin/dfmt", "/usr/local/bin/dfmt") {
+		t.Error("identical paths must equal")
+	}
+	if !pathsEqual("/usr/local/bin/dfmt", "/usr/local/bin/./dfmt") {
+		t.Error("Clean must collapse './'")
+	}
+	if pathsEqual("/usr/local/bin/dfmt", "/usr/local/bin/other") {
+		t.Error("different basenames must not equal")
+	}
+}
+
+// jsonString returns a JSON-quoted version of s suitable for
+// concatenation into a string literal under construction. We use this
+// instead of fmt.Sprintf("%q", s) because Windows paths contain
+// backslashes that need to be escaped using the JSON convention rather
+// than Go's quoting convention.
+func jsonString(s string) string {
+	b, err := json.Marshal(s)
+	if err != nil {
+		panic(err)
+	}
+	return string(b)
 }
 
 // Ensure os import stays valid even if tests above don't use it directly.
