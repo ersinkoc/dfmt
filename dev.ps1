@@ -6,13 +6,14 @@
 # reinstalls from source. This is what `.\dev.ps1` does by itself.
 #
 # Usage:
-#   .\dev.ps1                  # nuke + build + install + setup + init
+#   .\dev.ps1                  # nuke + build + install + setup + init + doctor
 #   .\dev.ps1 -NoClean         # skip the wipe (just build/install/setup)
 #   .\dev.ps1 -SkipSetup       # build/install only, skip agent registration
 #   .\dev.ps1 -SkipInit        # skip `dfmt init` for this project
 #   .\dev.ps1 -InstallHooks    # also install git hooks for this project
 #   .\dev.ps1 -KeepClaude      # do NOT auto-kill running Claude Code processes
 #   .\dev.ps1 -SkipMCPSmoke    # skip the post-build MCP initialize handshake
+#   .\dev.ps1 -SkipDoctor      # skip the post-install `dfmt doctor` health check
 #   .\dev.ps1 -SkipTests       # skip the `go test ./internal/transport/...` gate
 
 [CmdletBinding()]
@@ -23,6 +24,7 @@ param(
     [switch]$InstallHooks,
     [switch]$KeepClaude,
     [switch]$SkipMCPSmoke,
+    [switch]$SkipDoctor,
     [switch]$SkipTests
 )
 
@@ -530,7 +532,30 @@ if ($InstallHooks) {
 Write-Step "Status:"
 & $TargetPath status
 
-# ---- 10. Restart-Claude advisory ---------------------------------------------
+# ---- 10. Doctor: per-agent wire-up + command-path verification ---------------
+# This is the canonical post-install sanity check. It exercises three things
+# the earlier steps cannot:
+#   (a) every detected agent has its manifest-tracked file on disk;
+#   (b) every agent's mcpServers.dfmt.command equals $TargetPath (catches
+#       stale paths from a prior install in a different location);
+#   (c) the dfmt binary at $TargetPath is itself stat-able.
+# Non-fatal: doctor failures are warnings, not aborts. The earlier steps
+# already gate the build; doctor's job is to surface drift, and the operator
+# can choose how to react. Skip with -SkipDoctor for fast iteration.
+if (-not $SkipDoctor) {
+    Write-Step "Running doctor (project state + per-agent wire-up + command path)..."
+    & $TargetPath doctor
+    $doctorExit = $LASTEXITCODE
+    if ($doctorExit -ne 0) {
+        Write-Warn "doctor reported issues (exit $doctorExit) -- review the lines marked with X above"
+    } else {
+        Write-Ok "all health checks passed"
+    }
+} else {
+    Write-Info 'skipping doctor (-SkipDoctor)'
+}
+
+# ---- 11. Restart-Claude advisory ---------------------------------------------
 $claudeStillRunning = Get-Process -Name "Claude","claude","Claude Code" -ErrorAction SilentlyContinue
 Write-Host ""
 Write-Host "==> Install complete." -ForegroundColor Green
@@ -551,5 +576,6 @@ if ($claudeStillRunning) {
     Write-Host "    available immediately. Use /mcp to confirm the connection." -ForegroundColor White
 }
 Write-Host ""
-Write-Host "    Re-verify any time with:  dfmt setup --verify" -ForegroundColor White
+Write-Host "    Health check any time:    dfmt doctor              # project + per-agent wire-up" -ForegroundColor White
+Write-Host "    Setup files only:         dfmt setup --verify     # presence-only check" -ForegroundColor White
 Write-Host "    Daemon/project status:    dfmt status" -ForegroundColor White
