@@ -46,8 +46,8 @@ type Daemon struct {
 	rebuildStop     context.CancelFunc // stops the rebuild on Stop()
 	rebuildComplete atomic.Bool        // true once async rebuild finished without cancellation
 
-	running        atomic.Bool  // Use atomic for race-free access
-	lastActivityNs atomic.Int64 // UnixNano of last inbound RPC; drives idle monitor
+	running        atomic.Bool   // Use atomic for race-free access
+	lastActivityNs atomic.Int64  // UnixNano of last inbound RPC; drives idle monitor
 	idleCh         chan struct{} // closed on idle timeout or stop
 	shutdownCh     chan struct{}
 	stopOnce       sync.Once
@@ -151,7 +151,18 @@ func New(projectPath string, cfg *config.Config) (*Daemon, error) {
 		// Bind to the IPv4 loopback explicitly so we don't race between
 		// ::1 and 127.0.0.1 — the client also dials 127.0.0.1 to avoid
 		// slow IPv6-first fallbacks through "localhost" resolution.
-		httpServer = transport.NewHTTPServer("127.0.0.1:0", handlers)
+		//
+		// Default is 127.0.0.1:0 (ephemeral; CLI clients read the actual
+		// port from .dfmt/port). When the operator opts into a fixed bind
+		// via transport.http.enabled=true + transport.http.bind=…:8765,
+		// honor it so the dashboard URL is stable. Port file is still
+		// written either way — CLI clients always read it so they don't
+		// need to know whether the bind is fixed or ephemeral.
+		bind := "127.0.0.1:0"
+		if cfg != nil && cfg.Transport.HTTP.Enabled && cfg.Transport.HTTP.Bind != "" {
+			bind = cfg.Transport.HTTP.Bind
+		}
+		httpServer = transport.NewHTTPServer(bind, handlers)
 		portFile := filepath.Join(dfmtDir, "port")
 		httpServer.SetPortFile(portFile)
 		httpServer.SetProjectPath(projectPath)

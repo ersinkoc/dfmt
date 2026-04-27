@@ -565,6 +565,15 @@ func (s *HTTPServer) SetProjectPath(path string) {
 	s.projectPath = path
 }
 
+// Bind returns the configured listen address (e.g. "127.0.0.1:0",
+// "127.0.0.1:8765"). Empty when the server was constructed with a
+// pre-built listener via NewHTTPServerWithListener — that path does
+// not pass through net.Listen here. Exposed for tests; callers should
+// not depend on the format.
+func (s *HTTPServer) Bind() string {
+	return s.bind
+}
+
 func (s *HTTPServer) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
