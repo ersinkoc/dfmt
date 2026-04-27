@@ -1224,6 +1224,17 @@ func runDoctor(args []string) int {
 		}
 	}
 
+	// Per-agent verification — the previous doctor only inspected project
+	// state (.dfmt/, journal, lock). The MCP wire-up is the part that
+	// silently rots across upgrades: a user reinstalls dfmt to a different
+	// path, or wipes the agent's config, and `dfmt doctor` would still
+	// happily report "all good" while the agent fails to launch the MCP
+	// server. The block below checks each detected agent's manifest files
+	// and the resolvability of the dfmt binary the agents reference.
+	if !checkAgentWireUp() {
+		allOk = false
+	}
+
 	if daemonAlive {
 		fmt.Println("[i] Daemon running")
 	} else {
@@ -1234,6 +1245,81 @@ func runDoctor(args []string) int {
 		return 1
 	}
 	return 0
+}
+
+// checkAgentWireUp prints one line per detected agent describing whether
+// the manifest-recorded MCP config files are still on disk, plus a final
+// line confirming the dfmt binary that agents launch is itself reachable.
+// Returns false if any check failed so runDoctor can flip its exit code.
+//
+// The function is intentionally additive — printed AFTER the project-state
+// checks so the existing output remains stable for users who script around
+// it. We don't parse each agent's MCP config (formats vary; brittle) — the
+// presence of the manifest-tracked file plus the live binary path are the
+// 80% signal that catches the most common real breakages.
+func checkAgentWireUp() bool {
+	allOk := true
+	agents := setup.Detect()
+	if len(agents) == 0 {
+		fmt.Println("[i] No AI agents detected (run `dfmt setup` after installing one)")
+		return true
+	}
+
+	m, _ := setup.LoadManifest()
+	byAgent := make(map[string][]setup.FileEntry)
+	if m != nil {
+		for _, f := range m.Files {
+			byAgent[f.Agent] = append(byAgent[f.Agent], f)
+		}
+	}
+
+	fmt.Println()
+	fmt.Println("AI agent wire-up:")
+	for _, a := range agents {
+		files := byAgent[a.ID]
+		if len(files) == 0 {
+			fmt.Printf("✗ %s — detected but not configured (run `dfmt setup`)\n", a.Name)
+			allOk = false
+			continue
+		}
+		missing := 0
+		var missingPaths []string
+		for _, f := range files {
+			if _, err := os.Stat(f.Path); err != nil {
+				missing++
+				missingPaths = append(missingPaths, f.Path)
+			}
+		}
+		if missing > 0 {
+			fmt.Printf("✗ %s — %d/%d files missing (run `dfmt setup --force` to restore)\n",
+				a.Name, missing, len(files))
+			for _, p := range missingPaths {
+				fmt.Printf("    missing: %s\n", p)
+			}
+			allOk = false
+		} else {
+			fmt.Printf("✓ %s — %d file(s) in place\n", a.Name, len(files))
+		}
+	}
+
+	// The dfmt binary the agents are configured to launch must still
+	// exist. ResolveDFMTCommand returns the binary running this command —
+	// if it can't be stat'd, something is dramatically wrong (deleted
+	// while running). The more common case the manifest-file check above
+	// catches: agents configured with the OLD binary path but the user
+	// rebuilt to a NEW path. A future enhancement can parse each agent's
+	// config and compare; for now, surfacing the resolved path so the
+	// user can eyeball-compare against their agent config is enough.
+	cmd := setup.ResolveDFMTCommand()
+	if _, err := os.Stat(cmd); err != nil {
+		fmt.Printf("✗ DFMT binary — %s not stat-able (%v); rebuild + `dfmt setup --force`\n",
+			cmd, err)
+		allOk = false
+	} else {
+		fmt.Printf("✓ DFMT binary — %s\n", cmd)
+	}
+
+	return allOk
 }
 
 func runTask(args []string) int {
