@@ -68,19 +68,27 @@ type ChunkSet struct {
 
 // Store manages the content chunk storage.
 type Store struct {
-	mu      sync.RWMutex
-	chunks  map[string]*Chunk
-	sets    map[string]*ChunkSet
-	maxSize int64 // Maximum size in bytes
-	curSize int64 // Current size in bytes
-	path    string
+	mu         sync.RWMutex
+	chunks     map[string]*Chunk
+	sets       map[string]*ChunkSet
+	maxSize    int64         // Maximum size in bytes
+	curSize    int64         // Current size in bytes
+	defaultTTL time.Duration // 0 = no expiry (persist forever); >0 = ephemeral
+	path       string
 }
 
 // StoreOptions configures the content store.
 type StoreOptions struct {
-	Path       string
-	MaxSize    int64 // Maximum size in bytes (default 64 MB)
-	PersistTTL time.Duration
+	Path    string
+	MaxSize int64 // Maximum size in bytes (default 64 MB)
+	// DefaultChunkTTL, when >0, stamps every PutChunkSet that arrives with
+	// TTL==0 so it expires after this duration. Existing logic treats
+	// TTL>0 as ephemeral (no disk persist), so an opt-in default makes
+	// the in-memory chunk store self-cleaning over a long agent session
+	// without breaking the persistent-by-default behavior callers rely
+	// on. Default 0 keeps backward compatibility.
+	DefaultChunkTTL time.Duration
+	PersistTTL      time.Duration
 }
 
 // NewStore creates a new content store.
@@ -90,10 +98,11 @@ func NewStore(opt StoreOptions) (*Store, error) {
 	}
 
 	s := &Store{
-		chunks:  make(map[string]*Chunk),
-		sets:    make(map[string]*ChunkSet),
-		maxSize: opt.MaxSize,
-		path:    opt.Path,
+		chunks:     make(map[string]*Chunk),
+		sets:       make(map[string]*ChunkSet),
+		maxSize:    opt.MaxSize,
+		defaultTTL: opt.DefaultChunkTTL,
+		path:       opt.Path,
 	}
 
 	if opt.Path != "" {
@@ -151,12 +160,23 @@ func (s *Store) PutChunk(chunk *Chunk) error {
 
 // PutChunkSet stores a chunk set. Disk persistence runs without the write
 // lock held so a slow/failing content dir doesn't wedge readers.
+//
+// When the store's DefaultChunkTTL is non-zero and the incoming set has
+// TTL==0, we stamp the default. This is what keeps long sessions from
+// accumulating stale stash entries: every Exec/Read/Fetch creates a set
+// that expires after DefaultChunkTTL and gets reaped by PruneExpired (or
+// by lazy-prune on the next Get*). Callers that want a truly persistent
+// set still set TTL explicitly to a sentinel value; callers that already
+// pass TTL>0 are unaffected.
 func (s *Store) PutChunkSet(set *ChunkSet) error {
 	if err := validateID(set.ID); err != nil {
 		return err
 	}
 
 	s.mu.Lock()
+	if set.TTL == 0 && s.defaultTTL > 0 {
+		set.TTL = s.defaultTTL
+	}
 	s.sets[set.ID] = set
 	path := s.path
 	shouldPersist := path != "" && set.TTL == 0
@@ -175,20 +195,94 @@ func (s *Store) PutChunkSet(set *ChunkSet) error {
 	return nil
 }
 
-// GetChunk retrieves a chunk by ID.
-func (s *Store) GetChunk(id string) (*Chunk, bool) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	chunk, ok := s.chunks[id]
-	return chunk, ok
+// expired reports whether set has crossed its TTL window. TTL==0 means
+// the set is persistent and never expires from the in-memory store.
+// Callers must hold at least the read lock; this function does not lock.
+func (s *Store) expired(set *ChunkSet, now time.Time) bool {
+	if set == nil || set.TTL == 0 {
+		return false
+	}
+	return set.Created.Add(set.TTL).Before(now)
 }
 
-// GetChunkSet retrieves a chunk set by ID.
+// dropSetLocked removes a chunk-set and all its chunks from the in-memory
+// store, decrementing curSize. Caller must hold s.mu.Lock().
+func (s *Store) dropSetLocked(id string) {
+	set, ok := s.sets[id]
+	if !ok {
+		return
+	}
+	for _, cid := range set.Chunks {
+		if c, ok := s.chunks[cid]; ok {
+			s.curSize -= int64(len(c.Body))
+			delete(s.chunks, cid)
+		}
+	}
+	delete(s.sets, id)
+}
+
+// GetChunk retrieves a chunk by ID. If the chunk's parent set has expired,
+// the lookup misses and the set is reaped — lazy expiry keeps the hot path
+// cheap and bounds the prune work to "as you consume it".
+func (s *Store) GetChunk(id string) (*Chunk, bool) {
+	s.mu.RLock()
+	chunk, ok := s.chunks[id]
+	if !ok {
+		s.mu.RUnlock()
+		return nil, false
+	}
+	parent, hasParent := s.sets[chunk.ParentID]
+	if hasParent && s.expired(parent, time.Now()) {
+		s.mu.RUnlock()
+		// Re-acquire as writer to drop the expired set; another goroutine
+		// may have already done it, in which case the second Get* returns
+		// false anyway.
+		s.mu.Lock()
+		s.dropSetLocked(chunk.ParentID)
+		s.mu.Unlock()
+		return nil, false
+	}
+	s.mu.RUnlock()
+	return chunk, true
+}
+
+// GetChunkSet retrieves a chunk set by ID. Same lazy-expiry as GetChunk.
 func (s *Store) GetChunkSet(id string) (*ChunkSet, bool) {
 	s.mu.RLock()
-	defer s.mu.RUnlock()
 	set, ok := s.sets[id]
-	return set, ok
+	if !ok {
+		s.mu.RUnlock()
+		return nil, false
+	}
+	if s.expired(set, time.Now()) {
+		s.mu.RUnlock()
+		s.mu.Lock()
+		s.dropSetLocked(id)
+		s.mu.Unlock()
+		return nil, false
+	}
+	s.mu.RUnlock()
+	return set, true
+}
+
+// PruneExpired walks the entire chunk-set table and drops any set whose
+// TTL window has passed, returning the count removed. Intended to be
+// called periodically by a daemon idle tick or before a stats dump;
+// O(|sets|) so cheap in practice. Callers do not need to hold any lock.
+func (s *Store) PruneExpired() int {
+	now := time.Now()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var dropped []string
+	for id, set := range s.sets {
+		if s.expired(set, now) {
+			dropped = append(dropped, id)
+		}
+	}
+	for _, id := range dropped {
+		s.dropSetLocked(id)
+	}
+	return len(dropped)
 }
 
 // GetChunks retrieves all chunks in a chunk set.
