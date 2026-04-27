@@ -174,8 +174,9 @@ ${C_BLD}${C_GRN}DFMT installed.${C_RST}
 
 Next steps:
   ${C_BLD}1.${C_RST}  cd /path/to/your/project
-  ${C_BLD}2.${C_RST}  dfmt init
-  ${C_BLD}3.${C_RST}  restart Claude Code (or your agent) and you're done
+  ${C_BLD}2.${C_RST}  dfmt quickstart      ${C_CYA}# init + per-agent setup + verify${C_RST}
+  ${C_BLD}3.${C_RST}  restart your AI agent (Claude Code, Cursor, VS Code, Codex,
+      Gemini, Windsurf, Zed, Continue, OpenCode — whichever you use)
 
 Docs:  https://github.com/${REPO_OWNER}/${REPO_NAME}
 EOF
