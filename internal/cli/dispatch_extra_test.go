@@ -59,5 +59,54 @@ func TestRunStatsBadProject(t *testing.T) {
 	_ = Dispatch([]string{"stats"})
 }
 
+// TestRunQuickstartFreshDir covers the happy path: a brand-new directory,
+// `dfmt quickstart` should ensure .dfmt/ exists, attempt agent setup
+// (DetectWithOverride may legitimately return zero in a test environment
+// with no real agents installed), and exit cleanly. Either:
+//   - 0 when at least one stub agent is configured, or
+//   - 1 when no agents are detected (the empty-detection branch)
+//
+// Both are valid outcomes; the test asserts the .dfmt directory is the side
+// effect we care about regardless.
+func TestRunQuickstartFreshDir(t *testing.T) {
+	tmp := t.TempDir()
+
+	// Isolate HOME so DetectWithOverride doesn't pick up the developer's
+	// real installs and accidentally write to ~/.config or ~/.cursor.
+	t.Setenv("HOME", tmp)
+	t.Setenv("USERPROFILE", tmp)
+
+	code := Dispatch([]string{"quickstart", "-dir", tmp})
+
+	// .dfmt directory must exist regardless of agent-detection outcome.
+	if _, err := os.Stat(tmp + "/.dfmt"); err != nil {
+		t.Fatalf("quickstart did not create .dfmt: %v", err)
+	}
+
+	// Exit code: 0 (configured something) or 1 (no agents). Anything else
+	// is a regression — e.g., a panic-recovery turning into 2.
+	if code != 0 && code != 1 {
+		t.Errorf("quickstart exit code: got %d, want 0 or 1", code)
+	}
+}
+
+// TestRunQuickstartHelp covers the -h flag — flag.ErrHelp must return 0
+// without writing any state (no .dfmt created).
+func TestRunQuickstartHelp(t *testing.T) {
+	code := runQuickstart([]string{"-h"})
+	if code != 0 {
+		t.Errorf("quickstart -h: got %d, want 0", code)
+	}
+}
+
+// TestRunQuickstartBadFlag covers parse-error path: unknown flag must return
+// 2 (flag.ContinueOnError convention used elsewhere in this package).
+func TestRunQuickstartBadFlag(t *testing.T) {
+	code := runQuickstart([]string{"--no-such-flag"})
+	if code != 2 {
+		t.Errorf("quickstart --no-such-flag: got %d, want 2", code)
+	}
+}
+
 // Ensure os import stays valid even if tests above don't use it directly.
 var _ = os.Getenv

@@ -39,6 +39,8 @@ func Dispatch(args []string) int {
 	switch cmd {
 	case "init":
 		return runInit(remaining)
+	case "quickstart":
+		return runQuickstart(remaining)
 	case "remember", "note":
 		return runRemember(remaining)
 	case "search":
@@ -102,6 +104,7 @@ func printUsage() {
 
 Usage:
   dfmt init                       Initialize a project
+  dfmt quickstart                 Init + setup + verify in one shot
   dfmt remember [flags] <body>    Record an event (use --type for types like llm.response)
   dfmt note <body>               Record a note
   dfmt search <query>            Search events
@@ -200,6 +203,143 @@ func runInit(args []string) int {
 	fmt.Println()
 	fmt.Println("Next: run `dfmt setup` to wire DFMT into your AI agent(s),")
 	fmt.Println("then `dfmt doctor` to verify.")
+	return 0
+}
+
+// runQuickstart wires up a fresh project end-to-end without forcing the user
+// to remember the three-step ritual (init → setup → doctor). It is the
+// recommended entry point for first-time installs and the answer to "how do
+// I get started?" — agent-neutral, idempotent, safe to re-run.
+//
+// The flow:
+//  1. ensureProjectInitialized(cwd) — create .dfmt/, default config, ignore
+//     entry, project Claude settings (if not in $HOME).
+//  2. setup.DetectWithOverride(nil) — auto-discover installed agents.
+//  3. configureAgent(...) for each detected agent — non-fatal per-agent
+//     failures so one missing config dir doesn't abort the rest.
+//  4. Light doctor pass — config loadable, .dfmt/ writable. We deliberately
+//     do NOT spin up the daemon here: that happens lazily on first MCP/CLI
+//     call, and a daemon-running check at quickstart time would either
+//     show a bogus failure or unnecessarily start a daemon the user may
+//     not want yet.
+//  5. Print a per-agent "now do this" block so the user knows which app to
+//     restart and what to ask it.
+//
+// Exit code is 0 on partial success (init OK, at least one agent configured)
+// and 1 only when init itself failed or no agents could be configured.
+func runQuickstart(args []string) int {
+	var dir string
+	var agentOverride string
+	fs := flag.NewFlagSet("quickstart", flag.ContinueOnError)
+	fs.StringVar(&dir, "dir", "", "Project directory (default: cwd)")
+	fs.StringVar(&agentOverride, "agent", "", "Configure specific agent(s) only (comma-separated)")
+	if err := fs.Parse(args); err != nil {
+		if err == flag.ErrHelp {
+			return 0
+		}
+		return 2
+	}
+
+	if dir == "" {
+		dir, _ = os.Getwd()
+	}
+
+	fmt.Println("DFMT quickstart")
+	fmt.Println("===============")
+	fmt.Println()
+
+	// Step 1: init.
+	fmt.Printf("[1/3] Initializing project at %s...\n", dir)
+	if err := ensureProjectInitialized(dir); err != nil {
+		fmt.Fprintf(os.Stderr, "      error: %v\n", err)
+		return 1
+	}
+	if setup.IsClaudeCodeInstalled() {
+		if err := setup.PatchClaudeCodeUserJSON(dir, false); err != nil {
+			fmt.Fprintf(os.Stderr, "      warning: patch ~/.claude.json: %v\n", err)
+		}
+	}
+	fmt.Println("      done")
+	fmt.Println()
+
+	// Step 2: detect + configure agents.
+	var override []string
+	if agentOverride != "" {
+		override = strings.Split(agentOverride, ",")
+	}
+	agents := setup.DetectWithOverride(override)
+
+	fmt.Println("[2/3] Detecting AI agents...")
+	if len(agents) == 0 {
+		fmt.Println("      no agents detected")
+		fmt.Println()
+		fmt.Println("DFMT is initialized but no agent was configured. Either install one of:")
+		fmt.Println("  Claude Code, Cursor, VS Code, Codex, Gemini, Windsurf, Zed, Continue, OpenCode")
+		fmt.Println("then re-run `dfmt quickstart`, or point your agent's MCP config at:")
+		fmt.Printf("  %s mcp\n", setup.ResolveDFMTCommand())
+		return 1
+	}
+	for _, a := range agents {
+		fmt.Printf("      found: %s (%s)\n", a.Name, a.ID)
+	}
+	fmt.Println()
+
+	configured := make([]string, 0, len(agents))
+	failed := make(map[string]error)
+	for _, agent := range agents {
+		fmt.Printf("      configuring %s...", agent.Name)
+		if err := configureAgent(agent); err != nil {
+			fmt.Printf(" failed (%v)\n", err)
+			failed[agent.Name] = err
+			continue
+		}
+		fmt.Println(" done")
+		configured = append(configured, agent.Name)
+	}
+	fmt.Println()
+
+	// Step 3: light verify (no daemon spin-up).
+	fmt.Println("[3/3] Verifying...")
+	if cfg, err := config.Load(dir); err != nil || cfg == nil {
+		fmt.Printf("      ✗ config not loadable: %v\n", err)
+		return 1
+	}
+	fmt.Println("      ✓ config loadable")
+
+	if fi, err := os.Stat(filepath.Join(dir, ".dfmt")); err != nil || !fi.IsDir() {
+		fmt.Printf("      ✗ .dfmt directory missing\n")
+		return 1
+	}
+	fmt.Println("      ✓ .dfmt directory present")
+	fmt.Println()
+
+	// Final report.
+	if len(configured) == 0 {
+		fmt.Println("Quickstart finished, but no agent could be configured:")
+		for name, err := range failed {
+			fmt.Printf("  - %s: %v\n", name, err)
+		}
+		fmt.Println()
+		fmt.Println("Try `dfmt setup --agent <name>` to retry a single agent, or check")
+		fmt.Println("file permissions on the agent's config directory.")
+		return 1
+	}
+
+	fmt.Printf("Configured %d agent(s): %s\n", len(configured), strings.Join(configured, ", "))
+	if len(failed) > 0 {
+		fmt.Printf("Skipped %d agent(s):\n", len(failed))
+		for name, err := range failed {
+			fmt.Printf("  - %s: %v\n", name, err)
+		}
+	}
+	fmt.Println()
+	fmt.Println("You're done. Now:")
+	fmt.Println("  1. Restart your AI agent so it re-reads the MCP config.")
+	fmt.Println("  2. Ask it to read a file or run a command in this project.")
+	fmt.Println("  3. Run `dfmt stats` here — non-zero events_total confirms wire-up.")
+	fmt.Println()
+	fmt.Println("Health check any time: `dfmt doctor`")
+	fmt.Println("Uninstall:             `dfmt setup --uninstall`")
 	return 0
 }
 
