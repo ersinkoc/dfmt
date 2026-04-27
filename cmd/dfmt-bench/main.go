@@ -27,17 +27,23 @@ func main() {
 Usage: dfmt bench [operation]
 
 Operations:
-  tokenize    Benchmark tokenization
-  index       Benchmark indexing
-  search      Benchmark search
-  exec        Benchmark sandbox execution
-  all         Run all benchmarks (default)`)
+  tokenize     Benchmark tokenization
+  index        Benchmark indexing
+  search       Benchmark search
+  exec         Benchmark sandbox execution
+  tokensaving  Measure end-to-end token-savings vs legacy pipeline
+  all          Run all benchmarks (default)`)
 		return
 	}
 
 	op := "all"
 	if len(os.Args) > 1 {
 		op = os.Args[1]
+	}
+
+	if op == "tokensaving" {
+		runTokenSavingReport()
+		return
 	}
 
 	var results []Result
@@ -48,6 +54,9 @@ Operations:
 		results = append(results, benchIndex()...)
 		results = append(results, benchSearch()...)
 		results = append(results, benchExec()...)
+		// Token-savings report writes its own table; trigger after the
+		// numeric results above have printed so users see both views.
+		defer runTokenSavingReport()
 	case "tokenize":
 		results = append(results, benchTokenize()...)
 	case "index":
