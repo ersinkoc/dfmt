@@ -358,3 +358,213 @@ func TestNormalizeProjectKey(t *testing.T) {
 		}
 	}
 }
+
+// TestUnpatchClaudeCodeUserJSON_MissingFile verifies the uninstall path is
+// a no-op when ~/.claude.json doesn't exist (fresh install of dfmt that
+// never wrote the file).
+func TestUnpatchClaudeCodeUserJSON_MissingFile(t *testing.T) {
+	home := t.TempDir()
+	setHome(t, home)
+
+	if err := UnpatchClaudeCodeUserJSON(); err != nil {
+		t.Fatalf("UnpatchClaudeCodeUserJSON returned error on missing file: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".claude.json")); !os.IsNotExist(err) {
+		t.Errorf("UnpatchClaudeCodeUserJSON should not create the file; stat = %v", err)
+	}
+}
+
+// TestUnpatchClaudeCodeUserJSON_RemovesUserScopeMCPOnly seeds a config
+// with both top-level mcpServers.dfmt and unrelated keys, runs unpatch,
+// and asserts dfmt is removed while everything else survives.
+func TestUnpatchClaudeCodeUserJSON_RemovesUserScopeMCPOnly(t *testing.T) {
+	home := t.TempDir()
+	setHome(t, home)
+
+	initial := map[string]any{
+		"mcpServers": map[string]any{
+			"dfmt":      map[string]any{"command": "/old/path/dfmt"},
+			"otherTool": map[string]any{"command": "/keep/me"},
+		},
+		"unrelatedKey": "preserved",
+	}
+	seed, err := json.Marshal(initial)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	claudePath := filepath.Join(home, ".claude.json")
+	if err := os.WriteFile(claudePath, seed, 0o600); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	if err := UnpatchClaudeCodeUserJSON(); err != nil {
+		t.Fatalf("unpatch: %v", err)
+	}
+
+	cfg := readClaudeJSON(t, home)
+	servers, ok := cfg["mcpServers"].(map[string]any)
+	if !ok {
+		t.Fatalf("mcpServers map removed entirely; expected otherTool to survive (got %#v)", cfg["mcpServers"])
+	}
+	if _, present := servers["dfmt"]; present {
+		t.Error("mcpServers.dfmt was not removed")
+	}
+	if _, present := servers["otherTool"]; !present {
+		t.Error("unrelated mcpServers.otherTool was incorrectly removed")
+	}
+	if cfg["unrelatedKey"] != "preserved" {
+		t.Errorf("unrelated top-level key was modified: %v", cfg["unrelatedKey"])
+	}
+}
+
+// TestUnpatchClaudeCodeUserJSON_RemovesProjectScopeMCPLeavesTrustFlags
+// pins the deliberate behavior: project-scope mcpServers.dfmt is removed
+// but the trust flags DFMT may have set are LEFT alone (we cannot tell
+// whether the user accepted them independently of our setup).
+func TestUnpatchClaudeCodeUserJSON_RemovesProjectScopeMCPLeavesTrustFlags(t *testing.T) {
+	home := t.TempDir()
+	setHome(t, home)
+
+	projectKey := "/some/project"
+	initial := map[string]any{
+		"projects": map[string]any{
+			projectKey: map[string]any{
+				"hasTrustDialogAccepted":                  true,
+				"hasClaudeMdExternalIncludesApproved":     true,
+				"hasClaudeMdExternalIncludesWarningShown": true,
+				"customKey":                               "preserved",
+				"mcpServers": map[string]any{
+					"dfmt":      map[string]any{"command": "/old/dfmt"},
+					"otherTool": map[string]any{"command": "/keep"},
+				},
+			},
+		},
+	}
+	seed, err := json.Marshal(initial)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	claudePath := filepath.Join(home, ".claude.json")
+	if err := os.WriteFile(claudePath, seed, 0o600); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	if err := UnpatchClaudeCodeUserJSON(); err != nil {
+		t.Fatalf("unpatch: %v", err)
+	}
+
+	cfg := readClaudeJSON(t, home)
+	projects := getMap(t, cfg, "projects")
+	entry, ok := projects[projectKey].(map[string]any)
+	if !ok {
+		t.Fatalf("project entry removed entirely; want preserved")
+	}
+
+	// Trust flags must remain (deliberate; not our call to revoke).
+	for _, flag := range []string{
+		"hasTrustDialogAccepted",
+		"hasClaudeMdExternalIncludesApproved",
+		"hasClaudeMdExternalIncludesWarningShown",
+	} {
+		if v, _ := entry[flag].(bool); !v {
+			t.Errorf("flag %s = %v, want true (must not be revoked on uninstall)", flag, entry[flag])
+		}
+	}
+	// Custom key must remain.
+	if entry["customKey"] != "preserved" {
+		t.Errorf("custom key dropped: %v", entry["customKey"])
+	}
+	// dfmt entry gone, sibling kept.
+	servers, ok := entry["mcpServers"].(map[string]any)
+	if !ok {
+		t.Fatalf("mcpServers map removed; expected otherTool to survive")
+	}
+	if _, present := servers["dfmt"]; present {
+		t.Error("project mcpServers.dfmt was not removed")
+	}
+	if _, present := servers["otherTool"]; !present {
+		t.Error("unrelated project mcpServers.otherTool was incorrectly removed")
+	}
+}
+
+// TestUnpatchClaudeCodeUserJSON_PrunesEmptyMaps verifies that mcpServers
+// becomes absent (not an empty `{}` stub) when the dfmt entry was its only
+// member. Same for the per-project map.
+func TestUnpatchClaudeCodeUserJSON_PrunesEmptyMaps(t *testing.T) {
+	home := t.TempDir()
+	setHome(t, home)
+
+	projectKey := "/some/project"
+	initial := map[string]any{
+		"mcpServers": map[string]any{
+			"dfmt": map[string]any{"command": "/old/dfmt"},
+		},
+		"projects": map[string]any{
+			projectKey: map[string]any{
+				"customKey": "stays",
+				"mcpServers": map[string]any{
+					"dfmt": map[string]any{"command": "/old/dfmt"},
+				},
+			},
+		},
+	}
+	seed, _ := json.Marshal(initial)
+	claudePath := filepath.Join(home, ".claude.json")
+	if err := os.WriteFile(claudePath, seed, 0o600); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	if err := UnpatchClaudeCodeUserJSON(); err != nil {
+		t.Fatalf("unpatch: %v", err)
+	}
+
+	cfg := readClaudeJSON(t, home)
+	if _, present := cfg["mcpServers"]; present {
+		t.Error("top-level mcpServers stub was not pruned after dfmt removal")
+	}
+	projects := getMap(t, cfg, "projects")
+	entry, ok := projects[projectKey].(map[string]any)
+	if !ok {
+		t.Fatalf("project entry was removed; expected customKey to survive")
+	}
+	if _, present := entry["mcpServers"]; present {
+		t.Error("project mcpServers stub was not pruned after dfmt removal")
+	}
+	if entry["customKey"] != "stays" {
+		t.Errorf("custom key dropped: %v", entry["customKey"])
+	}
+}
+
+// TestUnpatchClaudeCodeUserJSON_NoChangeWhenAbsent confirms the file is
+// not rewritten if it never contained dfmt entries — avoids touching
+// mtime / file content needlessly on every uninstall attempt.
+func TestUnpatchClaudeCodeUserJSON_NoChangeWhenAbsent(t *testing.T) {
+	home := t.TempDir()
+	setHome(t, home)
+
+	initial := []byte(`{"mcpServers":{"otherTool":{"command":"/x"}},"unrelated":1}` + "\n")
+	claudePath := filepath.Join(home, ".claude.json")
+	if err := os.WriteFile(claudePath, initial, 0o600); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	beforeStat, err := os.Stat(claudePath)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+
+	if err := UnpatchClaudeCodeUserJSON(); err != nil {
+		t.Fatalf("unpatch: %v", err)
+	}
+
+	afterStat, err := os.Stat(claudePath)
+	if err != nil {
+		t.Fatalf("stat after: %v", err)
+	}
+	// File size and mtime must be unchanged when no dfmt entry was present.
+	if beforeStat.Size() != afterStat.Size() {
+		t.Errorf("file size changed despite no dfmt entries: before=%d after=%d", beforeStat.Size(), afterStat.Size())
+	}
+	if !beforeStat.ModTime().Equal(afterStat.ModTime()) {
+		t.Errorf("file mtime changed despite no dfmt entries: before=%v after=%v", beforeStat.ModTime(), afterStat.ModTime())
+	}
+}

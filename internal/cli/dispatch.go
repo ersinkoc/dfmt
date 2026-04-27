@@ -1604,6 +1604,16 @@ func runSetupUninstall() int {
 		}
 	}
 
+	// Strip dfmt's keys from ~/.claude.json. The manifest deliberately
+	// excludes that file because it's a shared user config — full delete
+	// would be wrong — but the `mcpServers.dfmt` and per-project
+	// `projects[*].mcpServers.dfmt` entries we wrote on setup must come
+	// out, otherwise Claude Code will keep trying to launch a binary that
+	// no longer exists. Closes F-G-INFO-2 from the security audit.
+	if err := setup.UnpatchClaudeCodeUserJSON(); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: clean ~/.claude.json: %v\n", err)
+	}
+
 	// Clear manifest
 	if err := setup.SaveManifest(&setup.Manifest{Version: 1}); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: clear manifest: %v\n", err)

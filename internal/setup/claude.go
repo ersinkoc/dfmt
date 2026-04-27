@@ -203,3 +203,121 @@ func PatchClaudeCodeUserJSON(projectPath string, setUserScopeMCP bool) error {
 
 	return nil
 }
+
+// UnpatchClaudeCodeUserJSON removes the dfmt MCP server entries from
+// ~/.claude.json. It strips:
+//
+//   - top-level `mcpServers.dfmt` (set by `setUserScopeMCP`),
+//   - per-project `projects[*].mcpServers.dfmt`.
+//
+// Trust flags (`hasTrustDialogAccepted`, `hasClaudeMdExternalIncludes-
+// Approved`, `hasClaudeMdExternalIncludesWarningShown`) are deliberately
+// left in place — DFMT cannot tell whether the user accepted them
+// independently of our setup, and removing them would silently un-trust
+// projects the user already trusts. Closes F-G-INFO-2 from the security
+// audit (uninstall left stale `mcpServers.dfmt` entries that surfaced as
+// "failed to start MCP server" in Claude Code after `dfmt` was removed).
+//
+// Safe against missing files (returns nil), empty files (no-op), and
+// concurrent writers (atomic tmp + rename in the same directory). Empty
+// `mcpServers` maps are pruned so the file doesn't grow `"mcpServers": {}`
+// stubs across uninstall/reinstall cycles.
+func UnpatchClaudeCodeUserJSON() error {
+	path, err := claudeUserJSONPath()
+	if err != nil {
+		return fmt.Errorf("locate claude user config: %w", err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("read %s: %w", path, err)
+	}
+	if strings.TrimSpace(string(data)) == "" {
+		return nil
+	}
+
+	cfg := map[string]any{}
+	if uerr := json.Unmarshal(data, &cfg); uerr != nil {
+		return fmt.Errorf("parse %s: %w", path, uerr)
+	}
+
+	changed := false
+
+	// Top-level user-scope MCP entry.
+	if servers, ok := cfg["mcpServers"].(map[string]any); ok {
+		if _, present := servers["dfmt"]; present {
+			delete(servers, "dfmt")
+			changed = true
+		}
+		if len(servers) == 0 {
+			delete(cfg, "mcpServers")
+		} else {
+			cfg["mcpServers"] = servers
+		}
+	}
+
+	// Per-project MCP entries.
+	if projects, ok := cfg["projects"].(map[string]any); ok {
+		for key, val := range projects {
+			entry, ok := val.(map[string]any)
+			if !ok {
+				continue
+			}
+			servers, ok := entry["mcpServers"].(map[string]any)
+			if !ok {
+				continue
+			}
+			if _, present := servers["dfmt"]; !present {
+				continue
+			}
+			delete(servers, "dfmt")
+			changed = true
+			if len(servers) == 0 {
+				delete(entry, "mcpServers")
+			} else {
+				entry["mcpServers"] = servers
+			}
+			projects[key] = entry
+		}
+	}
+
+	if !changed {
+		return nil
+	}
+
+	out, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal claude user config: %w", err)
+	}
+	out = append(out, '\n')
+
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("create %s: %w", dir, err)
+	}
+	tmp, err := os.CreateTemp(dir, ".claude.json.dfmt-unpatch-*")
+	if err != nil {
+		return fmt.Errorf("create temp: %w", err)
+	}
+	tmpPath := tmp.Name()
+	cleanup := func() { _ = os.Remove(tmpPath) }
+	if _, err := tmp.Write(out); err != nil {
+		_ = tmp.Close()
+		cleanup()
+		return fmt.Errorf("write temp: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		cleanup()
+		return fmt.Errorf("close temp: %w", err)
+	}
+	_ = os.Chmod(tmpPath, 0o600)
+	if err := os.Rename(tmpPath, path); err != nil {
+		cleanup()
+		return fmt.Errorf("rename temp: %w", err)
+	}
+
+	return nil
+}
