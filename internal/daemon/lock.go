@@ -16,7 +16,11 @@ type LockFile struct {
 func AcquireLock(projectPath string) (*LockFile, error) {
 	lockPath := filepath.Join(projectPath, ".dfmt", "lock")
 
-	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0644)
+	// Mode 0o600 matches the rest of `.dfmt/`. The flock advisory lock
+	// is what enforces exclusivity; the file mode just keeps other local
+	// users from learning that dfmt is running for the owning user
+	// (closes F-G-LOW-1 from the security audit).
+	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("open lock: %w", err)
 	}
