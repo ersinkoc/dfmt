@@ -57,13 +57,35 @@ function Remove-IfExists($path) {
 }
 
 # ---- 0. Preflight: Go must be available --------------------------------------
+# Minimum patched version: go1.26.2. Earlier 1.26.x patches ship vulnerable
+# crypto/x509 + crypto/tls (GO-2026-4866 / 4870 / 4946 / 4947). The build
+# is allowed to proceed on older patches — we don't have a clean way to
+# auto-upgrade — but the warning is loud enough that operators notice
+# before shipping a binary embedding the vulnerable stdlib.
 Write-Step "Checking Go toolchain..."
 $go = Get-Command go -ErrorAction SilentlyContinue
 if (-not $go) {
     Write-Err "Go not found in PATH. Install from https://go.dev/dl/ then re-run."
     exit 1
 }
-Write-Info "$($go.Source) ($(& go version))"
+$goVersionLine = & go version
+Write-Info "$($go.Source) ($goVersionLine)"
+
+if ($goVersionLine -match 'go(\d+)\.(\d+)(?:\.(\d+))?') {
+    $major = [int]$Matches[1]
+    $minor = [int]$Matches[2]
+    $patch = if ($Matches[3]) { [int]$Matches[3] } else { 0 }
+    $tooOld = ($major -lt 1) -or
+              ($major -eq 1 -and $minor -lt 26) -or
+              ($major -eq 1 -and $minor -eq 26 -and $patch -lt 2)
+    if ($tooOld) {
+        Write-Warn "Go $major.$minor.$patch is older than 1.26.2 — stdlib CVEs"
+        Write-Warn "  GO-2026-4866 / 4870 / 4946 / 4947 (crypto/x509, crypto/tls)"
+        Write-Warn "  remain unpatched in this build. Upgrade: https://go.dev/dl/"
+    }
+} else {
+    Write-Warn "could not parse Go version from: $goVersionLine"
+}
 
 # ---- 1. Stop running dfmt processes (and optionally Claude Code) -------------
 # Claude Code spawns `dfmt mcp` as a stdio subprocess and will respawn it

@@ -13,6 +13,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -1246,6 +1247,20 @@ func runDoctor(args []string) int {
 			}
 			return true, ""
 		}},
+		{"Go toolchain (build)", func() (bool, string) {
+			// runtime.Version() reports the toolchain that built THIS
+			// binary — operators rebuilding from source see whether the
+			// embedded stdlib carries the 1.26.2 patches for the
+			// crypto/x509 + crypto/tls CVEs (GO-2026-4866 / 4870 /
+			// 4946 / 4947). Doctor downgrades to a non-failing warning
+			// when older — the binary still works, but dashboard TLS
+			// (if anyone enables it) would inherit unpatched code.
+			v := runtime.Version()
+			if !goToolchainAtLeast(v, 1, 26, 2) {
+				return true, fmt.Sprintf("%s (older than go1.26.2 — stdlib CVEs unpatched; rebuild with newer toolchain)", v)
+			}
+			return true, v
+		}},
 		{"Journal openable", func() (bool, string) {
 			if _, err := os.Stat(journalPath); os.IsNotExist(err) {
 				return true, "(none yet — created on first event)"
@@ -1835,6 +1850,43 @@ func runDashboard(args []string) int {
 		}
 	}
 	return 0
+}
+
+// goToolchainAtLeast parses a Go version string ("go1.26.1",
+// "go1.27.0-rc1", "devel go1.27") and reports whether it is at least
+// major.minor.patch. Unparseable strings (e.g. "devel go1.27" with no
+// patch) are treated as "at least" so unreleased toolchains don't
+// trigger spurious warnings — the doctor check is meant to catch
+// stale shipped releases, not flag developers using tip.
+func goToolchainAtLeast(version string, wantMajor, wantMinor, wantPatch int) bool {
+	// Strip optional "go" prefix and any pre-release suffix like "-rc1".
+	v := strings.TrimPrefix(strings.TrimSpace(version), "go")
+	if i := strings.IndexAny(v, " -"); i >= 0 {
+		v = v[:i]
+	}
+	parts := strings.SplitN(v, ".", 3)
+	if len(parts) < 2 {
+		return true
+	}
+	maj, err1 := strconv.Atoi(parts[0])
+	min, err2 := strconv.Atoi(parts[1])
+	if err1 != nil || err2 != nil {
+		return true
+	}
+	patch := 0
+	if len(parts) == 3 {
+		// Trailing "+" or other oddities — best-effort parse.
+		if p, err := strconv.Atoi(strings.TrimRight(parts[2], "+")); err == nil {
+			patch = p
+		}
+	}
+	if maj != wantMajor {
+		return maj > wantMajor
+	}
+	if min != wantMinor {
+		return min > wantMinor
+	}
+	return patch >= wantPatch
 }
 
 // openInBrowser launches the OS-default browser pointed at url. Each
