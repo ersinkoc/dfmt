@@ -1,372 +1,204 @@
 # DFMT
 
-<p align="center">
-  <img src="assets/banner.png" alt="DFMT Banner" width="100%">
-</p >
+> A local proxy daemon between AI coding agents and their tools. Returns
+> intent-matched excerpts instead of raw output, and persists session
+> memory across conversation compactions.
 
-**Your tokens, your work, your agent — undisturbed.**
+## What it does
 
-DFMT is a local daemon that keeps AI coding agents from wasting your context window — and from losing your working state when the conversation resets.
+When your AI agent reads a 60 KB file or runs a 300 KB-output build, the
+agent's context window pays the full token cost — even though only a few
+lines are actually relevant. DFMT sits between the agent and its tools,
+runs the operation, then returns:
 
-[![MIT License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
-[![Go Report](https://goreportcard.com/badge/github.com/ersinkoc/dfmt)](https://goreportcard.com/report/github.com/ersinkoc/dfmt)
-[![Release](https://img.shields.io/github/v/release/ersinkoc/dfmt)](https://github.com/ersinkoc/dfmt/releases)
+- a short summary,
+- the lines that match the agent's stated `intent`,
+- a chunk-set ID the agent can use to fetch the rest if it needs to.
 
----
+Plus a journal that survives conversation compaction, so a second agent
+in the same project can recall what the first one decided.
 
-## The problem
+## Supported AI agents
 
-Every AI coding session fails in two predictable ways:
+| Agent | Auto-detected | MCP wire-up |
+|---|---|---|
+| Claude Code (CLI / desktop / IDE) | ✓ | `~/.claude.json` + `~/.claude/settings.json` |
+| Cursor | ✓ | `~/.cursor/mcp.json` |
+| VS Code (with Copilot or MCP-aware extension) | ✓ | `~/.vscode/mcp.json` |
+| Codex CLI | ✓ | `~/.codex/mcp.json` |
+| Gemini CLI | ✓ | `~/.gemini/mcp.json` |
+| Windsurf | ✓ | `~/.windsurf/mcp.json` |
+| Zed | ✓ | `~/.config/zed/mcp.json` |
+| Continue | ✓ | `~/.config/continue/mcp.json` |
+| OpenCode | ✓ | `~/.config/opencode/mcp.json` |
 
-**1. Tool output floods your context window.** Your agent runs a shell command, reads a file, fetches a URL — raw output lands in the context and stays there. After 45 minutes, half the window is consumed by stale data the agent no longer needs but can't forget.
+Any MCP-capable client can use DFMT — point its `mcp.json` at the
+`dfmt mcp` command. The auto-detect list above just saves you the manual
+config step.
 
-**2. Compaction destroys your working state.** When the context fills, the agent compacts the conversation. Your last request, active tasks, user decisions — gone. The agent starts asking questions it asked an hour ago.
+## Quick start
 
-## What DFMT does
-
-DFMT is a local daemon that sits between your AI coding agent and its tools. It solves both problems with one process.
-
-**Sandboxed tool execution.** Instead of the agent running `Bash` and dumping 56 KB of output into context, it calls `dfmt.exec(code: "...", intent: "...")`. The subprocess runs locally; the raw output is indexed in an ephemeral store; your context receives only the intent-matched excerpts plus a searchable vocabulary.
-
-**Session memory across compactions.** DFMT captures events as they happen — files edited, tasks created, user decisions, git operations, errors. When the conversation compacts or starts fresh, DFMT rebuilds a budget-capped snapshot of working state. The agent continues without asking you to repeat yourself.
-
-**One daemon per project.** Auto-starts on first command, idle-exits after 30 minutes. No globally running background process. No manual lifecycle.
-
-**Works everywhere.** MCP + hooks + CLI on all major AI coding agents. `dfmt setup` detects what you have installed and configures each.
-
-## Quick install
-
-One command. No Go toolchain required — the installer downloads a prebuilt binary from GitHub Releases (falls back to `go install` from source if no release matches your platform). Claude Code is wired up automatically: MCP server registered, per-project trust prompts silenced the first time you run `dfmt init`.
-
-### macOS / Linux
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/ersinkoc/dfmt/main/install.sh | sh
-```
-
-### Windows (PowerShell)
-
-```powershell
-iwr https://raw.githubusercontent.com/ersinkoc/dfmt/main/install.ps1 | iex
-```
-
-After the installer finishes, initialize each project:
-
-```bash
-cd my-project
-dfmt init          # creates .dfmt/ config and .claude/settings.json
-dfmt install-hooks  # install git hooks (post-commit, post-checkout, pre-push)
-# then restart Claude Code - you're done.
-```
-
-Set `DFMT_DEBUG=1` (or `$env:DFMT_DEBUG = '1'` on Windows) for verbose install logs.
-
-## Install (other options)
-
-### Homebrew (macOS, Linux)
-
-```bash
-brew install ersinkoc/tap/dfmt
-```
-
-### From source
-
-```bash
+```sh
+# 1. Install (requires Go 1.25+)
 go install github.com/ersinkoc/dfmt/cmd/dfmt@latest
-```
 
-No runtime dependencies. Single 8 MB static binary. Works on Alpine, standard Linux, macOS (Intel and Apple Silicon), Windows, FreeBSD.
-
-## Quickstart
-
-```bash
-# In your project directory
-cd my-project
-
-# Initialize (creates .dfmt/ and adds it to .gitignore)
+# 2. Initialize the project you're working in
+cd ~/path/to/your/project
 dfmt init
 
-# Auto-configure every AI coding agent on your machine
+# 3. Wire DFMT into every detected AI agent on this machine
 dfmt setup
 
-# Done. Restart your agent. DFMT's sandbox is preferred from the next session.
+# 4. Verify everything works
+dfmt doctor
 ```
 
-`dfmt setup` output:
+Then **restart your AI agent** (so it re-reads its MCP config). Ask it
+to read a file or run a command — it will route through DFMT
+automatically.
 
-```
-Scanning for installed AI coding agents...
+To check that the tool actually went through DFMT:
 
-✓ Claude Code          ~/.claude/           (hook support: full)
-✓ Cursor               ~/.cursor/           (hook support: partial)
-✓ Codex CLI            ~/.codex/            (hook support: none — instructions only)
-○ Gemini CLI           not detected
-✓ VS Code Copilot      project .vscode/     (hook support: full)
-
-For each detected agent, will write:
-  - MCP server registration
-  - Hook configuration (where supported)
-  - Instruction file (CLAUDE.md / AGENTS.md / .cursorrules)
-
-Proceed? [Y/n]
-```
-
-After confirmation, a manifest of every change is stored at `~/.local/share/dfmt/setup-manifest.json` for clean `dfmt setup --uninstall`.
-
-## How it works
-
-### Sandbox tools (keep tokens out of your context)
-
-Your agent calls DFMT's sandbox instead of native tools:
-
-| Native tool | DFMT replacement | Effect |
-| --- | --- | --- |
-| `Bash(cmd)` | `dfmt.exec(code, intent)` | 56 KB stdout → 2 KB intent-matched excerpt |
-| `Read(path)` | `dfmt.read(path, intent)` | 200-line file → 20-line relevant section |
-| `WebFetch(url)` | `dfmt.fetch(url, intent)` | 60 KB HTML → markdown summary + chunks |
-
-The `intent` argument is key. "I want to find auth failures in this log" returns the matching lines plus a vocabulary of other interesting terms ("rate-limit," "timeout," "5xx"). The agent can follow up with `dfmt.search_content` to dig deeper without re-loading the raw output.
-
-#### Measured wire-byte savings
-
-Numbers below are produced by `dfmt-bench tokensaving` on a canonical workload and re-measure after every refactor. "Legacy" is the pre-overhaul pipeline (no normalize, MCP envelope duplicates the payload into both `content[0].text` and `structuredContent`). "Modern" is the current default.
-
-| Scenario | Raw | Legacy | Modern | Savings |
-| --- | ---: | ---: | ---: | ---: |
-| Small file read (inline tier) | 66 B | 406 B | 246 B | 39% |
-| `npm install` with progress bar | 1.0 KB | 2.8 KB | 237 B | **92%** |
-| Spinner / retry-loop spam | 2.7 KB | 5.9 KB | 277 B | **95%** |
-| `go test` 200 PASS + 1 FAIL + panic | 12 KB | 1.2 KB | 615 B | 48% |
-| `pytest` 200 PASS + 1 FAIL + traceback | 8.4 KB | 750 B | 408 B | 46% |
-| `cargo build` 250 compile + 2 errors | 8.1 KB | 864 B | 465 B | 46% |
-| **Total** | | **12.1 KB** | **2.2 KB** | **81%** |
-
-Where the savings come from:
-- **MCP envelope:** the payload travels in `structuredContent` only; `content[0].text` is a 27-byte sentinel. Modern MCP clients (Claude Code, Cursor, Codex, Cline, Continue) read `structuredContent`. Set `DFMT_MCP_LEGACY_CONTENT=1` to restore the dual-emit behavior for older text-only clients.
-- **Tier-aware excerpts:** outputs ≤4 KB inline directly with no excerpts (the body already contains everything matches/vocab would duplicate). Outputs 4–64 KB get 5 matches + 10 vocab terms; >64 KB the historical 10/20.
-- **Tail-bias for verdict-at-bottom output:** `go test`, `npm build`, CI runs put the answer at the end. When no keyword matches land, the modern path surfaces the last 2 KB aligned to a newline boundary instead of dropping the body entirely.
-- **Kind-aware signal extraction:** `--- FAIL`, `panic:`, `error[E…]`, `Traceback`, `*Error:`, `Exception in thread`, `FATAL`, `Caused by:` and similar verdict-shaped lines get promoted to matches with a high score regardless of intent. Test/build/CI failures stay visible without an explicit `return=raw` follow-up.
-- **Pre-stash normalize:** ANSI color/cursor sequences stripped, `\r`-overwritten lines collapsed to their final state, ≥4 consecutive duplicate lines RLE-compacted. Done on raw bytes before redaction so escape sequences can't split a secret.
-- **Stash dedup:** 30-second SHA-256 cache over `(kind, source, body)`. Re-running the same command or opening a generated file twice returns the same `content_id` instead of churning the store.
-- **Self-tuning telemetry:** the `tools/list` description for `dfmt_exec`/`dfmt_read`/`dfmt_fetch` appends `Recent: ~85% token savings over last 23 calls` once enough samples accumulate. Suppressed below 5 samples or sub-5% savings so the description stays honest.
-
-### Session memory (keep your work across compactions)
-
-While you work, DFMT captures events from five sources: MCP tool calls, filesystem watcher, git hooks, shell integration, CLI commands. Events flow into a local append-only JSONL journal. Every event type has a priority tier (critical user decisions, important file edits and git ops, normal tool calls, informational stats).
-
-When the agent compacts the conversation or you start a fresh session, DFMT's `dfmt.recall` rebuilds a snapshot under a byte budget — critical events first, dropping lower-tier content if the budget is tight — and hands it back for injection. The agent continues from your last prompt without a "wait, what were we doing?" turn.
-
-### Agent-agnostic architecture
-
-DFMT does not depend on any single agent's extension model. It exposes:
-
-- **MCP server** over stdio for any MCP-capable agent (Claude Code, Cursor, Codex, Gemini, Copilot, OpenCode, Zed, Continue.dev, Windsurf, anything new).
-- **Unix socket** for CLI and git hook integration.
-- **HTTP API** (opt-in) for custom scripts and CI.
-- **CLI commands** for terminal use and debugging.
-
-Even with no agent at all — just a developer editing files and making commits — DFMT captures a useful session record. The FS watcher and git hooks work without any agent present.
-
-## Supported agents
-
-| Agent | MCP | Hooks | Sandbox routing | Session memory |
-| --- | --- | --- | --- | --- |
-| Claude Code | ✓ | ✓ | ~95% | Full |
-| Gemini CLI | ✓ | ✓ | ~95% | High |
-| VS Code Copilot | ✓ | ✓ | ~95% | High |
-| OpenCode | ✓ | plugin | ~95% | High |
-| Cursor | ✓ | partial | ~70% | Limited |
-| Zed | ✓ | — | ~65% | Limited |
-| Continue.dev | ✓ | — | ~65% | Limited |
-| Windsurf | ✓ | — | ~65% | Limited |
-| Codex CLI | ✓ | — | ~65% | — |
-
-"Sandbox routing" is the percentage of native tool calls redirected to DFMT's sandbox when the agent is using DFMT. Agents with hook support can enforce routing programmatically; agents without hooks rely on instruction files (CLAUDE.md, AGENTS.md, etc.) which are persuasive but not binding.
-
-Run `dfmt setup --agent <name> --dry-run` to preview per-agent configuration changes without applying them.
-
-## Commands
-
-```bash
-# Project lifecycle
-dfmt init                          # initialize project (.dfmt/ + .claude/settings.json)
-dfmt install-hooks                 # install git hooks (post-commit, post-checkout, pre-push)
-dfmt shell-init bash|zsh|fish      # print shell integration snippet
-dfmt setup                         # configure installed agents (run once globally)
-dfmt setup --agent claude          # configure one specific agent
-dfmt setup --dry-run               # preview without writing
-dfmt setup --uninstall             # remove DFMT from all agents
-
-# Daemon lifecycle (usually automatic)
-dfmt status                        # current project daemon status
-dfmt stop                          # stop this project's daemon
-dfmt list                          # all running daemons across projects
-dfmt doctor                        # diagnostic checks
-
-# Memory and retrieval
-dfmt remember <type> <body>        # record an event manually
-dfmt note <body>                   # shorthand for a note event
-dfmt task <body>                   # create a task
-dfmt task done <id>               # mark task done
-dfmt recall                        # print current session snapshot
-dfmt search <query>                # search session events
-dfmt tail                          # stream events live
-dfmt stats                         # show session stats
-
-# Sandbox tools (usually called by the agent)
-dfmt exec <code> --lang bash --intent "..."
-dfmt read <path> --intent "..."
-dfmt fetch <url> --intent "..."
-
-# MCP server (usually started automatically by the agent)
-dfmt mcp                          # start MCP server over stdio
-```
-
-All commands support `--json` for machine-readable output and `--project <path>` to target a specific project.
-
-## Dashboard
-
-DFMT includes a web dashboard for visualizing your session statistics.
-
-**Access the dashboard:**
-
-```bash
-# Start the daemon and visit the dashboard URL
-dfmt daemon &
-# Then open: http://localhost:<port>/dashboard
-
-# Or use the stats command for instructions
+```sh
 dfmt stats
 ```
 
-**Dashboard features:**
-- Total event count
-- Events by type (bar chart)
-- Events by priority tier (P1-P4)
-- Session duration and timeline
-- Real-time refresh
+You should see non-zero `events_total` and a non-zero `bytes_saved`.
 
-**HTTP API:**
+## Why use it
 
-The daemon exposes an HTTP API for custom integrations:
+**Token savings.** On the workloads in `dfmt-bench tokensaving`, dfmt
+reduces wire bytes 40–90 % vs. raw native output. The agent gets the
+matched excerpts, not the haystack.
 
-```bash
-# Get session statistics
-curl -X POST http://localhost:25076/api/stats \
-  -H 'Content-Type: application/json' \
-  -d '{"jsonrpc":"2.0","method":"dfmt.stats","params":{},"id":1}'
+**Session memory across compaction.** When the agent's conversation is
+compacted (most providers do this around 80 % context), DFMT's journal
+keeps every tool call, edit, decision, and prompt. `dfmt recall` rebuilds
+a snapshot under a byte budget — critical events first.
 
-# Response:
+**Intent-driven filtering.** Every read / fetch / exec accepts an
+`intent` string. DFMT does BM25 over the output and returns the top
+matches, plus a small vocabulary so the agent can refine. No intent
+means no filter.
+
+## How it works
+
+```
+┌────────────┐   MCP / stdio   ┌──────────┐   subprocess / files / HTTP
+│ AI agent   │ ──────────────► │ dfmt     │ ──────────────────────────►
+│ (any of 9) │ ◄────────────── │ daemon   │ ◄──────────────────────────
+└────────────┘  filtered out   └──────────┘     raw in
+```
+
+- `dfmt mcp` is what the agent launches. It speaks MCP over stdio.
+- The first MCP call auto-starts a per-project daemon over a Unix
+  socket (Linux/macOS) or loopback TCP (Windows).
+- The daemon runs the actual operation, redacts secrets, applies the
+  return-policy filter, and stashes the raw bytes in a content store.
+- The agent sees the filtered output. The journal sees the redacted
+  full record.
+
+## Configuration
+
+Per-project state lives in `.dfmt/`:
+
+| File | Purpose | Mode |
+|---|---|---|
+| `config.yaml` | feature flags + capture toggles | 0o600 |
+| `journal.jsonl` | append-only event log | 0o600 |
+| `index.gob` | persisted search index | 0o600 |
+| `permissions.yaml` | optional custom allow/deny rules | 0o600 |
+| `redact.yaml` | optional custom secret patterns | 0o600 |
+
+The default policy permits common dev tools (`git`, `npm`, `pnpm`,
+`pytest`, `cargo`, `go`, `node`, `python`, plus the read-only Unix
+basics) and denies destructive commands (`sudo`, `rm -rf /`,
+`curl|sh`, etc.). Add site-specific rules with:
+
+```yaml
+# .dfmt/permissions.yaml
+deny:read:creds/**
+deny:read:**/private_keys/**
+deny:write:creds/**
+```
+
+## Troubleshooting
+
+**"DFMT MCP server failed to start" in my agent.** Run `dfmt doctor`
+in the project root. The most common causes: dfmt binary not on
+`PATH`, project not initialized (`dfmt init` first), or the daemon
+lockfile is stale (`dfmt doctor` will surface and offer to clean it).
+
+**"operation denied by policy" when running a command.** DFMT's
+default sandbox refuses anything not in the allow list. Add the
+command to `.dfmt/permissions.yaml`:
+
+```yaml
+allow:exec:make *
+```
+
+**Non-loopback bind refused.** DFMT only binds to loopback by design
+(no auth layer). If you set `transport.http.bind` to `0.0.0.0:NNNN`
+or a LAN IP, the daemon refuses to start. Use `127.0.0.1:NNNN`
+instead.
+
+**Sandbox can't find my binary (`go: command not found` etc.).** The
+sandbox passes through the daemon's `PATH`. Make sure the daemon was
+started in a shell that sees the binary. Restart the daemon with
+`dfmt daemon stop && dfmt daemon start` if you've installed new
+toolchains since.
+
+**Setting up a new agent that's not auto-detected.** Point its MCP
+config at the dfmt binary directly:
+
+```json
 {
-  "jsonrpc": "2.0",
-  "id": 1,
-  "result": {
-    "events_total": 142,
-    "events_by_type": {
-      "file.edit": 45,
-      "git.commit": 12,
-      "task.done": 8
-    },
-    "events_by_priority": {
-      "p1": 15,
-      "p2": 38,
-      "p3": 67,
-      "p4": 22
-    },
-    "session_start": "2024-01-21T10:30:00Z",
-    "session_end": "2024-01-21T11:45:00Z"
+  "mcpServers": {
+    "dfmt": {
+      "command": "/usr/local/bin/dfmt",
+      "args": ["mcp"]
+    }
   }
 }
 ```
 
-**Available API endpoints:**
+`dfmt setup --uninstall` removes everything DFMT wrote (and surgically
+strips its keys from any shared user config like `~/.claude.json`).
 
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/dashboard` | GET | HTML dashboard UI |
-| `/api/stats` | POST | JSON stats via JSON-RPC 2.0 |
-| `/` | POST | Main JSON-RPC endpoint (dfmt.remember, dfmt.search, dfmt.recall) |
+## Project layout
 
-## Benchmarks
+- `cmd/dfmt/` — CLI binary
+- `cmd/dfmt-bench/` — token-savings benchmarks
+- `internal/core/` — events, journal, BM25 index, tokenizer
+- `internal/sandbox/` — exec/read/fetch/glob/grep policy gate
+- `internal/transport/` — MCP, JSON-RPC, HTTP dashboard
+- `internal/setup/` — agent auto-detection and config writers
+- `internal/redact/` — secret redaction patterns
+- `internal/safefs/` — symlink-safe write helper
+- `internal/capture/` — git hooks + filesystem watcher
 
-Raw numbers from real sessions:
+See `AGENTS.md` for the canonical agent-onboarding instructions and
+`CLAUDE.md` for the same content scoped to Claude Code's CLAUDE.md
+convention. Architecture decisions live under `docs/adr/`.
 
-| Scenario | Without DFMT | With DFMT | Reduction |
-| --- | --- | --- | --- |
-| Playwright snapshot | 56 KB | 299 B | 99% |
-| GitHub issues list (20 items) | 60 KB | 1.1 KB | 98% |
-| Access log (500 requests) | 45 KB | 155 B | 100% |
-| Package-manager install output | 40 KB | 2 KB | 95% |
-| Large JSON API response | 7.5 MB | 0.9 KB | 99% |
+## Dependency policy
 
-Session-level impact: a typical 30-minute coding session that would normally consume 60% of a 200 KB context window consumes 10-15% with DFMT. Time to first compaction extends from ~30 minutes to ~3 hours.
+DFMT follows a strict stdlib-first rule. The runtime tree has exactly
+two third-party Go modules:
 
-Query performance (local, 2023 laptop, SSD):
+- `golang.org/x/sys` (syscalls)
+- `gopkg.in/yaml.v3` (config loading)
 
-- `dfmt.remember` durable write: 1.5 ms p50, 5 ms p99
-- `dfmt.search` @ 10k events: 1 ms p50, 5 ms p99
-- `dfmt.recall` snapshot build: 3 ms p50, 10 ms p99
-- Daemon cold start: 100 ms typical (includes index rebuild)
-
-## Design principles
-
-DFMT is opinionated. A few positions that matter:
-
-- **Local-first.** Nothing leaves your machine. No accounts, no cloud, no telemetry.
-- **One daemon per project.** Crash-isolated, auto-started, idle-exits. No global long-running process.
-- **Stdlib-first.** Pure Go standard library plus `x/sys`, `x/crypto`, `yaml.v3`. Everything else — HTML parser, BM25, Porter stemmer, MCP protocol — bundled. No supply-chain sprawl.
-- **Inspectable storage.** The journal is append-only JSONL. `cat`, `grep`, `jq` work. No SQLite to attach, no opaque binary format.
-- **One-command setup across every agent.** You run `dfmt setup` once. Every installed AI coding agent on your machine picks up DFMT's tools. No per-agent manual configuration.
-
-The nine Architecture Decision Records in [docs/adr/](docs/adr/) capture why DFMT is shaped the way it is, with the alternatives considered and rejected.
-
-## Privacy
-
-DFMT is MIT-licensed, local-only, and has no telemetry. Zero data leaves your machine by design. The daemon binds to `127.0.0.1` only. The Unix socket has `0700` permissions. The event journal is readable by your user account and no one else.
-
-Secret patterns are redacted from all stored content — journal, sandbox output, file reads — before persistence. The built-in redactor covers:
-
-- **Cloud / AI providers:** AWS access keys (AKIA, ASIA, AGPA, AROA, AIDA, ANPA, AIPA, ANVA, ABIA, ACCA), AWS secret keys, OpenAI keys (legacy `sk-` and `sk-proj-` project keys), Anthropic keys (`sk-ant-api03-`, `sk-ant-admin01-`), Google API keys (`AIza…`).
-- **Source / CI:** GitHub classic PATs (ghp/gho/ghu/ghs/ghr) and fine-grained PATs (`github_pat_…`), JWTs.
-- **Payments / messaging:** Stripe live and test secret keys (`sk_live_/sk_test_`), restricted keys (`rk_live_/rk_test_`), tokens (`tok_`), Slack bot/user/admin/refresh/app tokens (`xoxb-/xoxp-/xoxa-/xoxr-/xoxs-/xapp-`), Slack and Discord webhook URLs, Discord bot tokens, Twilio API keys, SendGrid keys, Mailgun keys.
-- **Connection strings:** inline `user:password@` credentials in PostgreSQL, MySQL, MongoDB(+srv), Redis(+TLS), AMQP(+TLS) URLs.
-- **Inline forms:** `Bearer …` and `Basic …` headers, `api_key=…` / `secret_key=…` / `access_token=…` / `auth_token=…` assignments, `NAME=value` and `export NAME=value` shell lines where NAME hits the sensitive-key list (password, secret, token, etc.).
-- **Private keys:** full PEM blocks (RSA, EC, DSA, OpenSSH) — header through footer.
-
-User-configurable patterns via `.dfmt/redact.yaml`.
-
-## Support and bugs
-
-- **Issues:** [github.com/ersinkoc/dfmt/issues](https://github.com/ersinkoc/dfmt/issues)
-- **Discussions:** [github.com/ersinkoc/dfmt/discussions](https://github.com/ersinkoc/dfmt/discussions)
-- **Email:** `info@dfmt.dev`
-
-When filing a bug, run `dfmt bundle` to produce a redacted diagnostic tarball with logs, config, and last 1000 events. Attach it to the issue. The bundle is never transmitted automatically — you control what gets shared.
+Everything else — HTML parsing, BM25, Porter stemmer, MCP wire format,
+JSON-RPC 2.0 — is bundled in-tree. Adding a new dependency requires an
+ADR.
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for development workflow, test requirements, and the ADR process.
-
-Short form: tests are required, the dependency policy is strict (see [ADR-0004](docs/adr/0004-stdlib-only-deps.md)), decisions that change structure need an ADR.
-
-## Part of the ersinkoc open-source portfolio
-
-DFMT is one of a family of infrastructure tools under the `ersinkoc` GitHub org. Sibling projects include:
-
-- **[DFMC](https://github.com/ersinkoc/dfmc)** — Don't Fuck My Code. Code-quality companion for AI-assisted development.
-- **[Karadul](https://github.com/ersinkoc/karadul)** — Self-hosted mesh VPN. Tailscale alternative.
-- **[NothingDNS](https://github.com/ersinkoc/nothingdns)** — Full DNS server. Nothing but DNS.
-- **[Kervan](https://github.com/ersinkoc/kervan)** — Multi-protocol file transfer server.
-- **[Argus](https://github.com/ersinkoc/argus)** — Database firewall.
-
-All share the same philosophy: single binary, zero external dependencies, MIT-licensed, documentation-first.
+Open an issue first if the change is non-trivial. Tests are required
+for new behavior; bug fixes need a regression test. Run `make test`
+and `make lint` before pushing.
 
 ## License
 
-MIT. See [LICENSE](LICENSE) and [LICENSE-THIRD-PARTY.md](LICENSE-THIRD-PARTY.md) for attribution of bundled components.
-
----
-
-Built by [Ersin Koç](https://github.com/ersinkoc) at [ECOSTACK TECHNOLOGY OÜ](https://ecostack.ee).
-
-If DFMT saves you tokens, that's enough. A star on GitHub or a post about your experience keeps the project visible to others who need it.
+See `LICENSE` (TBD).

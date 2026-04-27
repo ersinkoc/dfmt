@@ -183,14 +183,23 @@ func runInit(args []string) int {
 		return 1
 	}
 
-	// Mark this project as trusted in ~/.claude.json so Claude Code doesn't
-	// re-prompt and the dfmt MCP server is attached to this project. Failure
-	// is non-fatal.
-	if err := setup.PatchClaudeCodeUserJSON(dir, false); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: patch ~/.claude.json: %v\n", err)
+	// Mark this project as trusted in ~/.claude.json — but ONLY if Claude
+	// Code is actually present on this machine. The previous unconditional
+	// patch created/modified ~/.claude.json on every `dfmt init` run, even
+	// for users on Cursor/Codex/Zed/etc. who don't have Claude Code
+	// installed. That polluted the home directory with an unrelated tool's
+	// state file. Failure remains non-fatal: a stale Claude install
+	// shouldn't block init.
+	if setup.IsClaudeCodeInstalled() {
+		if err := setup.PatchClaudeCodeUserJSON(dir, false); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: patch ~/.claude.json: %v\n", err)
+		}
 	}
 
 	fmt.Printf("Initialized DFMT in %s\n", dir)
+	fmt.Println()
+	fmt.Println("Next: run `dfmt setup` to wire DFMT into your AI agent(s),")
+	fmt.Println("then `dfmt doctor` to verify.")
 	return 0
 }
 
@@ -1560,17 +1569,51 @@ func runSetup(args []string) int {
 		}
 	}
 
-	// Configure each agent
+	// Configure each agent. Track success / failure counts so the final
+	// message can be specific instead of "Setup complete." on a partial
+	// failure (the previous output left the user thinking everything
+	// worked even when one agent's writeMCPConfig hit a permission
+	// error).
+	configured := make([]string, 0, len(agents))
+	failed := make(map[string]error, 0)
 	for _, agent := range agents {
 		fmt.Printf("Configuring %s...\n", agent.Name)
 		if err := configureAgent(agent); err != nil {
 			fmt.Fprintf(os.Stderr, "  error: %v\n", err)
+			failed[agent.Name] = err
 		} else {
 			fmt.Printf("  done\n")
+			configured = append(configured, agent.Name)
 		}
 	}
 
-	fmt.Println("\nSetup complete. Run `dfmt setup --verify` to confirm.")
+	// Summary block — agent-neutral, gives the user the exact next step.
+	fmt.Println()
+	if len(configured) > 0 {
+		fmt.Printf("Configured %d agent(s): %s\n",
+			len(configured), strings.Join(configured, ", "))
+	}
+	if len(failed) > 0 {
+		fmt.Printf("Failed: %d agent(s)\n", len(failed))
+		for name, err := range failed {
+			fmt.Printf("  - %s: %v\n", name, err)
+		}
+	}
+	if len(configured) == 0 {
+		fmt.Println("\nNothing was configured. Re-run with --agent NAME to target a specific agent,")
+		fmt.Println("or point your agent's MCP config at this binary manually:")
+		fmt.Printf("  %s\n", setup.ResolveDFMTCommand())
+		return 1
+	}
+
+	fmt.Println()
+	fmt.Println("Next steps:")
+	fmt.Println("  1. Restart your AI agent so it re-reads the MCP config.")
+	fmt.Println("  2. In the agent, ask it to read a file or run a command.")
+	fmt.Println("  3. Run `dfmt stats` here — non-zero events_total confirms the wire-up.")
+	fmt.Println()
+	fmt.Println("Verify any time with `dfmt doctor` (project health) or `dfmt setup --verify`")
+	fmt.Println("(agent file presence). Uninstall with `dfmt setup --uninstall`.")
 	return 0
 }
 

@@ -81,6 +81,16 @@ func detectAgent(spec agentSpec) *Agent {
 	return nil
 }
 
+// IsClaudeCodeInstalled reports whether Claude Code is detected on this
+// machine. Returns true on the same evidence detectClaudeCode() uses
+// (binary on PATH, ~/.claude/ directory, etc.). Used by `dfmt init` to
+// decide whether to patch ~/.claude.json — the previous unconditional
+// patch created/modified that file even on machines that don't run
+// Claude Code, polluting the home of Cursor/Codex/Zed/etc. users.
+func IsClaudeCodeInstalled() bool {
+	return detectClaudeCode() != nil
+}
+
 func detectClaudeCode() *Agent {
 	home := HomeDir()
 	binaryPaths := []string{
