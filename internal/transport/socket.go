@@ -2,7 +2,6 @@ package transport
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -197,7 +196,17 @@ func (s *SocketServer) handleConn(serverCtx context.Context, conn net.Conn) {
 		resp, err := s.dispatch(reqCtx, req)
 		cancel()
 		if err != nil {
-			if werr := codec.WriteError(req.ID, -32603, err.Error(), nil); werr != nil {
+			// Decode-time failures (unknown method already handled below
+			// via -32601 string match isn't reliable, so we only special-case
+			// ParamsError → -32602; everything else is -32603). The previous
+			// blanket -32603 made every malformed-params response look like
+			// an internal server fault, hiding caller bugs (typo'd field
+			// names, wrong types) under the wrong error class.
+			code := -32603
+			if IsParamsError(err) {
+				code = -32602
+			}
+			if werr := codec.WriteError(req.ID, code, err.Error(), nil); werr != nil {
 				return
 			}
 			continue
@@ -297,14 +306,6 @@ func (s *SocketServer) dispatch(ctx context.Context, req *Request) (any, error) 
 	default:
 		return nil, fmt.Errorf("unknown method: %s", req.Method)
 	}
-}
-
-// decodeParams decodes JSON-RPC params.
-func decodeParams(data json.RawMessage, v any) error {
-	if len(data) == 0 {
-		return nil
-	}
-	return json.Unmarshal(data, v)
 }
 
 // Stop stops the socket server.
