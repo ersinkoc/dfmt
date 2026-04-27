@@ -3,11 +3,36 @@ package sandbox
 import (
 	"fmt"
 	"math"
+	"regexp"
 	"sort"
 	"strings"
 	"unicode"
 	"unicode/utf8"
 )
+
+// TailBytes is the size of the tail snippet we keep on the auto path when no
+// keyword matches landed. Test/build/CI tools put the verdict at the bottom;
+// dropping the entire body in that case turned a passing test run into a
+// blank "(no matches)" report. 2 KB is enough for the last ~30-50 log lines
+// without re-introducing a meaningful chunk of the original payload.
+const TailBytes = 2 * 1024
+
+// rleMinReps is the minimum number of consecutive duplicate lines before RLE
+// compaction kicks in. 1-3 reps aren't worth a "(repeated N times)" annotation
+// — the saving is smaller than the label.
+const rleMinReps = 4
+
+// ansiCSI matches CSI escape sequences (cursor moves, color, style). The
+// terminating byte is in the range 0x40-0x7E; for our purposes a letter is
+// the practical match. We never expand or interpret these — they're noise
+// in tool output captured for an LLM.
+var ansiCSI = regexp.MustCompile(`\x1b\[[0-9;?]*[A-Za-z]`)
+
+// ansiOSC matches OSC sequences (set window title, hyperlinks). Terminator is
+// BEL (0x07) or ESC \\ (ST). The bracket reference set is conservative — we
+// stop at the first terminator-class byte so a runaway sequence doesn't eat
+// the rest of the output.
+var ansiOSC = regexp.MustCompile(`\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)`)
 
 // englishStopwords for intent parsing.
 var englishStopwords = map[string]struct{}{
@@ -185,8 +210,14 @@ func GenerateSummary(content string, keywords []string) string {
 	return fmt.Sprintf("Total lines: %d", total)
 }
 
-// ExtractVocabulary returns distinctive terms from content.
-func ExtractVocabulary(content string) []string {
+// ExtractVocabulary returns distinctive terms from content. maxTerms caps the
+// returned slice; <=0 falls back to 20, the historical default. The cap matters
+// because vocab is a per-tool-call token cost — small outputs don't earn 20
+// terms, large outputs may genuinely need them.
+func ExtractVocabulary(content string, maxTerms int) []string {
+	if maxTerms <= 0 {
+		maxTerms = 20
+	}
 	freq := make(map[string]int)
 	var current strings.Builder
 
@@ -238,7 +269,7 @@ func ExtractVocabulary(content string) []string {
 	})
 
 	var vocab []string
-	for i := 0; i < len(scores) && i < 20; i++ {
+	for i := 0; i < len(scores) && i < maxTerms; i++ {
 		vocab = append(vocab, scores[i].term)
 	}
 
@@ -269,19 +300,19 @@ type FilteredOutput struct {
 //	"raw"     - inline body, no excerpts. Agent pays full token cost.
 //	"search"  - matches + vocabulary only. No body, no summary.
 //	"summary" - summary + matches + vocabulary. Never inlines body.
-//	"auto"/"" - inline body iff len(body) <= InlineThreshold;
-//	            otherwise summary + matches + vocabulary, body dropped.
+//	"auto"/"" - inline body iff len(body) <= InlineThreshold (no excerpts;
+//	            the body already contains everything matches/vocab would
+//	            duplicate). Otherwise summary + matches + vocabulary,
+//	            body dropped, with match/vocab counts scaled to size; when
+//	            no matches landed, surface the last TailBytes as a "tail"
+//	            hint so verdict-at-the-bottom output (test/build/CI) stays
+//	            accessible.
 //
 // This makes the *default* path (auto + empty intent + large output) save
 // tokens, instead of silently falling through to "return everything".
 // Callers that need raw bytes must opt-in via Return: "raw".
 func ApplyReturnPolicy(content, intent, returnMode string) FilteredOutput {
 	keywords := ExtractKeywords(intent)
-	var matches []ContentMatch
-	if len(keywords) > 0 {
-		matches = MatchContent(content, keywords, 10)
-	}
-
 	out := FilteredOutput{}
 
 	switch returnMode {
@@ -289,23 +320,172 @@ func ApplyReturnPolicy(content, intent, returnMode string) FilteredOutput {
 		out.Body = content
 		return out
 	case "search":
-		out.Matches = matches
-		out.Vocabulary = ExtractVocabulary(content)
+		if len(keywords) > 0 {
+			out.Matches = MatchContent(content, keywords, 10)
+		}
+		out.Vocabulary = ExtractVocabulary(content, 20)
 		return out
 	case "summary":
 		out.Summary = GenerateSummary(content, keywords)
-		out.Matches = matches
-		out.Vocabulary = ExtractVocabulary(content)
+		if len(keywords) > 0 {
+			out.Matches = MatchContent(content, keywords, 10)
+		}
+		out.Vocabulary = ExtractVocabulary(content, 20)
 		return out
 	default: // "auto" or ""
+		// Inline-tier: body already carries everything. Adding summary +
+		// matches + vocabulary on top would duplicate the same bytes the
+		// agent is about to read inline — pure token waste. The agent can
+		// scan the inlined body itself to satisfy the intent.
 		if len(content) <= InlineThreshold {
 			out.Body = content
+			return out
+		}
+		// Mid-tier (4 KB – 64 KB): a handful of matches + a short vocab
+		// is enough to navigate. Big-tier: the historical 10/20 caps.
+		matchN, vocabN := 5, 10
+		if len(content) > MediumThreshold {
+			matchN, vocabN = 10, 20
 		}
 		out.Summary = GenerateSummary(content, keywords)
-		out.Matches = matches
-		out.Vocabulary = ExtractVocabulary(content)
+		var matches []ContentMatch
+		if len(keywords) > 0 {
+			matches = MatchContent(content, keywords, matchN)
+		}
+		// Kind-aware signal promotion: regardless of intent, surface
+		// verdict-shaped lines (panic, FAIL, exception headers, error:
+		// prefixes). Without this, an agent that ran `go test` with no
+		// intent or with an intent that didn't happen to match the FAIL
+		// lines got a vocabulary list and a tail snippet but no clear
+		// pointer to the failures. Signals merge ahead of keyword
+		// matches; the matchN budget caps the combined output.
+		signals := extractSignalLines(content)
+		out.Matches = mergeSignalsIntoMatches(signals, matches, matchN)
+		out.Vocabulary = ExtractVocabulary(content, vocabN)
+		// Tail-bias: matches+summary+vocab miss the most common "useful
+		// information lives at the end" pattern (go test, npm build, CI
+		// run). Without this, the agent had to follow up with return=raw
+		// to find out whether the run passed — the round trip cost more
+		// than the tail it was looking for. Cap at TailBytes so we don't
+		// re-introduce the original bloat. Signals already cover the
+		// verdict lines in test/build output; tail is the fallback when
+		// neither keywords nor signals landed.
+		if len(out.Matches) == 0 {
+			out.Body = tailLines(content, TailBytes)
+		}
 		return out
 	}
+}
+
+// NormalizeOutput strips ANSI escape sequences, collapses carriage-return-
+// rewritten lines down to their final state, and run-length-encodes
+// long stretches of identical consecutive lines. It runs before the
+// return-policy filter and the content-store stash so neither has to
+// budget tokens for terminal animations.
+//
+// The three patterns this targets are the dominant noise sources in
+// shell-captured output for an LLM:
+//
+//   - Color/style escapes (`\x1b[31m...\x1b[0m`) — visually meaningful in
+//     a terminal, pure entropy in a token stream.
+//   - Progress bars (`Downloading [###    ] 30%\r`) — the file-format
+//     reads as one line that gets rewritten dozens of times; we keep
+//     only the final state per line.
+//   - Spinner / retry loops ("dialing...", "dialing...", ...) — N copies
+//     compact to one + a "(repeated N times)" annotation.
+func NormalizeOutput(s string) string {
+	if s == "" {
+		return s
+	}
+	s = stripANSI(s)
+	s = collapseCarriageReturns(s)
+	s = runLengthEncode(s)
+	return s
+}
+
+// stripANSI removes CSI and OSC escape sequences. Other categories
+// (VT52, 7-bit single-shifts) are too rare in modern tool output to be
+// worth pattern-matching; if they show up, the output is so unusual
+// that the agent should opt into return=raw anyway.
+func stripANSI(s string) string {
+	if !strings.Contains(s, "\x1b") {
+		return s
+	}
+	s = ansiCSI.ReplaceAllString(s, "")
+	s = ansiOSC.ReplaceAllString(s, "")
+	return s
+}
+
+// collapseCarriageReturns reduces every "...A\rB\rC" run within a single
+// logical line down to "C" — the last-written state is what a terminal
+// user would have seen. The walk is per-line so a CR inside line 3
+// doesn't eat content from line 1.
+func collapseCarriageReturns(s string) string {
+	if !strings.ContainsRune(s, '\r') {
+		return s
+	}
+	lines := strings.Split(s, "\n")
+	for i, ln := range lines {
+		// Trim a trailing CR (CRLF leftover) before scanning, otherwise a
+		// well-formed CRLF file would have every line collapsed to "".
+		ln = strings.TrimRight(ln, "\r")
+		if idx := strings.LastIndex(ln, "\r"); idx >= 0 {
+			ln = ln[idx+1:]
+		}
+		lines[i] = ln
+	}
+	return strings.Join(lines, "\n")
+}
+
+// runLengthEncode replaces stretches of >= rleMinReps identical adjacent
+// lines with a single copy plus a short annotation. The minimum threshold
+// is there because the annotation itself costs tokens — squashing two
+// duplicates makes the output longer, not shorter.
+func runLengthEncode(s string) string {
+	if s == "" {
+		return s
+	}
+	lines := strings.Split(s, "\n")
+	out := make([]string, 0, len(lines))
+	i := 0
+	for i < len(lines) {
+		j := i + 1
+		for j < len(lines) && lines[j] == lines[i] {
+			j++
+		}
+		out = append(out, lines[i])
+		reps := j - i
+		if reps >= rleMinReps {
+			out = append(out, fmt.Sprintf("... (line above repeated %d more times)", reps-1))
+			i = j
+			continue
+		}
+		i++
+	}
+	return strings.Join(out, "\n")
+}
+
+// tailLines returns the last maxBytes of s, aligned to a newline boundary
+// so we don't cut mid-line, and prefixed with a marker the agent can
+// recognize. When s is already <= maxBytes we return it untouched.
+func tailLines(s string, maxBytes int) string {
+	if maxBytes <= 0 || len(s) <= maxBytes {
+		return s
+	}
+	cut := len(s) - maxBytes
+	// Walk forward to the next newline so the snippet starts on a clean
+	// line. If there's no newline in the candidate region, fall back to
+	// the byte cut and trim any trailing partial rune.
+	if nl := strings.IndexByte(s[cut:], '\n'); nl >= 0 && cut+nl+1 < len(s) {
+		cut = cut + nl + 1
+	} else {
+		// Walk back to a UTF-8 rune-start so encoding/json doesn't emit
+		// U+FFFD into the marker line.
+		for cut > 0 && !utf8.RuneStart(s[cut]) {
+			cut--
+		}
+	}
+	return "...(tail; earlier output dropped)\n" + s[cut:]
 }
 
 // truncate shortens s to at most maxLen bytes, appending "..." when it had
