@@ -161,6 +161,22 @@ func NewRedactorWithCustom(patterns []*redactPattern) *Redactor {
 }
 
 // Redact redacts sensitive data from the input string.
+//
+// The redactor is **best-effort**, not a guarantee. It catches the common
+// shapes documented in `commonPatterns` (provider keys, AWS, GitHub, JWT,
+// PEM blocks, marker-prefixed credentials, etc.) but cannot replace
+// disciplined logging hygiene. Specifically:
+//
+//   - A bare 40-char base64 AWS secret with no `…secret_key…` marker
+//     within 80 characters is not redacted (false-positive cost would
+//     be too high; see F-S-INFO-1 in security-report/).
+//   - Custom credential shapes specific to a project (e.g. a homegrown
+//     auth header) are not covered by default — operators should add
+//     project-level patterns via `Redactor.AddPattern` or by extending
+//     the `redact.yaml` file in `.dfmt/`.
+//   - The redactor is the last line of defense before the journal
+//     write. Treat it as defense-in-depth on top of not logging
+//     secrets in the first place, not as a substitute.
 func (r *Redactor) Redact(s string) string {
 	for _, p := range r.patterns {
 		if p.name == "env_export" {
