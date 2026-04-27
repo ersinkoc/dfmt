@@ -148,7 +148,9 @@ func New(projectPath string, cfg *config.Config) (*Daemon, error) {
 	// Create server based on platform - use HTTPServer for HTTP support (dashboard, API)
 	var server Server
 	var httpServer *transport.HTTPServer
-	if runtime.GOOS == "windows" {
+	tcpOptIn := cfg != nil && cfg.Transport.HTTP.Enabled && cfg.Transport.HTTP.Bind != ""
+	switch {
+	case runtime.GOOS == "windows":
 		// On Windows, use TCP with HTTPServer for full HTTP support.
 		// Bind to the IPv4 loopback explicitly so we don't race between
 		// ::1 and 127.0.0.1 — the client also dials 127.0.0.1 to avoid
@@ -161,15 +163,26 @@ func New(projectPath string, cfg *config.Config) (*Daemon, error) {
 		// written either way — CLI clients always read it so they don't
 		// need to know whether the bind is fixed or ephemeral.
 		bind := "127.0.0.1:0"
-		if cfg != nil && cfg.Transport.HTTP.Enabled && cfg.Transport.HTTP.Bind != "" {
+		if tcpOptIn {
 			bind = cfg.Transport.HTTP.Bind
 		}
 		httpServer = transport.NewHTTPServer(bind, handlers)
 		portFile := filepath.Join(dfmtDir, "port")
 		httpServer.SetPortFile(portFile)
 		httpServer.SetProjectPath(projectPath)
-		server = httpServer
-	} else {
+	case tcpOptIn:
+		// Unix opt-in TCP loopback. Required for the dashboard, which is
+		// HTTP over a routable address — a browser cannot dial a Unix
+		// socket. Loopback validation lives in transport (NewHTTPServer's
+		// listener phase), so a public bind would fail there. We refuse
+		// to run both a socket AND a TCP listener: the CLI client picks
+		// its dial target via the presence of .dfmt/port (TCP) vs the
+		// socket file, and exposing both would make that choice ambiguous.
+		httpServer = transport.NewHTTPServer(cfg.Transport.HTTP.Bind, handlers)
+		portFile := filepath.Join(dfmtDir, "port")
+		httpServer.SetPortFile(portFile)
+		httpServer.SetProjectPath(projectPath)
+	default:
 		// On Unix, use Unix socket with HTTPServer for full HTTP support.
 		// transport.ListenUnixSocket applies a 0o077 umask for the duration
 		// of bind(2) so the socket file is never world-readable in the
@@ -187,6 +200,10 @@ func New(projectPath string, cfg *config.Config) (*Daemon, error) {
 		httpServer = transport.NewHTTPServerWithListener(ln, handlers, socketPath)
 		httpServer.SetProjectPath(projectPath)
 	}
+	// Single assignment site — previously the Unix branch fell through with
+	// server still nil, which would panic at d.server.Start(ctx). Tests
+	// run on Windows so the nil-server bug went unnoticed in CI.
+	server = httpServer
 
 	// Optionally construct the filesystem watcher. Start() wires its event channel into the journal.
 	var fswatcher *capture.FSWatcher

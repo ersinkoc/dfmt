@@ -1767,15 +1767,34 @@ func runDashboard(args []string) int {
 	}
 
 	if runtime.GOOS != "windows" {
-		// Unix daemon binds a Unix socket, not TCP. A browser cannot
-		// dial that, so printing a 127.0.0.1 URL would mislead.
-		fmt.Println("Dashboard not browser-accessible on this platform: the daemon")
-		fmt.Println("serves HTTP over a Unix socket, which browsers cannot dial.")
-		fmt.Println()
-		fmt.Println("Alternatives:")
-		fmt.Println("  - `dfmt stats` for a CLI snapshot")
-		fmt.Printf("  - curl --unix-socket %s http://x/dashboard\n", project.SocketPath(proj))
-		return 1
+		// Unix has two modes:
+		//   1. Default: daemon binds a Unix socket — browsers cannot
+		//      dial that, so printing a 127.0.0.1 URL would mislead.
+		//      Print a friendly hint with curl --unix-socket fallback.
+		//   2. Opt-in: transport.http.enabled=true + a loopback bind.
+		//      The daemon serves HTTP over TCP and the rest of this
+		//      function (port-file read → URL print → optional open)
+		//      works the same as on Windows.
+		// We load the config to decide; a load error is treated as
+		// not-opted-in (safer default than crashing the user out of
+		// the helpful hint they'd otherwise see).
+		cfg, _ := config.Load(proj)
+		tcpOptIn := cfg != nil && cfg.Transport.HTTP.Enabled && cfg.Transport.HTTP.Bind != ""
+		if !tcpOptIn {
+			fmt.Println("Dashboard not browser-accessible on this platform: the daemon")
+			fmt.Println("serves HTTP over a Unix socket, which browsers cannot dial.")
+			fmt.Println()
+			fmt.Println("Options:")
+			fmt.Println("  - `dfmt stats` for a CLI snapshot")
+			fmt.Printf("  - curl --unix-socket %s http://x/dashboard\n", project.SocketPath(proj))
+			fmt.Println()
+			fmt.Println("Or enable TCP loopback in .dfmt/config.yaml:")
+			fmt.Println("  transport:")
+			fmt.Println("    http:")
+			fmt.Println("      enabled: true")
+			fmt.Println("      bind: 127.0.0.1:8765")
+			return 1
+		}
 	}
 
 	// Auto-start daemon if not running. NewClient performs the spawn +
