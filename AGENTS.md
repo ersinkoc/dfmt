@@ -127,14 +127,15 @@ recall — the snapshot may drop them. Tag accordingly.
 |---|---|
 | Build binaries | `make build` (produces `dist/dfmt`, `dist/dfmt-bench`) |
 | Run tests | `make test` (or `go test ./...`) |
-| Race detector | `CGO_ENABLED=1 go test -race ./...` |
+| Race detector | `go test -race ./...` (Linux/macOS); add `CGO_ENABLED=1` on Windows |
 | Lint | `make lint` (`golangci-lint run ./...`) |
 | Format | `make fmt` |
 | Clean state | `make clean` |
 | Install to GOPATH/bin | `make install` |
 | Cross-compile release binaries | `make release` |
 | Token-savings report | `dfmt-bench tokensaving` |
-| Diagnostic bundle | `dfmt bundle` |
+| One-shot project setup | `dfmt quickstart` (init + per-agent setup + verify) |
+| Per-agent wire-up health check | `dfmt doctor` (project state + per-agent MCP files + binary path) |
 | Install git hooks | `dfmt install-hooks` |
 | Shell integration snippet | `dfmt shell-init bash\|zsh\|fish` |
 
@@ -187,6 +188,12 @@ the content store. The default policy allows common dev tools and
 denies destructive ones; see `permissions.go::DefaultPolicy()` for
 the full list and the godoc explaining how operators add
 site-specific rules.
+
+Custom rules go in `.dfmt/permissions.yaml` — entries take the form
+`allow:exec:<base-cmd> *`, `deny:read:**/secrets/**`, etc. Every
+sandbox denial error ends with a `hint:` line pointing at this file
+and naming which network classes (loopback, RFC1918, cloud metadata)
+cannot be opened up via project config.
 
 ### Capture pipeline
 

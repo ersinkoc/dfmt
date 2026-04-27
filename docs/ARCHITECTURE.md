@@ -56,14 +56,18 @@ dfmt <command> [flags]
 
 Commands:
   init           Initialize a project (.dfmt/, config.yaml, .gitignore)
+  quickstart     init + per-agent setup + verify, in one shot
   remember       Record an event manually
   search         Query the journal via BM25 index
   recall         Build a session snapshot (markdown)
   exec           Run code in sandbox, return intent-matched excerpt
   read           Read file, return intent-matched excerpt
   fetch          HTTP fetch, return intent-matched excerpt
+  glob/grep      Pattern-match in sandbox, intent-aware
+  edit/write     Mutating file ops through the sandbox policy gate
   stats          Show session statistics
   tail           Stream events in real-time
+  doctor         Project + per-agent wire-up health check
   daemon         Start the daemon (rarely called directly)
   setup          Auto-detect and configure AI agents
   install-hooks  Install git hooks (post-commit, post-checkout, pre-push)
@@ -74,17 +78,25 @@ Commands:
 
 ### 2.2 MCP Transport (`internal/transport/mcp.go`)
 
-Model Context Protocol server over stdio. Primary integration path for Claude Code and similar agents. Tools exposed:
+Model Context Protocol server over stdio. Primary integration path for
+every supported agent. MCP requires tool names to match
+`^[a-zA-Z][a-zA-Z0-9_-]*$`, so the canonical names use underscores. The
+JSON-RPC HTTP / Unix-socket transports also accept legacy dotted names
+(`dfmt.exec`, etc.) for back-compat with non-MCP clients.
 
 | Tool | Description |
 |------|-------------|
-| `dfmt.exec` | Sandboxed code execution with intent extraction |
-| `dfmt.read` | File read with intent extraction |
-| `dfmt.fetch` | HTTP fetch with intent extraction |
-| `dfmt.remember` | Record events (llm.response, task, decision, etc.) |
-| `dfmt.search` | BM25 search over journal |
-| `dfmt.recall` | Build session snapshot |
-| `dfmt.stats` | Session statistics |
+| `dfmt_exec` | Sandboxed code execution with intent extraction |
+| `dfmt_read` | File read with intent extraction |
+| `dfmt_fetch` | HTTP fetch with intent extraction (SSRF-defended) |
+| `dfmt_glob` | Glob pattern matching, intent-filtered |
+| `dfmt_grep` | Text search across files, intent-filtered |
+| `dfmt_edit` | Targeted in-file replacement under sandbox policy |
+| `dfmt_write` | Full-file write under sandbox policy |
+| `dfmt_remember` | Record events (note, llm.response, task, decision, …) |
+| `dfmt_search` | BM25 search over journal |
+| `dfmt_recall` | Build session snapshot under a byte budget |
+| `dfmt_stats` | Session statistics + token / byte savings |
 
 ### 2.3 HTTP API (`internal/transport/http.go`)
 
@@ -234,13 +246,14 @@ Five event-ingestion paths. Four are live, one is a stub.
 │                           │                                      │
 │         ┌─────────────────┼─────────────────┐                   │
 │         │                 │                 │                    │
-│    ┌────▼────┐     ┌─────▼────┐    ┌──────▼──────┐            │
-│    │ Git hook │     │ Shell     │    │ Stub types  │            │
-│    │   LIVE   │     │ integration│   │ (capture/   │            │
-│    │post-commit│    │   LIVE     │    │  git.go,    │            │
-│    │post-checkout│  │ env.cwd    │    │  shell.go)  │            │
-│    │pre-push   │    │            │    │             │            │
-│    └───────────┘    └────────────┘    └─────────────┘            │
+│    ┌────▼────┐     ┌─────▼─────┐                                 │
+│    │ Git hook │     │ Shell      │                                │
+│    │ LIVE (opt│     │ integration│                                │
+│    │  -in)    │     │ LIVE (opt- │                                │
+│    │post-commit│    │ in)        │                                │
+│    │post-checkout│  │ env.cwd    │                                │
+│    │pre-push   │    │            │                                │
+│    └───────────┘    └────────────┘                                │
 └──────────────────────────────────────────────────────────────────┘
 ```
 
@@ -287,34 +300,52 @@ end
 
 ## 7. Sandbox (`internal/sandbox/`)
 
-Provides `exec`, `read`, `fetch` with **intent-matched excerpts** instead of raw output.
+Seven operations: `exec`, `read`, `fetch`, `glob`, `grep`, `edit`,
+`write`. All return **intent-matched excerpts** instead of raw output
+where filtering applies.
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                      Sandbox                                 │
 │                                                              │
-│  Exec(code, lang, intent, timeout):                        │
-│    1. Check language against Permissions policy              │
-│    2. Run code in subprocess (bash/sh)                       │
-│    3. Capture stdout/stderr                                 │
+│  Exec(code, lang, intent, timeout):                         │
+│    1. Strip `.exe` suffix off the leading word (Windows)    │
+│    2. Walk the deny list, then the allow list (operation +  │
+│     full command + base command + each chained part)        │
+│    3. Run subprocess; capture stdout/stderr                 │
 │    4. Store raw output in content store                     │
-│    5. Apply intent extraction → return excerpt             │
+│    5. Apply intent extraction → return excerpt              │
 │                                                              │
-│  Read(path, intent, offset, limit):                         │
-│    1. Read file contents                                    │
-│    2. Store raw content in content store                    │
-│    3. Apply intent extraction → return excerpt              │
+│  Read / Glob / Grep:                                         │
+│    Path checked against deny then allow rules. Output goes   │
+│    through the redactor before storage and excerpt return.   │
 │                                                              │
-│  Fetch(url, intent, method, timeout):                       │
-│    1. Execute HTTP request                                  │
-│    2. Store raw response in content store                   │
-│    3. Apply intent extraction → return excerpt              │
+│  Fetch:                                                      │
+│    Six-layer SSRF defense: scheme allow-list, hostname deny  │
+│    (cloud metadata IPs), pre-DNS classification, post-DNS    │
+│    classification, DNS-rebinding-safe DialContext, response  │
+│    size limit. Then redact + intent-match.                   │
+│                                                              │
+│  Edit / Write:                                               │
+│    Atomic via safefs.WriteFileAtomic (tmp + rename, symlink- │
+│    safe). Path passes through both write and edit deny rules │
+│    (.env*, **/secrets/**, **/id_*, .git/**, .dfmt/**).       │
 └─────────────────────────────────────────────────────────────┘
 ```
 
-**Intent extraction:** Uses a simple keyword-match approach in `intent.go`. Looks for relevant keywords from intent string in output, returns surrounding context.
+**Intent extraction:** BM25 over the output, returns top-matching
+spans plus a small vocabulary the caller can use to refine. Implementation
+in `intent.go`. Tier-aware: P1 events get bigger excerpts than P4.
 
-**Permissions:** `permissions.go` defines policy per language. Unknown languages are denied by default.
+**Permissions:** `permissions.go::DefaultPolicy()` defines rules per
+**operation** (exec / read / write / edit / fetch) and per glob pattern.
+Operators extend it via `.dfmt/permissions.yaml` — entries take the form
+`allow:exec:<base-cmd> *`, `deny:read:**/secrets/**`. Every denial error
+ends with a `hint:` line pointing at this file.
+
+**Recursive bypass blocked:** `dfmt` and `dfmt *` are on the deny list
+so an agent can't shell out to `dfmt exec '...'` and bypass the outer
+policy.
 
 ---
 
@@ -345,21 +376,35 @@ Three simultaneous interfaces:
 
 ## 9. Agent Setup (`internal/setup/`)
 
-Auto-detects installed AI agents and writes MCP configuration:
+Auto-detects nine installed AI agents and writes their MCP
+configuration:
 
 | Agent | Config Path |
 |-------|------------|
-| Claude Code | `~/.claude/settings.json` |
+| Claude Code | `~/.claude.json` (user) + `~/.claude/settings.json` |
 | Cursor | `~/.cursor/mcp.json` |
 | VS Code Copilot | `~/.vscode/mcp.json` |
-| Codex CLI | `~/.codex/config.json` |
+| Codex CLI | `~/.codex/mcp.json` |
 | Gemini CLI | `~/.gemini/mcp.json` |
 | Windsurf | `~/.windsurf/mcp.json` |
+| Zed | `~/.config/zed/mcp.json` |
+| Continue | `~/.config/continue/mcp.json` |
 | OpenCode | `~/.config/opencode/mcp.json` |
 
-Also writes `.claude/settings.json` in project (with DFMT MCP allow-list) and `docs/DFMT-INSTRUCTIONS.md` for agents that support instruction files.
+In a project, `dfmt init` (and `dfmt quickstart`) also write
+`.claude/settings.json` with DFMT's MCP allow-list and the
+PreCompact / SessionStart hooks. The `~/.claude.json` patch is
+gated behind `setup.IsClaudeCodeInstalled()` so machines without
+Claude Code aren't polluted.
 
-Uninstall removes all written files, tracked in `~/.local/share/dfmt/setup-manifest.json`.
+Uninstall (`dfmt setup --uninstall`) removes every file the manifest
+tracks (`~/.local/share/dfmt/setup-manifest.json`) and surgically
+strips `mcpServers.dfmt` from the shared `~/.claude.json` instead of
+deleting it.
+
+`dfmt doctor` reports per-agent wire-up status — for each detected
+agent it stats every manifest-recorded file and the resolvable dfmt
+binary path.
 
 ---
 
@@ -488,12 +533,13 @@ internal/
 │   ├── fswatch.go            Shared FSWatcher logic
 │   ├── fswatch_linux.go      inotify implementation
 │   ├── fswatch_windows.go    ReadDirectoryChangesW + mod-time optimization
-│   ├── git.go                Stub: SubmitCommit, SubmitCheckout, SubmitPush
-│   └── shell.go             Stub: SubmitCommand (env.cwd)
+│   ├── git.go                Git-hook submitters (post-commit, etc.) — LIVE
+│   └── shell.go              Shell hook submitter (env.cwd) — LIVE
 ├── sandbox/
-│   ├── sandbox.go           exec, read, fetch with intent extraction
-│   ├── permissions.go       Language policy
-│   └── intent.go            Intent keyword matching
+│   ├── sandbox.go            exec, read, fetch, glob, grep, edit, write
+│   ├── permissions.go        Operation-scoped allow/deny + DefaultPolicy
+│   └── intent.go             BM25 intent extraction + tier-aware excerpt
+├── safefs/safefs.go          Symlink-safe atomic write helper
 ├── content/
 │   ├── store.go             Ephemeral content storage
 │   └── summarize.go         Content summarization
@@ -522,7 +568,10 @@ internal/
 ## 13. Key Design Decisions
 
 ### Stdlib-First
-No external dependencies except `golang.org/x/sys`, `golang.org/x/crypto`, `gopkg.in/yaml.v3`. Everything else (BM25, Porter stemmer, MCP protocol, JSON-RPC 2.0) is bundled.
+Two third-party Go modules total: `golang.org/x/sys` (syscalls) and
+`gopkg.in/yaml.v3` (config loading). Everything else — BM25, Porter
+stemmer, MCP protocol, JSON-RPC 2.0, HTML parser, ULID — is bundled
+in-tree. Adding a dependency requires an ADR.
 
 ### Intent-Matched Output
 Agents never see raw tool output. Sandbox produces an excerpt matched to the agent's stated intent. Raw output goes to ephemeral content store.
@@ -571,4 +620,4 @@ All new functionality requires tests. Bug fixes require regression tests.
 
 ---
 
-*Generated for DFMT v0.1.2*
+*Last updated for DFMT v0.2.0 (Sprint 0/1/2 + audit closures landed).*

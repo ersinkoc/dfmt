@@ -6,9 +6,10 @@ Thank you for your interest in contributing to DFMT. This document outlines the 
 
 ### Prerequisites
 
-- Go 1.21 or later
+- Go 1.25 or later (matches `go.mod`)
 - Make (for running build targets)
 - Git
+- `golangci-lint` if you intend to run `make lint`
 
 ### Setup
 
@@ -37,18 +38,35 @@ Thank you for your interest in contributing to DFMT. This document outlines the 
 
 ```
 dfmt/
-├── cmd/dfmt/          # Main CLI entry point
+├── cmd/
+│   ├── dfmt/          # CLI binary entry point
+│   └── dfmt-bench/    # Token-savings benchmark binary
 ├── internal/
-│   ├── cli/           # CLI command implementations
-│   ├── config/        # Configuration loading
-│   ├── core/          # Core domain logic (events, journal, index)
-│   ├── daemon/        # Daemon lifecycle management
-│   ├── sandbox/       # Sandboxed tool execution
-│   └── transport/     # Transport layer (HTTP, stdio, Unix socket)
+│   ├── capture/       # FS watcher + git hooks + shell integration
+│   ├── cli/           # CLI command implementations + dispatch
+│   ├── client/        # CLI ↔ daemon RPC client
+│   ├── config/        # YAML configuration loading
+│   ├── content/       # Ephemeral content store for raw tool output
+│   ├── core/          # Events, journal, BM25 index, classifier
+│   ├── daemon/        # Daemon lifecycle + lockfile + idle exit
+│   ├── logging/       # Internal logging
+│   ├── project/       # Project discovery + per-user registry
+│   ├── redact/        # Secret redaction (AWS, GitHub, Anthropic, …)
+│   ├── retrieve/      # Recall-snapshot building + markdown rendering
+│   ├── safefs/        # Symlink-safe atomic write helper
+│   ├── sandbox/       # exec/read/fetch/glob/grep/edit/write policy gate
+│   ├── setup/         # Agent auto-detection + MCP config writers
+│   └── transport/     # MCP stdio + JSON-RPC HTTP + Unix socket
 ├── docs/
-│   ├── adr/           # Architecture Decision Records
-│   └── hooks/         # Hook integration guides
-└── README.md          # Project documentation
+│   ├── ARCHITECTURE.md  # System architecture overview
+│   └── adr/             # Architecture Decision Records
+├── install.sh           # POSIX one-line installer
+├── install.ps1          # Windows one-line installer
+├── dev.ps1              # Developer reset + build + install + smoke test
+├── AGENTS.md            # Canonical agent-onboarding doc
+├── CLAUDE.md            # Pointer to AGENTS.md (Claude Code's filename)
+├── CONTRIBUTING.md      # This file
+└── README.md            # Project entry point
 ```
 
 ### Making Changes
@@ -67,7 +85,6 @@ dfmt/
 4. **Ensure all tests pass**:
    ```bash
    make test
-   make test-coverage
    ```
 
 5. **Commit your changes** using descriptive commit messages:
@@ -91,14 +108,16 @@ dfmt/
 # Run all tests
 make test
 
-# Run tests with coverage
-make test-coverage
+# Run tests with coverage (raw `go test` flags)
+go test -cover ./...
 
 # Run specific package tests
 go test ./internal/core/...
 
-# Run tests with race detector
+# Run tests with race detector (Linux/macOS)
 go test -race ./...
+# On Windows the race detector needs cgo:
+CGO_ENABLED=1 go test -race ./...
 ```
 
 ### Test Structure
@@ -116,7 +135,8 @@ internal/core/
 Generate an HTML coverage report:
 
 ```bash
-make coverage-html
+go test -coverprofile=coverage.out ./...
+go tool cover -html=coverage.out -o coverage.html
 # Open coverage.html in your browser
 ```
 
@@ -186,9 +206,13 @@ Adding a new dependency requires:
 ### Permitted
 
 - Standard library (`net`, `http`, `os`, `io`, etc.)
-- `golang.org/x/sys` — system calls not in stdlib
-- `golang.org/x/crypto` — cryptographic operations
-- `gopkg.in/yaml.v3` — YAML configuration (only exception to stdlib)
+- `golang.org/x/sys` — syscalls not in stdlib
+- `gopkg.in/yaml.v3` — YAML configuration
+
+That's it. The runtime tree currently has exactly two third-party
+modules (`go.mod` is the source of truth). `golang.org/x/crypto`,
+`golang.org/x/text`, and similar were considered but are not used —
+proposing them requires an ADR.
 
 ### Bundled Libraries
 
@@ -237,13 +261,16 @@ Include:
 - Expected vs actual behavior
 - Relevant log output
 
-Run `dfmt bundle` to generate a diagnostic package:
+Useful debugging commands when filing an issue:
 
 ```bash
-dfmt bundle
+dfmt --version       # version + build SHA
+dfmt doctor          # project state + per-agent wire-up
+dfmt stats           # event counts and byte savings
+dfmt config          # active configuration
 ```
 
-Attach the resulting tarball to your issue.
+Paste the relevant output into the issue body.
 
 ### Feature Requests
 

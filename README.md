@@ -38,32 +38,45 @@ config step.
 
 ## Quick start
 
+**One-line install (Linux / macOS / FreeBSD):**
+
 ```sh
-# 1. Install (requires Go 1.25+)
+curl -fsSL https://raw.githubusercontent.com/ersinkoc/dfmt/main/install.sh | sh
+```
+
+**One-line install (Windows PowerShell):**
+
+```powershell
+iwr https://raw.githubusercontent.com/ersinkoc/dfmt/main/install.ps1 | iex
+```
+
+**From source (requires Go 1.25+):**
+
+```sh
 go install github.com/ersinkoc/dfmt/cmd/dfmt@latest
-
-# 2. Initialize the project you're working in
-cd ~/path/to/your/project
-dfmt init
-
-# 3. Wire DFMT into every detected AI agent on this machine
-dfmt setup
-
-# 4. Verify everything works
-dfmt doctor
 ```
 
-Then **restart your AI agent** (so it re-reads its MCP config). Ask it
-to read a file or run a command — it will route through DFMT
-automatically.
-
-To check that the tool actually went through DFMT:
+The installers also run `dfmt setup --force` on your behalf so every
+detected agent's MCP config is wired up. Then in a project:
 
 ```sh
-dfmt stats
+cd ~/path/to/your/project
+dfmt quickstart       # init + per-agent setup + verify, in one shot
 ```
 
-You should see non-zero `events_total` and a non-zero `bytes_saved`.
+That's it. **Restart your AI agent** so it re-reads its MCP config, and
+ask it to read a file or run a command — the call will route through
+DFMT automatically.
+
+To confirm the wire-up actually works:
+
+```sh
+dfmt stats            # non-zero events_total + bytes_saved means yes
+```
+
+If anything looks off, `dfmt doctor` runs ten checks (project state,
+daemon liveness, per-agent wire-up, dfmt binary resolvable) and prints
+a one-line fix per failure.
 
 ## Why use it
 
@@ -122,31 +135,31 @@ deny:read:**/private_keys/**
 deny:write:creds/**
 ```
 
+DFMT denial errors point at this file directly — every "operation
+denied by policy" message ends with a `hint:` line telling you which
+file to edit and which network classes are non-negotiable (loopback,
+RFC1918, cloud metadata).
+
 ## Troubleshooting
 
-**"DFMT MCP server failed to start" in my agent.** Run `dfmt doctor`
-in the project root. The most common causes: dfmt binary not on
-`PATH`, project not initialized (`dfmt init` first), or the daemon
-lockfile is stale (`dfmt doctor` will surface and offer to clean it).
+**The wire-up isn't working.** Run `dfmt doctor` first — it now prints
+a per-agent block:
 
-**"operation denied by policy" when running a command.** DFMT's
-default sandbox refuses anything not in the allow list. Add the
-command to `.dfmt/permissions.yaml`:
-
-```yaml
-allow:exec:make *
+```
+AI agent wire-up:
+✓ Claude Code — 3 file(s) in place
+✗ Cursor — 1/2 files missing (run `dfmt setup --force` to restore)
+    missing: /home/x/.cursor/mcp.json
+✓ DFMT binary — /usr/local/bin/dfmt
 ```
 
-**Non-loopback bind refused.** DFMT only binds to loopback by design
-(no auth layer). If you set `transport.http.bind` to `0.0.0.0:NNNN`
-or a LAN IP, the daemon refuses to start. Use `127.0.0.1:NNNN`
-instead.
+Most "DFMT MCP server failed to start" reports come down to one of
+the failing lines above.
 
-**Sandbox can't find my binary (`go: command not found` etc.).** The
-sandbox passes through the daemon's `PATH`. Make sure the daemon was
-started in a shell that sees the binary. Restart the daemon with
-`dfmt daemon stop && dfmt daemon start` if you've installed new
-toolchains since.
+**`go: command not found` from inside the sandbox.** The sandbox passes
+through the daemon's `PATH`. Make sure the daemon was started in a shell
+that sees the binary. Restart with `dfmt stop` (the daemon auto-starts
+on the next call with fresh env).
 
 **Setting up a new agent that's not auto-detected.** Point its MCP
 config at the dfmt binary directly:
@@ -169,17 +182,19 @@ strips its keys from any shared user config like `~/.claude.json`).
 
 - `cmd/dfmt/` — CLI binary
 - `cmd/dfmt-bench/` — token-savings benchmarks
-- `internal/core/` — events, journal, BM25 index, tokenizer
-- `internal/sandbox/` — exec/read/fetch/glob/grep policy gate
+- `internal/core/` — events, journal, BM25 index, tokenizer, classifier
+- `internal/sandbox/` — exec/read/fetch/glob/grep/edit/write policy gate
 - `internal/transport/` — MCP, JSON-RPC, HTTP dashboard
 - `internal/setup/` — agent auto-detection and config writers
 - `internal/redact/` — secret redaction patterns
 - `internal/safefs/` — symlink-safe write helper
-- `internal/capture/` — git hooks + filesystem watcher
+- `internal/capture/` — git hooks + filesystem watcher + shell hook
+- `internal/content/` — ephemeral content store for raw tool output
+- `internal/retrieve/` — recall-snapshot building and markdown rendering
 
 See `AGENTS.md` for the canonical agent-onboarding instructions and
-`CLAUDE.md` for the same content scoped to Claude Code's CLAUDE.md
-convention. Architecture decisions live under `docs/adr/`.
+`CLAUDE.md` (which now points at AGENTS.md). Architecture decisions
+live under `docs/adr/`.
 
 ## Dependency policy
 
@@ -197,8 +212,9 @@ ADR.
 
 Open an issue first if the change is non-trivial. Tests are required
 for new behavior; bug fixes need a regression test. Run `make test`
-and `make lint` before pushing.
+and `make lint` before pushing. See `CONTRIBUTING.md` for the full
+workflow and `docs/adr/0000-adr-process.md` for the ADR template.
 
 ## License
 
-See `LICENSE` (TBD).
+MIT — see `LICENSE`.
