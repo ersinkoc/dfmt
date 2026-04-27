@@ -46,14 +46,17 @@ type markerStyle struct {
 }
 
 // markersFor returns the marker style appropriate to the file at path.
-// Selection is purely by basename; everything but `.cursorrules` gets
-// markdown-style. Adding a new plain-text target later means a new
-// case here, no other call-site changes.
+// Plain-text rule files (.cursorrules, .windsurfrules) get `# dfmt:v1`
+// markers; everything else (markdown, html-tolerant) gets HTML comment
+// markers. Adding a new plain-text target later means one more entry
+// in plainTextRuleFiles below, no other call-site changes.
 func markersFor(path string) markerStyle {
-	if filepath.Base(path) == ".cursorrules" {
+	switch filepath.Base(path) {
+	case ".cursorrules", ".windsurfrules":
 		return markerStyle{begin: dfmtBlockBeginCursor, end: dfmtBlockEndCursor}
+	default:
+		return markerStyle{begin: dfmtBlockBeginMD, end: dfmtBlockEndMD}
 	}
-	return markerStyle{begin: dfmtBlockBeginMD, end: dfmtBlockEndMD}
 }
 
 // markdownProjectBlockBody is the canonical DFMT block body for the
@@ -163,9 +166,15 @@ var cursorrulesProjectBlockBody = "# Context Discipline\n" +
 // ProjectInstructionPath returns the absolute path to the project-level
 // instruction file for the given agent ID, rooted at projectDir. Returns
 // ("", false) for agents that have no canonical project-level instruction
-// file (Windsurf, Continue) or unknown IDs. Several agents map to the
-// same file (Codex/OpenCode/Zed all use AGENTS.md); callers should
-// de-duplicate paths before calling Upsert.
+// file or unknown IDs.
+//
+// Continue.dev intentionally has no mapping: its directives live in the
+// user-scope `~/.continue/config.yaml` `prompts:` section (per the
+// AGENT-INTEGRATION.md spec), not a project-root file, so a per-project
+// upsert isn't the right injection point.
+//
+// Several agents map to the same file (Codex/OpenCode/Zed all use
+// AGENTS.md); callers should de-duplicate paths before calling Upsert.
 func ProjectInstructionPath(projectDir, agentID string) (string, bool) {
 	switch agentID {
 	case AgentClaudeCode:
@@ -178,9 +187,22 @@ func ProjectInstructionPath(projectDir, agentID string) (string, bool) {
 		return filepath.Join(projectDir, "AGENTS.md"), true
 	case AgentCursor:
 		return filepath.Join(projectDir, ".cursorrules"), true
+	case AgentWindsurf:
+		return filepath.Join(projectDir, ".windsurfrules"), true
 	default:
+		// AgentContinue intentionally falls through here — its rules
+		// file is in user config, not project root.
 		return "", false
 	}
+}
+
+// ProjectBlockBodyForAgent returns the canonical inner body of the
+// DFMT block for the given agent, or "" if the agent has no registered
+// body. Used by `dfmt doctor` to detect drift between the on-disk
+// block in a user's CLAUDE.md/AGENTS.md/etc. and the body shipped by
+// the current dfmt binary.
+func ProjectBlockBodyForAgent(agentID string) string {
+	return projectBlockBodyFor(agentID)
 }
 
 // projectBlockBodyFor returns the inner body of the DFMT block for the
@@ -194,7 +216,9 @@ func projectBlockBodyFor(agentID string) string {
 		return markdownProjectBlockBody
 	case AgentCodex, AgentOpenCode, AgentZed:
 		return agentsMdProjectBlockBody
-	case AgentCursor:
+	case AgentCursor, AgentWindsurf:
+		// Both rule files are plain-text-comment-form; the short body
+		// points at AGENTS.md for the full template.
 		return cursorrulesProjectBlockBody
 	default:
 		return ""
@@ -348,6 +372,64 @@ func StripDFMTBlock(filePath string) error {
 		return nil
 	}
 	return safefs.WriteFileAtomic(filepath.Dir(abs), abs, out, 0o644)
+}
+
+// ExtractDFMTBlock returns the body of the DFMT-marked block in the
+// file at filePath, or ("", false, nil) if the file exists but has no
+// markers. Returns ("", false, err) for read or marker-malformation
+// errors. The body returned is exactly what was between the begin and
+// end markers, with the wrapping marker lines removed and trailing
+// newlines normalised so callers can compare against
+// projectBlockBodyFor(agentID) byte-for-byte after a single
+// strings.TrimRight on both sides.
+//
+// Used by `dfmt doctor` to detect block-content drift across DFMT
+// upgrades: a user runs `dfmt init` on v0.2.0, then upgrades to v0.3.0
+// where the markdown body added a new tool name to the table — the
+// installed CLAUDE.md still shows the old table, and the user has no
+// way to learn that without re-running init. Drift detection turns
+// that into a doctor warning.
+func ExtractDFMTBlock(filePath string) (body string, found bool, err error) {
+	abs, err := filepath.Abs(filePath)
+	if err != nil {
+		return "", false, fmt.Errorf("resolve %s: %w", filePath, err)
+	}
+	data, rerr := os.ReadFile(abs)
+	if rerr != nil {
+		if errors.Is(rerr, os.ErrNotExist) {
+			return "", false, nil
+		}
+		return "", false, fmt.Errorf("read %s: %w", abs, rerr)
+	}
+	m := markersFor(abs)
+	begin := bytes.Index(data, []byte(m.begin))
+	if begin < 0 {
+		return "", false, nil
+	}
+	endRel := bytes.Index(data[begin:], []byte(m.end))
+	if endRel < 0 {
+		return "", false, fmt.Errorf("malformed %s: %q present without matching %q", abs, m.begin, m.end)
+	}
+	// Body is between the begin marker's line terminator and the end
+	// marker's preceding line terminator. UpsertDFMTBlock writes the
+	// pattern `<begin>\n<body-trimmed>\n<end>\n`, so the body slice is
+	// data[begin+len(begin)+1 : end_marker_start - 1].
+	bodyStart := begin + len(m.begin)
+	if bodyStart < len(data) && data[bodyStart] == '\n' {
+		bodyStart++
+	}
+	end := begin + endRel
+	// Strip trailing \n that precedes the end marker (the one
+	// UpsertDFMTBlock added when framing).
+	bodyEnd := end
+	if bodyEnd > 0 && data[bodyEnd-1] == '\n' {
+		bodyEnd--
+	}
+	if bodyEnd < bodyStart {
+		// Empty block body.
+		return "", true, nil
+	}
+	return string(data[bodyStart:bodyEnd]), true, nil
 }
 
 // UpsertProjectInstructions writes/updates the DFMT block in the project

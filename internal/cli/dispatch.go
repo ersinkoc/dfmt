@@ -172,8 +172,10 @@ func getProject() (string, error) {
 
 func runInit(args []string) int {
 	var dir string
+	var agentOverride string
 	fs := flag.NewFlagSet("init", flag.ContinueOnError)
 	fs.StringVar(&dir, "dir", "", "Project directory")
+	fs.StringVar(&agentOverride, "agent", "", "Comma-separated agent IDs to write project files for (default: detected). Use this to commit shared CLAUDE.md/AGENTS.md without needing every agent locally installed.")
 	if err := fs.Parse(args); err != nil {
 		if err == flag.ErrHelp {
 			return 0
@@ -190,12 +192,21 @@ func runInit(args []string) int {
 		return 1
 	}
 
-	// Inject the DFMT routing block into each detected agent's project
-	// instruction file (CLAUDE.md, etc.). Without this, MCP registration
-	// succeeds but agents don't know they should prefer dfmt_* over
-	// native tools — the original "init completes but agent ignores
-	// DFMT" complaint. Diagnostics-only on failure.
-	writeProjectInstructionFiles(dir)
+	// Inject the DFMT routing block into each agent's project instruction
+	// file (CLAUDE.md, etc.). Without this, MCP registration succeeds
+	// but agents don't know they should prefer dfmt_* over native tools
+	// — the original "init completes but agent ignores DFMT" complaint.
+	// --agent override forces writes for non-detected agents (shared-
+	// repo use case). Diagnostics-only on failure.
+	var explicitIDs []string
+	if agentOverride != "" {
+		for _, id := range strings.Split(agentOverride, ",") {
+			if trimmed := strings.TrimSpace(id); trimmed != "" {
+				explicitIDs = append(explicitIDs, trimmed)
+			}
+		}
+	}
+	writeProjectInstructionFiles(dir, explicitIDs)
 
 	// Mark this project as trusted in ~/.claude.json — but ONLY if Claude
 	// Code is actually present on this machine. The previous unconditional
@@ -218,14 +229,21 @@ func runInit(args []string) int {
 }
 
 // writeProjectInstructionFiles upserts the DFMT routing block into each
-// detected agent's project-level instruction file (CLAUDE.md and friends)
-// and records each successful write in the setup manifest with
+// agent's project-level instruction file (CLAUDE.md and friends) and
+// records each successful write in the setup manifest with
 // Kind=FileKindStrip so `dfmt setup --uninstall` removes only our block,
 // not the user's whole file. Idempotent — re-running replaces the
 // existing block in place. Failures are reported but do NOT fail init:
 // MCP registration still works without the doc nudge, just less
 // reliably.
-func writeProjectInstructionFiles(projectDir string) {
+//
+// agentIDs is an explicit override list. When non-empty the function
+// writes blocks for exactly those IDs regardless of local detection
+// — useful for shared repos where teammates may use agents not
+// installed on this machine ("git commit me your CLAUDE.md and
+// AGENTS.md"). When empty, falls back to setup.Detect() so the user
+// gets blocks for whatever they actually use.
+func writeProjectInstructionFiles(projectDir string, agentIDs []string) {
 	// Best-effort manifest load. If it fails we still write the files —
 	// the user gets the doc nudge; uninstall just won't auto-strip.
 	m, mErr := setup.LoadManifest()
@@ -233,10 +251,21 @@ func writeProjectInstructionFiles(projectDir string) {
 		fmt.Fprintf(os.Stderr, "warning: load manifest: %v\n", mErr)
 	}
 
+	// Resolve the ID list once so the loop body is identical between
+	// detected and override paths.
+	var ids []string
+	if len(agentIDs) == 0 {
+		for _, a := range setup.Detect() {
+			ids = append(ids, a.ID)
+		}
+	} else {
+		ids = agentIDs
+	}
+
 	seen := make(map[string]bool)
 	tracked := false
-	for _, a := range setup.Detect() {
-		path, err := setup.UpsertProjectInstructions(projectDir, a.ID)
+	for _, id := range ids {
+		path, err := setup.UpsertProjectInstructions(projectDir, id)
 		if path == "" {
 			continue
 		}
@@ -252,7 +281,7 @@ func writeProjectInstructionFiles(projectDir string) {
 		if m != nil {
 			m.AddFile(setup.FileEntry{
 				Path:    path,
-				Agent:   a.ID,
+				Agent:   id,
 				Version: "v1",
 				Kind:    setup.FileKindStrip,
 			})
@@ -324,7 +353,18 @@ func runQuickstart(args []string) int {
 	}
 	// Inject DFMT routing block into each detected agent's project
 	// instruction file. See writeProjectInstructionFiles for rationale.
-	writeProjectInstructionFiles(dir)
+	// quickstart honours the same --agent override as setup so the
+	// project-doc and MCP-config writes converge on the same agent
+	// set when the operator picks one explicitly.
+	var qsExplicitIDs []string
+	if agentOverride != "" {
+		for _, id := range strings.Split(agentOverride, ",") {
+			if trimmed := strings.TrimSpace(id); trimmed != "" {
+				qsExplicitIDs = append(qsExplicitIDs, trimmed)
+			}
+		}
+	}
+	writeProjectInstructionFiles(dir, qsExplicitIDs)
 	if setup.IsClaudeCodeInstalled() {
 		if err := setup.PatchClaudeCodeUserJSON(dir, false); err != nil {
 			fmt.Fprintf(os.Stderr, "      warning: patch ~/.claude.json: %v\n", err)
@@ -1311,6 +1351,14 @@ func runDoctor(args []string) int {
 		allOk = false
 	}
 
+	// Instruction-file staleness: a project may have been `dfmt init`-ed
+	// on a previous DFMT version whose canonical block body has since
+	// drifted (table additions, wording changes). The MCP server still
+	// works — only the agent's prompt is stale — so this is a warning,
+	// not a failure. Surfaces the cure ("run `dfmt init` to refresh")
+	// inline so the user doesn't have to consult docs.
+	checkInstructionBlockStaleness()
+
 	if daemonAlive {
 		fmt.Println("[i] Daemon running")
 	} else {
@@ -1341,6 +1389,74 @@ func runDoctor(args []string) int {
 // agent's config still points at the old binary, doctor reported
 // "all good" while every agent actually fails to launch the MCP
 // server on its next restart.
+// checkInstructionBlockStaleness compares each manifest-tracked
+// instruction file's current block body against the canonical body
+// shipped by this dfmt binary. Drift is non-fatal — the MCP server
+// keeps working with a stale block — so the function prints warnings
+// and returns nothing.
+//
+// The check covers only Kind=FileKindStrip entries (project doc
+// injections); Kind=delete (~/.claude/mcp.json etc.) are out of scope
+// — those are full-file artefacts, not blocks within user content.
+//
+// Comparison is whitespace-tolerant on the *boundary* (we trim
+// trailing newlines from both sides) but strict on the body. A single
+// reordered table row or new sentence flips the answer. False
+// positives are acceptable here because the cure ("run `dfmt init` to
+// refresh") is one command and idempotent.
+func checkInstructionBlockStaleness() {
+	m, err := setup.LoadManifest()
+	if err != nil || m == nil {
+		// Manifest read errors are surfaced by other checks; don't
+		// double-report here.
+		return
+	}
+
+	driftCount := 0
+	for _, f := range m.Files {
+		if f.Kind != setup.FileKindStrip {
+			continue
+		}
+		canonical := setup.ProjectBlockBodyForAgent(f.Agent)
+		if canonical == "" {
+			// Agent has no registered body (e.g., the entry is from
+			// a future-version that knew about an agent this binary
+			// doesn't). Skip silently.
+			continue
+		}
+		got, found, err := setup.ExtractDFMTBlock(f.Path)
+		if err != nil {
+			fmt.Printf("✗ Instruction block %s — %v\n", f.Path, err)
+			driftCount++
+			continue
+		}
+		if !found {
+			fmt.Printf("✗ Instruction block %s — markers missing (run `dfmt init` to restore)\n", f.Path)
+			driftCount++
+			continue
+		}
+		if strings.TrimRight(got, "\n") != strings.TrimRight(canonical, "\n") {
+			fmt.Printf("⚠ Instruction block %s — drift from canonical body (run `dfmt init` to refresh)\n", f.Path)
+			driftCount++
+		}
+	}
+
+	if driftCount == 0 && len(m.Files) > 0 {
+		// Only print the all-good line when there's something to check
+		// — silent on a fresh project with no instruction files.
+		anyStrip := false
+		for _, f := range m.Files {
+			if f.Kind == setup.FileKindStrip {
+				anyStrip = true
+				break
+			}
+		}
+		if anyStrip {
+			fmt.Println("✓ Instruction blocks current")
+		}
+	}
+}
+
 func checkAgentWireUp() bool {
 	allOk := true
 	agents := setup.Detect()

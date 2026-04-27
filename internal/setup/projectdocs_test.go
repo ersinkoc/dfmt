@@ -328,6 +328,7 @@ func TestProjectInstructionPath_AllWiredAgents(t *testing.T) {
 		{"opencode", "AGENTS.md"},
 		{"zed", "AGENTS.md"},
 		{"cursor", ".cursorrules"},
+		{"windsurf", ".windsurfrules"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.agent, func(t *testing.T) {
@@ -372,6 +373,48 @@ func TestUpsertProjectInstructions_AGENTSmdShared(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestUpsertProjectInstructions_ContinueIsSilentNoOp pins the
+// design choice that Continue.dev has no project-root injection
+// point — its rules live in user-scope ~/.continue/config.yaml.
+// A regression that wires Continue to AGENTS.md or similar would
+// silently overwrite user files; verify the no-op holds.
+func TestUpsertProjectInstructions_ContinueIsSilentNoOp(t *testing.T) {
+	dir := t.TempDir()
+	path, err := UpsertProjectInstructions(dir, "continue")
+	if err != nil {
+		t.Fatalf("err = %v, want nil for Continue (no-op)", err)
+	}
+	if path != "" {
+		t.Errorf("path = %q, want empty (Continue has no project file)", path)
+	}
+	entries, _ := os.ReadDir(dir)
+	if len(entries) != 0 {
+		t.Errorf("dir not empty after Continue upsert: %v", entries)
+	}
+}
+
+// TestUpsertProjectInstructions_WindsurfMarkerStyle proves Windsurf
+// gets the cursor-style plain-text markers, not HTML. Windsurf parses
+// .windsurfrules line by line just like Cursor parses .cursorrules.
+func TestUpsertProjectInstructions_WindsurfMarkerStyle(t *testing.T) {
+	dir := t.TempDir()
+	path, err := UpsertProjectInstructions(dir, "windsurf")
+	if err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	if filepath.Base(path) != ".windsurfrules" {
+		t.Fatalf("path = %q, want .../.windsurfrules", path)
+	}
+	got, _ := os.ReadFile(path)
+	gs := string(got)
+	if !strings.Contains(gs, dfmtBlockBeginCursor) {
+		t.Errorf(".windsurfrules missing cursor-style begin marker:\n%s", gs)
+	}
+	if strings.Contains(gs, dfmtBlockBeginMD) {
+		t.Errorf(".windsurfrules contains markdown-style marker (wrong style):\n%s", gs)
 	}
 }
 
@@ -486,6 +529,86 @@ func TestManifestPersistsFileKind(t *testing.T) {
 	}
 	if k := byName["AGENTS.md"].Kind; k != FileKindStrip {
 		t.Errorf("AGENTS.md Kind = %q, want %q", k, FileKindStrip)
+	}
+}
+
+// TestExtractDFMTBlock_RoundtripsCanonicalBody pins the doctor
+// staleness check's contract: ExtractDFMTBlock must return the body
+// in a form that compares byte-equal to ProjectBlockBodyForAgent
+// after a single TrimRight on both sides. A regression that adds a
+// stray newline or whitespace would flip every doctor check to "stale".
+func TestExtractDFMTBlock_RoundtripsCanonicalBody(t *testing.T) {
+	dir := t.TempDir()
+	path, err := UpsertProjectInstructions(dir, "claude-code")
+	if err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	got, found, err := ExtractDFMTBlock(path)
+	if err != nil {
+		t.Fatalf("extract: %v", err)
+	}
+	if !found {
+		t.Fatal("ExtractDFMTBlock found=false on a freshly-upserted file")
+	}
+
+	canonical := ProjectBlockBodyForAgent("claude-code")
+	gotTrim := strings.TrimRight(got, "\n")
+	wantTrim := strings.TrimRight(canonical, "\n")
+	if gotTrim != wantTrim {
+		t.Errorf("roundtrip mismatch — staleness check would falsely flag fresh files\n--- extracted ---\n%s\n--- canonical ---\n%s\n", got, canonical)
+	}
+}
+
+// TestExtractDFMTBlock_DetectsDrift covers the actual staleness
+// scenario: a CLAUDE.md from an older dfmt has a different body than
+// the current canonical. ExtractDFMTBlock returns the old body;
+// caller compares to canonical and detects drift.
+func TestExtractDFMTBlock_DetectsDrift(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "CLAUDE.md")
+
+	// Hand-write an "old version" block — the marker says v1 but the
+	// body is fictional.
+	oldContent := dfmtBlockBeginMD + "\nold body from v0.1.0\n" + dfmtBlockEndMD + "\n"
+	if err := os.WriteFile(path, []byte(oldContent), 0o644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	got, found, err := ExtractDFMTBlock(path)
+	if err != nil {
+		t.Fatalf("extract: %v", err)
+	}
+	if !found {
+		t.Fatal("ExtractDFMTBlock found=false on file with valid markers")
+	}
+	if got != "old body from v0.1.0" {
+		t.Errorf("got body = %q, want %q", got, "old body from v0.1.0")
+	}
+
+	canonical := ProjectBlockBodyForAgent("claude-code")
+	if strings.TrimRight(got, "\n") == strings.TrimRight(canonical, "\n") {
+		t.Error("old body matched current canonical — drift detection would not fire")
+	}
+}
+
+// TestExtractDFMTBlock_NoMarkersIsNotFound — a clean user CLAUDE.md
+// with no DFMT injection must return found=false, no error. Doctor
+// uses this to skip files DFMT never touched.
+func TestExtractDFMTBlock_NoMarkersIsNotFound(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "CLAUDE.md")
+	if err := os.WriteFile(path, []byte("# user notes\nno dfmt here\n"), 0o644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	got, found, err := ExtractDFMTBlock(path)
+	if err != nil {
+		t.Fatalf("err = %v, want nil", err)
+	}
+	if found {
+		t.Errorf("found = true, want false (no markers in file)")
+	}
+	if got != "" {
+		t.Errorf("got = %q, want empty", got)
 	}
 }
 

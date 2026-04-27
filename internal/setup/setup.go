@@ -109,14 +109,26 @@ const (
 )
 
 // FileEntry records a file written by setup.
+//
+// All fields use omitempty for both encodings. The legacy on-disk
+// manifests written by older dfmt versions had unconditional fields
+// (`"Path":""`, etc.); JSON unmarshal is case-insensitive and accepts
+// missing fields as zero values, so dropping the empty serialisations
+// is forward-compatible. The asymmetry where only Kind had omitempty
+// produced manifests like:
+//
+//	{"Path":"a","Agent":"b","Version":"v1"}                       // legacy
+//	{"Path":"c","Agent":"d","Version":"v1","Kind":"strip"}        // new
+//
+// which made diffing across versions noisy. Now all entries write
+// only the fields they populate.
 type FileEntry struct {
-	Path    string `yaml:"path"`
-	Agent   string `yaml:"agent"`
-	Version string `yaml:"version"`
+	Path    string `yaml:"path,omitempty" json:",omitempty"`
+	Agent   string `yaml:"agent,omitempty" json:",omitempty"`
+	Version string `yaml:"version,omitempty" json:",omitempty"`
 	// Kind selects the uninstall strategy. Empty string is treated as
 	// FileKindDelete so manifests written by older dfmt versions still
-	// uninstall correctly. omitempty on both encodings keeps legacy-
-	// style entries (Kind=="") from cluttering the on-disk manifest.
+	// uninstall correctly.
 	Kind string `yaml:"kind,omitempty" json:",omitempty"`
 }
 
