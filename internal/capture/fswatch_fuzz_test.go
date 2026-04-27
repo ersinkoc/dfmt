@@ -28,17 +28,24 @@ func FuzzMatchIgnorePattern(f *testing.F) {
 	f.Add("", "")
 
 	f.Fuzz(func(t *testing.T, pattern, target string) {
-		// matchIgnorePattern uses path.Match which only handles forward
-		// slashes — fuzz inputs with embedded NULs or backslashes are
-		// fine to feed in (the function ToSlash-normalises them).
-		// We're testing for panics and basic invariants, not pinning
-		// every case of the matcher's truth table.
+		// matchIgnorePattern's contract: pattern is ToSlash-normalised
+		// internally, target is expected to be slash-form already
+		// (callers run filepath.ToSlash before invocation). The fuzzer
+		// feeds raw bytes so we can't assume that contract holds; we
+		// test only for panics and the slash-form-pattern identity.
 		_ = matchIgnorePattern(pattern, target)
 
-		// Identity: a literal pattern with no wildcards must match itself.
-		if !strings.ContainsAny(pattern, "*?[") {
-			if !matchIgnorePattern(pattern, pattern) {
-				t.Fatalf("literal pattern %q does not match itself", pattern)
+		// Identity: a literal pattern with no path.Match meta-chars
+		// must match itself when both sides are slash-form. Backslash
+		// is excluded because it's path.Match's escape char (`\*` is a
+		// literal `*`, not a meta), so `\\` as a pattern means "literal
+		// `\`" — exactly one byte — which can't match a two-byte
+		// target. Filtering it here aligns the invariant with the
+		// matcher's real semantics.
+		if !strings.ContainsAny(pattern, `*?[\`) {
+			slashed := strings.ReplaceAll(pattern, "\\", "/") // mirror caller-side normalisation
+			if !matchIgnorePattern(pattern, slashed) {
+				t.Fatalf("literal pattern %q does not match its slash-normalised target %q", pattern, slashed)
 			}
 		}
 	})

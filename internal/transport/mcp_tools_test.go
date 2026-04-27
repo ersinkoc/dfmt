@@ -1,6 +1,7 @@
 package transport
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -26,7 +27,7 @@ func callTool(t *testing.T, m *MCPProtocol, name string, args any) *MCPResponse 
 		"name":      name,
 		"arguments": json.RawMessage(argsRaw),
 	})
-	resp, err := m.handleToolsCall(&MCPRequest{
+	resp, err := m.handleToolsCall(context.Background(), &MCPRequest{
 		JSONRPC: jsonRPCVersion,
 		ID:      1,
 		Method:  "tools/call",
@@ -70,7 +71,7 @@ func TestMCPToolsCall_Exec_InvalidArgs(t *testing.T) {
 		"name":      methodExec,
 		"arguments": json.RawMessage(`"not-an-object"`),
 	})
-	resp, err := m.handleToolsCall(&MCPRequest{
+	resp, err := m.handleToolsCall(context.Background(), &MCPRequest{
 		JSONRPC: jsonRPCVersion,
 		ID:      9,
 		Method:  "tools/call",
@@ -108,7 +109,7 @@ func TestMCPToolsCall_Read_InvalidArgs(t *testing.T) {
 		"name":      methodRead,
 		"arguments": json.RawMessage(`"bad"`),
 	})
-	resp, _ := m.handleToolsCall(&MCPRequest{
+	resp, _ := m.handleToolsCall(context.Background(), &MCPRequest{
 		JSONRPC: jsonRPCVersion, ID: 1, Method: "tools/call", Params: paramsRaw,
 	})
 	if resp.Error == nil || resp.Error.Code != -32602 {
@@ -140,7 +141,7 @@ func TestMCPToolsCall_Fetch_InvalidArgs(t *testing.T) {
 		"name":      methodFetch,
 		"arguments": json.RawMessage(`"bad"`),
 	})
-	resp, _ := m.handleToolsCall(&MCPRequest{
+	resp, _ := m.handleToolsCall(context.Background(), &MCPRequest{
 		JSONRPC: jsonRPCVersion, ID: 1, Method: "tools/call", Params: paramsRaw,
 	})
 	if resp.Error == nil || resp.Error.Code != -32602 {
@@ -159,7 +160,7 @@ func TestMCPToolsCall_Stats_Success(t *testing.T) {
 func TestMCPToolsCall_Stats_NoArgs(t *testing.T) {
 	m := newTestMCPProtocol(nil, nil)
 	paramsRaw, _ := json.Marshal(map[string]any{"name": methodStats})
-	resp, err := m.handleToolsCall(&MCPRequest{
+	resp, err := m.handleToolsCall(context.Background(), &MCPRequest{
 		JSONRPC: jsonRPCVersion, ID: 1, Method: "tools/call", Params: paramsRaw,
 	})
 	if err != nil {
@@ -200,7 +201,7 @@ func TestMCPToolsCall_Remember_InvalidArgs(t *testing.T) {
 		"name":      methodRemember,
 		"arguments": json.RawMessage(`"bad"`),
 	})
-	resp, _ := m.handleToolsCall(&MCPRequest{
+	resp, _ := m.handleToolsCall(context.Background(), &MCPRequest{
 		JSONRPC: jsonRPCVersion, ID: 1, Method: "tools/call", Params: paramsRaw,
 	})
 	if resp.Error == nil || resp.Error.Code != -32602 {
@@ -222,7 +223,7 @@ func TestMCPToolsCall_Search_InvalidArgs(t *testing.T) {
 		"name":      methodSearch,
 		"arguments": json.RawMessage(`"bad"`),
 	})
-	resp, _ := m.handleToolsCall(&MCPRequest{
+	resp, _ := m.handleToolsCall(context.Background(), &MCPRequest{
 		JSONRPC: jsonRPCVersion, ID: 1, Method: "tools/call", Params: paramsRaw,
 	})
 	if resp.Error == nil || resp.Error.Code != -32602 {
@@ -250,7 +251,7 @@ func TestMCPToolsCall_Recall_InvalidArgs(t *testing.T) {
 		"name":      methodRecall,
 		"arguments": json.RawMessage(`"bad"`),
 	})
-	resp, _ := m.handleToolsCall(&MCPRequest{
+	resp, _ := m.handleToolsCall(context.Background(), &MCPRequest{
 		JSONRPC: jsonRPCVersion, ID: 1, Method: "tools/call", Params: paramsRaw,
 	})
 	if resp.Error == nil || resp.Error.Code != -32602 {
