@@ -69,6 +69,7 @@ select:focus { outline: none; border-color: #00d4ff; }
 <div class="card"><div class="card-value" id="returned-bytes">0</div><div class="card-label">Returned Bytes</div></div>
 <div class="card"><div class="card-value" id="bytes-saved">0</div><div class="card-label">Bytes Saved</div></div>
 <div class="card"><div class="card-value" id="compression-ratio">0%</div><div class="card-label">Compression</div></div>
+<div class="card"><div class="card-value" id="dedup-hits">0</div><div class="card-label">Stash Dedup Hits</div></div>
 </div>
 <h2>LLM Token Metrics</h2>
 <div class="cards">
@@ -219,6 +220,7 @@ async function loadStats() {
     document.getElementById('returned-bytes').textContent = formatNumber(stats.total_returned_bytes || 0);
     document.getElementById('bytes-saved').textContent = formatNumber(stats.bytes_saved || 0);
     document.getElementById('compression-ratio').textContent = ((stats.compression_ratio || 0) * 100).toFixed(1) + '%';
+    document.getElementById('dedup-hits').textContent = formatNumber(stats.dedup_hits || 0);
     if (stats.session_start && stats.session_end) {
       var start = new Date(stats.session_start);
       var end = new Date(stats.session_end);

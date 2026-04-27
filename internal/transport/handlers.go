@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ersinkoc/dfmt/internal/content"
@@ -47,6 +48,13 @@ type Handlers struct {
 	// Fetch and must not contend with project/redactor setters.
 	dedupMu    sync.Mutex
 	dedupCache map[string]dedupEntry
+
+	// dedupHits counts cache hits since process start. Surfaced in Stats
+	// (and the dashboard) so users can see the dedup layer earning its
+	// keep — a high count over a session means the agent is re-running
+	// commands or re-reading generated files often enough that the
+	// dedup window pays for itself.
+	dedupHits atomic.Int64
 }
 
 // dedupEntry maps a content hash to the chunk-set ID that already holds those
@@ -238,7 +246,9 @@ func stashDedupKey(kind, source, body string) string {
 
 // dedupLookup returns the cached chunk-set ID for key when one exists and is
 // still within TTL. Expired entries are removed lazily so dedupRecord
-// doesn't have to walk the whole map on every miss.
+// doesn't have to walk the whole map on every miss. A hit increments the
+// dedupHits counter for telemetry; misses are uncounted (we count the
+// observable savings, not the work that didn't happen).
 func (h *Handlers) dedupLookup(key string) string {
 	h.dedupMu.Lock()
 	defer h.dedupMu.Unlock()
@@ -253,6 +263,7 @@ func (h *Handlers) dedupLookup(key string) string {
 		delete(h.dedupCache, key)
 		return ""
 	}
+	h.dedupHits.Add(1)
 	return e.contentID
 }
 
@@ -625,6 +636,11 @@ type StatsResponse struct {
 	TotalReturnedBytes int     `json:"total_returned_bytes"`
 	BytesSaved         int     `json:"bytes_saved"`       // raw - returned
 	CompressionRatio   float64 `json:"compression_ratio"` // saved / raw, 0..1
+	// DedupHits is the number of times stashContent collapsed an
+	// identical (kind, source, body) tuple to an existing chunk-set ID
+	// instead of writing a new one. Process-lifetime counter — survives
+	// idle restarts via re-warming, not via persistence.
+	DedupHits int `json:"dedup_hits"`
 	// Native tool awareness: how many tool calls bypassed dfmt MCP
 	NativeToolCalls      map[string]int `json:"native_tool_calls"`       // count by tool name (Bash, Read, Glob, etc.)
 	MCPToolCalls         map[string]int `json:"mcp_tool_calls"`          // count by MCP tool name (dfmt.exec, dfmt.read, etc.)
@@ -724,6 +740,7 @@ func (h *Handlers) Stats(ctx context.Context, params StatsParams) (*StatsRespons
 	if totalRawBytes > 0 {
 		resp.CompressionRatio = float64(resp.BytesSaved) / float64(totalRawBytes)
 	}
+	resp.DedupHits = int(h.dedupHits.Load())
 
 	// Compute native tool bypass rate
 	var nativeTotal, mcpTotal int
