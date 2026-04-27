@@ -97,7 +97,7 @@ const (
 	// FileKindDelete: os.Remove the path on uninstall, optionally
 	// restoring a .dfmt.bak backup if one was captured. Default for
 	// files DFMT created from scratch (~/.claude/mcp.json,
-	// ~/.codex/config.toml, etc.).
+	// ~/.codex/mcp.json, etc.).
 	FileKindDelete = "delete"
 
 	// FileKindStrip: the file is a *user-owned* document (CLAUDE.md,
