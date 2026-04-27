@@ -22,10 +22,19 @@ var defaultPriorities = map[EventType]Priority{
 }
 
 // RuleMatch defines matching criteria for a classification rule.
+//
+// All present clauses must match (AND semantics). TagAny is the one
+// disjunctive clause: the event matches if ANY of the listed tags is
+// present in Event.Tags. The previous schema (Type + PathGlob +
+// MessageRegex only) had no way to elevate priority based on tags, so
+// callers using dfmt_remember with tags like "audit" or "decision"
+// landed at the default P4 priority — same as routine tool calls —
+// and got dropped first under a tight byte-budget recall.
 type RuleMatch struct {
 	Type         EventType `yaml:"type"`
 	PathGlob     string    `yaml:"path_glob,omitempty"`
 	MessageRegex string    `yaml:"message_regex,omitempty"`
+	TagAny       []string  `yaml:"tag_any,omitempty"`
 }
 
 // Rule defines a classification rule.
@@ -52,16 +61,54 @@ type Classifier struct {
 	rules    []compiledRule
 }
 
-// NewClassifier creates a new Classifier with default priorities.
+// noteElevateP2Tags lists tag values that elevate a note-typed event to
+// P2 (just under decisions/task-done). These tags signal session-spanning
+// context the recall snapshot must keep even under a tight byte budget:
+// audit summaries, design decisions, design-strength records that future
+// agents must NOT regress, and ledger entries pointing at commits.
+var noteElevateP2Tags = []string{
+	"summary",
+	"decision",
+	"strengths",
+	"ledger",
+}
+
+// noteElevateP3Tags lists tag values that elevate a note-typed event to
+// P3 (above routine tool calls). Individual audit findings and follow-up
+// tasks live here — they are valuable but more numerous, so the byte
+// budget can drop them before the P2-tagged top-level context.
+var noteElevateP3Tags = []string{
+	"audit",
+	"finding",
+	"followup",
+	"preserve",
+}
+
+// NewClassifier creates a new Classifier with default priorities and
+// seeded note-elevation rules. The seeded rules let dfmt_remember callers
+// raise a note above the default P4 by attaching the right tag — without
+// the seed, every manually-recorded note ranked equal to a tool.read
+// event in the recall budget pass.
 func NewClassifier() *Classifier {
 	defaults := make(map[EventType]Priority)
 	for k, v := range defaultPriorities {
 		defaults[k] = v
 	}
-	return &Classifier{
+	c := &Classifier{
 		defaults: defaults,
 		rules:    []compiledRule{},
 	}
+	// Seed in priority order so the first-matching-rule wins logic in
+	// Classify picks P2 over P3 when a note carries both kinds of tags.
+	c.AddRule(Rule{
+		Match:    RuleMatch{Type: EvtNote, TagAny: append([]string(nil), noteElevateP2Tags...)},
+		Priority: PriP2,
+	})
+	c.AddRule(Rule{
+		Match:    RuleMatch{Type: EvtNote, TagAny: append([]string(nil), noteElevateP3Tags...)},
+		Priority: PriP3,
+	})
+	return c
 }
 
 // Classify returns the priority for an event.
@@ -123,7 +170,36 @@ func (c *Classifier) matchRule(e Event, cr compiledRule) bool {
 		}
 	}
 
+	// Check tag membership. TagAny matches if ANY tag in the rule appears
+	// in Event.Tags. An empty TagAny is a no-op (clause is absent), not a
+	// "match nothing" — same convention as the empty Type / PathGlob /
+	// MessageRegex clauses above.
+	if len(m.TagAny) > 0 {
+		if !anyTagMatches(e.Tags, m.TagAny) {
+			return false
+		}
+	}
+
 	return true
+}
+
+// anyTagMatches returns true if eventTags and ruleTags share at least one
+// element. Both slices are typically short (<= 8 entries), so a nested
+// linear scan is cheaper than building a map. Empty inputs return false —
+// callers must guard `len(ruleTags) > 0` before calling if absence of the
+// clause should mean "match".
+func anyTagMatches(eventTags, ruleTags []string) bool {
+	if len(eventTags) == 0 || len(ruleTags) == 0 {
+		return false
+	}
+	for _, rt := range ruleTags {
+		for _, et := range eventTags {
+			if et == rt {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // AddRule adds a classification rule. The MessageRegex is compiled once
