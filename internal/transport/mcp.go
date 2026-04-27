@@ -4,19 +4,70 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"sync"
+	"time"
 
 	"github.com/ersinkoc/dfmt/internal/config"
+	"github.com/ersinkoc/dfmt/internal/core"
 )
+
+// mcpLegacyContentSentinel is what we put in content[0].text when the modern
+// path is active. Strict MCP validators reject empty content arrays, so a tiny
+// sentinel keeps them happy while the actual payload travels in
+// structuredContent (where every modern client already reads it from).
+const mcpLegacyContentSentinel = "dfmt: see structuredContent"
+
+// mcpLegacyContent, when DFMT_MCP_LEGACY_CONTENT=1, restores the pre-token-
+// optimization behavior of duplicating the full JSON payload into
+// content[0].text alongside structuredContent. The duplicate roughly doubled
+// the token cost of every tool response on clients that count both fields
+// (Claude Code, Cursor, Codex). The sentinel-only default is safe for every
+// MCP client that consumes structuredContent — which, as of mid-2025, is all
+// of them. The escape hatch exists for the rare text-only client that parses
+// JSON out of content[0].text.
+func mcpLegacyContent() bool {
+	return os.Getenv("DFMT_MCP_LEGACY_CONTENT") == "1"
+}
 
 // MCPProtocol implements the Model Context Protocol over JSON-RPC.
 type MCPProtocol struct {
 	handlers *Handlers
+
+	// statsMu guards the lazily-populated tool-call compression cache used
+	// to enrich tool descriptions with self-tuning telemetry. Computing the
+	// stats requires a journal stream; caching keeps tools/list cheap when
+	// the client polls or reconnects within a single session.
+	statsMu       sync.Mutex
+	statsCache    map[string]toolCompression
+	statsCachedAt time.Time
 }
+
+// toolCompression aggregates raw vs. returned bytes across recent tool.* events
+// of a single type. Stored in MCPProtocol's stats cache, recomputed every
+// toolStatsTTL.
+type toolCompression struct {
+	n             int
+	rawBytes      int
+	returnedBytes int
+}
+
+// toolStatsTTL is how long compression telemetry stays cached before the next
+// tools/list call recomputes it. 60s is short enough that a session that just
+// did a high-savings batch sees the new average within a refresh, long enough
+// that the journal isn't streamed on every list call.
+const toolStatsTTL = 60 * time.Second
+
+// toolStatsMinSamples is the floor below which we suppress the description
+// suffix entirely. Five calls is too few to be honest about an average, and
+// the description should not advertise "savings: ~0% over 1 call" on a fresh
+// project.
+const toolStatsMinSamples = 5
 
 // MCPTool represents an MCP tool definition.
 type MCPTool struct {
-	Name        string                 `json:"name"`
-	Description string                 `json:"description"`
+	Name        string         `json:"name"`
+	Description string         `json:"description"`
 	InputSchema map[string]any `json:"inputSchema"`
 }
 
@@ -72,16 +123,30 @@ type MCPCallToolResult struct {
 }
 
 // mcpToolResult wraps a handler payload in the MCP CallToolResult envelope.
-// The JSON-stringified payload lives in content[0].text so old text-only
-// clients still see the data; structuredContent surfaces the typed object
-// for clients that prefer it.
+//
+// Default (token-optimized): content[0].text carries a short sentinel and the
+// full payload travels in structuredContent. Modern MCP clients (Claude Code,
+// Cursor, Codex, Cline, Continue) read structuredContent; emitting the
+// JSON-stringified payload in *both* fields was a flat ~50% token tax on
+// every tool response.
+//
+// Legacy mode (DFMT_MCP_LEGACY_CONTENT=1): content[0].text gets the full
+// JSON-stringified payload, matching the pre-optimization behavior. Use this
+// only when paired with a text-only MCP client that parses JSON out of
+// content[0].text and ignores structuredContent.
 func mcpToolResult(payload any) MCPCallToolResult {
-	body, err := json.Marshal(payload)
-	if err != nil {
-		body = []byte(fmt.Sprintf("%v", payload))
+	if mcpLegacyContent() {
+		body, err := json.Marshal(payload)
+		if err != nil {
+			body = []byte(fmt.Sprintf("%v", payload))
+		}
+		return MCPCallToolResult{
+			Content:           []MCPContent{{Type: "text", Text: string(body)}},
+			StructuredContent: payload,
+		}
 	}
 	return MCPCallToolResult{
-		Content:           []MCPContent{{Type: "text", Text: string(body)}},
+		Content:           []MCPContent{{Type: "text", Text: mcpLegacyContentSentinel}},
 		StructuredContent: payload,
 	}
 }
@@ -100,6 +165,84 @@ type MCPResponse struct {
 // NewMCPProtocol creates a new MCP protocol handler.
 func NewMCPProtocol(handlers *Handlers) *MCPProtocol {
 	return &MCPProtocol{handlers: handlers}
+}
+
+// toolStatsBlurb returns the trailing description text we append to a tool's
+// declaration based on observed compression history. The empty string is the
+// safe default — no journal, no events, too few samples, or near-zero
+// savings all suppress the blurb so the description stays honest. The blurb
+// reads as evidence the agent can act on ("recent: ~87% savings over 23
+// calls"), not as a marketing claim.
+func (m *MCPProtocol) toolStatsBlurb(eventType string) string {
+	stats := m.compressionStats()
+	s, ok := stats[eventType]
+	if !ok || s.n < toolStatsMinSamples || s.rawBytes <= 0 {
+		return ""
+	}
+	saved := s.rawBytes - s.returnedBytes
+	if saved <= 0 {
+		return ""
+	}
+	pct := 100.0 * float64(saved) / float64(s.rawBytes)
+	if pct < 5.0 {
+		// Sub-5% savings probably mean the agent is using return=raw or all
+		// outputs fit InlineThreshold — advertising it doesn't help.
+		return ""
+	}
+	return fmt.Sprintf(" Recent: ~%.0f%% token savings over last %d calls.", pct, s.n)
+}
+
+// compressionStats returns a per-event-type aggregation of (raw, returned)
+// bytes for tool.* events seen in the journal. The result is cached for
+// toolStatsTTL because tools/list can be called repeatedly within a single
+// session and recomputing on every call would stream the journal up to N
+// times. A nil journal or stream error returns an empty map — never an
+// error, because tools/list must succeed regardless of telemetry health.
+func (m *MCPProtocol) compressionStats() map[string]toolCompression {
+	m.statsMu.Lock()
+	defer m.statsMu.Unlock()
+
+	if m.statsCache != nil && time.Since(m.statsCachedAt) < toolStatsTTL {
+		return m.statsCache
+	}
+
+	out := map[string]toolCompression{}
+	if m.handlers == nil || m.handlers.journal == nil {
+		m.statsCache = out
+		m.statsCachedAt = time.Now()
+		return out
+	}
+
+	// Bound the time spent here: a misbehaving Stream shouldn't wedge the
+	// MCP handshake. 2s is generous for an in-memory mock journal and the
+	// production file-backed journal at the 10 MB cap.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	stream, err := m.handlers.journal.Stream(ctx, "")
+	if err != nil {
+		m.statsCache = out
+		m.statsCachedAt = time.Now()
+		return out
+	}
+
+	for e := range stream {
+		t := string(e.Type)
+		if t != "tool.exec" && t != "tool.read" && t != "tool.fetch" {
+			continue
+		}
+		raw, _ := getInt(e.Data, core.KeyRawBytes)
+		ret, _ := getInt(e.Data, core.KeyReturnedBytes)
+		s := out[t]
+		s.n++
+		s.rawBytes += raw
+		s.returnedBytes += ret
+		out[t] = s
+	}
+
+	m.statsCache = out
+	m.statsCachedAt = time.Now()
+	return out
 }
 
 // Handle handles an MCP request.
@@ -153,10 +296,18 @@ func (m *MCPProtocol) handleInitialize(req *MCPRequest) (*MCPResponse, error) {
 }
 
 func (m *MCPProtocol) handleToolsList(req *MCPRequest) (*MCPResponse, error) {
+	// Self-tuning telemetry: append observed compression ratios to the
+	// exec/read/fetch descriptions so the agent sees up-to-date evidence
+	// that intent-driven calls are paying off. Strings are empty (no
+	// suffix) when the journal hasn't accumulated enough samples yet.
+	execBlurb := m.toolStatsBlurb("tool.exec")
+	readBlurb := m.toolStatsBlurb("tool.read")
+	fetchBlurb := m.toolStatsBlurb("tool.fetch")
+
 	tools := []MCPTool{
 		{
 			Name:        mcpToolExec,
-			Description: "Execute code in sandbox. Returns intent-matched excerpts to save tokens.",
+			Description: "Execute code in sandbox. Returns intent-matched excerpts to save tokens." + execBlurb,
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -190,7 +341,7 @@ func (m *MCPProtocol) handleToolsList(req *MCPRequest) (*MCPResponse, error) {
 		},
 		{
 			Name:        mcpToolRead,
-			Description: "Read file via sandbox. Use this instead of native Read.",
+			Description: "Read file via sandbox. Use this instead of native Read." + readBlurb,
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -224,7 +375,7 @@ func (m *MCPProtocol) handleToolsList(req *MCPRequest) (*MCPResponse, error) {
 		},
 		{
 			Name:        mcpToolFetch,
-			Description: "Fetch URL via sandbox. Use this instead of native WebFetch.",
+			Description: "Fetch URL via sandbox. Use this instead of native WebFetch." + fetchBlurb,
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{

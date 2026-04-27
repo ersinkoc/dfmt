@@ -262,6 +262,11 @@ func TestMCPToolsCall_Recall_InvalidArgs(t *testing.T) {
 // envelope. Returning a bare ReadResponse used to make Claude Code reject the
 // reply with `expected array, received string` because ReadResponse.Content
 // is a string while MCP requires content to be a content-block array.
+//
+// In the default (token-optimized) path, content[0].text is a short sentinel
+// and the payload travels in structuredContent. Asserting payload bytes in
+// content[0].text would re-introduce the duplicate-payload tax this server
+// exists to remove, so the payload check lives on structuredContent.
 func TestMCPToolsCall_Read_CallToolResultShape(t *testing.T) {
 	sb := &stubSandbox{readResp: sandbox.ReadResp{Content: "hello"}}
 	m := newTestMCPProtocol(sb, nil)
@@ -277,12 +282,38 @@ func TestMCPToolsCall_Read_CallToolResultShape(t *testing.T) {
 		t.Errorf("Content = %+v, want at least one text block", wrapped.Content)
 	}
 	if wrapped.StructuredContent == nil {
-		t.Error("StructuredContent is nil; want original payload")
+		t.Fatal("StructuredContent is nil; want original payload")
 	}
-	// The text block must carry the stringified payload so old text-only
-	// clients still see the data.
-	if !strings.Contains(wrapped.Content[0].Text, "hello") {
-		t.Errorf("Content[0].Text = %q, want to contain payload body", wrapped.Content[0].Text)
+	rr, ok := wrapped.StructuredContent.(*ReadResponse)
+	if !ok {
+		t.Fatalf("StructuredContent type = %T, want *ReadResponse", wrapped.StructuredContent)
+	}
+	if rr.Content != "hello" {
+		t.Errorf("StructuredContent.Content = %q, want %q", rr.Content, "hello")
+	}
+	// content[0].text is intentionally NOT the JSON payload — it's a short
+	// sentinel. Re-stuffing the payload here is exactly the regression we
+	// removed.
+	if strings.Contains(wrapped.Content[0].Text, "\"content\":\"hello\"") {
+		t.Errorf("Content[0].Text duplicates structuredContent payload (%q); the modern path must keep it minimal", wrapped.Content[0].Text)
+	}
+}
+
+// TestMCPToolsCall_LegacyContentEnvelope verifies that DFMT_MCP_LEGACY_CONTENT=1
+// restores the pre-optimization behavior of duplicating the payload into
+// content[0].text. The escape hatch is documented support for text-only MCP
+// clients that ignore structuredContent.
+func TestMCPToolsCall_LegacyContentEnvelope(t *testing.T) {
+	t.Setenv("DFMT_MCP_LEGACY_CONTENT", "1")
+	sb := &stubSandbox{readResp: sandbox.ReadResp{Content: "hello-legacy"}}
+	m := newTestMCPProtocol(sb, nil)
+	resp := callTool(t, m, methodRead, ReadParams{Path: "/x"})
+	wrapped, ok := resp.Result.(MCPCallToolResult)
+	if !ok {
+		t.Fatalf("Result type = %T, want MCPCallToolResult", resp.Result)
+	}
+	if !strings.Contains(wrapped.Content[0].Text, "hello-legacy") {
+		t.Errorf("legacy mode must inline payload in content[0].text; got %q", wrapped.Content[0].Text)
 	}
 }
 
