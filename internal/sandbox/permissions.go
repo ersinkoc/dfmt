@@ -458,9 +458,43 @@ func (s *SandboxImpl) SetWorkingDir(wd string) {
 // PolicyCheck checks if an operation is allowed by the policy.
 func (s *SandboxImpl) PolicyCheck(op, text string) error {
 	if !s.policy.Evaluate(op, text) {
-		return fmt.Errorf("operation denied by policy: %s %s", op, text)
+		return fmt.Errorf("operation denied by policy: %s %s\n%s", op, text, policyDenyHint(op))
 	}
 	return nil
+}
+
+// policyDenyHint returns a one-line, actionable suffix appended to every
+// "operation denied by policy" error. Without it the user sees only what was
+// blocked, never how to unblock it — and the canonical override location
+// (.dfmt/permissions.yaml, loaded by LoadPolicy) is undiscoverable.
+//
+// We deliberately do NOT split allow-miss vs. deny-hit here: PolicyCheck's
+// caller can't tell which branch tripped, and for the user the remediation
+// is the same — open .dfmt/permissions.yaml. A few op-specific notes (cloud
+// metadata for fetch, secret paths for read/write/edit) are added so users
+// don't try to "fix" things that are deliberately walled off.
+func policyDenyHint(op string) string {
+	switch op {
+	case "exec":
+		return "  hint: add `allow:exec:<base-cmd> *` to .dfmt/permissions.yaml to allow it,\n" +
+			"        or call via dfmt's MCP tool (dfmt_exec). Deny-list entries (sudo, rm -rf /,\n" +
+			"        recursive dfmt, etc.) are intentional and can't be overridden in project config."
+	case "read":
+		return "  hint: this path matches a sandbox deny rule (.env*, **/secrets/**, **/id_*,\n" +
+			"        .git/**, .dfmt/**). Move the operation to a non-secret path, or — if you're\n" +
+			"        sure — relax it in .dfmt/permissions.yaml."
+	case "write", "edit":
+		return "  hint: this path is write/edit-protected (.env*, **/secrets/**, **/id_*,\n" +
+			"        .git/**, .dfmt/**). dfmt blocks writes/edits to secret stores, the git\n" +
+			"        repo state, and its own journal. Override in .dfmt/permissions.yaml only\n" +
+			"        if you understand why the protection exists."
+	case "fetch":
+		return "  hint: URL blocked by SSRF defenses (cloud-metadata IPs, loopback, RFC1918,\n" +
+			"        link-local, file://) or by an explicit deny rule. Use a public, routable\n" +
+			"        URL — these network classes can't be allow-listed in project config."
+	default:
+		return "  hint: see .dfmt/permissions.yaml to inspect or override the policy."
+	}
 }
 
 // stripExeSuffixFromLeadingWord strips a Windows-style `.exe` suffix from the
@@ -635,11 +669,11 @@ func (s *SandboxImpl) Exec(ctx context.Context, req ExecReq) (ExecResp, error) {
 		baseCmd := extractBaseCommand(cmd)
 		// Skip env var assignments (e.g., "GOCACHE=xxx go test")
 		if baseCmd != "" && !isEnvAssignment(baseCmd) && !s.policy.Evaluate("exec", baseCmd) {
-			return ExecResp{}, fmt.Errorf("operation denied by policy: %s: base command '%s' not allowed", cmd, baseCmd)
+			return ExecResp{}, fmt.Errorf("operation denied by policy: %s: base command '%s' not allowed\n%s", cmd, baseCmd, policyDenyHint("exec"))
 		}
 		// Second check: does the full command match any deny rule?
 		if !s.policy.Evaluate("exec", cmdForPolicy) {
-			return ExecResp{}, fmt.Errorf("operation denied by policy: %s: %v", cmd, "blocked by deny rule")
+			return ExecResp{}, fmt.Errorf("operation denied by policy: %s: %v\n%s", cmd, "blocked by deny rule", policyDenyHint("exec"))
 		}
 		// Third check: each individual command (defense in depth)
 		// Skip redirection operands (2>&1, 1>, etc.) - they're not commands
@@ -659,7 +693,7 @@ func (s *SandboxImpl) Exec(ctx context.Context, req ExecReq) (ExecResp, error) {
 			}
 			partBase := extractBaseCommand(part)
 			if !s.policy.Evaluate("exec", partBase) {
-				return ExecResp{}, fmt.Errorf("operation denied by policy: %s: part '%s' not allowed", cmd, part)
+				return ExecResp{}, fmt.Errorf("operation denied by policy: %s: part '%s' not allowed\n%s", cmd, part, policyDenyHint("exec"))
 			}
 		}
 	} else if isLangPrefix {
