@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -561,46 +560,81 @@ func (h *Handlers) Recall(ctx context.Context, params RecallParams) (*RecallResp
 		format = "md"
 	}
 
-	// Get events from journal. The buffered slice is bounded by
-	// recallMaxBufferedEvents so a long-running project's journal cannot
-	// grow this allocation without limit. The full streaming-greedy
-	// rewrite is deferred (review finding #7); this stopgap caps memory
-	// while keeping the existing priority-sort correctness — at the
-	// default budget of 4 KiB and ~80 bytes/line, recall will never need
-	// more than a few hundred events anyway.
+	// Per-tier streaming with FIFO eviction (closes review finding #7).
 	//
-	// streamCtx is a child of ctx with its own cancel: when we hit the
-	// cap we stop reading, the deferred cancel fires on return, and the
-	// journal's stream goroutine observes Done() and exits — no orphan
-	// goroutine spinning to push the remaining 95% of events into a
-	// channel nobody reads.
-	const recallMaxBufferedEvents = 5000
+	// Previous stopgap: read up to recallMaxBufferedEvents=5000 events
+	// off the journal stream, then sort the truncated slice by priority.
+	// On long-running projects with >5000 events that meant P1
+	// decisions past index 5000 were silently dropped — the priority
+	// sort had nothing to elevate.
+	//
+	// New behavior: classify each event as we stream and place it in
+	// its tier's bucket. Each bucket has its own cap; on overflow we
+	// FIFO-evict the oldest in-bucket event (Recall serves the "most
+	// relevant", which for tiers means more recent within-tier).
+	// Memory is bounded by the sum of tier caps, independent of
+	// journal length. P1 events from any journal position survive as
+	// long as the total P1 count fits p1Cap.
+	//
+	// streamCtx is a child of ctx with its own cancel so the journal's
+	// stream goroutine exits cleanly if Recall returns early (e.g.,
+	// caller cancellation, downstream render error).
 	streamCtx, streamCancel := context.WithCancel(ctx)
 	defer streamCancel()
-	events := make([]core.Event, 0, 256)
 	stream, err := h.journal.Stream(streamCtx, "")
 	if err != nil {
 		return nil, fmt.Errorf("stream journal: %w", err)
 	}
+
+	const (
+		p1Cap = 5000 // decisions/task-done — rare; keep nearly all
+		p2Cap = 1000 // commits/errors/elevated notes
+		p3Cap = 500  // file edits / audit findings
+		p4Cap = 500  // tool calls / unelevated notes
+	)
+	classifier := core.NewClassifier()
+	caps := [4]int{p1Cap, p2Cap, p3Cap, p4Cap}
+	var buckets [4][]core.Event
+
 	for e := range stream {
-		if len(events) >= recallMaxBufferedEvents {
-			break
+		var idx int
+		switch classifier.Classify(e) {
+		case core.PriP1:
+			idx = 0
+		case core.PriP2:
+			idx = 1
+		case core.PriP3:
+			idx = 2
+		case core.PriP4:
+			idx = 3
+		default:
+			idx = 3 // unknown priority → P4 bucket so events are still surfaced
 		}
-		events = append(events, e)
+		if len(buckets[idx]) >= caps[idx] {
+			// In-place FIFO shift. `s = s[1:]` would also drop the
+			// front element but slowly grows the backing array on
+			// repeated append, and would retain a reference to the
+			// dropped Event in the unreachable head slot. copy +
+			// overwrite keeps the cap bounded and lets GC collect
+			// dropped event payloads.
+			copy(buckets[idx], buckets[idx][1:])
+			buckets[idx][len(buckets[idx])-1] = e
+		} else {
+			buckets[idx] = append(buckets[idx], e)
+		}
 	}
 
-	// Classify and sort by priority (P1 first), then by timestamp descending
-	classifier := core.NewClassifier()
-	sorted := make([]core.Event, len(events))
-	copy(sorted, events)
-	sort.Slice(sorted, func(i, j int) bool {
-		pi := classifier.Classify(sorted[i])
-		pj := classifier.Classify(sorted[j])
-		if pi != pj {
-			return pi < pj // P1 < P2 < P3 < P4
+	// Concatenate tiers in priority order. Within each tier the
+	// journal streamed events TS-ascending, so reverse-iterate to
+	// surface newest-first — matching the previous sort.Slice
+	// "TS.After" tiebreak.
+	sorted := make([]core.Event, 0, len(buckets[0])+len(buckets[1])+len(buckets[2])+len(buckets[3]))
+	for tier := 0; tier < 4; tier++ {
+		bucket := buckets[tier]
+		for i := len(bucket) - 1; i >= 0; i-- {
+			sorted = append(sorted, bucket[i])
 		}
-		return sorted[i].TS.After(sorted[j].TS)
-	})
+	}
 
 	// Greedy fill with budget. Render each candidate line first so we know
 	// its exact byte cost, then stop as soon as the budget can't hold the

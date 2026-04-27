@@ -195,17 +195,17 @@ func TestStatsCacheClonesMaps(t *testing.T) {
 	}
 }
 
-// TestRecallBoundsBufferedEvents pins finding #7's stopgap: Recall must
-// not buffer the entire journal into memory. With more events than
-// recallMaxBufferedEvents, the function still returns successfully and
-// produces a snapshot — it just samples the first N events from the
-// stream. The snapshot's correctness in the over-cap case is not asserted
-// here (the priority sort then operates on the truncated set); the test
-// asserts the bound is honoured at all.
+// TestRecallBoundsBufferedEvents pins finding #7's resolution: Recall
+// must not buffer the entire journal into memory. With more events than
+// the smallest tier cap, the function still returns successfully and
+// produces a non-empty snapshot.
 //
-// We use a small synthetic count (250 events × 25 iterations of Append per
-// pass would be ~6000) but go just past the cap to keep the test fast.
-// Beyond the cap we expect Recall to short-circuit reading.
+// Historical context: this test was written against an earlier stopgap
+// that capped a single global buffer at 5000 events and could lose
+// high-priority events past that index. The recall handler now uses
+// per-tier buckets with FIFO eviction (handlers_recall_tiers_test.go
+// covers correctness under that scheme); this test continues to pin
+// the fundamental "don't OOM on big journals" invariant.
 func TestRecallBoundsBufferedEvents(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping bulk-event Recall test in -short mode")
