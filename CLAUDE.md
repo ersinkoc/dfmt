@@ -67,6 +67,7 @@ DFMT is not just a tool — it is the **mandatory proxy layer** for all operatio
 | Clean build artifacts and local state | `make clean` |
 | Install to GOPATH/bin | `make install` |
 | Cross-compile release binaries | `make release` |
+| Token-savings wire-byte report | `dfmt-bench tokensaving` (legacy vs modern across canonical workloads) |
 | Diagnostic bundle (for bug reports) | `dfmt bundle` |
 | Install git hooks | `dfmt install-hooks` |
 | Shell integration snippet | `dfmt shell-init bash\|zsh\|fish` |

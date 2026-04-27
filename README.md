@@ -127,6 +127,29 @@ Your agent calls DFMT's sandbox instead of native tools:
 
 The `intent` argument is key. "I want to find auth failures in this log" returns the matching lines plus a vocabulary of other interesting terms ("rate-limit," "timeout," "5xx"). The agent can follow up with `dfmt.search_content` to dig deeper without re-loading the raw output.
 
+#### Measured wire-byte savings
+
+Numbers below are produced by `dfmt-bench tokensaving` on a canonical workload and re-measure after every refactor. "Legacy" is the pre-overhaul pipeline (no normalize, MCP envelope duplicates the payload into both `content[0].text` and `structuredContent`). "Modern" is the current default.
+
+| Scenario | Raw | Legacy | Modern | Savings |
+| --- | ---: | ---: | ---: | ---: |
+| Small file read (inline tier) | 66 B | 406 B | 246 B | 39% |
+| `npm install` with progress bar | 1.0 KB | 2.8 KB | 237 B | **92%** |
+| Spinner / retry-loop spam | 2.7 KB | 5.9 KB | 277 B | **95%** |
+| `go test` 200 PASS + 1 FAIL + panic | 12 KB | 1.2 KB | 615 B | 48% |
+| `pytest` 200 PASS + 1 FAIL + traceback | 8.4 KB | 750 B | 408 B | 46% |
+| `cargo build` 250 compile + 2 errors | 8.1 KB | 864 B | 465 B | 46% |
+| **Total** | | **12.1 KB** | **2.2 KB** | **81%** |
+
+Where the savings come from:
+- **MCP envelope:** the payload travels in `structuredContent` only; `content[0].text` is a 27-byte sentinel. Modern MCP clients (Claude Code, Cursor, Codex, Cline, Continue) read `structuredContent`. Set `DFMT_MCP_LEGACY_CONTENT=1` to restore the dual-emit behavior for older text-only clients.
+- **Tier-aware excerpts:** outputs ≤4 KB inline directly with no excerpts (the body already contains everything matches/vocab would duplicate). Outputs 4–64 KB get 5 matches + 10 vocab terms; >64 KB the historical 10/20.
+- **Tail-bias for verdict-at-bottom output:** `go test`, `npm build`, CI runs put the answer at the end. When no keyword matches land, the modern path surfaces the last 2 KB aligned to a newline boundary instead of dropping the body entirely.
+- **Kind-aware signal extraction:** `--- FAIL`, `panic:`, `error[E…]`, `Traceback`, `*Error:`, `Exception in thread`, `FATAL`, `Caused by:` and similar verdict-shaped lines get promoted to matches with a high score regardless of intent. Test/build/CI failures stay visible without an explicit `return=raw` follow-up.
+- **Pre-stash normalize:** ANSI color/cursor sequences stripped, `\r`-overwritten lines collapsed to their final state, ≥4 consecutive duplicate lines RLE-compacted. Done on raw bytes before redaction so escape sequences can't split a secret.
+- **Stash dedup:** 30-second SHA-256 cache over `(kind, source, body)`. Re-running the same command or opening a generated file twice returns the same `content_id` instead of churning the store.
+- **Self-tuning telemetry:** the `tools/list` description for `dfmt_exec`/`dfmt_read`/`dfmt_fetch` appends `Recent: ~85% token savings over last 23 calls` once enough samples accumulate. Suppressed below 5 samples or sub-5% savings so the description stays honest.
+
 ### Session memory (keep your work across compactions)
 
 While you work, DFMT captures events from five sources: MCP tool calls, filesystem watcher, git hooks, shell integration, CLI commands. Events flow into a local append-only JSONL journal. Every event type has a priority tier (critical user decisions, important file edits and git ops, normal tool calls, informational stats).
