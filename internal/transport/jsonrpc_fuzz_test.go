@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net"
 	"testing"
+	"unicode/utf8"
 )
 
 // FuzzCodecRoundTrip pins the Codec's framing contract under arbitrary
@@ -28,6 +29,16 @@ func FuzzCodecRoundTrip(f *testing.F) {
 	f.Add("ping", `[]`, int64(-1))
 
 	f.Fuzz(func(t *testing.T, method, paramsJSON string, id int64) {
+		// JSON encoding lossy-converts invalid UTF-8 byte sequences in
+		// strings to the replacement rune U+FFFD per RFC 8259 §8.1. The
+		// codec round-trip therefore can't preserve a method name with
+		// non-UTF-8 bytes — that's a JSON property, not a framing bug.
+		// Skip such inputs so we keep testing framing/escaping rather
+		// than re-discovering the same UTF-8 contract on every run.
+		if !utf8.ValidString(method) {
+			t.Skip()
+		}
+
 		// Skip params that don't parse as JSON — fuzzing the framing here,
 		// not json.Unmarshal robustness.
 		var rawParams json.RawMessage
