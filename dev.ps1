@@ -79,7 +79,7 @@ if ($goVersionLine -match 'go(\d+)\.(\d+)(?:\.(\d+))?') {
               ($major -eq 1 -and $minor -lt 26) -or
               ($major -eq 1 -and $minor -eq 26 -and $patch -lt 2)
     if ($tooOld) {
-        Write-Warn "Go $major.$minor.$patch is older than 1.26.2 — stdlib CVEs"
+        Write-Warn "Go $major.$minor.$patch is older than 1.26.2 - stdlib CVEs"
         Write-Warn "  GO-2026-4866 / 4870 / 4946 / 4947 (crypto/x509, crypto/tls)"
         Write-Warn "  remain unpatched in this build. Upgrade: https://go.dev/dl/"
     }
