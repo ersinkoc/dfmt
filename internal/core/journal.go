@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -32,14 +33,39 @@ const maxEventBytes = 1 << 20 // 1 MiB
 const scannerBufferMax = 1 << 20 // 1 MiB
 
 // journalWarnf emits a warning the operator should see (corrupt-line skips,
-// partial-write recovery). Tests override this var to capture warnings; the
-// production default writes to stderr.
+// partial-write recovery). Tests override the implementation via
+// swapJournalWarnf so the package var is never assigned concurrently — the
+// previous mutable-var test seam was a -race landmine when t.Parallel tests
+// ran journal streams in parallel with a pending var swap. Production never
+// changes the implementation.
 //
 // See V-9 in security-report/: previously `streamFile` and `scanLastID`
 // silently dropped any line that failed `json.Unmarshal`, leaving no
 // operator-visible trail for journal corruption.
-var journalWarnf = func(format string, args ...any) {
-	fmt.Fprintf(os.Stderr, format, args...)
+type journalWarnFunc func(format string, args ...any)
+
+var journalWarnfPtr atomic.Pointer[journalWarnFunc]
+
+func init() {
+	defaultWarn := journalWarnFunc(func(format string, args ...any) {
+		fmt.Fprintf(os.Stderr, format, args...)
+	})
+	journalWarnfPtr.Store(&defaultWarn)
+}
+
+func journalWarnf(format string, args ...any) {
+	if f := journalWarnfPtr.Load(); f != nil {
+		(*f)(format, args...)
+	}
+}
+
+// swapJournalWarnf replaces the warning sink for testing. The returned
+// restore func MUST be deferred (or wired into t.Cleanup) so the previous
+// implementation is reinstated even if the test panics.
+func swapJournalWarnf(f journalWarnFunc) (restore func()) {
+	prev := journalWarnfPtr.Load()
+	journalWarnfPtr.Store(&f)
+	return func() { journalWarnfPtr.Store(prev) }
 }
 
 // snippetForWarn produces a bounded, copy-safe snippet of a journal line for
@@ -146,6 +172,13 @@ func OpenJournal(path string, opt JournalOptions) (Journal, error) {
 
 // Append adds an event to the journal.
 func (j *journalImpl) Append(ctx context.Context, e Event) error {
+	// Honor caller cancellation before doing any work. Append's hot path is
+	// CPU + a small disk write, but on a contended Append (mu held by a
+	// long Rotate or by another writer queued ahead) ctx.Done() is the
+	// only escape — pre-fix the parameter was ignored entirely.
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	// Marshal event outside the lock (CPU-bound, no shared state).
 	data, err := json.Marshal(e)
 	if err != nil {
@@ -160,6 +193,13 @@ func (j *journalImpl) Append(ctx context.Context, e Event) error {
 
 	j.mu.Lock()
 	defer j.mu.Unlock()
+
+	// Re-check ctx after the (potentially blocking) lock acquire. A caller
+	// that cancelled while waiting on j.mu shouldn't get its append snuck
+	// through after the cancel.
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
 	if j.closed {
 		return errors.New("journal closed")
@@ -345,6 +385,9 @@ func (j *journalImpl) StreamN(ctx context.Context, from string, n int) (<-chan E
 
 // Checkpoint returns the ULID of the last appended event.
 func (j *journalImpl) Checkpoint(ctx context.Context) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	return j.hiCursor, nil

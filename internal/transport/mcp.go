@@ -198,6 +198,13 @@ func (m *MCPProtocol) toolStatsBlurb(eventType string) string {
 // session and recomputing on every call would stream the journal up to N
 // times. A nil journal or stream error returns an empty map — never an
 // error, because tools/list must succeed regardless of telemetry health.
+//
+// This function uses its own bounded ctx (context.Background + 2s timeout)
+// rather than the request ctx by design: tools/list returns the cached
+// result even when the request ctx is short, and the agent should not
+// have to wait for telemetry that lives behind a slow journal read. The
+// child producer goroutine inside Stream honors this ctx, so cancellation
+// is observed within ~one event period of the deadline.
 func (m *MCPProtocol) compressionStats() map[string]toolCompression {
 	m.statsMu.Lock()
 	defer m.statsMu.Unlock()
@@ -251,7 +258,13 @@ func (m *MCPProtocol) compressionStats() map[string]toolCompression {
 // a response. The MCP handshake uses notifications/initialized; Claude Code
 // considers a server that replies to notifications broken. Callers should
 // treat a (nil, nil) return as "no response to send".
-func (m *MCPProtocol) Handle(req *MCPRequest) (*MCPResponse, error) {
+//
+// ctx is the per-request lifetime. The MCP stdio loop derives it from the
+// process-level cancellable context so SIGTERM (or future graceful-shutdown
+// triggers) cancels any in-flight tool call. Pre-fix, handleToolsCall used
+// context.Background() unconditionally, so a long-running dfmt_exec ignored
+// shutdown signals and the agent had to wait for the handler's own timeout.
+func (m *MCPProtocol) Handle(ctx context.Context, req *MCPRequest) (*MCPResponse, error) {
 	if req.ID == nil {
 		return nil, nil
 	}
@@ -261,7 +274,7 @@ func (m *MCPProtocol) Handle(req *MCPRequest) (*MCPResponse, error) {
 	case "tools/list":
 		return m.handleToolsList(req)
 	case "tools/call":
-		return m.handleToolsCall(req)
+		return m.handleToolsCall(ctx, req)
 	case "ping":
 		return m.handlePing(req)
 	default:
@@ -593,7 +606,7 @@ func (m *MCPProtocol) handleToolsList(req *MCPRequest) (*MCPResponse, error) {
 	}, nil
 }
 
-func (m *MCPProtocol) handleToolsCall(req *MCPRequest) (*MCPResponse, error) {
+func (m *MCPProtocol) handleToolsCall(ctx context.Context, req *MCPRequest) (*MCPResponse, error) {
 	if m.handlers == nil {
 		return m.errorResult(req.ID, -32603, "daemon not connected")
 	}
@@ -613,8 +626,6 @@ func (m *MCPProtocol) handleToolsCall(req *MCPRequest) (*MCPResponse, error) {
 			ID: req.ID,
 		}, nil
 	}
-
-	ctx := context.Background()
 	// Accept both the MCP-spec-compliant underscored names (mcpToolXxx) and
 	// the legacy dotted methodXxx names. Old `mcp__dfmt__dfmt.exec` allow
 	// rules in user settings.json and any client still calling the dotted
@@ -681,9 +692,17 @@ func (m *MCPProtocol) handleToolsCall(req *MCPRequest) (*MCPResponse, error) {
 		}, nil
 
 	case mcpToolStats, methodStats:
+		// Stats accepts an empty params struct — it has no required fields.
+		// Empty/absent Args is fine, but malformed JSON should still surface
+		// as Invalid params (-32602) so the agent learns about the typo
+		// instead of silently getting a zero-value StatsParams. Pre-fix the
+		// json.Unmarshal error was discarded; every other case in this
+		// switch already checks it and this one was the lone outlier.
 		var args StatsParams
-		if params.Args != nil {
-			json.Unmarshal(params.Args, &args)
+		if len(params.Args) != 0 {
+			if err := json.Unmarshal(params.Args, &args); err != nil {
+				return m.errorResult(req.ID, -32602, err.Error())
+			}
 		}
 		result, err := m.handlers.Stats(ctx, args)
 		if err != nil {

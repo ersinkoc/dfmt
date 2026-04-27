@@ -1,6 +1,9 @@
 package transport
 
-import "testing"
+import (
+	"context"
+	"testing"
+)
 
 func TestMCPProtocol_Handle_ToolsCall_NilHandlers(t *testing.T) {
 	// Create protocol with nil handlers
@@ -13,7 +16,7 @@ func TestMCPProtocol_Handle_ToolsCall_NilHandlers(t *testing.T) {
 		ID:      1,
 	}
 
-	resp, err := p.Handle(req)
+	resp, err := p.Handle(context.Background(), req)
 	if err != nil {
 		t.Fatalf("Handle returned error: %v", err)
 	}
@@ -43,7 +46,7 @@ func TestMCPProtocol_Handle_ToolsCall_EmptyParams(t *testing.T) {
 		ID:      2,
 	}
 
-	resp, err := p.Handle(req)
+	resp, err := p.Handle(context.Background(), req)
 	if err != nil {
 		t.Fatalf("Handle returned error: %v", err)
 	}
@@ -72,7 +75,7 @@ func TestMCPProtocol_Handle_ToolsCall_UnknownTool(t *testing.T) {
 		ID:      3,
 	}
 
-	resp, err := p.Handle(req)
+	resp, err := p.Handle(context.Background(), req)
 	if err != nil {
 		t.Fatalf("Handle returned error: %v", err)
 	}

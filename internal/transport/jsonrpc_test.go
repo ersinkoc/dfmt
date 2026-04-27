@@ -167,3 +167,105 @@ func TestReadRequest_UnsupportedVersion(t *testing.T) {
 		t.Errorf("expected unsupported version error, got %v", err)
 	}
 }
+
+// TestCodecRoundTrip_MultiMessage pins the framing contract: writing N
+// requests through one codec and reading N back through another must round-
+// trip cleanly. Pre-fix the writer emitted "{...}\n\n" because json.Encoder
+// already appends a newline and the codec added a second one — the second
+// ReadRequest then surfaced the empty frame as "unexpected end of JSON
+// input" and the socket loop dropped the connection.
+func TestCodecRoundTrip_MultiMessage(t *testing.T) {
+	r, w := net.Pipe()
+	defer r.Close()
+	defer w.Close()
+
+	writer := NewCodec(w)
+	reader := NewCodec(r)
+
+	const n = 3
+	writes := make([]*Request, n)
+	for i := 0; i < n; i++ {
+		writes[i] = &Request{
+			Method: "test",
+			Params: json.RawMessage(`{}`),
+			ID:     i + 1,
+		}
+	}
+
+	writeErrCh := make(chan error, 1)
+	go func() {
+		for _, req := range writes {
+			if err := writer.WriteRequest(req); err != nil {
+				writeErrCh <- err
+				return
+			}
+		}
+		writeErrCh <- nil
+	}()
+
+	for i := 0; i < n; i++ {
+		got, err := reader.ReadRequest()
+		if err != nil {
+			t.Fatalf("ReadRequest %d: %v", i, err)
+		}
+		if got.Method != "test" {
+			t.Fatalf("ReadRequest %d: method = %q, want %q", i, got.Method, "test")
+		}
+		// JSON numbers decode as float64 into `any`.
+		gotID, ok := got.ID.(float64)
+		if !ok {
+			t.Fatalf("ReadRequest %d: id type = %T, want float64", i, got.ID)
+		}
+		if int(gotID) != i+1 {
+			t.Fatalf("ReadRequest %d: id = %v, want %d", i, gotID, i+1)
+		}
+	}
+
+	if err := <-writeErrCh; err != nil {
+		t.Fatalf("writer goroutine: %v", err)
+	}
+}
+
+// TestCodecRoundTrip_ResponseMultiMessage is the symmetric test for
+// WriteResponse / ReadResponse.
+func TestCodecRoundTrip_ResponseMultiMessage(t *testing.T) {
+	r, w := net.Pipe()
+	defer r.Close()
+	defer w.Close()
+
+	writer := NewCodec(w)
+	reader := NewCodec(r)
+
+	const n = 3
+	writeErrCh := make(chan error, 1)
+	go func() {
+		for i := 0; i < n; i++ {
+			if err := writer.WriteResponse(&Response{
+				Result: map[string]any{"i": i},
+				ID:     i + 1,
+			}); err != nil {
+				writeErrCh <- err
+				return
+			}
+		}
+		writeErrCh <- nil
+	}()
+
+	for i := 0; i < n; i++ {
+		got, err := reader.ReadResponse()
+		if err != nil {
+			t.Fatalf("ReadResponse %d: %v", i, err)
+		}
+		gotID, ok := got.ID.(float64)
+		if !ok {
+			t.Fatalf("ReadResponse %d: id type = %T, want float64", i, got.ID)
+		}
+		if int(gotID) != i+1 {
+			t.Fatalf("ReadResponse %d: id = %v, want %d", i, gotID, i+1)
+		}
+	}
+
+	if err := <-writeErrCh; err != nil {
+		t.Fatalf("writer goroutine: %v", err)
+	}
+}

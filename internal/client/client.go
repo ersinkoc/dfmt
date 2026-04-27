@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -40,7 +41,7 @@ func readPortFile(path string) (int, error) {
 	}
 	trimmed := bytes.TrimSpace(data)
 	if len(trimmed) == 0 {
-		return 0, fmt.Errorf("empty port file")
+		return 0, errors.New("empty port file")
 	}
 	if trimmed[0] == '{' {
 		var pf transport.PortFile
@@ -61,6 +62,15 @@ const (
 	netUnix        = "unix"
 	addrLocalhost0 = "127.0.0.1:0"
 )
+
+// maxRPCResponseBytes caps the daemon's JSON-RPC response body so a buggy or
+// runaway daemon (looping streamer, recall snapshot misconfigured to return
+// MBs of journal) cannot OOM the client. The peer is the same-user daemon —
+// trust boundary is loose — but defense-in-depth here is cheap and matches
+// the +1-trick pattern used by config/setup loaders. 16 MiB is well above
+// any legitimate response (Stats summary, Recall snapshot capped at the
+// caller's Budget) and well below sizes that would actually crash the CLI.
+const maxRPCResponseBytes = 16 << 20
 
 // NewClient creates a new client for the given project.
 // If the project is not initialized, it auto-initializes.
@@ -164,7 +174,7 @@ func (c *Client) ensureDaemon(projectPath string) error {
 			return fmt.Errorf("daemon started but not responding (try: dfmt daemon --foreground to debug): %w", err)
 		}
 	}
-	return fmt.Errorf("daemon failed to start")
+	return errors.New("daemon failed to start")
 }
 
 // autoInitProject initializes the project if .dfmt/ doesn't exist.
@@ -282,7 +292,7 @@ func startDaemon(projectPath string) error {
 	// Belt-and-braces: refuse to re-exec a test binary even if a caller
 	// reaches this function directly. See isTestBinary for the rationale.
 	if isTestBinary() {
-		return fmt.Errorf("refusing to spawn daemon from test binary")
+		return errors.New("refusing to spawn daemon from test binary")
 	}
 
 	exePath, err := os.Executable()
@@ -291,7 +301,7 @@ func startDaemon(projectPath string) error {
 		if path, err := exec.LookPath("dfmt"); err == nil {
 			exePath = path
 		} else {
-			return fmt.Errorf("cannot find dfmt executable")
+			return errors.New("cannot find dfmt executable")
 		}
 	}
 
@@ -311,7 +321,12 @@ func startDaemon(projectPath string) error {
 		return err
 	}
 	// Reap the child when it exits so we don't leak process handles.
-	go func() { _ = cmd.Wait() }()
+	// recover guards against future refactors where Wait could be replaced
+	// by something panicking; today cmd.Wait itself does not panic.
+	go func() {
+		defer func() { _ = recover() }()
+		_ = cmd.Wait()
+	}()
 	return nil
 }
 
@@ -484,13 +499,14 @@ func cleanupStaleDaemon(projectPath string) {
 	// Don't remove port/socket - new daemon will overwrite
 }
 
-// Stats returns aggregated statistics from the daemon.
-func (c *Client) Stats(ctx context.Context) (*transport.StatsResponse, error) {
+// Stats returns aggregated statistics from the daemon. params.NoCache
+// bypasses the daemon-side TTL cache; CLI callers set it so successive
+// runs don't all return the same memoised snapshot.
+func (c *Client) Stats(ctx context.Context, params transport.StatsParams) (*transport.StatsResponse, error) {
 	// Use HTTP since daemon exposes HTTP endpoint
-	params := mustMarshal(transport.StatsParams{})
 	body, err := c.doHTTP("/api/stats", transport.Request{
 		Method: "stats",
-		Params: params,
+		Params: mustMarshal(params),
 		ID:     1,
 	})
 	if err != nil {
@@ -746,9 +762,12 @@ func (c *Client) doHTTP(method string, req transport.Request) ([]byte, error) {
 	}
 	defer resp.Body.Close()
 
-	result, err := io.ReadAll(resp.Body)
+	result, err := io.ReadAll(io.LimitReader(resp.Body, maxRPCResponseBytes+1))
 	if err != nil {
 		return nil, fmt.Errorf("read body: %w", err)
+	}
+	if int64(len(result)) > maxRPCResponseBytes {
+		return nil, fmt.Errorf("rpc response too large: exceeds %d bytes", maxRPCResponseBytes)
 	}
 
 	return result, nil

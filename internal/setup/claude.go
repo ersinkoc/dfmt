@@ -4,6 +4,7 @@ package setup
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -42,7 +43,7 @@ func claudeUserJSONPath() (string, error) {
 		return "", err
 	}
 	if home == "" {
-		return "", fmt.Errorf("empty home directory")
+		return "", errors.New("empty home directory")
 	}
 	return filepath.Join(home, ".claude.json"), nil
 }

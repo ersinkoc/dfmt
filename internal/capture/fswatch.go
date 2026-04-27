@@ -151,10 +151,14 @@ func (w *FSWatcher) runDebounceCleanup() {
 	for {
 		select {
 		case <-w.stopCh:
+			// time.Ticker.Stop is idempotent; the prior nil-out write
+			// raced with the field's construction-time read in
+			// NewFSWatcher under -race. The field has no other reader so
+			// dropping the write removes the race without needing a
+			// mutex. (Review finding #14.)
 			if w.cleanupTicker != nil {
 				w.cleanupTicker.Stop()
 			}
-			w.cleanupTicker = nil // Prevent nil dereference if Stop() was already called
 			return
 		case <-w.cleanupTicker.C:
 			if w.debounceMs <= 0 {

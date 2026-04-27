@@ -1370,7 +1370,7 @@ func TestMCPProtocolInitialize(t *testing.T) {
 		ID:      1,
 	}
 
-	resp, err := mcp.Handle(req)
+	resp, err := mcp.Handle(context.Background(), req)
 	if err != nil {
 		t.Fatalf("Handle failed: %v", err)
 	}
@@ -1393,7 +1393,7 @@ func TestMCPProtocolToolsList(t *testing.T) {
 		ID:      2,
 	}
 
-	resp, err := mcp.Handle(req)
+	resp, err := mcp.Handle(context.Background(), req)
 	if err != nil {
 		t.Fatalf("Handle failed: %v", err)
 	}
@@ -1437,7 +1437,7 @@ func TestMCPProtocolPing(t *testing.T) {
 		ID:      3,
 	}
 
-	resp, err := mcp.Handle(req)
+	resp, err := mcp.Handle(context.Background(), req)
 	if err != nil {
 		t.Fatalf("Handle failed: %v", err)
 	}
@@ -1460,7 +1460,7 @@ func TestMCPProtocolUnknownMethod(t *testing.T) {
 		ID:      4,
 	}
 
-	resp, err := mcp.Handle(req)
+	resp, err := mcp.Handle(context.Background(), req)
 	if err != nil {
 		t.Fatalf("Handle failed: %v", err)
 	}
@@ -1481,7 +1481,7 @@ func TestMCPProtocolToolsCallNoHandler(t *testing.T) {
 		ID:      5,
 	}
 
-	resp, err := mcp.Handle(req)
+	resp, err := mcp.Handle(context.Background(), req)
 	if err != nil {
 		t.Fatalf("Handle failed: %v", err)
 	}
@@ -1503,7 +1503,7 @@ func TestMCPProtocolToolsCallInvalidParams(t *testing.T) {
 		ID:      6,
 	}
 
-	resp, err := mcp.Handle(req)
+	resp, err := mcp.Handle(context.Background(), req)
 	if err != nil {
 		t.Fatalf("Handle failed: %v", err)
 	}
@@ -1524,7 +1524,7 @@ func TestMCPProtocolToolsCallKnownTool(t *testing.T) {
 		ID:      7,
 	}
 
-	resp, err := mcp.Handle(req)
+	resp, err := mcp.Handle(context.Background(), req)
 	if err != nil {
 		t.Fatalf("Handle failed: %v", err)
 	}

@@ -897,7 +897,7 @@ func (s *SandboxImpl) Read(ctx context.Context, req ReadReq) (ReadResp, error) {
 	// Reject null bytes — Go's os.Open rejects them on Windows but on Unix they
 	// are valid filename characters, so explicit rejection is defense-in-depth.
 	if strings.IndexByte(cleanPath, 0) >= 0 {
-		return ReadResp{}, fmt.Errorf("path contains null byte")
+		return ReadResp{}, errors.New("path contains null byte")
 	}
 
 	// Resolve to an absolute path and require it to sit inside the working
@@ -937,7 +937,7 @@ func (s *SandboxImpl) Read(ctx context.Context, req ReadReq) (ReadResp, error) {
 	} else if filepath.IsAbs(cleanPath) {
 		// No working directory configured: refuse absolute paths rather than
 		// silently trusting whatever policy rules exist.
-		return ReadResp{}, fmt.Errorf("absolute paths not allowed without working directory")
+		return ReadResp{}, errors.New("absolute paths not allowed without working directory")
 	}
 
 	// Policy check with the clean path
@@ -1547,7 +1547,7 @@ func (s *SandboxImpl) Edit(ctx context.Context, req EditReq) (EditResp, error) {
 	// Reject null bytes — Go's os.Open rejects them on Windows but on Unix
 	// they are valid filename characters, so explicit rejection is defense-in-depth.
 	if strings.IndexByte(cleanPath, 0) >= 0 {
-		return EditResp{}, fmt.Errorf("path contains null byte")
+		return EditResp{}, errors.New("path contains null byte")
 	}
 
 	// Verify path is within working directory
@@ -1640,7 +1640,7 @@ func (s *SandboxImpl) Write(ctx context.Context, req WriteReq) (WriteResp, error
 	// Reject null bytes — Go's os.Open rejects them on Windows but on Unix
 	// they are valid filename characters, so explicit rejection is defense-in-depth.
 	if strings.IndexByte(cleanPath, 0) >= 0 {
-		return WriteResp{}, fmt.Errorf("path contains null byte")
+		return WriteResp{}, errors.New("path contains null byte")
 	}
 
 	// Verify path is within working directory

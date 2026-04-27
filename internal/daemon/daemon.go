@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -232,7 +233,7 @@ func New(projectPath string, cfg *config.Config) (*Daemon, error) {
 // real.
 func (d *Daemon) Start(ctx context.Context) error {
 	if !d.running.CompareAndSwap(false, true) {
-		return fmt.Errorf("daemon already running")
+		return errors.New("daemon already running")
 	}
 
 	lock, lerr := AcquireLock(d.projectPath)
@@ -362,6 +363,12 @@ func (d *Daemon) Stop(ctx context.Context) error {
 		return nil
 	}
 
+	// stopOnce.Do runs the body exactly once across all callers. retErr
+	// captures the *first* call's outcome; any subsequent Stop() races
+	// past the CompareAndSwap (returns nil there) so this Once arm is
+	// effectively the unique invocation. Documented because the
+	// retErr-set-inside-closure pattern can read like "every call gets a
+	// fresh retErr" if you don't notice the Once guard.
 	var retErr error
 	d.stopOnce.Do(func() {
 		// (1/2) Signal shutdown to background goroutines.

@@ -7,20 +7,25 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 )
 
 // captureJournalWarnings swaps the package-level journalWarnf with a recorder
-// for the duration of the test and restores it on cleanup.
+// for the duration of the test and restores it on cleanup. Uses
+// swapJournalWarnf so the swap is atomic-pointer-safe under -race even when
+// other tests in the package run in parallel.
 func captureJournalWarnings(t *testing.T) *[]string {
 	t.Helper()
 	var warnings []string
-	prev := journalWarnf
-	journalWarnf = func(format string, args ...any) {
+	var mu sync.Mutex // protects warnings against the journal's own goroutines
+	restore := swapJournalWarnf(func(format string, args ...any) {
+		mu.Lock()
 		warnings = append(warnings, fmt.Sprintf(format, args...))
-	}
-	t.Cleanup(func() { journalWarnf = prev })
+		mu.Unlock()
+	})
+	t.Cleanup(restore)
 	return &warnings
 }
 

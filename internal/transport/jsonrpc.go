@@ -3,6 +3,7 @@ package transport
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"sync"
@@ -66,7 +67,7 @@ func (c *Codec) readCappedLine() ([]byte, error) {
 			if err == io.EOF && len(buf) > 0 {
 				// Partial line at EOF is an error — we only accept fully
 				// framed messages.
-				return nil, fmt.Errorf("unterminated JSON-RPC line at EOF")
+				return nil, errors.New("unterminated JSON-RPC line at EOF")
 			}
 			return nil, err
 		}
@@ -121,6 +122,15 @@ func (c *Codec) ReadResponse() (*Response, error) {
 }
 
 // WriteRequest encodes and writes a JSON-RPC request.
+//
+// json.Encoder.Encode appends a trailing newline after every value, which is
+// the frame separator readCappedLine expects. Writing an extra "\n" here used
+// to produce {…}\n\n on the wire — readCappedLine then surfaced the bare
+// second \n as an empty frame, json.Unmarshal failed with "unexpected end of
+// JSON input", and handleConn closed the connection. Single-shot HTTP never
+// hit it (one request per conn); only the socket transport's pipelined loop
+// would, and there was no regression test for that path. See
+// TestCodecRoundTrip_MultiMessage.
 func (c *Codec) WriteRequest(req *Request) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -129,12 +139,11 @@ func (c *Codec) WriteRequest(req *Request) error {
 	if err := c.enc.Encode(req); err != nil {
 		return fmt.Errorf("encode request: %w", err)
 	}
-	// Write newline to match ReadRequest's ReadBytes('\n')
-	c.rw.Write([]byte("\n"))
 	return nil
 }
 
-// WriteResponse encodes and writes a JSON-RPC response.
+// WriteResponse encodes and writes a JSON-RPC response. See WriteRequest for
+// why we rely on json.Encoder's own trailing newline.
 func (c *Codec) WriteResponse(resp *Response) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -143,8 +152,6 @@ func (c *Codec) WriteResponse(resp *Response) error {
 	if err := c.enc.Encode(resp); err != nil {
 		return fmt.Errorf("encode response: %w", err)
 	}
-	// Write newline to match ReadResponse's ReadBytes('\n')
-	c.rw.Write([]byte("\n"))
 	return nil
 }
 

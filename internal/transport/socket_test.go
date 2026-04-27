@@ -264,7 +264,7 @@ func TestSocketServer_HandleConn_IdleTimeout(t *testing.T) {
 	server := &SocketServer{handlers: &Handlers{}}
 	done := make(chan struct{})
 	go func() {
-		server.handleConn(serverConn)
+		server.handleConn(context.Background(), serverConn)
 		close(done)
 	}()
 

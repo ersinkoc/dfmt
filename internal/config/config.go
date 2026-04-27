@@ -227,7 +227,7 @@ func decodeConfigYAML(data []byte, cfg *Config) error {
 	}
 	var extra any
 	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
-		return fmt.Errorf("config file must contain exactly one YAML document")
+		return errors.New("config file must contain exactly one YAML document")
 	}
 	return nil
 }
@@ -261,11 +261,11 @@ func (c *Config) Validate() error {
 	}
 
 	if c.Storage.MaxBatchMS < 0 {
-		return fmt.Errorf("storage.max_batch_ms must be non-negative")
+		return errors.New("storage.max_batch_ms must be non-negative")
 	}
 
 	if c.Storage.JournalMaxBytes < 0 {
-		return fmt.Errorf("storage.journal_max_bytes must be non-negative")
+		return errors.New("storage.journal_max_bytes must be non-negative")
 	}
 
 	if c.Lifecycle.IdleTimeout != "" {

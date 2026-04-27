@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -63,6 +64,8 @@ func Dispatch(args []string) int {
 		return runConfig(remaining)
 	case "stats":
 		return runStats(remaining)
+	case "dashboard":
+		return runDashboard(remaining)
 	case "tail":
 		return runTail(remaining)
 	case "shell-init":
@@ -117,6 +120,7 @@ Usage:
   dfmt task done <id>           Mark task done
   dfmt config get/set <key>     Get/set config
   dfmt stats                     Show session stats
+  dfmt dashboard [--open]        Print/open the live web dashboard URL
   dfmt tail                      Stream events
   dfmt shell-init <shell>        Print shell integration
   dfmt install-hooks            Install git hooks
@@ -186,6 +190,13 @@ func runInit(args []string) int {
 		return 1
 	}
 
+	// Inject the DFMT routing block into each detected agent's project
+	// instruction file (CLAUDE.md, etc.). Without this, MCP registration
+	// succeeds but agents don't know they should prefer dfmt_* over
+	// native tools — the original "init completes but agent ignores
+	// DFMT" complaint. Diagnostics-only on failure.
+	writeProjectInstructionFiles(dir)
+
 	// Mark this project as trusted in ~/.claude.json — but ONLY if Claude
 	// Code is actually present on this machine. The previous unconditional
 	// patch created/modified ~/.claude.json on every `dfmt init` run, even
@@ -204,6 +215,63 @@ func runInit(args []string) int {
 	fmt.Println("Next: run `dfmt setup` to wire DFMT into your AI agent(s),")
 	fmt.Println("then `dfmt doctor` to verify.")
 	return 0
+}
+
+// writeProjectInstructionFiles upserts the DFMT routing block into each
+// detected agent's project-level instruction file (CLAUDE.md and friends)
+// and records each successful write in the setup manifest with
+// Kind=FileKindStrip so `dfmt setup --uninstall` removes only our block,
+// not the user's whole file. Idempotent — re-running replaces the
+// existing block in place. Failures are reported but do NOT fail init:
+// MCP registration still works without the doc nudge, just less
+// reliably.
+func writeProjectInstructionFiles(projectDir string) {
+	// Best-effort manifest load. If it fails we still write the files —
+	// the user gets the doc nudge; uninstall just won't auto-strip.
+	m, mErr := setup.LoadManifest()
+	if mErr != nil {
+		fmt.Fprintf(os.Stderr, "warning: load manifest: %v\n", mErr)
+	}
+
+	seen := make(map[string]bool)
+	tracked := false
+	for _, a := range setup.Detect() {
+		path, err := setup.UpsertProjectInstructions(projectDir, a.ID)
+		if path == "" {
+			continue
+		}
+		if seen[path] {
+			continue // shared file (multiple agents → AGENTS.md)
+		}
+		seen[path] = true
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "warning: write %s: %v\n", path, err)
+			continue
+		}
+		fmt.Printf("Wrote DFMT block to %s\n", path)
+		if m != nil {
+			m.AddFile(setup.FileEntry{
+				Path:    path,
+				Agent:   a.ID,
+				Version: "v1",
+				Kind:    setup.FileKindStrip,
+			})
+			tracked = true
+		}
+	}
+
+	if m != nil && tracked {
+		// Bump timestamp + version so a subsequent LoadManifest sees a
+		// well-formed record. RecordAgent does this for agent entries;
+		// instruction files reuse the same Files slice so a single Save
+		// is enough.
+		if m.Version == 0 {
+			m.Version = 1
+		}
+		if err := setup.SaveManifest(m); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: save manifest: %v\n", err)
+		}
+	}
 }
 
 // runQuickstart wires up a fresh project end-to-end without forcing the user
@@ -254,6 +322,9 @@ func runQuickstart(args []string) int {
 		fmt.Fprintf(os.Stderr, "      error: %v\n", err)
 		return 1
 	}
+	// Inject DFMT routing block into each detected agent's project
+	// instruction file. See writeProjectInstructionFiles for rationale.
+	writeProjectInstructionFiles(dir)
 	if setup.IsClaudeCodeInstalled() {
 		if err := setup.PatchClaudeCodeUserJSON(dir, false); err != nil {
 			fmt.Fprintf(os.Stderr, "      warning: patch ~/.claude.json: %v\n", err)
@@ -877,14 +948,14 @@ func runDaemonForeground(proj string, cfg *config.Config) int {
 
 func startDaemonBackground(proj string) (int, error) {
 	if client.DaemonRunning(proj) {
-		return 0, fmt.Errorf("daemon already running")
+		return 0, errors.New("daemon already running")
 	}
 
 	// Refuse to re-exec a test binary as the daemon. Under `go test` the
 	// test framework would ignore the extra args and re-run the suite,
 	// causing an exponential fork bomb.
 	if flag.Lookup("test.v") != nil {
-		return 0, fmt.Errorf("refusing to spawn daemon from test binary")
+		return 0, errors.New("refusing to spawn daemon from test binary")
 	}
 
 	exePath, err := os.Executable()
@@ -906,7 +977,12 @@ func startDaemonBackground(proj string) (int, error) {
 		return 0, fmt.Errorf("start daemon: %w", err)
 	}
 	// Reap the child when it exits so we don't leak process handles.
-	go func() { _ = cmd.Wait() }()
+	// recover guards against future refactors where Wait could be replaced
+	// by something panicking; today cmd.Wait itself does not panic.
+	go func() {
+		defer func() { _ = recover() }()
+		_ = cmd.Wait()
+	}()
 
 	pidPath := filepath.Join(proj, ".dfmt", "daemon.pid")
 	pidData := fmt.Sprintf("%d\n", cmd.Process.Pid)
@@ -1467,7 +1543,12 @@ func runStats(args []string) int {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	resp, err := cl.Stats(ctx)
+	// CLI bypasses the daemon-side stats cache: a human running `dfmt
+	// stats` twice in a row interprets identical numbers as "DFMT
+	// stopped recording", but the cache TTL would hold the same value
+	// for 5 seconds. Dashboard polling still gets the cached path
+	// because it sets NoCache=false (default).
+	resp, err := cl.Stats(ctx, transport.StatsParams{NoCache: true})
 	if err != nil {
 		if flagJSON {
 			fmt.Fprintf(os.Stderr, "error: %v\n", err)
@@ -1530,10 +1611,122 @@ func runStats(args []string) int {
 		if resp.EventsTotal == 0 {
 			fmt.Println("")
 			fmt.Println("No events recorded yet. Start using dfmt to record your work.")
+		} else {
+			fmt.Println()
+			fmt.Println("Tip: `dfmt dashboard` opens a live web view of these stats.")
 		}
 	}
 
 	return 0
+}
+
+// runDashboard prints the dashboard URL and optionally opens it in the
+// user's default browser. Without this command the dashboard route at
+// /dashboard exists in the HTTP server but the user has no way to find
+// the loopback port — it's chosen ephemerally and written to .dfmt/port
+// in JSON. Closes the long-standing "dashboard zaten çalışmıyor"
+// observation: the route was live, just invisible.
+//
+// Platform support: on Windows the daemon binds 127.0.0.1:<ephemeral>
+// so the dashboard is browser-reachable as soon as the daemon is up.
+// On Unix the daemon serves HTTP over a Unix socket which browsers
+// can't dial; the command prints a friendly hint instead of a URL
+// that wouldn't load.
+func runDashboard(args []string) int {
+	var openBrowser bool
+	fs := flag.NewFlagSet("dashboard", flag.ContinueOnError)
+	fs.BoolVar(&openBrowser, "open", false, "Open the dashboard in the default browser")
+	if err := fs.Parse(args); err != nil {
+		if err == flag.ErrHelp {
+			return 0
+		}
+		return 2
+	}
+
+	proj, err := getProject()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		return 1
+	}
+
+	if runtime.GOOS != "windows" {
+		// Unix daemon binds a Unix socket, not TCP. A browser cannot
+		// dial that, so printing a 127.0.0.1 URL would mislead.
+		fmt.Println("Dashboard not browser-accessible on this platform: the daemon")
+		fmt.Println("serves HTTP over a Unix socket, which browsers cannot dial.")
+		fmt.Println()
+		fmt.Println("Alternatives:")
+		fmt.Println("  - `dfmt stats` for a CLI snapshot")
+		fmt.Printf("  - curl --unix-socket %s http://x/dashboard\n", project.SocketPath(proj))
+		return 1
+	}
+
+	// Auto-start daemon if not running. NewClient performs the spawn +
+	// readiness handshake, so by the time it returns the port file is
+	// guaranteed to exist with a valid port.
+	cl, err := client.NewClient(proj)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		return 1
+	}
+	_ = cl // we only need the side-effect of ensuring the daemon is up
+
+	portFile := filepath.Join(proj, ".dfmt", "port")
+	data, err := os.ReadFile(portFile)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: read port file %s: %v\n", portFile, err)
+		return 1
+	}
+	var pf transport.PortFile
+	if jerr := json.Unmarshal(data, &pf); jerr != nil || pf.Port <= 0 {
+		// Older daemons wrote a bare integer; tolerate that format too.
+		var port int
+		if _, perr := fmt.Sscanf(strings.TrimSpace(string(data)), "%d", &port); perr == nil && port > 0 {
+			pf.Port = port
+		} else {
+			fmt.Fprintf(os.Stderr, "error: parse port file %s: %v\n", portFile, jerr)
+			return 1
+		}
+	}
+
+	url := fmt.Sprintf("http://127.0.0.1:%d/dashboard", pf.Port)
+	fmt.Println(url)
+
+	if openBrowser {
+		if err := openInBrowser(url); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: open browser: %v\n", err)
+			return 1
+		}
+	}
+	return 0
+}
+
+// openInBrowser launches the OS-default browser pointed at url. Each
+// platform has a different conventional helper; this uses the same
+// helper that desktop environments dispatch to when the user clicks a
+// link, so behaviour matches the user's defaults (e.g., a default
+// browser change is honoured on the next call).
+//
+// Safety: url is constructed by runDashboard from a fixed scheme
+// (http://127.0.0.1:<int>/dashboard) so there is no shell-injection
+// surface — the int port can't introduce metacharacters. A future
+// caller passing user input here would need to validate the scheme
+// first.
+func openInBrowser(url string) error {
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "windows":
+		// rundll32 is the documented protocol-handler entry point and
+		// avoids `cmd /c start`'s window-title quoting quirk where the
+		// first quoted argument becomes the window title rather than
+		// the URL.
+		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", url)
+	case "darwin":
+		cmd = exec.Command("open", url)
+	default:
+		cmd = exec.Command("xdg-open", url)
+	}
+	return cmd.Start()
 }
 
 func runTail(args []string) int {
@@ -1644,21 +1837,21 @@ func installShellHookContent(raw, dfmtBin string) string {
 // errSkipCapture signals that buildCaptureParams intentionally produced no event
 // (e.g. PreToolUse hook fired with no usable args/stdin) and the caller should
 // exit 0 without sending anything to the daemon.
-var errSkipCapture = fmt.Errorf("capture: nothing to record")
+var errSkipCapture = errors.New("capture: nothing to record")
 
 func buildCaptureParams(args []string) (transport.RememberParams, error) {
 	if len(args) < 1 {
-		return transport.RememberParams{}, fmt.Errorf("capture type required")
+		return transport.RememberParams{}, errors.New("capture type required")
 	}
 	switch args[0] {
 	case "git":
 		if len(args) < 2 {
-			return transport.RememberParams{}, fmt.Errorf("git capture requires subcommand")
+			return transport.RememberParams{}, errors.New("git capture requires subcommand")
 		}
 		switch args[1] {
 		case "commit":
 			if len(args) < 3 {
-				return transport.RememberParams{}, fmt.Errorf("git commit requires hash")
+				return transport.RememberParams{}, errors.New("git commit requires hash")
 			}
 			msg := ""
 			if len(args) >= 4 {
@@ -1672,7 +1865,7 @@ func buildCaptureParams(args []string) (transport.RememberParams, error) {
 			}, nil
 		case "checkout":
 			if len(args) < 3 {
-				return transport.RememberParams{}, fmt.Errorf("git checkout requires ref")
+				return transport.RememberParams{}, errors.New("git checkout requires ref")
 			}
 			isBranch := "0"
 			if len(args) >= 4 {
@@ -1688,7 +1881,7 @@ func buildCaptureParams(args []string) (transport.RememberParams, error) {
 			}, nil
 		case "push":
 			if len(args) < 4 {
-				return transport.RememberParams{}, fmt.Errorf("git push requires remote and branch")
+				return transport.RememberParams{}, errors.New("git push requires remote and branch")
 			}
 			return transport.RememberParams{
 				Type:     string(core.EvtGitPush),
@@ -1701,7 +1894,7 @@ func buildCaptureParams(args []string) (transport.RememberParams, error) {
 		}
 	case "env.cwd":
 		if len(args) < 2 {
-			return transport.RememberParams{}, fmt.Errorf("env.cwd requires path")
+			return transport.RememberParams{}, errors.New("env.cwd requires path")
 		}
 		return transport.RememberParams{
 			Type:     string(core.EvtEnvCwd),
@@ -1751,7 +1944,7 @@ func buildCaptureParams(args []string) (transport.RememberParams, error) {
 		}, nil
 	case "shell":
 		if len(args) < 2 {
-			return transport.RememberParams{}, fmt.Errorf("shell requires command")
+			return transport.RememberParams{}, errors.New("shell requires command")
 		}
 		cwd := ""
 		if len(args) >= 3 {
@@ -1948,19 +2141,36 @@ func runSetupUninstall() int {
 
 	fmt.Printf("Removing %d files...\n", len(m.Files))
 	for _, f := range m.Files {
-		if err := os.Remove(f.Path); err != nil && !os.IsNotExist(err) {
-			fmt.Fprintf(os.Stderr, "error removing %s: %v\n", f.Path, err)
-			continue
-		}
-		// If setup created a .dfmt.bak backup of a pre-existing user config,
-		// restore it so uninstall leaves the user's original config intact.
-		backup := f.Path + ".dfmt.bak"
-		if _, err := os.Stat(backup); err == nil {
-			if err := os.Rename(backup, f.Path); err != nil {
-				fmt.Fprintf(os.Stderr, "warning: restore backup %s: %v\n", backup, err)
-			} else {
-				fmt.Printf("restored original: %s\n", f.Path)
+		switch f.Kind {
+		case setup.FileKindStrip:
+			// Instruction file: strip only our marker-delimited block,
+			// preserve the rest. StripDFMTBlock no-ops on missing file
+			// or absent markers, removes the file if empty after strip.
+			if err := setup.StripDFMTBlock(f.Path); err != nil {
+				fmt.Fprintf(os.Stderr, "error stripping %s: %v\n", f.Path, err)
+				continue
 			}
+			fmt.Printf("stripped DFMT block: %s\n", f.Path)
+
+		case "", setup.FileKindDelete:
+			if err := os.Remove(f.Path); err != nil && !os.IsNotExist(err) {
+				fmt.Fprintf(os.Stderr, "error removing %s: %v\n", f.Path, err)
+				continue
+			}
+			// If setup created a .dfmt.bak backup of a pre-existing
+			// user config, restore it so uninstall leaves the user's
+			// original config intact.
+			backup := f.Path + ".dfmt.bak"
+			if _, err := os.Stat(backup); err == nil {
+				if err := os.Rename(backup, f.Path); err != nil {
+					fmt.Fprintf(os.Stderr, "warning: restore backup %s: %v\n", backup, err)
+				} else {
+					fmt.Printf("restored original: %s\n", f.Path)
+				}
+			}
+
+		default:
+			fmt.Fprintf(os.Stderr, "warning: unknown manifest kind %q for %s; skipping\n", f.Kind, f.Path)
 		}
 	}
 
@@ -2389,6 +2599,24 @@ func runMCP(_ []string) int {
 	handlers.SetProject(proj)
 	mcp := transport.NewMCPProtocol(handlers)
 
+	// Per-process cancellable context. Cancelled on stdin EOF (deferred
+	// cancel below) or on SIGINT/SIGTERM (signal goroutine). Threaded into
+	// every mcp.Handle call so a long-running tool invocation honours
+	// graceful shutdown — pre-fix, handleToolsCall used context.Background()
+	// and a Ctrl-C waited for the handler's own per-call timeout.
+	mcpCtx, mcpCancel := context.WithCancel(context.Background())
+	defer mcpCancel()
+	mcpSig := make(chan os.Signal, 1)
+	signal.Notify(mcpSig, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(mcpSig)
+	go func() {
+		select {
+		case <-mcpSig:
+			mcpCancel()
+		case <-mcpCtx.Done():
+		}
+	}()
+
 	// Read/write MCP JSON-RPC. Use bufio.Reader with a per-message cap so
 	// an oversized line produces a -32700 parse error and the session
 	// continues, instead of bufio.Scanner's ErrTooLong which kills the
@@ -2485,7 +2713,7 @@ func runMCP(_ []string) int {
 					// per JSON-RPC 2.0 they never get one.
 				}
 			}()
-			resp, _ = mcp.Handle(&req)
+			resp, _ = mcp.Handle(mcpCtx, &req)
 		}()
 
 		// JSON-RPC notifications (no ID) yield a nil response and MUST NOT

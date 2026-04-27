@@ -89,11 +89,35 @@ type AgentEntry struct {
 	ConfigDir  string `yaml:"config_dir"`
 }
 
+// FileKind drives uninstall's per-entry teardown strategy. Empty string
+// (zero value) means delete-the-whole-file, which is the historical
+// behaviour for entries written before this field existed; new code
+// should set Kind explicitly.
+const (
+	// FileKindDelete: os.Remove the path on uninstall, optionally
+	// restoring a .dfmt.bak backup if one was captured. Default for
+	// files DFMT created from scratch (~/.claude/mcp.json,
+	// ~/.codex/config.toml, etc.).
+	FileKindDelete = "delete"
+
+	// FileKindStrip: the file is a *user-owned* document (CLAUDE.md,
+	// AGENTS.md, .cursorrules) into which DFMT injected a marker-
+	// delimited block. Uninstall removes only the block, leaving the
+	// rest of the file alone. If the file is empty after stripping
+	// (DFMT was the sole resident), it is removed.
+	FileKindStrip = "strip"
+)
+
 // FileEntry records a file written by setup.
 type FileEntry struct {
 	Path    string `yaml:"path"`
 	Agent   string `yaml:"agent"`
 	Version string `yaml:"version"`
+	// Kind selects the uninstall strategy. Empty string is treated as
+	// FileKindDelete so manifests written by older dfmt versions still
+	// uninstall correctly. omitempty on both encodings keeps legacy-
+	// style entries (Kind=="") from cluttering the on-disk manifest.
+	Kind string `yaml:"kind,omitempty" json:",omitempty"`
 }
 
 // samePath compares two filesystem paths for equality. On Windows the
@@ -262,7 +286,7 @@ func decodeManifestJSON(data []byte, m *Manifest) error {
 	}
 	var extra any
 	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
-		return fmt.Errorf("manifest JSON must contain exactly one value")
+		return errors.New("manifest JSON must contain exactly one value")
 	}
 	return nil
 }
@@ -278,7 +302,7 @@ func decodeManifestYAML(data []byte, m *Manifest) error {
 	}
 	var extra any
 	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
-		return fmt.Errorf("manifest YAML must contain exactly one document")
+		return errors.New("manifest YAML must contain exactly one document")
 	}
 	return nil
 }

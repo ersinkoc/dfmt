@@ -3,6 +3,7 @@ package transport
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -110,7 +111,7 @@ func (s *HTTPServer) Start(ctx context.Context) error {
 	defer s.mu.Unlock()
 
 	if s.running {
-		return fmt.Errorf("server already running")
+		return errors.New("server already running")
 	}
 
 	// Pick a listener first so actualPort is known before we write the port file.

@@ -569,7 +569,7 @@ func TestMCPProtocolHandle(t *testing.T) {
 		ID:      1,
 	}
 
-	resp, err := mcp.Handle(req)
+	resp, err := mcp.Handle(context.Background(), req)
 	if err != nil {
 		t.Fatalf("Handle failed: %v", err)
 	}
@@ -590,7 +590,7 @@ func TestMCPProtocolHandleInitialize(t *testing.T) {
 		ID:      1,
 	}
 
-	resp, err := mcp.Handle(req)
+	resp, err := mcp.Handle(context.Background(), req)
 	if err != nil {
 		t.Fatalf("Handle failed: %v", err)
 	}
@@ -615,7 +615,7 @@ func TestMCPProtocolHandleToolsList(t *testing.T) {
 		ID:      1,
 	}
 
-	resp, err := mcp.Handle(req)
+	resp, err := mcp.Handle(context.Background(), req)
 	if err != nil {
 		t.Fatalf("Handle failed: %v", err)
 	}
@@ -655,7 +655,7 @@ func TestMCPProtocolHandleUnknownMethod(t *testing.T) {
 		ID:      1,
 	}
 
-	resp, err := mcp.Handle(req)
+	resp, err := mcp.Handle(context.Background(), req)
 	if err != nil {
 		t.Fatalf("Handle failed: %v", err)
 	}
@@ -678,7 +678,7 @@ func TestMCPProtocolHandleToolsCallUnknown(t *testing.T) {
 		ID:      1,
 	}
 
-	resp, err := mcp.Handle(req)
+	resp, err := mcp.Handle(context.Background(), req)
 	if err != nil {
 		t.Fatalf("Handle failed: %v", err)
 	}
@@ -845,7 +845,7 @@ func TestMCPProtocolHandleToolsCallRemember(t *testing.T) {
 		ID:      1,
 	}
 
-	resp, err := mcp.Handle(req)
+	resp, err := mcp.Handle(context.Background(), req)
 	if err != nil {
 		t.Fatalf("Handle failed: %v", err)
 	}
@@ -869,7 +869,7 @@ func TestMCPProtocolHandleToolsCallSearch(t *testing.T) {
 		ID:      1,
 	}
 
-	resp, err := mcp.Handle(req)
+	resp, err := mcp.Handle(context.Background(), req)
 	if err != nil {
 		t.Fatalf("Handle failed: %v", err)
 	}
@@ -894,7 +894,7 @@ func TestMCPProtocolHandleToolsCallRecall(t *testing.T) {
 		ID:      1,
 	}
 
-	resp, err := mcp.Handle(req)
+	resp, err := mcp.Handle(context.Background(), req)
 	if err != nil {
 		t.Fatalf("Handle failed: %v", err)
 	}
@@ -917,7 +917,7 @@ func TestMCPProtocolHandleToolsCallInvalidParams(t *testing.T) {
 		ID:      1,
 	}
 
-	resp, err := mcp.Handle(req)
+	resp, err := mcp.Handle(context.Background(), req)
 	if err != nil {
 		t.Fatalf("Handle failed: %v", err)
 	}
@@ -1826,7 +1826,7 @@ func TestMCPProtocolHandleToolsCallNilHandlers(t *testing.T) {
 		ID:      1,
 	}
 
-	resp, err := mcp.Handle(req)
+	resp, err := mcp.Handle(context.Background(), req)
 	if err != nil {
 		t.Fatalf("Handle failed: %v", err)
 	}
@@ -1853,7 +1853,7 @@ func TestMCPProtocolHandleToolsCallEmptyName(t *testing.T) {
 		ID:      1,
 	}
 
-	resp, err := mcp.Handle(req)
+	resp, err := mcp.Handle(context.Background(), req)
 	if err != nil {
 		t.Fatalf("Handle failed: %v", err)
 	}
@@ -1883,7 +1883,7 @@ func TestMCPProtocolHandleToolsCallRememberArgsInvalid(t *testing.T) {
 		ID:     1,
 	}
 
-	resp, err := mcp.Handle(req)
+	resp, err := mcp.Handle(context.Background(), req)
 	if err != nil {
 		t.Fatalf("Handle failed: %v", err)
 	}
@@ -1908,7 +1908,7 @@ func TestMCPProtocolHandleToolsCallSearchArgsInvalid(t *testing.T) {
 		ID:      1,
 	}
 
-	resp, err := mcp.Handle(req)
+	resp, err := mcp.Handle(context.Background(), req)
 	if err != nil {
 		t.Fatalf("Handle failed: %v", err)
 	}
@@ -1934,7 +1934,7 @@ func TestMCPProtocolHandleToolsCallRecallArgsInvalid(t *testing.T) {
 		ID:      1,
 	}
 
-	resp, err := mcp.Handle(req)
+	resp, err := mcp.Handle(context.Background(), req)
 	if err != nil {
 		t.Fatalf("Handle failed: %v", err)
 	}
@@ -1985,7 +1985,7 @@ func TestMCPProtocolHandleToolsCallRememberHandlerError(t *testing.T) {
 		ID:      1,
 	}
 
-	resp, err := mcp.Handle(req)
+	resp, err := mcp.Handle(context.Background(), req)
 	if err != nil {
 		t.Fatalf("Handle failed: %v", err)
 	}
@@ -2014,7 +2014,7 @@ func TestMCPProtocolHandleToolsCallRecallHandlerError(t *testing.T) {
 		ID:      1,
 	}
 
-	resp, err := mcp.Handle(req)
+	resp, err := mcp.Handle(context.Background(), req)
 	if err != nil {
 		t.Fatalf("Handle failed: %v", err)
 	}
@@ -2042,7 +2042,7 @@ func TestMCPProtocolHandleToolsCallMissingArguments(t *testing.T) {
 		ID:      1,
 	}
 
-	resp, err := mcp.Handle(req)
+	resp, err := mcp.Handle(context.Background(), req)
 	if err != nil {
 		t.Fatalf("Handle failed: %v", err)
 	}
@@ -2068,7 +2068,7 @@ func TestMCPProtocolHandleToolsCallSearchNoArgs(t *testing.T) {
 		ID:      1,
 	}
 
-	resp, err := mcp.Handle(req)
+	resp, err := mcp.Handle(context.Background(), req)
 	if err != nil {
 		t.Fatalf("Handle failed: %v", err)
 	}
@@ -2102,7 +2102,7 @@ func TestMCPProtocolHandleToolsCallVariousUnknownTools(t *testing.T) {
 			ID:      1,
 		}
 
-		resp, err := mcp.Handle(req)
+		resp, err := mcp.Handle(context.Background(), req)
 		if err != nil {
 			t.Fatalf("Handle failed for tool %q: %v", name, err)
 		}
