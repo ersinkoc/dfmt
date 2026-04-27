@@ -1704,6 +1704,16 @@ func (s *SandboxImpl) execImpl(ctx context.Context, req ExecReq, rt Runtime) (Ex
 		output = trimPartialRune(output)
 	}
 
+	// Strip terminal noise (ANSI color/cursor, CR-overwrites, repeat-spam)
+	// before either the return-policy filter or the content-store stash sees
+	// the bytes. Tools that paint their own UI (npm install, gradle, cargo,
+	// any Go test with -v + a coloured runner) routinely produce output
+	// whose token count is dominated by escape sequences and progress-bar
+	// rewrites — none of which the agent can act on. We do this on RAW
+	// stdout, not after redaction, because escape sequences can split a
+	// secret across positions and break the redactor's regex anchors.
+	output = NormalizeOutput(output)
+
 	// Apply the return-policy filter. This is the single point that decides
 	// whether to inline output or return excerpts; per-handler ad-hoc logic
 	// was the source of the empty-intent → full-output token leak.

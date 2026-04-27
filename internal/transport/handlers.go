@@ -41,7 +41,35 @@ type Handlers struct {
 	redactor *redact.Redactor
 	store    *content.Store
 	activity func()
+
+	// dedupMu guards the short-lived stash dedup cache. Kept separate from
+	// h.mu because stashContent runs on the hot path of every Exec/Read/
+	// Fetch and must not contend with project/redactor setters.
+	dedupMu    sync.Mutex
+	dedupCache map[string]dedupEntry
 }
+
+// dedupEntry maps a content hash to the chunk-set ID that already holds those
+// bytes. expiresAt is absolute time, not a duration — comparing against
+// time.Now() is one cheaper conditional than re-deriving every check.
+type dedupEntry struct {
+	contentID string
+	expiresAt time.Time
+}
+
+// dedupTTL is the window in which a re-stash of identical bytes returns the
+// existing chunk-set ID instead of creating a new one. The 30-second value is
+// tuned for "agent retried the same command" / "two tools read the same
+// generated file" — long enough to catch real reuse, short enough that the
+// store doesn't keep stale pointers alive past the conversation turn that
+// produced them.
+const dedupTTL = 30 * time.Second
+
+// dedupCap bounds the cache to keep memory predictable on a noisy session.
+// Past this size the recorder prunes expired entries first, then drops
+// arbitrary live ones — the cache is a best-effort optimization, missing a
+// dedup never breaks correctness.
+const dedupCap = 64
 
 // errNoProject is returned by memory-tool handlers (Remember, Recall, Stats,
 // Stream) when the MCP server is running in degraded mode — i.e. dfmt mcp
@@ -147,10 +175,23 @@ func (h *Handlers) touch() {
 // returns the chunk set ID. Returns "" when the store is not configured or
 // the body is empty. Errors are logged to stderr and swallowed — content
 // stashing must never fail a sandbox call.
+//
+// Dedup: identical (kind, source, body) tuples seen within dedupTTL return
+// the chunk-set ID of the original stash instead of writing a fresh copy.
+// Re-running the same command, opening a generated file twice, or hitting
+// the same URL during an agent loop all collapse to one entry. The
+// agent-visible content_id stays stable across the dedup window, which lets
+// downstream tooling key off it without churn. Body bytes are hashed
+// post-redaction (caller already redacts) so a redacted secret can't be
+// recovered by checking which key the cache picked.
 func (h *Handlers) stashContent(kind, source, intent, body string) string {
 	store := h.getStore()
 	if store == nil || body == "" {
 		return ""
+	}
+	dedupKey := stashDedupKey(kind, source, body)
+	if cached := h.dedupLookup(dedupKey); cached != "" {
+		return cached
 	}
 	setID := string(core.NewULID(time.Now()))
 	set := &content.ChunkSet{
@@ -176,7 +217,70 @@ func (h *Handlers) stashContent(kind, source, intent, body string) string {
 		fmt.Fprintf(os.Stderr, "stashContent put chunk: %v\n", err)
 		return ""
 	}
+	h.dedupRecord(dedupKey, setID)
 	return setID
+}
+
+// stashDedupKey returns a stable hex digest over (kind, source, body) so two
+// stashes of the same bytes from the same source compare equal even when
+// the intent string differs. NUL separators block the trivial "concat
+// collision" where a kind ending in "x" and source starting with "x" hash
+// identically to kind ending in "" and source "xx".
+func stashDedupKey(kind, source, body string) string {
+	h := sha256.New()
+	h.Write([]byte(kind))
+	h.Write([]byte{0})
+	h.Write([]byte(source))
+	h.Write([]byte{0})
+	h.Write([]byte(body))
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// dedupLookup returns the cached chunk-set ID for key when one exists and is
+// still within TTL. Expired entries are removed lazily so dedupRecord
+// doesn't have to walk the whole map on every miss.
+func (h *Handlers) dedupLookup(key string) string {
+	h.dedupMu.Lock()
+	defer h.dedupMu.Unlock()
+	if h.dedupCache == nil {
+		return ""
+	}
+	e, ok := h.dedupCache[key]
+	if !ok {
+		return ""
+	}
+	if time.Now().After(e.expiresAt) {
+		delete(h.dedupCache, key)
+		return ""
+	}
+	return e.contentID
+}
+
+// dedupRecord stores a (key -> contentID) mapping with expiry dedupTTL into
+// the future. When the cache is full the recorder evicts expired entries
+// first, then drops arbitrary live ones — a missed dedup is never wrong,
+// just suboptimal.
+func (h *Handlers) dedupRecord(key, contentID string) {
+	h.dedupMu.Lock()
+	defer h.dedupMu.Unlock()
+	if h.dedupCache == nil {
+		h.dedupCache = make(map[string]dedupEntry)
+	}
+	now := time.Now()
+	if len(h.dedupCache) >= dedupCap {
+		for k, v := range h.dedupCache {
+			if now.After(v.expiresAt) {
+				delete(h.dedupCache, k)
+			}
+		}
+		for k := range h.dedupCache {
+			if len(h.dedupCache) < dedupCap {
+				break
+			}
+			delete(h.dedupCache, k)
+		}
+	}
+	h.dedupCache[key] = dedupEntry{contentID: contentID, expiresAt: now.Add(dedupTTL)}
 }
 
 // redactString returns s with sensitive data scrubbed, or s unchanged if no
