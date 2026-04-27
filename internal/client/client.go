@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/ersinkoc/dfmt/internal/config"
+	"github.com/ersinkoc/dfmt/internal/logging"
 	"github.com/ersinkoc/dfmt/internal/project"
 	"github.com/ersinkoc/dfmt/internal/transport"
 )
@@ -209,7 +210,7 @@ func autoInitProject(projectPath string) error {
 				_, _ = f.WriteString("\n.dfmt/\n")
 				_ = f.Close()
 			} else {
-				fmt.Fprintf(os.Stderr, "warning: append .dfmt/ to %s: %v\n", gitignorePath, oerr)
+				logging.Warnf("append .dfmt/ to %s: %v", gitignorePath, oerr)
 			}
 		}
 	}

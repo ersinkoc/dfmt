@@ -13,6 +13,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/ersinkoc/dfmt/internal/logging"
 )
 
 var (
@@ -535,12 +537,12 @@ func (j *journalImpl) scanLastID() error {
 	if fi.Size() > 0 {
 		var buf [1]byte
 		if _, err := j.file.ReadAt(buf[:], fi.Size()-1); err == nil && buf[0] != '\n' {
-			fmt.Fprintf(os.Stderr, "warning: journal %s does not end with newline (partial write?); "+
-				"next append will insert a leading newline to recover\n", j.path)
+			logging.Warnf("journal %s does not end with newline (partial write?); "+
+				"next append will insert a leading newline to recover", j.path)
 			// Ensure the next Append starts a new line by writing a newline
 			// separator before anything else. This keeps JSONL parseable.
 			if _, werr := j.file.Write([]byte{'\n'}); werr != nil {
-				fmt.Fprintf(os.Stderr, "warning: could not insert recovery newline: %v\n", werr)
+				logging.Warnf("could not insert recovery newline: %v", werr)
 			}
 		}
 	}

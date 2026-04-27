@@ -21,6 +21,7 @@ import (
 	"github.com/ersinkoc/dfmt/internal/config"
 	"github.com/ersinkoc/dfmt/internal/core"
 	"github.com/ersinkoc/dfmt/internal/daemon"
+	"github.com/ersinkoc/dfmt/internal/logging"
 	"github.com/ersinkoc/dfmt/internal/project"
 	"github.com/ersinkoc/dfmt/internal/sandbox"
 	"github.com/ersinkoc/dfmt/internal/setup"
@@ -217,7 +218,7 @@ func runInit(args []string) int {
 	// shouldn't block init.
 	if setup.IsClaudeCodeInstalled() {
 		if err := setup.PatchClaudeCodeUserJSON(dir, false); err != nil {
-			fmt.Fprintf(os.Stderr, "warning: patch ~/.claude.json: %v\n", err)
+			logging.Warnf("patch ~/.claude.json: %v", err)
 		}
 	}
 
@@ -248,7 +249,7 @@ func writeProjectInstructionFiles(projectDir string, agentIDs []string) {
 	// the user gets the doc nudge; uninstall just won't auto-strip.
 	m, mErr := setup.LoadManifest()
 	if mErr != nil {
-		fmt.Fprintf(os.Stderr, "warning: load manifest: %v\n", mErr)
+		logging.Warnf("load manifest: %v", mErr)
 	}
 
 	// Resolve the ID list once so the loop body is identical between
@@ -274,7 +275,7 @@ func writeProjectInstructionFiles(projectDir string, agentIDs []string) {
 		}
 		seen[path] = true
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "warning: write %s: %v\n", path, err)
+			logging.Warnf("write %s: %v", path, err)
 			continue
 		}
 		fmt.Printf("Wrote DFMT block to %s\n", path)
@@ -298,7 +299,7 @@ func writeProjectInstructionFiles(projectDir string, agentIDs []string) {
 			m.Version = 1
 		}
 		if err := setup.SaveManifest(m); err != nil {
-			fmt.Fprintf(os.Stderr, "warning: save manifest: %v\n", err)
+			logging.Warnf("save manifest: %v", err)
 		}
 	}
 }
@@ -492,23 +493,23 @@ func ensureProjectInitialized(dir string) error {
 		if !project.IsDfmtIgnored(content) {
 			f, oerr := os.OpenFile(gitignorePath, os.O_APPEND|os.O_WRONLY, 0o644)
 			if oerr != nil {
-				fmt.Fprintf(os.Stderr, "warning: open %s for append: %v\n", gitignorePath, oerr)
+				logging.Warnf("open %s for append: %v", gitignorePath, oerr)
 			} else {
 				if _, werr := f.WriteString("\n.dfmt/\n"); werr != nil {
-					fmt.Fprintf(os.Stderr, "warning: append to %s: %v\n", gitignorePath, werr)
+					logging.Warnf("append to %s: %v", gitignorePath, werr)
 				}
 				_ = f.Close()
 			}
 		}
 	} else if !os.IsNotExist(rerr) {
-		fmt.Fprintf(os.Stderr, "warning: read %s: %v\n", gitignorePath, rerr)
+		logging.Warnf("read %s: %v", gitignorePath, rerr)
 	}
 
 	// writeProjectClaudeSettings is itself merge-safe and refuses to write
 	// to ~/.claude/settings.json. Failure is non-fatal — surface as warning
 	// so the operator can fix permissions/ACL issues.
 	if err := writeProjectClaudeSettings(dir); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: write project Claude settings: %v\n", err)
+		logging.Warnf("write project Claude settings: %v", err)
 	}
 	return nil
 }
@@ -1810,7 +1811,7 @@ func runDashboard(args []string) int {
 
 	if openBrowser {
 		if err := openInBrowser(url); err != nil {
-			fmt.Fprintf(os.Stderr, "warning: open browser: %v\n", err)
+			logging.Warnf("open browser: %v", err)
 			return 1
 		}
 	}
@@ -1874,7 +1875,7 @@ func runShellInit(args []string) int {
 	// invoke *this* binary rather than whatever `dfmt` is on PATH.
 	dfmtBin, err := os.Executable()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "warning: os.Executable failed (%v); shell hooks will use PATH\n", err)
+		logging.Warnf("os.Executable failed (%v); shell hooks will use PATH", err)
 		dfmtBin = ""
 	} else {
 		dfmtBin = filepath.ToSlash(dfmtBin)
@@ -2279,14 +2280,14 @@ func runSetupUninstall() int {
 			backup := f.Path + ".dfmt.bak"
 			if _, err := os.Stat(backup); err == nil {
 				if err := os.Rename(backup, f.Path); err != nil {
-					fmt.Fprintf(os.Stderr, "warning: restore backup %s: %v\n", backup, err)
+					logging.Warnf("restore backup %s: %v", backup, err)
 				} else {
 					fmt.Printf("restored original: %s\n", f.Path)
 				}
 			}
 
 		default:
-			fmt.Fprintf(os.Stderr, "warning: unknown manifest kind %q for %s; skipping\n", f.Kind, f.Path)
+			logging.Warnf("unknown manifest kind %q for %s; skipping", f.Kind, f.Path)
 		}
 	}
 
@@ -2297,12 +2298,12 @@ func runSetupUninstall() int {
 	// out, otherwise Claude Code will keep trying to launch a binary that
 	// no longer exists. Closes F-G-INFO-2 from the security audit.
 	if err := setup.UnpatchClaudeCodeUserJSON(); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: clean ~/.claude.json: %v\n", err)
+		logging.Warnf("clean ~/.claude.json: %v", err)
 	}
 
 	// Clear manifest
 	if err := setup.SaveManifest(&setup.Manifest{Version: 1}); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: clear manifest: %v\n", err)
+		logging.Warnf("clear manifest: %v", err)
 	}
 	fmt.Println("Uninstall complete")
 	return 0
@@ -2409,7 +2410,7 @@ func configureClaudeCode(_ setup.Agent) error {
 	// uninstall of these keys is tracked separately (see install.sh/ps1
 	// and the dfmt.bak backup written on first patch).
 	if err := setup.PatchClaudeCodeUserJSON("", true); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: patch ~/.claude.json: %v\n", err)
+		logging.Warnf("patch ~/.claude.json: %v", err)
 	}
 	m.RecordAgent("claude-code", claudeDir)
 	if err := setup.SaveManifest(m); err != nil {
@@ -2640,7 +2641,7 @@ func runMCP(_ []string) int {
 		// Auto-init the project on every MCP startup. Same idempotent
 		// steps as `dfmt init`. Failure of any single step is non-fatal.
 		if ierr := ensureProjectInitialized(proj); ierr != nil {
-			fmt.Fprintf(os.Stderr, "warning: auto-init %s: %v\n", proj, ierr)
+			logging.Warnf("auto-init %s: %v", proj, ierr)
 		}
 		dfmtDir := filepath.Join(proj, ".dfmt")
 
@@ -2654,7 +2655,7 @@ func runMCP(_ []string) int {
 		}
 		j, jerr := core.OpenJournal(journalPath, journalOpts)
 		if jerr != nil {
-			fmt.Fprintf(os.Stderr, "warning: open journal: %v\n", jerr)
+			logging.Warnf("open journal: %v", jerr)
 		}
 		journal = j
 
@@ -2680,7 +2681,7 @@ func runMCP(_ []string) int {
 				idx = rebuilt
 			} else {
 				if rerr != nil {
-					fmt.Fprintf(os.Stderr, "warning: rebuild index from journal: %v\n", rerr)
+					logging.Warnf("rebuild index from journal: %v", rerr)
 				}
 				idx = core.NewIndex()
 			}
@@ -2700,10 +2701,10 @@ func runMCP(_ []string) int {
 					// Surface the error so operators notice — on Windows a
 					// locked target file would otherwise silently drop the
 					// snapshot and force a full rebuild next launch.
-					fmt.Fprintf(os.Stderr, "warning: persist index: %v\n", perr)
+					logging.Warnf("persist index: %v", perr)
 				}
 			} else {
-				fmt.Fprintf(os.Stderr, "warning: journal checkpoint: %v\n", cerr)
+				logging.Warnf("journal checkpoint: %v", cerr)
 			}
 			_ = journal.Close()
 		}

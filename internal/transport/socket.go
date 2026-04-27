@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/ersinkoc/dfmt/internal/logging"
 )
 
 var socketReadIdleTimeout = 60 * time.Second
@@ -93,7 +95,7 @@ func (s *SocketServer) Start(ctx context.Context) error {
 	// regression — silently allowing 0666 perms on the socket would let any
 	// local user dial the daemon.
 	if cerr := os.Chmod(s.path, 0o700); cerr != nil {
-		fmt.Fprintf(os.Stderr, "warning: chmod socket: %v\n", cerr)
+		logging.Warnf("chmod socket: %v", cerr)
 	}
 
 	s.listener = ln
@@ -345,7 +347,7 @@ func (s *SocketServer) Stop(ctx context.Context) error {
 		// to unwind we still return so the daemon's shutdown sequence
 		// (journal close, index persist) can finish. The handler
 		// goroutine remains; the OS will reap it on process exit.
-		fmt.Fprintf(os.Stderr, "warning: socket Stop drain timed out after %s; one or more connections may still be unwinding\n",
+		logging.Warnf("socket Stop drain timed out after %s; one or more connections may still be unwinding",
 			stopDrainTimeout)
 	}
 

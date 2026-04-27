@@ -16,6 +16,7 @@ import (
 	"github.com/ersinkoc/dfmt/internal/config"
 	"github.com/ersinkoc/dfmt/internal/content"
 	"github.com/ersinkoc/dfmt/internal/core"
+	"github.com/ersinkoc/dfmt/internal/logging"
 	"github.com/ersinkoc/dfmt/internal/project"
 	"github.com/ersinkoc/dfmt/internal/redact"
 	"github.com/ersinkoc/dfmt/internal/safefs"
@@ -119,7 +120,7 @@ func New(projectPath string, cfg *config.Config) (*Daemon, error) {
 	// was actually still in the middle of rebuilding.
 	index, _, needsRebuild, err := core.LoadIndexWithCursor(indexPath, cursorPath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "warning: load index: %v\n", err)
+		logging.Warnf("load index: %v", err)
 		needsRebuild = true
 	}
 	if index == nil || needsRebuild {
@@ -141,7 +142,7 @@ func New(projectPath string, cfg *config.Config) (*Daemon, error) {
 	if store, cerr := content.NewStore(content.StoreOptions{Path: contentDir}); cerr == nil {
 		handlers.SetContentStore(store)
 	} else {
-		fmt.Fprintf(os.Stderr, "warning: create content store: %v\n", cerr)
+		logging.Warnf("create content store: %v", cerr)
 	}
 
 	// Create server based on platform - use HTTPServer for HTTP support (dashboard, API)
@@ -181,7 +182,7 @@ func New(projectPath string, cfg *config.Config) (*Daemon, error) {
 			return nil, fmt.Errorf("create socket listener: %w", err)
 		}
 		if cerr := os.Chmod(socketPath, 0o700); cerr != nil {
-			fmt.Fprintf(os.Stderr, "warning: chmod socket: %v\n", cerr)
+			logging.Warnf("chmod socket: %v", cerr)
 		}
 		httpServer = transport.NewHTTPServerWithListener(ln, handlers, socketPath)
 		httpServer.SetProjectPath(projectPath)
@@ -281,13 +282,13 @@ func (d *Daemon) Start(ctx context.Context) error {
 		pidPath := filepath.Join(absProject, ".dfmt", "daemon.pid")
 		pidData := fmt.Sprintf("%d\n", os.Getpid())
 		if err := safefs.WriteFile(absProject, pidPath, []byte(pidData), 0o600); err != nil {
-			fmt.Fprintf(os.Stderr, "warning: write pid file: %v\n", err)
+			logging.Warnf("write pid file: %v", err)
 		}
 
 		// Start optional filesystem watcher and pipe its events into the journal.
 		if d.fswatcher != nil {
 			if err := d.fswatcher.Start(ctx); err != nil {
-				fmt.Fprintf(os.Stderr, "warning: fswatcher start: %v\n", err)
+				logging.Warnf("fswatcher start: %v", err)
 			} else {
 				fswatcherStarted = true
 				d.wg.Add(1)
@@ -422,10 +423,10 @@ func (d *Daemon) Stop(ctx context.Context) error {
 		} else {
 			hiID, err := d.journal.Checkpoint(ctx)
 			if err != nil {
-				fmt.Fprintf(os.Stderr, "warning: checkpoint failed: %v\n", err)
+				logging.Warnf("checkpoint failed: %v", err)
 			}
 			if perr := core.PersistIndex(d.index, indexPath, hiID); perr != nil {
-				fmt.Fprintf(os.Stderr, "warning: persist index: %v\n", perr)
+				logging.Warnf("persist index: %v", perr)
 			}
 		}
 
@@ -466,7 +467,7 @@ func (d *Daemon) rebuildIndexAsync() {
 	defer d.wg.Done()
 	defer func() {
 		if r := recover(); r != nil {
-			fmt.Fprintf(os.Stderr, "warning: index rebuild panic recovered: %v\n", r)
+			logging.Warnf("index rebuild panic recovered: %v", r)
 		}
 	}()
 
@@ -477,12 +478,12 @@ func (d *Daemon) rebuildIndexAsync() {
 		// would lie about which events are indexed — see Stop's persist
 		// guard below.
 		if d.rebuildCtx.Err() == nil {
-			fmt.Fprintf(os.Stderr, "warning: index rebuild: %v\n", err)
+			logging.Warnf("index rebuild: %v", err)
 		}
 		return
 	}
 	if perr := core.PersistIndex(d.index, d.indexPath, hiID); perr != nil {
-		fmt.Fprintf(os.Stderr, "warning: persist rebuilt index: %v\n", perr)
+		logging.Warnf("persist rebuilt index: %v", perr)
 	}
 	d.rebuildComplete.Store(true)
 }

@@ -4,10 +4,11 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"encoding/hex"
-	"fmt"
 	"os"
 	"sync"
 	"time"
+
+	"github.com/ersinkoc/dfmt/internal/logging"
 )
 
 var (
@@ -48,7 +49,7 @@ func NewULID(ts time.Time) ULID {
 			// purposes: fall back to a deterministic pid+counter+nanotime
 			// mix so the daemon can still mint monotonic IDs instead of
 			// crashing. Surface the error once so operators notice.
-			fmt.Fprintf(os.Stderr, "warning: crypto/rand.Read failed for ULID: %v (using fallback seed)\n", err)
+			logging.Warnf("crypto/rand.Read failed for ULID: %v (using fallback seed)", err)
 			ulidFallbackCtr++
 			mix := uint64(os.Getpid())<<32 | ulidFallbackCtr
 			binary.BigEndian.PutUint64(lastRandom[:8], mix^uint64(ts.UnixNano()))
