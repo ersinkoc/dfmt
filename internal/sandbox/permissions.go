@@ -76,6 +76,25 @@ func (p Policy) Evaluate(op, text string) bool {
 }
 
 // DefaultPolicy returns the default security policy.
+//
+// The default `read **` and `write **` allow rules let agents navigate
+// the working directory freely. Sensitive paths (`.env*`, `**/secrets/**`,
+// `**/id_rsa`, `**/id_*`, `.dfmt/**`, `.git/**`) are explicitly denied —
+// the deny list is checked first and is the only gate on those paths.
+//
+// Operators with site-specific secret directories beyond the standard
+// shapes (e.g. `creds/`, `private_keys/`, `ca-bundles/`, custom vault
+// mounts) should extend the policy with project-level deny rules. The
+// canonical location is `.dfmt/permissions.yaml` (loaded via
+// `LoadPolicy`) — entries take the form:
+//
+//	deny:read:creds/**
+//	deny:read:**/private_keys/**
+//	deny:write:creds/**
+//	deny:edit:creds/**
+//
+// Closes F-A-LOW-1 from the security audit (operator-facing guidance
+// for non-standard secret stores).
 func DefaultPolicy() Policy {
 	return Policy{
 		Version: 1,
@@ -1541,13 +1560,22 @@ func (s *SandboxImpl) Edit(ctx context.Context, req EditReq) (EditResp, error) {
 	newContent := strings.Replace(content, req.OldString, req.NewString, 1)
 
 	// Write back, preserving original mode where possible. We re-stat instead
-	// of trusting WriteFile's perm arg (which only takes effect on create) so
-	// a 0600 secrets file edited by an agent keeps its 0600 mode.
+	// of trusting WriteFileAtomic's perm arg (which only takes effect on
+	// create) so a 0600 secrets file edited by an agent keeps its 0600 mode.
+	//
+	// WriteFileAtomic (tmp + rename) closes the F-R-LOW-1 TOCTOU window
+	// from the security audit: the previous WriteFile path was Lstat-then-
+	// open, so an attacker who could swap `cleanPath` for a symlink between
+	// the CheckNoSymlinks call above and the open could still write through
+	// that symlink. Rename(2) replaces the symlink as a directory entry
+	// rather than following it, so the race window is closed at the cost
+	// of breaking pre-existing hard links to the target — an acceptable
+	// trade-off for an agent-driven editor.
 	mode := os.FileMode(0o600)
 	if fi, ferr := os.Stat(cleanPath); ferr == nil {
 		mode = fi.Mode().Perm()
 	}
-	if err := safefs.WriteFile(absWd, cleanPath, []byte(newContent), mode); err != nil {
+	if err := safefs.WriteFileAtomic(absWd, cleanPath, []byte(newContent), mode); err != nil {
 		return EditResp{}, fmt.Errorf("write file: %w", err)
 	}
 
@@ -1612,11 +1640,17 @@ func (s *SandboxImpl) Write(ctx context.Context, req WriteReq) (WriteResp, error
 	// Write file with owner-only permissions for new files. If the file
 	// already exists, preserve its mode (an agent shouldn't widen access on
 	// an existing file by overwriting it).
+	//
+	// WriteFileAtomic (tmp + rename) closes the F-R-LOW-1 TOCTOU window
+	// from the security audit: rename(2) replaces a symlink that an
+	// attacker raced into the leaf position rather than following it.
+	// Trade-off: any hard links to a pre-existing target are broken on
+	// overwrite — acceptable for an agent-driven file writer.
 	mode := os.FileMode(0o600)
 	if fi, ferr := os.Stat(cleanPath); ferr == nil {
 		mode = fi.Mode().Perm()
 	}
-	if err := safefs.WriteFile(absWd, cleanPath, []byte(req.Content), mode); err != nil {
+	if err := safefs.WriteFileAtomic(absWd, cleanPath, []byte(req.Content), mode); err != nil {
 		return WriteResp{}, fmt.Errorf("write file: %w", err)
 	}
 
@@ -1833,15 +1867,48 @@ func buildEnv(extra map[string]string) []string {
 // allowlist-by-exclusion for buildEnv's extra map. Kept as a block-list
 // because the base env is curated and the agent is expected to add debug
 // toggles (e.g. VERBOSE=1), not redefine core runtime behavior.
+//
+// The list is grouped by the runtime each prefix targets. Every interpreter
+// that the default policy allows (`go`, `node`, `python`, plus the optional
+// `npm`/`pnpm`/`pytest`/`cargo`) and every interpreter an operator might
+// add to a custom allow list (`ruby`, `php`, `java`, `lua`) needs at least
+// one entry — otherwise an agent who supplies `req.Env` can hijack the
+// loader / startup hook of an otherwise-allowed binary. F-G-LOW-2 in the
+// security audit added the npm / bundle / gem / composer / lua / java / php
+// rows after the original list missed them.
 var (
 	sandboxBlockedEnvPrefixes = []string{
+		// Dynamic loader injection (Linux, macOS).
 		"LD_",
 		"DYLD_",
+		// Git internals: GIT_EXEC_PATH, GIT_SSH, GIT_INDEX_FILE, etc.
 		"GIT_",
+		// Node: NODE_OPTIONS, NODE_PATH, NODE_DEBUG, NODE_TLS_REJECT_UNAUTHORIZED.
 		"NODE_",
+		// npm config overrides reach into npm internals (init module, script
+		// shell, registry). `npm` is in the default allow list so this is
+		// reachable even without an operator-authored rule.
+		"NPM_CONFIG_",
+		// Python: PYTHONSTARTUP, PYTHONPATH, PYTHONHOME, PYTHONIOENCODING.
 		"PYTHON",
+		// Ruby toolchain: RUBYLIB, RUBYOPT, BUNDLE_GEMFILE, GEM_PATH, GEM_HOME.
 		"RUBY",
+		"BUNDLE_",
+		"GEM_",
+		// Perl: PERL5LIB, PERL5OPT.
 		"PERL5",
+		// Lua module search path.
+		"LUA_",
+		// PHP: PHP_INI_SCAN_DIR, PHP_FCGI_*, plus PHPRC (no underscore —
+		// hence the bare `PHP` prefix, matching PYTHON/RUBY's shape).
+		"PHP",
+		// Composer: COMPOSER_HOME, COMPOSER_VENDOR_DIR, etc.
+		"COMPOSER_",
+		// JVM: JAVA_TOOL_OPTIONS injects javaagent; JAVA_HOME redirects
+		// which JVM is invoked. The legacy `_JAVA_OPTIONS` (leading
+		// underscore) is in sandboxBlockedEnvNames since no useful prefix
+		// would bind it without poisoning unrelated variables.
+		"JAVA_",
 	}
 	sandboxBlockedEnvNames = map[string]struct{}{
 		"PATH":           {},
@@ -1858,6 +1925,10 @@ var (
 		"PATHEXT":        {},
 		"COMSPEC":        {},
 		"SYSTEMROOT":     {},
+		// JVM: legacy uppercase-with-leading-underscore variant of
+		// JAVA_TOOL_OPTIONS. Same effect (javaagent injection); no useful
+		// prefix because the leading `_` would cripple the prefix list.
+		"_JAVA_OPTIONS": {},
 	}
 )
 
@@ -1876,27 +1947,48 @@ func isSandboxEnvBlocked(name string) bool {
 
 // convertUTF16LEToUTF8 converts UTF-16LE encoded bytes to UTF-8 string.
 // Windows Git Bash outputs UTF-16LE with null bytes between ASCII chars.
+//
+// Detection prefers the explicit BOM (`0xFF 0xFE` for UTF-16LE) when present
+// because the prior null-byte-density heuristic alone could mis-detect
+// binary subprocess output (xxd, hexdump, image dumps) whose nulls happen
+// to land in even positions. The heuristic remains as a fallback for the
+// Git-Bash case where the BOM is stripped before we see the bytes — this
+// closes F-G-INFO-1 from the security audit without regressing the
+// existing Windows-shell support.
 func convertUTF16LEToUTF8(data []byte) string {
-	// Check if it looks like UTF-16LE (null bytes alternating with ASCII)
-	isUTF16 := len(data) >= 4
-	if isUTF16 {
+	// BOM-led UTF-16LE: trust the BOM and strip it.
+	if len(data) >= 2 && data[0] == 0xFF && data[1] == 0xFE {
+		data = data[2:]
+		return decodeUTF16LE(data)
+	}
+	// BOM-led UTF-16BE: not what this function targets, but unambiguous.
+	// Pass through as-is rather than misinterpret.
+	if len(data) >= 2 && data[0] == 0xFE && data[1] == 0xFF {
+		return string(data)
+	}
+	// Heuristic fallback for BOM-less UTF-16LE (Git Bash on Windows).
+	// "More than 30% of even-position bytes are null over the first 100"
+	// is a Git-Bash signature; binary outputs rarely meet it.
+	isUTF16 := false
+	if len(data) >= 4 {
 		nullCount := 0
 		for i := 0; i < len(data) && i < 100; i += 2 {
 			if data[i] == 0 {
 				nullCount++
 			}
 		}
-		// If more than 30% of even-position bytes are null, treat as UTF-16LE
-		if nullCount > 15 {
-			isUTF16 = true
-		} else {
-			isUTF16 = false
-		}
+		isUTF16 = nullCount > 15
 	}
 
 	if !isUTF16 {
 		return string(data)
 	}
+	return decodeUTF16LE(data)
+}
+
+// decodeUTF16LE converts UTF-16LE bytes to UTF-8 without re-checking the
+// BOM. Callers are responsible for stripping any BOM before calling.
+func decodeUTF16LE(data []byte) string {
 
 	// Convert UTF-16LE to UTF-8
 	var result strings.Builder

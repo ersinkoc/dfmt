@@ -764,6 +764,113 @@ func TestBuildEnvExtraVars(t *testing.T) {
 	}
 }
 
+// TestBuildEnvBlocksLoaderHijackVectors pins every interpreter-hijack
+// vector that buildEnv must filter out of the agent-supplied extra map.
+// Closes F-G-LOW-2 from the security audit — the original block list
+// covered LD_/DYLD_/GIT_/NODE_/PYTHON/RUBY/PERL5 only, missing
+// NPM_CONFIG_*, BUNDLE_*, GEM_*, COMPOSER_*, LUA_*, JAVA_TOOL_*, PHP_*
+// and the literal _JAVA_OPTIONS. Every entry below would, if leaked
+// into the subprocess env, redirect the loader / startup hook of a
+// binary the policy might allow.
+func TestBuildEnvBlocksLoaderHijackVectors(t *testing.T) {
+	blocked := []string{
+		// Dynamic loader.
+		"LD_PRELOAD",
+		"LD_LIBRARY_PATH",
+		"DYLD_INSERT_LIBRARIES",
+		"DYLD_LIBRARY_PATH",
+		// Git.
+		"GIT_EXEC_PATH",
+		"GIT_SSH",
+		"GIT_INDEX_FILE",
+		// Node.
+		"NODE_OPTIONS",
+		"NODE_PATH",
+		"NODE_TLS_REJECT_UNAUTHORIZED",
+		// npm — reachable via the default `npm *` allow rule.
+		"NPM_CONFIG_INIT_MODULE",
+		"NPM_CONFIG_SCRIPT_SHELL",
+		"NPM_CONFIG_REGISTRY",
+		// Python.
+		"PYTHONSTARTUP",
+		"PYTHONPATH",
+		"PYTHONHOME",
+		// Ruby toolchain.
+		"RUBYLIB",
+		"RUBYOPT",
+		"BUNDLE_GEMFILE",
+		"GEM_PATH",
+		"GEM_HOME",
+		// Perl.
+		"PERL5LIB",
+		"PERL5OPT",
+		// Lua.
+		"LUA_PATH",
+		"LUA_CPATH",
+		// PHP.
+		"PHP_INI_SCAN_DIR",
+		"PHPRC",
+		// Composer.
+		"COMPOSER_HOME",
+		"COMPOSER_VENDOR_DIR",
+		// JVM.
+		"JAVA_TOOL_OPTIONS",
+		"_JAVA_OPTIONS",
+		// Shell internals already listed by name.
+		"PATH",
+		"IFS",
+		"BASH_ENV",
+		"PS4",
+		"PROMPT_COMMAND",
+	}
+
+	extra := make(map[string]string, len(blocked))
+	for _, k := range blocked {
+		extra[k] = "ATTACKER_VALUE"
+	}
+
+	env := buildEnv(extra)
+
+	// Build a set of names buildEnv accepted into the extra portion of the
+	// env. The base env intentionally re-sets some of these (PATH, HOME,
+	// USER) to the daemon's own values — those are allowed (they did not
+	// originate from `extra`). We assert that no entry equals
+	// "<NAME>=ATTACKER_VALUE" — i.e. the attacker's value never won.
+	for _, k := range blocked {
+		want := k + "=ATTACKER_VALUE"
+		for _, e := range env {
+			if e == want {
+				t.Errorf("buildEnv leaked attacker-controlled %s into subprocess env", k)
+				break
+			}
+		}
+	}
+}
+
+// TestBuildEnvAllowsBenignDebugVar confirms that the block-list-by-
+// exclusion model still lets agents pass debug toggles through. If this
+// breaks, the block list has grown too aggressive.
+func TestBuildEnvAllowsBenignDebugVar(t *testing.T) {
+	env := buildEnv(map[string]string{"VERBOSE": "1", "DEBUG_LEVEL": "trace"})
+
+	wantVerbose := false
+	wantDebug := false
+	for _, e := range env {
+		if e == "VERBOSE=1" {
+			wantVerbose = true
+		}
+		if e == "DEBUG_LEVEL=trace" {
+			wantDebug = true
+		}
+	}
+	if !wantVerbose {
+		t.Error("buildEnv should pass through VERBOSE=1 (benign debug toggle)")
+	}
+	if !wantDebug {
+		t.Error("buildEnv should pass through DEBUG_LEVEL=trace (benign debug toggle)")
+	}
+}
+
 // TestWriteTempFileMultipleExtensions tests writeTempFile with various extensions.
 func TestWriteTempFileMultipleExtensions(t *testing.T) {
 	tmpDir := t.TempDir()

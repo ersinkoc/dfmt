@@ -1825,3 +1825,123 @@ func TestSandboxEditReadOnly(t *testing.T) {
 		t.Error("Edit should fail on read-only file")
 	}
 }
+
+// TestSandboxWriteRefusesLeafSymlink pins the F-R-LOW-1 closure: a
+// pre-existing symlink at the leaf position must be refused, and the
+// symlink target must be left untouched. WriteFileAtomic (rename-based)
+// still goes through CheckNoSymlinks first; this test guards against a
+// future regression that drops the check thinking rename is enough.
+func TestSandboxWriteRefusesLeafSymlink(t *testing.T) {
+	wd := t.TempDir()
+
+	// Target the symlink will point at — outside the symlink path itself.
+	target := filepath.Join(wd, "untouched.txt")
+	if err := os.WriteFile(target, []byte("ORIGINAL"), 0o600); err != nil {
+		t.Fatalf("seed target: %v", err)
+	}
+
+	link := filepath.Join(wd, "leak")
+	if err := os.Symlink(target, link); err != nil {
+		// Windows without developer mode / admin: symlink creation fails.
+		t.Skipf("os.Symlink unavailable: %v", err)
+	}
+
+	sb := NewSandbox(wd)
+	ctx := context.Background()
+
+	_, err := sb.Write(ctx, WriteReq{
+		Path:    "leak",
+		Content: "ATTACKER_PAYLOAD",
+	})
+	if err == nil {
+		t.Fatal("Write should refuse a pre-existing leaf symlink")
+	}
+
+	// Target must still hold ORIGINAL — the rename must NOT have followed
+	// the symlink to write through it.
+	got, rerr := os.ReadFile(target)
+	if rerr != nil {
+		t.Fatalf("read target after refused write: %v", rerr)
+	}
+	if string(got) != "ORIGINAL" {
+		t.Errorf("symlink target was modified despite refusal: got %q", got)
+	}
+}
+
+// TestSandboxEditRefusesLeafSymlink mirrors TestSandboxWriteRefusesLeafSymlink
+// for Edit. Edit's mode-preservation path stats the existing target — if
+// the stat were to follow the symlink AND then write through it, the
+// symlink target would change. Both must be refused.
+func TestSandboxEditRefusesLeafSymlink(t *testing.T) {
+	wd := t.TempDir()
+
+	target := filepath.Join(wd, "untouched.txt")
+	if err := os.WriteFile(target, []byte("readable content"), 0o600); err != nil {
+		t.Fatalf("seed target: %v", err)
+	}
+
+	link := filepath.Join(wd, "leak")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("os.Symlink unavailable: %v", err)
+	}
+
+	sb := NewSandbox(wd)
+	ctx := context.Background()
+
+	_, err := sb.Edit(ctx, EditReq{
+		Path:      "leak",
+		OldString: "readable",
+		NewString: "ATTACKER",
+	})
+	if err == nil {
+		t.Fatal("Edit should refuse a pre-existing leaf symlink")
+	}
+
+	got, rerr := os.ReadFile(target)
+	if rerr != nil {
+		t.Fatalf("read target after refused edit: %v", rerr)
+	}
+	if string(got) != "readable content" {
+		t.Errorf("symlink target was modified despite refusal: got %q", got)
+	}
+}
+
+// TestSandboxWriteAtomicReplaces verifies the migrated WriteFileAtomic
+// path still works for the normal case: writing to a path that already
+// exists overwrites in place and preserves the existing mode (the
+// sandbox stats the file before the write to capture mode). This is the
+// regression guard for the migration in F-R-LOW-1.
+func TestSandboxWriteAtomicReplaces(t *testing.T) {
+	wd := t.TempDir()
+	path := filepath.Join(wd, "doc.txt")
+	if err := os.WriteFile(path, []byte("v1"), 0o600); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	sb := NewSandbox(wd)
+	ctx := context.Background()
+
+	if _, err := sb.Write(ctx, WriteReq{Path: "doc.txt", Content: "v2"}); err != nil {
+		t.Fatalf("Write returned error: %v", err)
+	}
+
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if string(got) != "v2" {
+		t.Errorf("Write did not overwrite: got %q", got)
+	}
+
+	// Mode must remain 0o600. On Windows the .Mode() bits may not match
+	// exactly; only assert on Unix.
+	if runtime.GOOS != "windows" {
+		fi, err := os.Stat(path)
+		if err != nil {
+			t.Fatalf("stat: %v", err)
+		}
+		if fi.Mode().Perm() != 0o600 {
+			t.Errorf("mode not preserved: got %o, want 0o600", fi.Mode().Perm())
+		}
+	}
+}
