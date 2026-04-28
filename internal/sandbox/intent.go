@@ -471,6 +471,12 @@ func NormalizeOutput(s string) string {
 	// (kubectl -o yaml, helm get manifest). Detection is conservative
 	// — only fires on `---` separators or apiVersion:/kind: headers.
 	s = CompactYAML(s)
+	// Markdown frontmatter strip: static-site generators prepend a
+	// YAML metadata block to .md files (`---\ntitle: ...\n---`). The
+	// renderer uses it; an LLM agent reading the body doesn't.
+	// Detection is anchored at the very start of the body, so a
+	// `---` separator inside a CHANGELOG stays untouched.
+	s = CompactMarkdownFrontmatter(s)
 	// HTML → markdown conversion (ADR-0008 full path). When the body is
 	// HTML-shaped, tokenize it and emit markdown — drops boilerplate
 	// elements wholesale, converts headings/lists/code/links/tables to

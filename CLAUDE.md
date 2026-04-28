@@ -101,7 +101,22 @@ Three faces, same daemon:
 
 ### Sandbox (`internal/sandbox/`)
 
-Implements the seven tool primitives. Output is summarized, intent-matched against the BM25 index, and the raw bytes are stashed in `internal/content/` (the ephemeral content store). The default policy in `permissions.go::DefaultPolicy()` allows common dev tools (`git`, `npm`, `pnpm`, `pytest`, `cargo`, `go`, `node`, `python`, basic Unix read-only) and denies destructive ones (`sudo`, `rm -rf /`, `curl|sh`). Operators add overrides in `.dfmt/permissions.yaml`. Every denial error ends with a `hint:` line naming the file to edit and the network classes that cannot be opened up (loopback, RFC1918, cloud metadata).
+Implements the seven tool primitives. Output is summarized, intent-matched against the BM25 index, and the raw bytes are stashed in `internal/content/` (the ephemeral content store). The default policy in `permissions.go::DefaultPolicy()` allows common dev tools (`git`, `npm`, `pnpm`, `yarn`, `bun`, `npx`/`pnpx`/`bunx`, `tsc`/`tsx`/`ts-node`, `vitest`/`jest`, `eslint`/`prettier`, `vite`/`next`/`webpack`, `make`, `pytest`, `cargo`, `go`, `node`, `python`, `deno`, basic Unix read-only) and denies destructive ones (`sudo`, `rm -rf /`, `curl|sh`). Operators add overrides in `.dfmt/permissions.yaml`. Every denial error ends with a `hint:` line naming the file to edit and the network classes that cannot be opened up (loopback, RFC1918, cloud metadata).
+
+The sandbox runs an 8-stage **`NormalizeOutput` pipeline** before responses reach the policy filter (`internal/sandbox/intent.go`):
+
+1. **Binary refusal** (`binary.go`) — non-UTF-8 / magic-number-detected bodies (PNG, PDF, gzip, …) become a one-line `(binary; type=…; N bytes; sha256=…)` summary.
+2. **ANSI strip** — CSI/OSC escape sequences gone.
+3. **CR-rewrite collapse** — progress bars and spinner overwrites collapsed to final state.
+4. **RLE** — ≥4 identical adjacent lines compacted with a "(repeated N times)" annotation.
+5. **Stack-trace path collapsing** (`stacktrace.go`) — Python/Go traces with ≥3 same-path frames replace continuation paths with `"…"` marker.
+6. **Git diff index-line drop** (`diff.go`) — `index <hash>..<hash> <mode>` lines stripped from `git diff` bodies.
+7. **Structured-output compaction** (`structured.go`) — JSON / NDJSON / YAML noise fields (`created_at`, `*_url`, `_links`, K8s `creationTimestamp`/`resourceVersion`/`selfLink`/`managedFields`, AWS `NextToken`, pagination metadata, null/empty values). Markdown frontmatter stripped from `.md` bodies. ADR-0010.
+8. **HTML → markdown** (`htmltok.go` / `htmlmd.go`) — full tokenizer + markdown walker; drops `<script>`/`<style>`/`<nav>`/`<footer>`/`<aside>`/`<head>`/`<noscript>`/`<svg>`/`<form>`/`<button>`/`<iframe>` wholesale; emits markdown for headings, lists, code blocks (with language hint), tables (with GFM separator), blockquotes, definition lists, links, images. ADR-0008.
+
+The policy filter (`ApplyReturnPolicy`) gates inline / summary / big-tier on **approximated tokens, not raw bytes** (ADR-0012). `ApproxTokens(s) = ascii_bytes/4 + non_ascii_runes` — CJK and English bodies hit the same agent-cost threshold. I/O hard caps (`MaxFetchBodyBytes` 8 MiB, `MaxRawBytes` 256 KB Windows truncation) stay byte-based.
+
+Cross-call wire dedup: a `content_id` already emitted to the agent in this session returns `(unchanged; same content_id)` instead of repeating the bytes (ADR-0009 / ADR-0011).
 
 ### Capture pipeline (`internal/capture/`)
 
@@ -109,7 +124,9 @@ Five ingestion paths feed the journal: MCP calls (live), CLI commands like `dfmt
 
 ### Recall (`internal/retrieve/`)
 
-`dfmt_recall` rebuilds a markdown snapshot under a byte budget. Per-tier streaming with FIFO eviction — lower-priority content drops first when the budget tightens.
+`dfmt_recall` rebuilds a markdown snapshot under a byte budget. Per-tier streaming with FIFO eviction — lower-priority content drops first when the budget tightens. Frequently-occurring path strings get a Refs table at the top + `[rN]` token references in events (path interning kicks in at ≥3 occurrences) so 50 events of the same path don't repeat the full string 50 times.
+
+`dfmt_search` returns hits with a short `excerpt` field (≤80 bytes, rune-aligned) drawn from the event's `message` / `path` / `type` — agents can decide whether to drill in without a follow-up `dfmt_recall` round-trip.
 
 ### Agent setup (`internal/setup/`)
 

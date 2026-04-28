@@ -462,6 +462,70 @@ func TestCompactHTML_DoctypeOnlyMustWork(t *testing.T) {
 	}
 }
 
+// TestCompactMarkdownFrontmatter_StripsBlock: canonical static-site
+// frontmatter is dropped; body content survives.
+func TestCompactMarkdownFrontmatter_StripsBlock(t *testing.T) {
+	in := `---
+title: My Post
+date: 2024-01-01
+tags: [go, blog]
+draft: false
+---
+
+# Real heading
+
+The actual post body.
+`
+	out := CompactMarkdownFrontmatter(in)
+	if out == in {
+		t.Fatal("expected frontmatter strip")
+	}
+	for _, banned := range []string{"title:", "draft:", "tags:"} {
+		if strings.Contains(out, banned) {
+			t.Errorf("frontmatter key %q leaked: %s", banned, out)
+		}
+	}
+	if !strings.Contains(out, "# Real heading") {
+		t.Errorf("body lost: %s", out)
+	}
+}
+
+// TestCompactMarkdownFrontmatter_NoLeadingFence: a markdown file
+// without frontmatter (most README.md, plain prose) stays untouched.
+func TestCompactMarkdownFrontmatter_NoLeadingFence(t *testing.T) {
+	in := "# Just a heading\n\nNo frontmatter here.\n"
+	if got := CompactMarkdownFrontmatter(in); got != in {
+		t.Errorf("frontmatter-less input must pass through; got %q", got)
+	}
+}
+
+// TestCompactMarkdownFrontmatter_TripleDashSeparatorMidDoc: `---`
+// separators inside a CHANGELOG or a multi-section document must NOT
+// trigger the strip — the regex is anchored to the document start.
+func TestCompactMarkdownFrontmatter_TripleDashSeparatorMidDoc(t *testing.T) {
+	in := `# Section A
+
+content
+---
+# Section B
+
+more content
+`
+	if got := CompactMarkdownFrontmatter(in); got != in {
+		t.Errorf("mid-doc separator must not trigger strip; got %q", got)
+	}
+}
+
+// TestCompactMarkdownFrontmatter_UnclosedFence: a stray opening `---`
+// with no closing fence (malformed) should not eat the rest of the
+// document. Detection requires both fences.
+func TestCompactMarkdownFrontmatter_UnclosedFence(t *testing.T) {
+	in := "---\ntitle: oops\n# Body without closing fence\nmore content\n"
+	if got := CompactMarkdownFrontmatter(in); got != in {
+		t.Errorf("unclosed frontmatter must pass through; got %q", got)
+	}
+}
+
 // TestCompactHTML_NormalizeOutputIntegration: pipeline-level wiring check.
 // Without this, a future refactor that re-orders NormalizeOutput could
 // silently disable HTML compaction.

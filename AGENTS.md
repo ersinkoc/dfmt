@@ -190,16 +190,58 @@ journal and index lifecycle.
 
 `internal/sandbox/` handles `exec`, `read`, `fetch`, `glob`, `grep`,
 `edit`, `write`. Output is summarized, intent-matched, and stashed in
-the content store. The default policy allows common dev tools and
-denies destructive ones; see `permissions.go::DefaultPolicy()` for
-the full list and the godoc explaining how operators add
-site-specific rules.
+the content store. The default policy allows common dev tools (incl.
+the JS/TS toolchain — `tsc`, `tsx`, `ts-node`, `vitest`, `jest`,
+`bun`, `deno`, `yarn`, `npx`/`pnpx`/`bunx`, `eslint`, `prettier`,
+`vite`, `next`, `webpack`, `make`) and denies destructive ones; see
+`permissions.go::DefaultPolicy()` for the full list and the godoc
+explaining how operators add site-specific rules.
 
 Custom rules go in `.dfmt/permissions.yaml` — entries take the form
 `allow:exec:<base-cmd> *`, `deny:read:**/secrets/**`, etc. Every
 sandbox denial error ends with a `hint:` line pointing at this file
 and naming which network classes (loopback, RFC1918, cloud metadata)
 cannot be opened up via project config.
+
+Before responses reach the policy filter, `NormalizeOutput`
+(`internal/sandbox/intent.go`) runs an 8-stage pipeline:
+
+1. **Binary refusal** — non-UTF-8 / magic-number-detected bodies
+   become a one-line `(binary; type=…; sha256=…)` summary.
+2. **ANSI strip** — CSI/OSC escape sequences gone.
+3. **CR-rewrite collapse** — progress bars / spinners reduced to
+   their final state.
+4. **RLE** — ≥4 identical adjacent lines compacted with a
+   "(repeated N times)" annotation.
+5. **Stack-trace path collapse** — Python/Go traces with ≥3
+   same-path frames replace continuation paths with a `"…"` marker.
+6. **Git diff** — `index <hash>..<hash> <mode>` lines stripped.
+7. **Structured-output compaction** (ADR-0010) — JSON / NDJSON /
+   YAML noise fields (`created_at`, `*_url`, `_links`,
+   `creationTimestamp`, `selfLink`, `managedFields`, pagination
+   metadata, null/empty values). Markdown frontmatter stripped from
+   leading `---` blocks.
+8. **HTML → markdown** (ADR-0008) — full tokenizer + walker; drops
+   `<script>`/`<style>`/`<nav>`/`<footer>`/`<aside>`/`<head>`/
+   `<noscript>`/`<svg>`/`<form>`/`<button>`/`<iframe>`; emits
+   markdown for headings, lists, code blocks (with language hint),
+   tables (with GFM separator), blockquotes, definition lists,
+   links, images.
+
+The policy filter (`ApplyReturnPolicy`) gates inline / summary /
+big-tier on **approximated tokens** (ADR-0012):
+`ApproxTokens(s) = ascii_bytes/4 + non_ascii_runes`. CJK and English
+bodies hit the same agent-cost threshold. I/O hard caps
+(`MaxFetchBodyBytes` 8 MiB, `MaxRawBytes` 256 KB Windows truncation,
+`maxRPCResponseBytes` 16 MiB) stay byte-based — they protect
+network/system invariants where bytes are the right unit.
+
+Cross-call wire dedup (ADR-0009 / ADR-0011): a `content_id` already
+emitted to the agent in this session returns
+`(unchanged; same content_id)` instead of repeating the bytes.
+Session ID flows through `context.Context` via
+`transport.WithSessionID`, so two distinct callers maintain
+independent dedup histories.
 
 ### Capture pipeline
 
@@ -216,6 +258,15 @@ wired today:
 
 Events are prioritized (p1–p4). On compaction, `dfmt_recall` rebuilds
 a snapshot under a byte budget; lower-tier content drops first.
+Frequently-occurring path strings get a Refs table at the top of the
+markdown snapshot + `[rN]` token references in events (path interning
+kicks in at ≥3 occurrences) so 50 events of the same path don't
+repeat the full string 50 times.
+
+`dfmt_search` returns hits with a short `excerpt` field (≤80 bytes,
+rune-aligned) drawn from the event's `message` / `path` / `type` —
+agents can decide whether to drill in without a follow-up
+`dfmt_recall` round-trip.
 
 ### Agent setup
 

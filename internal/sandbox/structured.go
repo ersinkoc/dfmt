@@ -205,6 +205,41 @@ func yamlNormalizeMaps(v any) any {
 	}
 }
 
+// mdFrontmatterBlock matches a YAML frontmatter block at the start of
+// a markdown file: a `---` opening fence on its own line, body, and a
+// closing `---` on its own line. Static-site generators (Jekyll,
+// Hugo, Astro, MkDocs, Docusaurus) put `title`/`date`/`tags`/`draft`
+// keys here that are useful for the renderer but ~useless for an
+// agent reading the body. Anchored to the very start of the body so
+// frontmatter-shaped sections appearing later in the document (a
+// CHANGELOG with `---` separators) stay untouched.
+//
+// (?s) lets `.` match newlines so the body capture covers multi-line
+// YAML. Non-greedy `.*?` ensures the first closing `---` ends the
+// block.
+var mdFrontmatterBlock = regexp.MustCompile(`(?s)\A---\r?\n.*?\n---\r?\n?`)
+
+// CompactMarkdownFrontmatter strips a YAML frontmatter block from the
+// start of a markdown body. Returns input unchanged when:
+//   - input doesn't open with the `---` fence,
+//   - no closing `---` line is present (malformed frontmatter),
+//   - the stripped form is not strictly smaller than the input.
+//
+// The function is pure and safe for concurrent use.
+func CompactMarkdownFrontmatter(s string) string {
+	if s == "" {
+		return s
+	}
+	if !strings.HasPrefix(s, "---\n") && !strings.HasPrefix(s, "---\r\n") {
+		return s
+	}
+	out := mdFrontmatterBlock.ReplaceAllString(s, "")
+	if len(out) >= len(s) {
+		return s
+	}
+	return out
+}
+
 // htmlBoilerplateBlocks matches HTML elements whose contents are nearly
 // always wire bloat for an LLM consumer reading documentation pages: inline
 // scripts/styles, HTML comments, nav, footer, aside, and the entire head.
