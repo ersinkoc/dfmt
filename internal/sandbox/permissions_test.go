@@ -3,6 +3,7 @@ package sandbox
 import (
 	"context"
 	"os"
+	"os/exec"
 	"runtime"
 	"strings"
 	"testing"
@@ -744,6 +745,110 @@ func TestBuildEnvDFMTExecPrefix(t *testing.T) {
 	}
 	if hasRegular {
 		t.Error("buildEnv should not include regular env vars")
+	}
+}
+
+// TestPrependPATHEmpty pins the no-op behaviour: an empty or nil dirs
+// slice must return env unchanged. Closes the recurring "exit 127"
+// regression test surface for projects that have not configured
+// exec.path_prepend.
+func TestPrependPATHEmpty(t *testing.T) {
+	env := []string{"PATH=/usr/bin", "HOME=/home/x"}
+	out := prependPATH(env, nil)
+	if len(out) != 2 || out[0] != "PATH=/usr/bin" {
+		t.Fatalf("nil dirs must be a no-op, got %v", out)
+	}
+	out = prependPATH(env, []string{})
+	if len(out) != 2 || out[0] != "PATH=/usr/bin" {
+		t.Fatalf("empty dirs must be a no-op, got %v", out)
+	}
+}
+
+// TestPrependPATHPrependsInOrder verifies that listed dirs land at the
+// front of PATH in declared order so the user's pinned toolchain wins
+// over whatever the daemon inherited.
+func TestPrependPATHPrependsInOrder(t *testing.T) {
+	sep := string(os.PathListSeparator)
+	env := []string{"PATH=/usr/bin" + sep + "/bin", "HOME=/home/x"}
+	out := prependPATH(env, []string{"/opt/go/bin", "/opt/node/bin"})
+
+	want := "PATH=/opt/go/bin" + sep + "/opt/node/bin" + sep + "/usr/bin" + sep + "/bin"
+	for _, e := range out {
+		if strings.HasPrefix(e, "PATH=") {
+			if e != want {
+				t.Errorf("PATH mismatch:\n got %q\nwant %q", e, want)
+			}
+			return
+		}
+	}
+	t.Fatal("PATH entry missing from output")
+}
+
+// TestPrependPATHDedups guards against unbounded PATH growth when the
+// daemon restarts repeatedly with the same path_prepend — every restart
+// previously stacked another copy of the same dir on PATH.
+func TestPrependPATHDedups(t *testing.T) {
+	sep := string(os.PathListSeparator)
+	env := []string{"PATH=/opt/go/bin" + sep + "/usr/bin"}
+	out := prependPATH(env, []string{"/opt/go/bin", "/opt/node/bin"})
+
+	want := "PATH=/opt/node/bin" + sep + "/opt/go/bin" + sep + "/usr/bin"
+	for _, e := range out {
+		if strings.HasPrefix(e, "PATH=") {
+			if e != want {
+				t.Errorf("dedup mismatch:\n got %q\nwant %q", e, want)
+			}
+			return
+		}
+	}
+	t.Fatal("PATH entry missing from output")
+}
+
+// TestPrependPATHAddsWhenAbsent covers the corner where buildEnv was
+// stripped of its PATH (degenerate test env): a PATH entry must still
+// be created from the prepend dirs alone, otherwise the subprocess
+// inherits no PATH at all and every command 127s.
+func TestPrependPATHAddsWhenAbsent(t *testing.T) {
+	sep := string(os.PathListSeparator)
+	env := []string{"HOME=/home/x"}
+	out := prependPATH(env, []string{"/opt/go/bin", "/opt/node/bin"})
+
+	want := "PATH=/opt/go/bin" + sep + "/opt/node/bin"
+	for _, e := range out {
+		if e == want {
+			return
+		}
+	}
+	t.Fatalf("expected new PATH entry %q in %v", want, out)
+}
+
+// TestWithPathPrependOnExec pins the wiring: a sandbox with PathPrepend
+// set must surface those dirs in the subprocess PATH. Uses the bash
+// runtime so we can echo the env back without depending on the host's
+// language toolchains.
+func TestWithPathPrependOnExec(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("bash echo behaviour differs on Windows; covered by the prependPATH unit tests")
+	}
+	bash, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skipf("bash not on PATH: %v", err)
+	}
+	rts := NewRuntimes()
+	rts.setRuntime(Runtime{Lang: langBash, Executable: bash, Available: true})
+
+	sb := NewSandboxWithPolicyAndRuntimes(t.TempDir(), DefaultPolicy(), rts).
+		WithPathPrepend([]string{"/opt/dfmt-pin/bin"})
+
+	resp, err := sb.Exec(context.Background(), ExecReq{
+		Code: "echo \"$PATH\"",
+		Lang: langBash,
+	})
+	if err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+	if !strings.Contains(resp.RawStdout, "/opt/dfmt-pin/bin") {
+		t.Errorf("PathPrepend dir not in subprocess PATH; raw stdout=%q", resp.RawStdout)
 	}
 }
 

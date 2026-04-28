@@ -213,7 +213,7 @@ if (-not $NoClean) {
                         Write-Info "backed up ~/.claude.json -> $backup"
                     }
                     $newJson = $cj | ConvertTo-Json -Depth 100
-                    [System.IO.File]::WriteAllText($ClaudeJson, $newJson -replace "`r`n","`n")
+                    [System.IO.File]::WriteAllText($ClaudeJson, ($newJson -replace "`r`n","`n"))
                     Write-Info "removed $removed stale dfmt-* Temp project entries from ~/.claude.json"
                 }
             }
@@ -228,18 +228,25 @@ if (-not $NoClean) {
 }
 
 # ---- 2. Run the gate tests before anyone gets a binary -----------------------
-# Exercises the MCP transport (initialize handshake, CallToolResult envelope)
-# AND the sandbox runtime (default-Lang fallback, runtime probing) so either
-# regression trips the build, not the user.
+# Four packages, picked because every regression class they catch surfaces
+# only at runtime (not at build time):
+#   transport — MCP initialize handshake + CallToolResult envelope shape
+#   sandbox   — default-Lang fallback, runtime probing, exec env (PATH
+#               prepend) so a broken path_prepend doesn't ship silently
+#   config    — yaml round-trip of new fields (e.g. exec.path_prepend)
+#               and the Validate() rejection list
+#   cli       — dispatch wiring + doctor checks (sandbox toolchain probe,
+#               instruction-block staleness) so an agent UX regression
+#               trips the build, not the user
 if (-not $SkipTests) {
-    Write-Step "Running transport + sandbox tests (gate)..."
+    Write-Step "Running transport + sandbox + config + cli tests (gate)..."
     Set-Location $RepoRoot
-    & go test ./internal/transport/... ./internal/sandbox/...
+    & go test ./internal/transport/... ./internal/sandbox/... ./internal/config/... ./internal/cli/...
     if ($LASTEXITCODE -ne 0) {
         Write-Err "tests failed -- aborting before install"
         exit 1
     }
-    Write-Ok "transport + sandbox tests pass"
+    Write-Ok "transport + sandbox + config + cli tests pass"
 } else {
     Write-Info "skipping tests (-SkipTests)"
 }
@@ -393,7 +400,7 @@ if (-not $SkipSetup) {
             # Depth must be high -- ~/.claude.json has deeply nested project blocks.
             $newJson = $claudeJson | ConvertTo-Json -Depth 100
             # Preserve LF newlines on disk (Claude Code writes LF on all platforms).
-            [System.IO.File]::WriteAllText($ClaudeJson, $newJson -replace "`r`n","`n")
+            [System.IO.File]::WriteAllText($ClaudeJson, ($newJson -replace "`r`n","`n"))
             Write-Ok "patched mcpServers.dfmt.command to $TargetPath"
         } else {
             Write-Ok "mcpServers.dfmt.command already pinned to $TargetPath"

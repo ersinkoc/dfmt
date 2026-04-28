@@ -11,6 +11,57 @@ import (
 
 const durabilityInvalid = "invalid"
 
+// TestExecPathPrependRoundTrip pins YAML <-> struct fidelity for the
+// path_prepend list. Without this, a typo in the yaml tag silently
+// drops user-configured toolchain dirs and the daemon falls back to
+// its inherited PATH — the original symptom this feature exists to
+// fix.
+func TestExecPathPrependRoundTrip(t *testing.T) {
+	abs := absPathForTest(t)
+	yamlBody := []byte("exec:\n  path_prepend:\n    - " + abs + "\n    - " + abs + "/sub\n")
+
+	cfg := Default()
+	if err := decodeConfigYAML(yamlBody, cfg); err != nil {
+		t.Fatalf("decodeConfigYAML: %v", err)
+	}
+	if got, want := len(cfg.Exec.PathPrepend), 2; got != want {
+		t.Fatalf("len(PathPrepend) = %d, want %d", got, want)
+	}
+	if cfg.Exec.PathPrepend[0] != abs {
+		t.Errorf("PathPrepend[0] = %q, want %q", cfg.Exec.PathPrepend[0], abs)
+	}
+}
+
+// TestValidateRejectsNonAbsolutePathPrepend ensures Validate refuses
+// relative entries — a relative dir would resolve against whatever cwd
+// the daemon was launched from, which is never what the operator
+// meant.
+func TestValidateRejectsNonAbsolutePathPrepend(t *testing.T) {
+	cfg := Default()
+	cfg.Exec.PathPrepend = []string{"relative/path"}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("Validate accepted relative path_prepend entry")
+	}
+}
+
+// TestValidateRejectsEmptyPathPrependEntry guards the YAML quirk where
+// `- ""` parses as a populated slice with an empty string element.
+func TestValidateRejectsEmptyPathPrependEntry(t *testing.T) {
+	cfg := Default()
+	cfg.Exec.PathPrepend = []string{""}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("Validate accepted empty path_prepend entry")
+	}
+}
+
+func absPathForTest(t *testing.T) string {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		return `C:\opt\go\bin`
+	}
+	return "/opt/go/bin"
+}
+
 func TestDefault(t *testing.T) {
 	cfg := Default()
 

@@ -1375,6 +1375,15 @@ func runDoctor(args []string) int {
 	// inline so the user doesn't have to consult docs.
 	checkInstructionBlockStaleness()
 
+	// Sandbox toolchain visibility: the recurring "exit 127, command not
+	// found" symptom when the daemon was auto-started from a shell whose
+	// PATH did not include the user's Go / Node / Python install. This
+	// check probes the effective sandbox PATH and, if anything is
+	// missing, scans well-known install locations and prints a
+	// copy-pasteable `exec.path_prepend:` block. Warning-only — agents
+	// that don't run subprocesses are unaffected.
+	checkSandboxToolchains(dir)
+
 	if daemonAlive {
 		fmt.Println("[i] Daemon running")
 	} else {
@@ -1420,6 +1429,146 @@ func runDoctor(args []string) int {
 // reordered table row or new sentence flips the answer. False
 // positives are acceptable here because the cure ("run `dfmt init` to
 // refresh") is one command and idempotent.
+// checkSandboxToolchains probes the effective sandbox PATH (inherited
+// PATH + cfg.Exec.PathPrepend) for the language toolchains the agent is
+// most likely to invoke (`go`, `node`, `python`). For each one missing,
+// it scans well-known install locations and, if it finds a candidate,
+// prints a copy-pasteable `exec.path_prepend:` block the operator can
+// paste into `.dfmt/config.yaml`. Warning-only — never flips the doctor
+// exit code, because plenty of valid setups don't need any of these.
+func checkSandboxToolchains(dir string) {
+	cfg, _ := config.Load(dir)
+	prepend := []string(nil)
+	if cfg != nil {
+		prepend = cfg.Exec.PathPrepend
+	}
+
+	// Build the same effective PATH the sandbox would assemble: prepend
+	// dirs first, then the daemon's inherited PATH.
+	parts := append([]string{}, prepend...)
+	if p := os.Getenv("PATH"); p != "" {
+		parts = append(parts, strings.Split(p, string(os.PathListSeparator))...)
+	}
+	effectivePATH := strings.Join(parts, string(os.PathListSeparator))
+
+	tools := []string{"go", "node", "python"}
+	if runtime.GOOS == "windows" {
+		// `python` on Windows is often only `python.exe`; LookPath
+		// already adds .exe, so just keep the unsuffixed name. `python3`
+		// is unusual on Windows so don't probe it.
+	} else {
+		tools = append(tools, "python3")
+	}
+
+	missing := []string{}
+	for _, t := range tools {
+		if _, err := lookPathIn(t, effectivePATH); err == nil {
+			fmt.Printf("✓ Sandbox PATH sees %s\n", t)
+			continue
+		}
+		fmt.Printf("[!] Sandbox PATH cannot find %s — exec calls for %s will return 'exit 127'\n", t, t)
+		missing = append(missing, t)
+	}
+	if len(missing) == 0 {
+		return
+	}
+
+	suggestions := suggestToolchainDirs(missing)
+	if len(suggestions) == 0 {
+		fmt.Println("    (no install candidates found in the usual locations; install the toolchain or set PATH in the shell that starts dfmt)")
+		return
+	}
+
+	fmt.Println("    Add these to .dfmt/config.yaml so the sandbox can see them:")
+	fmt.Println("")
+	fmt.Println("    exec:")
+	fmt.Println("      path_prepend:")
+	for _, d := range suggestions {
+		fmt.Printf("        - %q\n", d)
+	}
+	fmt.Println("")
+	fmt.Println("    Then restart the daemon: `dfmt stop` (auto-restarts on next call).")
+}
+
+// lookPathIn is exec.LookPath restricted to a caller-supplied PATH
+// rather than the process env. Lets doctor probe the sandbox's
+// effective PATH (which may include path_prepend dirs not visible to
+// the doctor process itself).
+func lookPathIn(name, pathEnv string) (string, error) {
+	saved := os.Getenv("PATH")
+	if err := os.Setenv("PATH", pathEnv); err != nil {
+		return "", err
+	}
+	defer func() { _ = os.Setenv("PATH", saved) }()
+	return exec.LookPath(name)
+}
+
+// suggestToolchainDirs scans well-known install locations for the
+// missing toolchains and returns the directories that contain a usable
+// binary. Order is deterministic so doctor output is reproducible
+// across runs.
+func suggestToolchainDirs(missing []string) []string {
+	candidates := toolchainCandidateDirs()
+	want := make(map[string]struct{}, len(missing))
+	for _, m := range missing {
+		want[m] = struct{}{}
+	}
+	seen := make(map[string]struct{})
+	out := []string{}
+	for _, d := range candidates {
+		if _, dup := seen[d]; dup {
+			continue
+		}
+		for tool := range want {
+			bin := tool
+			if runtime.GOOS == "windows" {
+				bin = tool + ".exe"
+			}
+			full := filepath.Join(d, bin)
+			if fi, err := os.Stat(full); err == nil && !fi.IsDir() {
+				seen[d] = struct{}{}
+				out = append(out, d)
+				break
+			}
+		}
+	}
+	return out
+}
+
+// toolchainCandidateDirs returns the platform-specific list of
+// directories DFMT will probe when suggesting path_prepend entries.
+// Kept short on purpose: a hit-rate of 80% across common installers is
+// the bar; exotic setups can configure path_prepend manually.
+func toolchainCandidateDirs() []string {
+	if runtime.GOOS == "windows" {
+		dirs := []string{
+			`C:\Program Files\Go\bin`,
+			`C:\Go\bin`,
+			`C:\Program Files\nodejs`,
+		}
+		if local := os.Getenv("LOCALAPPDATA"); local != "" {
+			// Python's per-user installer drops here; minor versions
+			// vary so glob-by-prefix.
+			pat := filepath.Join(local, "Programs", "Python")
+			if entries, err := os.ReadDir(pat); err == nil {
+				for _, e := range entries {
+					if e.IsDir() && strings.HasPrefix(e.Name(), "Python3") {
+						dirs = append(dirs, filepath.Join(pat, e.Name()))
+					}
+				}
+			}
+		}
+		return dirs
+	}
+	return []string{
+		"/usr/local/go/bin",
+		"/usr/local/bin",
+		"/opt/homebrew/bin",
+		"/opt/homebrew/opt/python@3/libexec/bin",
+		"/usr/bin",
+	}
+}
+
 func checkInstructionBlockStaleness() {
 	m, err := setup.LoadManifest()
 	if err != nil || m == nil {
@@ -2643,8 +2792,14 @@ func runExec(args []string) int {
 		Intent: intent,
 	})
 	if err != nil {
-		// Fallback to direct sandbox if daemon not available
-		resp, err := sandbox.NewSandbox(proj).Exec(ctx, sandbox.ExecReq{
+		// Fallback to direct sandbox if daemon not available. Honor
+		// cfg.Exec.PathPrepend so the CLI fallback isn't stricter than
+		// the daemon path.
+		var pp []string
+		if c, cerr := config.Load(proj); cerr == nil && c != nil {
+			pp = c.Exec.PathPrepend
+		}
+		resp, err := sandbox.NewSandbox(proj).WithPathPrepend(pp).Exec(ctx, sandbox.ExecReq{
 			Code:   code,
 			Lang:   lang,
 			Intent: intent,
@@ -2781,8 +2936,17 @@ func runMCP(_ []string) int {
 		}
 	}()
 
-	// Create sandbox and handlers
-	sb := sandbox.NewSandbox(sandboxWD)
+	// Create sandbox and handlers. Pull cfg.Exec.PathPrepend so a project
+	// with toolchain dirs configured doesn't hit exit 127 when the daemon
+	// inherited a stripped PATH. Config-load failure is non-fatal — only
+	// path_prepend is lost; other defaults still apply.
+	var pathPrepend []string
+	if proj != "" {
+		if cfg, cerr := config.Load(proj); cerr == nil && cfg != nil {
+			pathPrepend = cfg.Exec.PathPrepend
+		}
+	}
+	sb := sandbox.NewSandbox(sandboxWD).WithPathPrepend(pathPrepend)
 	handlers := transport.NewHandlers(index, journal, sb)
 	handlers.SetProject(proj)
 	mcp := transport.NewMCPProtocol(handlers)

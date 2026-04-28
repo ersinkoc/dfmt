@@ -418,9 +418,30 @@ func regexMatch(pattern, text string) bool {
 
 // SandboxImpl is the default sandbox implementation.
 type SandboxImpl struct {
-	runtimes *Runtimes
-	policy   Policy
-	wd       string // Working directory
+	runtimes    *Runtimes
+	policy      Policy
+	wd          string   // Working directory
+	pathPrepend []string // Absolute dirs prepended to PATH for every exec; populated from cfg.Exec.PathPrepend
+}
+
+// WithPathPrepend returns the sandbox after attaching the given list of
+// absolute directories. They are prepended to PATH (in order, dedup'd
+// against the inherited PATH) for every Exec call. Closes the recurring
+// "exit 127" symptom when the daemon was auto-started from a shell that
+// did not have the user's language toolchains on PATH.
+func (s *SandboxImpl) WithPathPrepend(dirs []string) *SandboxImpl {
+	if len(dirs) == 0 {
+		s.pathPrepend = nil
+		return s
+	}
+	out := make([]string, 0, len(dirs))
+	for _, d := range dirs {
+		if d != "" {
+			out = append(out, d)
+		}
+	}
+	s.pathPrepend = out
+	return s
 }
 
 // NewSandbox creates a new sandbox instance.
@@ -1725,7 +1746,7 @@ func (s *SandboxImpl) execImpl(ctx context.Context, req ExecReq, rt Runtime) (Ex
 	}
 
 	cmd.Dir = s.wd
-	cmd.Env = buildEnv(req.Env)
+	cmd.Env = prependPATH(buildEnv(req.Env), s.pathPrepend)
 
 	// F-10: bound the in-memory subprocess buffer at MaxRawBytes via a
 	// streamed read on StdoutPipe + LimitReader, so a `find / -name "*"`
@@ -1843,6 +1864,40 @@ func writeTempFile(lang, code string) (path string, err error) {
 		return "", err
 	}
 	return tmpName, nil
+}
+
+// prependPATH returns env with the given absolute dirs prepended to
+// the PATH variable (OS list separator, deduped against existing
+// entries so a repeated `dfmt setup` doesn't grow PATH unboundedly).
+// If env has no PATH entry, one is added with just `dirs`. dirs == nil
+// is a no-op.
+func prependPATH(env []string, dirs []string) []string {
+	if len(dirs) == 0 {
+		return env
+	}
+	sep := string(os.PathListSeparator)
+	for i, e := range env {
+		if !strings.HasPrefix(e, "PATH=") {
+			continue
+		}
+		existing := strings.Split(e[len("PATH="):], sep)
+		seen := make(map[string]struct{}, len(existing)+len(dirs))
+		for _, p := range existing {
+			seen[p] = struct{}{}
+		}
+		merged := make([]string, 0, len(existing)+len(dirs))
+		for _, d := range dirs {
+			if _, dup := seen[d]; dup {
+				continue
+			}
+			seen[d] = struct{}{}
+			merged = append(merged, d)
+		}
+		merged = append(merged, existing...)
+		env[i] = "PATH=" + strings.Join(merged, sep)
+		return env
+	}
+	return append(env, "PATH="+strings.Join(dirs, sep))
 }
 
 // buildEnv builds the environment for a subprocess.

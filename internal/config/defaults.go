@@ -55,5 +55,16 @@ capture:
 storage:
   durability: batched
   journal_max_bytes: 10485760
+
+# Optional: directories to prepend to the sandbox's PATH for every exec
+# call. Use this when the daemon was auto-started from a shell that does
+# not see your language toolchains, so dfmt_exec returns exit 127 for go
+# / node / python. Run "dfmt doctor" — it probes common locations and
+# prints a ready-to-paste block here. Each entry must be an absolute
+# path.
+# exec:
+#   path_prepend:
+#     - "C:/Program Files/Go/bin"
+#     - "C:/Program Files/nodejs"
 `
 }

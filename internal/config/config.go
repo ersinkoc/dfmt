@@ -95,6 +95,18 @@ type Config struct {
 		Level  string `yaml:"level"`
 		Format string `yaml:"format"`
 	} `yaml:"logging"`
+
+	// Exec controls how the sandbox runs subprocesses. PathPrepend is the
+	// fix for the recurring "exit 127, command not found" symptom that
+	// shows up when the daemon was auto-started from a shell whose PATH
+	// did not include the language toolchains the agent needs (Go, Node,
+	// Python). Each listed directory is prepended (in order) to the
+	// sandbox's PATH for every exec call. Project-scope configures it for
+	// the team; user-scope (~/.local/share/dfmt/config.yaml) configures
+	// it for a single machine.
+	Exec struct {
+		PathPrepend []string `yaml:"path_prepend"`
+	} `yaml:"exec"`
 }
 
 // Default returns a fully populated Config with all defaults.
@@ -294,6 +306,15 @@ func (c *Config) Validate() error {
 	}
 	if c.Retrieval.DefaultBudget < 0 {
 		return fmt.Errorf("retrieval.default_budget must be non-negative, got %d", c.Retrieval.DefaultBudget)
+	}
+
+	for i, p := range c.Exec.PathPrepend {
+		if p == "" {
+			return fmt.Errorf("exec.path_prepend[%d] is empty", i)
+		}
+		if !filepath.IsAbs(p) {
+			return fmt.Errorf("exec.path_prepend[%d] must be absolute, got %q", i, p)
+		}
 	}
 
 	return nil

@@ -129,8 +129,10 @@ func New(projectPath string, cfg *config.Config) (*Daemon, error) {
 		index = core.NewIndex()
 	}
 
-	// Create sandbox
-	sb := sandbox.NewSandbox(projectPath)
+	// Create sandbox; cfg.Exec.PathPrepend is the project's escape hatch
+	// when the daemon's inherited PATH does not see the user's toolchains
+	// (Go, Node, Python). dirs are prepended for every exec call.
+	sb := sandbox.NewSandbox(projectPath).WithPathPrepend(cfg.Exec.PathPrepend)
 
 	// Create handlers
 	handlers := transport.NewHandlers(index, journal, sb)
