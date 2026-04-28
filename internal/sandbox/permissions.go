@@ -138,6 +138,52 @@ func DefaultPolicy() Policy {
 			{Op: "exec", Text: "node *"},
 			{Op: "exec", Text: "python"},
 			{Op: "exec", Text: "python *"},
+			// JavaScript/TypeScript ecosystem. Without these the agent has
+			// to drop a permissions.yaml override on every TS project just
+			// to run `tsc` or `vitest` — defeats the zero-config promise.
+			// Package managers + script runners + test runners + linters
+			// + formatters + the common bundler/dev-server CLIs are all
+			// here. Anything called *through* npm/pnpm/yarn (e.g. `npm
+			// run test`) was already covered by the npm/pnpm rules above
+			// — these entries are for direct invocation of the tools.
+			{Op: "exec", Text: "npx"},
+			{Op: "exec", Text: "npx *"},
+			{Op: "exec", Text: "pnpx"},
+			{Op: "exec", Text: "pnpx *"},
+			{Op: "exec", Text: "yarn"},
+			{Op: "exec", Text: "yarn *"},
+			{Op: "exec", Text: "bun"},
+			{Op: "exec", Text: "bun *"},
+			{Op: "exec", Text: "bunx"},
+			{Op: "exec", Text: "bunx *"},
+			{Op: "exec", Text: "deno"},
+			{Op: "exec", Text: "deno *"},
+			{Op: "exec", Text: "tsc"},
+			{Op: "exec", Text: "tsc *"},
+			{Op: "exec", Text: "tsx"},
+			{Op: "exec", Text: "tsx *"},
+			{Op: "exec", Text: "ts-node"},
+			{Op: "exec", Text: "ts-node *"},
+			{Op: "exec", Text: "vitest"},
+			{Op: "exec", Text: "vitest *"},
+			{Op: "exec", Text: "jest"},
+			{Op: "exec", Text: "jest *"},
+			{Op: "exec", Text: "eslint"},
+			{Op: "exec", Text: "eslint *"},
+			{Op: "exec", Text: "prettier"},
+			{Op: "exec", Text: "prettier *"},
+			{Op: "exec", Text: "vite"},
+			{Op: "exec", Text: "vite *"},
+			{Op: "exec", Text: "next"},
+			{Op: "exec", Text: "next *"},
+			{Op: "exec", Text: "webpack"},
+			{Op: "exec", Text: "webpack *"},
+			// make is in the same "every dev has it, every project uses it"
+			// bucket as the JS toolchain above. Wagons of Makefiles in the
+			// wild that wrap `tsc`/`go build`/`docker build`; blocking
+			// `make build` because it isn't in the list is pure friction.
+			{Op: "exec", Text: "make"},
+			{Op: "exec", Text: "make *"},
 			{Op: "read", Text: "**"},
 			{Op: "fetch", Text: "https://*"},
 			{Op: "fetch", Text: "http://*"},
