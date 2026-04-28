@@ -1926,6 +1926,17 @@ func runStats(args []string) int {
 				fmt.Printf("  Cache Hit Rate: %.1f%%\n", resp.CacheHitRate)
 			}
 			fmt.Println()
+		} else if resp.EventsTotal > 0 {
+			// Surface why the LLM block is missing instead of letting users
+			// guess. The fields are not auto-tracked; the host harness has to
+			// pipe usage through dfmt_remember on its side. Closes a recurring
+			// "are these stats broken?" question raised during system audits.
+			fmt.Println("LLM Token Metrics: not tracked")
+			fmt.Println("  Input/output/cache tokens are opt-in: pass input_tokens, output_tokens, and")
+			fmt.Println("  cached_tokens to dfmt_remember from the agent harness when it finishes a turn.")
+			fmt.Println("  Without that the MCP layer cannot observe API usage on its own — only the byte")
+			fmt.Println("  savings below are computed automatically.")
+			fmt.Println()
 		}
 
 		// MCP byte savings — automatic from sandbox tool calls.
