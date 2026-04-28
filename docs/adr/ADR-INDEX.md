@@ -19,6 +19,7 @@ See [ADR-0000](0000-adr-process.md) for the process governing how ADRs are writt
 | [0008](0008-html-parser.md) | Bundled HTML Parser | Accepted | ~350 lines bundled; don't take `x/net/html` dependency. |
 | [0009](0009-cross-call-content-dedup.md) | Cross-Call Content Dedup | Accepted | Strip payload to `content_id` + `(unchanged)` summary when the same body was emitted earlier in the daemon's lifetime. |
 | [0010](0010-structured-output-awareness.md) | Structured-Output Awareness | Accepted | `NormalizeOutput` detects JSON bodies and drops a small noise-field set (`created_at`, `*_url`, `_links`, `etag`, `node_id`). |
+| [0011](0011-per-session-wire-dedup.md) | Per-Session Wire Dedup Scoping | Accepted | Session ID flows through `context.Context`; `Handlers.sentCache` keys per-session. Closes the deferred risk in ADR-0009. |
 
 ## Superseded Decisions
 

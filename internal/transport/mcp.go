@@ -34,6 +34,16 @@ func mcpLegacyContent() bool {
 type MCPProtocol struct {
 	handlers *Handlers
 
+	// sessionID identifies this MCPProtocol instance for the wire-dedup
+	// cache (ADR-0011). Generated as a ULID at construction time so each
+	// `dfmt mcp` subprocess gets a unique bucket; optionally augmented in
+	// handleInitialize with the client's name/version when the agent
+	// honours the MCP `clientInfo` payload — useful for the dashboard's
+	// session list. The ULID alone guarantees uniqueness, so missing
+	// clientInfo is harmless. Mutated only by handleInitialize, which
+	// runs before any tool call, so no mutex is needed.
+	sessionID string
+
 	// statsMu guards the lazily-populated tool-call compression cache used
 	// to enrich tool descriptions with self-tuning telemetry. Computing the
 	// stats requires a journal stream; caching keeps tools/list cheap when
@@ -162,9 +172,16 @@ type MCPResponse struct {
 	ID      any       `json:"id"`
 }
 
-// NewMCPProtocol creates a new MCP protocol handler.
+// NewMCPProtocol creates a new MCP protocol handler. The session ID is
+// minted up front so it's available even if a client skips `initialize`
+// (some thin MCP clients go straight to `tools/list`). handleInitialize
+// may later prepend a clientInfo prefix for telemetry; the ULID suffix
+// keeps the ID unique either way.
 func NewMCPProtocol(handlers *Handlers) *MCPProtocol {
-	return &MCPProtocol{handlers: handlers}
+	return &MCPProtocol{
+		handlers:  handlers,
+		sessionID: string(core.NewULID(time.Now())),
+	}
 }
 
 // toolStatsBlurb returns the trailing description text we append to a tool's
@@ -290,6 +307,26 @@ func (m *MCPProtocol) Handle(ctx context.Context, req *MCPRequest) (*MCPResponse
 }
 
 func (m *MCPProtocol) handleInitialize(req *MCPRequest) (*MCPResponse, error) {
+	// Parse clientInfo if present and prepend it to the session ID so
+	// telemetry can attribute "(unchanged)" rates to specific agents
+	// (claude-code vs cursor vs ad-hoc). Errors are tolerated — the ULID
+	// suffix already guarantees uniqueness; clientInfo is just a label.
+	if len(req.Params) > 0 {
+		var params struct {
+			ClientInfo struct {
+				Name    string `json:"name"`
+				Version string `json:"version"`
+			} `json:"clientInfo"`
+		}
+		if err := json.Unmarshal(req.Params, &params); err == nil && params.ClientInfo.Name != "" {
+			label := params.ClientInfo.Name
+			if params.ClientInfo.Version != "" {
+				label += "/" + params.ClientInfo.Version
+			}
+			m.sessionID = label + ":" + m.sessionID
+		}
+	}
+
 	result := MCPInitializeResult{
 		ProtocolVersion: config.DefaultMCPProtocolVersion,
 		Capabilities: MCPServerCapabilities{
@@ -614,6 +651,14 @@ func (m *MCPProtocol) handleToolsCall(ctx context.Context, req *MCPRequest) (*MC
 	if m.handlers == nil {
 		return m.errorResult(req.ID, -32603, "daemon not connected")
 	}
+
+	// Attach the per-MCPProtocol session ID so the wire-dedup cache
+	// (ADR-0011) keys per-agent. Each `dfmt mcp` subprocess has its own
+	// MCPProtocol instance and therefore its own session ID — even when
+	// two stdio MCP clients somehow shared a daemon's Handlers (current
+	// architecture forks a subprocess per connect, but this guards
+	// against future shared-handler refactors).
+	ctx = WithSessionID(ctx, m.sessionID)
 
 	var params struct {
 		Name string          `json:"name"`

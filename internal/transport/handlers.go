@@ -339,53 +339,68 @@ func (h *Handlers) dedupRecord(key, contentID string) {
 	h.dedupCache[key] = dedupEntry{contentID: contentID, expiresAt: now.Add(dedupTTL)}
 }
 
+// sentCacheKey composes the cache key from session ID and content_id with a
+// NUL separator — the same trick stashDedupKey uses to block prefix
+// collisions ("sess" + "" + "x" must not equal "ses" + "" + "sx"). An empty
+// session ID falls into a single shared "default" bucket so paths that
+// haven't been threaded with WithSessionID still dedupe; this keeps tests
+// and any pre-ADR-0011 caller working.
+func sentCacheKey(sessionID, contentID string) string {
+	return sessionID + "\x00" + contentID
+}
+
 // seenBefore reports whether the agent has already received this content_id
-// within sentTTL. Empty IDs are never "seen" — callers that pass "" have no
-// content to dedupe and short-circuit elsewhere. Expired entries are removed
-// lazily so the lookup path stays O(1) on the common (cache-miss) case.
-func (h *Handlers) seenBefore(contentID string) bool {
+// within sentTTL, scoped to the session attached via WithSessionID (ADR-0011).
+// Empty contentIDs are never "seen" — callers that pass "" have no content
+// to dedupe and short-circuit elsewhere. Expired entries are removed lazily
+// so the lookup path stays O(1) on the common (cache-miss) case.
+func (h *Handlers) seenBefore(ctx context.Context, contentID string) bool {
 	if contentID == "" {
 		return false
 	}
+	key := sentCacheKey(SessionIDFrom(ctx), contentID)
 	h.sentMu.Lock()
 	defer h.sentMu.Unlock()
 	if h.sentCache == nil {
 		return false
 	}
-	expires, ok := h.sentCache[contentID]
+	expires, ok := h.sentCache[key]
 	if !ok {
 		return false
 	}
 	if time.Now().After(expires) {
-		delete(h.sentCache, contentID)
+		delete(h.sentCache, key)
 		return false
 	}
 	return true
 }
 
-// markSent records that the agent has received this content_id, with expiry
-// sentTTL into the future. FIFO eviction: when the cache is full we drop the
-// oldest entry (front of sentOrder) regardless of TTL. Re-adding an existing
-// ID refreshes its expiry but does not re-queue it — preventing the same ID
-// from occupying multiple slots in the FIFO under a busy retry loop.
-func (h *Handlers) markSent(contentID string) {
+// markSent records that the agent has received this content_id under the
+// session attached via WithSessionID (ADR-0011), with expiry sentTTL into
+// the future. FIFO eviction: when the cache is full we drop the oldest
+// entry (front of sentOrder) regardless of TTL. Re-adding an existing
+// (sessionID, contentID) pair refreshes its expiry but does not re-queue
+// it — preventing the same key from occupying multiple slots in the FIFO
+// under a busy retry loop.
+func (h *Handlers) markSent(ctx context.Context, contentID string) {
 	if contentID == "" {
 		return
 	}
+	key := sentCacheKey(SessionIDFrom(ctx), contentID)
 	h.sentMu.Lock()
 	defer h.sentMu.Unlock()
 	if h.sentCache == nil {
 		h.sentCache = make(map[string]time.Time, sentCap)
 	}
-	if _, exists := h.sentCache[contentID]; !exists {
+	if _, exists := h.sentCache[key]; !exists {
 		if len(h.sentOrder) >= sentCap {
 			oldest := h.sentOrder[0]
 			h.sentOrder = h.sentOrder[1:]
 			delete(h.sentCache, oldest)
 		}
-		h.sentOrder = append(h.sentOrder, contentID)
+		h.sentOrder = append(h.sentOrder, key)
 	}
-	h.sentCache[contentID] = time.Now().Add(sentTTL)
+	h.sentCache[key] = time.Now().Add(sentTTL)
 }
 
 // redactString returns s with sensitive data scrubbed, or s unchanged if no
@@ -1159,7 +1174,7 @@ func (h *Handlers) Exec(ctx context.Context, params ExecParams) (*ExecResponse, 
 	// Return:"raw" when it actually needs them again. We log the invocation
 	// at full byte size before short-circuiting so dashboard stats reflect
 	// the work that ran.
-	if params.Return != "raw" && h.seenBefore(contentID) {
+	if params.Return != "raw" && h.seenBefore(ctx, contentID) {
 		h.logEvent(ctx, "tool.exec", params.Intent, map[string]any{
 			"code":                params.Code,
 			"lang":                params.Lang,
@@ -1198,7 +1213,7 @@ func (h *Handlers) Exec(ctx context.Context, params ExecParams) (*ExecResponse, 
 		core.KeyReturnedBytes: returnedBytes,
 	})
 
-	h.markSent(contentID)
+	h.markSent(ctx, contentID)
 	return &ExecResponse{
 		Exit:       resp.Exit,
 		Stdout:     stdout,
@@ -1273,7 +1288,7 @@ func (h *Handlers) Read(ctx context.Context, params ReadParams) (*ReadResponse, 
 
 	// Wire dedup short-circuit. See ADR-0009 and the matching block in Exec
 	// for the full rationale.
-	if params.Return != "raw" && h.seenBefore(contentID) {
+	if params.Return != "raw" && h.seenBefore(ctx, contentID) {
 		h.logEvent(ctx, "tool.read", params.Intent, map[string]any{
 			"path":                params.Path,
 			"read_bytes":          resp.ReadBytes,
@@ -1307,7 +1322,7 @@ func (h *Handlers) Read(ctx context.Context, params ReadParams) (*ReadResponse, 
 		core.KeyReturnedBytes: returnedBytes,
 	})
 
-	h.markSent(contentID)
+	h.markSent(ctx, contentID)
 	return &ReadResponse{
 		Content:   redContent,
 		Summary:   summary,
@@ -1408,7 +1423,7 @@ func (h *Handlers) Fetch(ctx context.Context, params FetchParams) (*FetchRespons
 	// because they carry HTTP-level metadata (e.g. caching headers, redirect
 	// chains) the agent may still want to reason about even when the body
 	// hasn't changed.
-	if params.Return != "raw" && h.seenBefore(contentID) {
+	if params.Return != "raw" && h.seenBefore(ctx, contentID) {
 		h.logEvent(ctx, "tool.fetch", params.Intent, map[string]any{
 			"url":                 params.URL,
 			"status":              resp.Status,
@@ -1441,7 +1456,7 @@ func (h *Handlers) Fetch(ctx context.Context, params FetchParams) (*FetchRespons
 		core.KeyReturnedBytes: returnedBytes,
 	})
 
-	h.markSent(contentID)
+	h.markSent(ctx, contentID)
 	return &FetchResponse{
 		Status:     resp.Status,
 		Headers:    resp.Headers,

@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/ersinkoc/dfmt/internal/core"
 )
 
 const (
@@ -371,7 +373,19 @@ func (s *HTTPServer) handle(w http.ResponseWriter, r *http.Request) {
 	}
 	defer r.Body.Close()
 
-	ctx := r.Context()
+	// Per-request session ID (ADR-0011). HTTP is stateless — there's no
+	// "connection" the way socket has — so callers that want wire-dedup
+	// across multiple HTTP calls must opt in by sending the same
+	// X-DFMT-Session header on each. Absent header → fresh ULID per
+	// request → no dedupe (the second call's session is unique). This
+	// matches the loopback CLI use case (each invocation is its own
+	// session) without forcing the dashboard or ad-hoc curl to think
+	// about session identity.
+	sessionID := r.Header.Get("X-DFMT-Session")
+	if sessionID == "" {
+		sessionID = string(core.NewULID(time.Now()))
+	}
+	ctx := WithSessionID(r.Context(), sessionID)
 
 	var req Request
 	if err := json.Unmarshal(body, &req); err != nil {

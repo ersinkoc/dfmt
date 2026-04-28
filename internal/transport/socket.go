@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ersinkoc/dfmt/internal/core"
 	"github.com/ersinkoc/dfmt/internal/logging"
 )
 
@@ -180,6 +181,15 @@ func (s *SocketServer) handleConn(serverCtx context.Context, conn net.Conn) {
 		t := time.AfterFunc(socketConnMaxLifetime, func() { _ = conn.Close() })
 		defer t.Stop()
 	}
+
+	// Stamp every request from this connection with a per-connection
+	// session ID (ADR-0011). Two distinct CLI invocations or two
+	// concurrent dashboard polls now have independent wire-dedup buckets:
+	// one caller's repeated reads still trigger "(unchanged)" for them,
+	// but the other caller still sees full payload on its first read.
+	// ULID gives time-sortable uniqueness without external deps.
+	sessionID := string(core.NewULID(time.Now()))
+	serverCtx = WithSessionID(serverCtx, sessionID)
 
 	codec := NewCodec(conn)
 
