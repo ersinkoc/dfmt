@@ -1,0 +1,38 @@
+<!doctype html>
+<html>
+<head>
+<title>Why we rewrote our parser — Engineering Blog</title>
+<style>article{max-width:720px;margin:0 auto}</style>
+<script src="/static/analytics.js"></script>
+</head>
+<body>
+<header><nav><a href="/">Blog</a></nav></header>
+<article>
+<h1>Why we rewrote our parser</h1>
+<p>Last quarter we shipped a complete rewrite of our config parser. This post explains <em>why</em> and what we learned.</p>
+<h2>The original problem</h2>
+<p>Our v1 parser was built when the codebase was 12 KLOC. It made three assumptions that didn't survive growth:</p>
+<ul>
+<li>Configs are always under 1 KB.</li>
+<li>Schema is fully known at parse time.</li>
+<li>Errors can be best-effort recovered.</li>
+</ul>
+<p>By v3 of the product, none of these were true. We kept patching <strong>around</strong> the parser instead of <strong>through</strong> it.</p>
+<h2>The new design</h2>
+<p>The rewrite is a streaming tokenizer + walker, modeled on Go's <code>encoding/json</code> internals.</p>
+<blockquote>
+<p>Take what works. <code>json</code> handles malformed input gracefully without panicking, and that was exactly what we needed.</p>
+</blockquote>
+<img src="/img/parser-flow.png" alt="Parser data flow diagram">
+<h2>Numbers</h2>
+<p>Throughput improved 8×. Memory dropped 60%. Lines of code went up 15% but the new ones are testable.</p>
+<hr>
+<p>Comments? <a href="https://github.com/example/blog/issues">Open an issue</a>.</p>
+</article>
+<aside>
+<h3>Recent posts</h3>
+<ul><li><a href="/p/2">Migrating</a></li><li><a href="/p/3">Profiling</a></li></ul>
+</aside>
+<footer><p>(c) 2024 Engineering team</p></footer>
+</body>
+</html>

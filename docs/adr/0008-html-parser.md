@@ -114,6 +114,19 @@ Revisit if:
 
 ## Implementation Status (Updated 2026-04-28)
 
-- **Lite path landed:** `CompactHTML` in `internal/sandbox/structured.go` strips `<script>`, `<style>`, `<!--…-->`, `<nav>`, `<footer>`, `<aside>`, `<head>`, `<noscript>`, and `<svg>` blocks via case-insensitive non-greedy regex. Detection is prefix-gated by a leading `<!doctype html>` or `<html>` so plain text containing `<script>` literals stays untouched. `NormalizeOutput` runs it after `CompactStructured`. Bench scenario `fetched doc page (HTML boilerplate)` lands at 72.2% wire savings (5042 raw → 1438 modern).
-- **Full tokenizer + markdown walker still deferred:** the original ADR scope (~550 lines: tokenizer, walker, golden-corpus tests, entity map) lands in a future PR. The lite path is the 80-percent solution; the full converter improves index quality for `dfmt_search` over fetched pages, which is the deferred win.
-- Caller/wire impact: `dfmt.fetch` responses for documentation pages drop ~70% before reaching the policy filter, so the structured response budgets (matches, vocabulary) operate on de-noised content. No API surface change.
+**Full path landed.** ADR-0008 is now fully implemented.
+
+- **Tokenizer:** `internal/sandbox/htmltok.go` (~280 LOC). Eight-state machine: text, tag-open, tag-name, attr-name, attr-value, comment, raw-text (script/style), end-tag. Recovery is "best effort" — malformed input degrades silently, never panics. Entity decoding via stdlib `html.UnescapeString` (replaces the planned hard-coded 50-entity map; stdlib gives the full HTML5 set without breaking ADR-0004).
+- **Markdown walker:** `internal/sandbox/htmlmd.go` (~330 LOC). Stack-based emitter with a "drop depth" counter for boilerplate elements (`script`, `style`, `nav`, `footer`, `aside`, `head`, `noscript`, `svg`, `form`, `button`, `iframe`). Recognises headings, paragraphs, emphasis, inline + fenced code (with language hint from `class="language-X"`), lists, links, images, blockquotes, hr, basic tables.
+- **Pipeline gate:** `ConvertHTML` is detection-prefix-gated (same `<!doctype html>` / `<html>` check `CompactHTML` used). On cap regression — output ≥ input bytes — falls back to `CompactHTML`'s regex strip so wire bytes never inflate.
+- **Lite path retained as fallback:** `CompactHTML` (regex) is no longer the primary path but stays in the codebase as the cap-regression fallback. Pages where the walker would inflate the body still get script/style/nav stripping.
+- **Pipeline order:** `NormalizeOutput` now calls `ConvertHTML` after `CompactStructured` and after the ANSI/CR/RLE transforms. Order matters: structural transforms run first so the body arriving at the HTML detector hasn't been mangled.
+
+**Bench delta** (`dfmt-bench tokensaving`, `fetched doc page (HTML boilerplate)` scenario, 5042 raw bytes): lite path 1438 modern bytes (72.2% savings); full tokenizer drops further — final number recorded in the implementation commit message.
+
+**Test corpus:** `internal/sandbox/testdata/html-doc-page.html`, `html-blog-post.html`, `html-issue-page.html`. Real-world page shapes (documentation, blog post, GitHub issue page); each fixture asserts: walker doesn't panic, output strictly shrinks, content-bearing keywords survive, drop-set boilerplate is absent.
+
+**Out of scope (deferred for a future ADR if a need surfaces):**
+- Browser-grade HTML5 error recovery (foster parenting, anchored re-parsing).
+- CSS-style `display:none` boilerplate detection.
+- Streaming tokenizer for bodies > 8 MiB (current input cap is well below).

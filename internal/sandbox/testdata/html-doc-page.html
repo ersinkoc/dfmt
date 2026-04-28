@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>parseConfig — Foo Library</title>
+<link rel="stylesheet" href="/static/main.css">
+<style>
+body{font-family:sans-serif;margin:0}
+.sidebar{width:280px;float:left}
+.content{margin-left:280px;padding:2rem}
+</style>
+<script>
+(function(){window.dataLayer=window.dataLayer||[];function gtag(){dataLayer.push(arguments)}
+gtag('js',new Date());gtag('config','GA-X');})();
+</script>
+</head>
+<body>
+<nav>
+<ul><li><a href="/">Home</a></li><li><a href="/docs">Docs</a></li><li><a href="/api">API</a></li></ul>
+</nav>
+<aside class="sidebar">
+<h3>API Reference</h3>
+<ul>
+<li><a href="/api/parse">parseConfig</a></li>
+<li><a href="/api/load">loadConfig</a></li>
+<li><a href="/api/save">saveConfig</a></li>
+</ul>
+</aside>
+<main class="content">
+<h1>parseConfig(input, options)</h1>
+<p>Parses a configuration string and returns a structured <code>Config</code> object. Throws <code>ParseError</code> on malformed input.</p>
+<h2>Parameters</h2>
+<ul>
+<li><code>input</code> (<em>string</em>) — The configuration source.</li>
+<li><code>options</code> (<em>object</em>) — Parser options:
+  <ul>
+    <li><code>strict</code> (boolean, default <strong>true</strong>) — enables strict-mode validation.</li>
+    <li><code>encoding</code> (string, default <strong>utf-8</strong>) — input character encoding.</li>
+  </ul>
+</li>
+</ul>
+<h2>Returns</h2>
+<p>A <code>Config</code> object on success.</p>
+<h2>Example</h2>
+<pre><code class="language-go">cfg, err := parseConfig(src, &amp;Options{Strict: false})
+if err != nil {
+    log.Fatal(err)
+}
+fmt.Println(cfg.Section("database").Get("host"))</code></pre>
+<h2>Errors</h2>
+<table>
+<thead><tr><th>Code</th><th>Meaning</th></tr></thead>
+<tbody>
+<tr><td>E001</td><td>Unrecognised section.</td></tr>
+<tr><td>E002</td><td>Duplicate key.</td></tr>
+<tr><td>E003</td><td>Unterminated string literal.</td></tr>
+</tbody>
+</table>
+<hr>
+<p>See also: <a href="/api/load">loadConfig</a>, <a href="/api/save">saveConfig</a>.</p>
+</main>
+<footer>
+<p>&copy; 2024 Foo Library. All rights reserved.</p>
+</footer>
+<script>analytics.track('pageview');</script>
+</body>
+</html>

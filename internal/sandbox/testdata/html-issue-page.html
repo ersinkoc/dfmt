@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>Bug: parseConfig crashes on empty input · Issue #42 · foo/bar</title>
+<style>.timeline{padding:1rem}</style>
+<script defer src="/assets/issue.js"></script>
+</head>
+<body>
+<nav class="header-nav">
+<ul><li><a href="/">Dashboard</a></li><li><a href="/foo/bar">foo/bar</a></li><li><a href="/foo/bar/issues">Issues</a></li></ul>
+</nav>
+<main>
+<h1>Bug: parseConfig crashes on empty input <span>#42</span></h1>
+<aside class="meta">
+<p>Opened by <a href="/alice">@alice</a> on 2024-01-15</p>
+<p>Labels: <a href="/foo/bar/labels/bug">bug</a>, <a href="/foo/bar/labels/parser">parser</a></p>
+</aside>
+<section class="comment">
+<h3>Description</h3>
+<p>Calling <code>parseConfig("")</code> panics instead of returning an empty <code>Config</code>:</p>
+<pre><code class="language-go">cfg, err := parseConfig("")
+// panic: runtime error: index out of range [-1]</code></pre>
+<p>Expected: empty input should return <code>Config{}</code> with no error, or return <code>ErrEmpty</code>.</p>
+<h3>Steps to reproduce</h3>
+<ol>
+<li>Install foo v3.2.1.</li>
+<li>Run the snippet above.</li>
+<li>Observe panic.</li>
+</ol>
+<h3>Environment</h3>
+<table>
+<thead><tr><th>Field</th><th>Value</th></tr></thead>
+<tbody>
+<tr><td>OS</td><td>macOS 14.2</td></tr>
+<tr><td>Go</td><td>1.22.0</td></tr>
+<tr><td>foo</td><td>3.2.1</td></tr>
+</tbody>
+</table>
+</section>
+<section class="comment">
+<h3><a href="/bob">@bob</a> commented</h3>
+<p>Confirmed. Looking into it now. The fix is in <code>parser.go:88</code> — the index check should be <code>&gt;= 0</code> not <code>&gt; 0</code>.</p>
+</section>
+</main>
+<aside class="sidebar">
+<h3>Linked PRs</h3>
+<ul><li><a href="/foo/bar/pull/43">#43 fix(parser): guard empty input</a></li></ul>
+</aside>
+<footer><p>&copy; foo/bar contributors</p></footer>
+</body>
+</html>
