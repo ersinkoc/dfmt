@@ -821,35 +821,43 @@ type StatsParams struct {
 }
 
 // StatsResponse is the response for the Stats method.
+//
+// Most numeric fields use `omitempty` so a fresh project (zero events,
+// zero token reports, zero MCP traffic) returns a small payload. The
+// dashboard reads each field with a `|| 0` fallback (see
+// internal/transport/dashboard.go) so an absent field reads as zero
+// — same as the explicit zero would. EventsTotal stays without
+// `omitempty` because consumers use its presence as a "stats are
+// populated" sentinel.
 type StatsResponse struct {
 	EventsTotal      int            `json:"events_total"`
-	EventsByType     map[string]int `json:"events_by_type"`
-	EventsByPriority map[string]int `json:"events_by_priority"`
-	SessionStart     string         `json:"session_start"`
-	SessionEnd       string         `json:"session_end"`
+	EventsByType     map[string]int `json:"events_by_type,omitempty"`
+	EventsByPriority map[string]int `json:"events_by_priority,omitempty"`
+	SessionStart     string         `json:"session_start,omitempty"`
+	SessionEnd       string         `json:"session_end,omitempty"`
 	// LLM token metrics — populated only when callers pass input_tokens /
 	// output_tokens / cached_tokens to dfmt_remember (the MCP layer cannot
 	// observe API usage on its own).
-	TotalInputTokens  int     `json:"total_input_tokens"`
-	TotalOutputTokens int     `json:"total_output_tokens"`
-	TotalCachedTokens int     `json:"total_cached_tokens"`
-	TokenSavings      int     `json:"token_savings"` // alias of TotalCachedTokens
-	CacheHitRate      float64 `json:"cache_hit_rate"`
+	TotalInputTokens  int     `json:"total_input_tokens,omitempty"`
+	TotalOutputTokens int     `json:"total_output_tokens,omitempty"`
+	TotalCachedTokens int     `json:"total_cached_tokens,omitempty"`
+	TokenSavings      int     `json:"token_savings,omitempty"` // alias of TotalCachedTokens
+	CacheHitRate      float64 `json:"cache_hit_rate,omitempty"`
 	// MCP byte savings — populated automatically by sandbox tool calls.
 	// raw = pre-filter (post-redact) bytes; returned = bytes actually sent back.
-	TotalRawBytes      int     `json:"total_raw_bytes"`
-	TotalReturnedBytes int     `json:"total_returned_bytes"`
-	BytesSaved         int     `json:"bytes_saved"`       // raw - returned
-	CompressionRatio   float64 `json:"compression_ratio"` // saved / raw, 0..1
+	TotalRawBytes      int     `json:"total_raw_bytes,omitempty"`
+	TotalReturnedBytes int     `json:"total_returned_bytes,omitempty"`
+	BytesSaved         int     `json:"bytes_saved,omitempty"`       // raw - returned
+	CompressionRatio   float64 `json:"compression_ratio,omitempty"` // saved / raw, 0..1
 	// DedupHits is the number of times stashContent collapsed an
 	// identical (kind, source, body) tuple to an existing chunk-set ID
 	// instead of writing a new one. Process-lifetime counter — survives
 	// idle restarts via re-warming, not via persistence.
-	DedupHits int `json:"dedup_hits"`
+	DedupHits int `json:"dedup_hits,omitempty"`
 	// Native tool awareness: how many tool calls bypassed dfmt MCP
-	NativeToolCalls      map[string]int `json:"native_tool_calls"`       // count by tool name (Bash, Read, Glob, etc.)
-	MCPToolCalls         map[string]int `json:"mcp_tool_calls"`          // count by MCP tool name (dfmt.exec, dfmt.read, etc.)
-	NativeToolBypassRate float64        `json:"native_tool_bypass_rate"` // % of tool calls that used native tools
+	NativeToolCalls      map[string]int `json:"native_tool_calls,omitempty"`       // count by tool name (Bash, Read, Glob, etc.)
+	MCPToolCalls         map[string]int `json:"mcp_tool_calls,omitempty"`          // count by MCP tool name (dfmt.exec, dfmt.read, etc.)
+	NativeToolBypassRate float64        `json:"native_tool_bypass_rate,omitempty"` // % of tool calls that used native tools
 }
 
 // knownNativeTools is the set of Claude Code built-in tool names captured
