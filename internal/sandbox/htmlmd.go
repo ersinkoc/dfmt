@@ -98,6 +98,22 @@ type walker struct {
 	// listStack tracks whether each open list is ordered. Top of stack
 	// is the innermost list. <li> emission consults this.
 	listStack []listKind
+	// tableStack tracks per-table state for emitting GFM separators.
+	// A separator (`| --- | --- |`) must follow the first row, but
+	// only the first — emitting it after every row would break the
+	// table syntax. Stack-based to support nested tables (rare but
+	// not unheard of: figure captions inside table cells, for
+	// instance).
+	tableStack []tableState
+}
+
+// tableState tracks one open table: how many rows have closed and
+// the column count of the first row (used to size the separator
+// when we emit it).
+type tableState struct {
+	rowsClosed int
+	firstCols  int
+	curCols    int
 }
 
 type listKind int
@@ -197,14 +213,34 @@ func (w *walker) handleStart(tk token) {
 	case "blockquote":
 		w.ensureBlockBreak()
 		// The actual ">" prefix happens line-by-line in writeText.
+	case "dl":
+		w.ensureBlockBreak()
+	case "dt":
+		// Definition term renders as bold; closing </dt> drops the
+		// bold marker and a trailing colon kicks off the definition.
+		w.out.WriteString("**")
+	case "dd":
+		// Definition body indents under the term; markdown definition
+		// list extensions vary, but the simplest "term: body" form
+		// renders correctly across CommonMark + GFM.
+		w.out.WriteByte(' ')
 	case "table":
 		w.ensureBlockBreak()
+		w.tableStack = append(w.tableStack, tableState{})
 	case "thead", "tbody", "tfoot":
 		// Markdown tables don't distinguish; just structural in HTML.
 	case "tr":
 		// Row break. Markdown rows end with `\n` after the cells.
+		// Reset the per-row column counter so we can capture this
+		// row's width for the GFM separator (when we emit one).
+		if i := len(w.tableStack) - 1; i >= 0 {
+			w.tableStack[i].curCols = 0
+		}
 	case "th", "td":
 		w.out.WriteString("| ")
+		if i := len(w.tableStack) - 1; i >= 0 {
+			w.tableStack[i].curCols++
+		}
 	default:
 		// Block elements get a paragraph break around them; inline
 		// elements pass through transparently.
@@ -346,20 +382,38 @@ func (w *walker) popFrame(tag string, stranded bool) {
 		w.out.WriteByte(')')
 	case "tr":
 		w.out.WriteString("|\n")
-		// If this was the first row, emit GFM separator. We track
-		// "first row" by counting how many `|\n` we've seen on this
-		// table — but the simpler heuristic is: emit a separator only
-		// after the FIRST `</tr>` of any table. Realistic doc tables
-		// always have headers; tracking head context exactly is more
-		// complexity than the small markdown improvement justifies.
-		// Skip the separator for now; markdown renderers will render
-		// the table without it as a borderless table, which is fine.
+		// GFM tables require a `| --- | --- |` separator after the
+		// first row. Without it, CommonMark renderers treat the
+		// markdown as plain pipe-delimited text — agents reading the
+		// output miss the table structure entirely. Emit the
+		// separator exactly once per table, sized to the first
+		// row's column count.
+		if i := len(w.tableStack) - 1; i >= 0 {
+			ts := &w.tableStack[i]
+			ts.rowsClosed++
+			if ts.rowsClosed == 1 {
+				ts.firstCols = ts.curCols
+				if ts.firstCols > 0 {
+					w.out.WriteString(strings.Repeat("| --- ", ts.firstCols))
+					w.out.WriteString("|\n")
+				}
+			}
+		}
 	case "th", "td":
 		w.out.WriteByte(' ')
 	case "table":
 		w.out.WriteByte('\n')
+		if len(w.tableStack) > 0 {
+			w.tableStack = w.tableStack[:len(w.tableStack)-1]
+		}
 	case "blockquote":
 		w.out.WriteString("\n\n")
+	case "dl":
+		w.out.WriteByte('\n')
+	case "dt":
+		w.out.WriteString("**:")
+	case "dd":
+		w.out.WriteByte('\n')
 	}
 }
 

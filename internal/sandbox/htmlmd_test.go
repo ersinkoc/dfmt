@@ -262,6 +262,69 @@ func TestConvertHTML_SkipNestedDrop(t *testing.T) {
 	}
 }
 
+// TestConvertHTML_TableEmitsGFMSeparator: GFM tables need a
+// `| --- | --- |` separator after the first row. Without it
+// CommonMark renderers fall back to plain text and agents lose the
+// table structure entirely.
+func TestConvertHTML_TableEmitsGFMSeparator(t *testing.T) {
+	in := `<table>
+<thead><tr><th>Code</th><th>Meaning</th></tr></thead>
+<tbody>
+<tr><td>E001</td><td>Bad input</td></tr>
+<tr><td>E002</td><td>Duplicate key</td></tr>
+</tbody>
+</table>`
+	out := convert(in)
+	if !strings.Contains(out, "| --- | --- |") {
+		t.Errorf("expected GFM separator '| --- | --- |' after first row; got: %s", out)
+	}
+	// Separator should appear exactly once per table.
+	if strings.Count(out, "| --- | --- |") != 1 {
+		t.Errorf("separator must appear exactly once per table; got %d", strings.Count(out, "| --- | --- |"))
+	}
+	// All rows should still emit.
+	for _, want := range []string{"Code", "Meaning", "E001", "Bad input", "E002", "Duplicate key"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("table content %q missing: %s", want, out)
+		}
+	}
+}
+
+// TestConvertHTML_TableMultipleSeparators: two distinct tables get
+// independent separators (separator state must reset per table).
+func TestConvertHTML_TableMultipleSeparators(t *testing.T) {
+	in := `<table><tr><td>A</td><td>B</td></tr><tr><td>1</td><td>2</td></tr></table>
+<p>between</p>
+<table><tr><td>X</td><td>Y</td><td>Z</td></tr><tr><td>x</td><td>y</td><td>z</td></tr></table>`
+	out := convert(in)
+	// First table: 2 columns. Second table: 3 columns.
+	if !strings.Contains(out, "| --- | --- |\n") {
+		t.Errorf("first table separator (2-col) missing: %s", out)
+	}
+	if !strings.Contains(out, "| --- | --- | --- |\n") {
+		t.Errorf("second table separator (3-col) missing: %s", out)
+	}
+}
+
+// TestConvertHTML_DefinitionList: <dl><dt><dd> shape becomes
+// `**term**: definition` in markdown. Common in API reference docs.
+func TestConvertHTML_DefinitionList(t *testing.T) {
+	in := `<dl>
+<dt>strict</dt><dd>boolean, default true. Enables strict mode.</dd>
+<dt>encoding</dt><dd>string, default utf-8.</dd>
+</dl>`
+	out := convert(in)
+	if !strings.Contains(out, "**strict**:") {
+		t.Errorf("definition term should render as **term**:; got %s", out)
+	}
+	if !strings.Contains(out, "Enables strict mode") {
+		t.Errorf("definition body lost: %s", out)
+	}
+	if !strings.Contains(out, "**encoding**:") {
+		t.Errorf("second term lost: %s", out)
+	}
+}
+
 // TestConvertHTML_NormalizeOutputIntegration: the pipeline-level wiring
 // — NormalizeOutput must call ConvertHTML.
 func TestConvertHTML_NormalizeOutputIntegration(t *testing.T) {
