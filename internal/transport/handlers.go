@@ -590,13 +590,18 @@ type SearchResponse struct {
 	Layer   string      `json:"layer"`
 }
 
-// SearchHit represents a single search result.
+// SearchHit represents a single search result. Excerpt carries a short
+// content snippet (≤80 bytes, rune-aligned) so agents can decide
+// whether to drill into the hit without a follow-up dfmt_recall round
+// trip — net wire saving even after the per-hit byte cost. Empty when
+// the indexed event predates the excerpt feature.
 type SearchHit struct {
-	ID     string  `json:"id"`
-	Score  float64 `json:"score"`
-	Layer  int     `json:"layer"`
-	Type   string  `json:"type,omitempty"`
-	Source string  `json:"source,omitempty"`
+	ID      string  `json:"id"`
+	Score   float64 `json:"score"`
+	Layer   int     `json:"layer"`
+	Type    string  `json:"type,omitempty"`
+	Source  string  `json:"source,omitempty"`
+	Excerpt string  `json:"excerpt,omitempty"`
 }
 
 // Search queries the index.
@@ -640,9 +645,10 @@ func (h *Handlers) Search(ctx context.Context, params SearchParams) (*SearchResp
 	results := make([]SearchHit, len(hits))
 	for i, hit := range hits {
 		results[i] = SearchHit{
-			ID:    hit.ID,
-			Score: hit.Score,
-			Layer: hit.Layer,
+			ID:      hit.ID,
+			Score:   hit.Score,
+			Layer:   hit.Layer,
+			Excerpt: h.index.Excerpt(hit.ID),
 		}
 	}
 

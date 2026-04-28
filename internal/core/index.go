@@ -25,7 +25,20 @@ type Index struct {
 	docLen    map[string]int          // document ID -> token count
 	avgDocLen float64
 	totalDocs int
+	// excerpts maps event ID to a short content excerpt the search
+	// handler attaches to each hit. Lets agents see WHAT each hit
+	// contains without a follow-up dfmt_recall round-trip — net wire
+	// saving even after the per-hit byte cost. Not persisted: gob
+	// format stability beats one-time rebuild on daemon start
+	// (Index.Add is called during journal load anyway).
+	excerpts map[string]string
 }
+
+// excerptMaxBytes caps each per-event excerpt to keep search responses
+// bounded. 80 bytes ≈ a typical truncated title or first sentence —
+// enough signal for the agent to decide whether to drill in. Not a
+// rune-aligned value because truncate() handles the alignment.
+const excerptMaxBytes = 80
 
 // NewIndex creates a new Index.
 func NewIndex() *Index {
@@ -33,6 +46,7 @@ func NewIndex() *Index {
 		stemPL:    make(map[string]*PostingList),
 		trigramPL: make(map[string]*PostingList),
 		docLen:    make(map[string]int),
+		excerpts:  make(map[string]string),
 	}
 }
 
@@ -85,6 +99,12 @@ func (ix *Index) UnmarshalJSON(data []byte) error {
 	if ix.docLen == nil {
 		ix.docLen = make(map[string]int)
 	}
+	// excerpts is intentionally NOT in the persisted JSON — re-built
+	// from the journal stream on load. Init to non-nil so concurrent
+	// Search readers don't see a zero-value map.
+	if ix.excerpts == nil {
+		ix.excerpts = make(map[string]string)
+	}
 	ix.avgDocLen = j.AvgDocLen
 	ix.totalDocs = j.TotalDocs
 	return nil
@@ -100,6 +120,16 @@ func (ix *Index) Add(e Event) {
 	id := e.ID
 	if _, exists := ix.docLen[id]; exists {
 		return
+	}
+
+	// Stash a short content excerpt for search-result enrichment.
+	// Done before tokenization because the excerpt comes from raw
+	// event fields (message/path/type) before stop-word filtering.
+	if ix.excerpts == nil {
+		ix.excerpts = make(map[string]string)
+	}
+	if ex := buildExcerpt(e); ex != "" {
+		ix.excerpts[id] = ex
 	}
 
 	// Extract searchable text from event
@@ -141,6 +171,56 @@ func (ix *Index) Add(e Event) {
 		}
 		pl.IDs = append(pl.IDs, ids...)
 	}
+}
+
+// Excerpt returns the short text snippet attached to docID at index
+// time, or "" when no excerpt is recorded (event was indexed before
+// the excerpt feature, or never had a message/path field). Safe for
+// concurrent reads.
+func (ix *Index) Excerpt(docID string) string {
+	ix.mu.RLock()
+	defer ix.mu.RUnlock()
+	if ix.excerpts == nil {
+		return ""
+	}
+	return ix.excerpts[docID]
+}
+
+// buildExcerpt picks the most informative ~80-byte snippet for an
+// event. Preference order: message → path → type+actor. Rune-aligned
+// truncation keeps non-ASCII (Turkish, CJK) snippets valid UTF-8 so
+// JSON marshal doesn't substitute U+FFFD.
+func buildExcerpt(e Event) string {
+	if e.Data != nil {
+		if msg, ok := e.Data["message"].(string); ok && msg != "" {
+			return excerptTruncate(msg, excerptMaxBytes)
+		}
+		if path, ok := e.Data["path"].(string); ok && path != "" {
+			return excerptTruncate(string(e.Type)+" "+path, excerptMaxBytes)
+		}
+	}
+	if e.Actor != "" {
+		return excerptTruncate(string(e.Type)+" by "+e.Actor, excerptMaxBytes)
+	}
+	return excerptTruncate(string(e.Type), excerptMaxBytes)
+}
+
+// excerptTruncate cuts s to at most maxLen bytes at a rune boundary,
+// appending "…" when truncation occurred. Local copy of the sandbox
+// truncate helper to keep core dep-free.
+func excerptTruncate(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	cut := maxLen - 1
+	for cut > 0 {
+		b := s[cut]
+		if b < 0x80 || b >= 0xC0 {
+			break
+		}
+		cut--
+	}
+	return s[:cut] + "…"
 }
 
 // eventText extracts searchable text from an event.
@@ -347,6 +427,7 @@ func (ix *Index) Remove(id string) {
 		return
 	}
 	delete(ix.docLen, id)
+	delete(ix.excerpts, id)
 	if ix.totalDocs > 0 {
 		ix.totalDocs--
 	}
