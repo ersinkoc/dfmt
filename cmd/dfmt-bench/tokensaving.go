@@ -126,6 +126,68 @@ func buildScenarios() []tokenSavingScenario {
 	}
 	ghIssues.WriteString("]")
 
+	// kubectl get pods -o json — k8s objects carry deep metadata blocks
+	// (creationTimestamp, resourceVersion, selfLink, uid, ownerReferences,
+	// managedFields). The structured compactor catches the URL family,
+	// timestamps, and node_id; managedFields stays because it's not on
+	// the drop list (a richer drop list could halve this further — out
+	// of scope for ADR-0010's conservative default).
+	var kubectl strings.Builder
+	kubectl.WriteString(`{"apiVersion":"v1","kind":"List","items":[`)
+	for i := 1; i <= 20; i++ {
+		if i > 1 {
+			kubectl.WriteString(",")
+		}
+		kubectl.WriteString(fmt.Sprintf(`{`+
+			`"apiVersion":"v1",`+
+			`"kind":"Pod",`+
+			`"metadata":{`+
+			`"name":"worker-%d","namespace":"prod",`+
+			`"uid":"abc-1234-def-%d",`+
+			`"resourceVersion":"99887%d",`+
+			`"creationTimestamp":"2024-03-15T08:30:00Z",`+
+			`"selfLink":"/api/v1/namespaces/prod/pods/worker-%d",`+
+			`"labels":{"app":"worker","tier":"backend"}`+
+			`},`+
+			`"spec":{"containers":[{"name":"app","image":"acme/worker:v1.2.%d"}]},`+
+			`"status":{"phase":"Running","podIP":"10.0.0.%d"}`+
+			`}`,
+			i, i, i, i, i, i))
+	}
+	kubectl.WriteString(`]}`)
+
+	// aws ec2 describe-instances — Reservations[].Instances[] shape with
+	// the typical noise (LaunchTime, NetworkInterfaces[].Attachment.AttachTime,
+	// IamInstanceProfile.Arn, etc.). Most agent reasoning over EC2 data
+	// keys off InstanceId + State + InstanceType + private-IP; the rest
+	// is wire bloat.
+	var awsEC2 strings.Builder
+	awsEC2.WriteString(`{"Reservations":[`)
+	for i := 1; i <= 15; i++ {
+		if i > 1 {
+			awsEC2.WriteString(",")
+		}
+		awsEC2.WriteString(fmt.Sprintf(`{`+
+			`"ReservationId":"r-abc%d",`+
+			`"OwnerId":"123456789012",`+
+			`"Instances":[{`+
+			`"InstanceId":"i-0abc%d",`+
+			`"InstanceType":"t3.medium",`+
+			`"State":{"Name":"running","Code":16},`+
+			`"PrivateIpAddress":"10.1.0.%d",`+
+			`"PublicDnsName":"",`+
+			`"LaunchTime":"2024-01-15T10:00:00Z",`+
+			`"VpcId":"vpc-aaa","SubnetId":"subnet-bbb",`+
+			`"node_id":"opaque-%d",`+
+			`"created_at":"2024-01-15T10:00:00Z",`+
+			`"updated_at":"2024-04-01T12:00:00Z",`+
+			`"console_url":"https://console.aws.amazon.com/ec2/v2/home?instanceId=i-%d",`+
+			`"metadata_url":"http://169.254.169.254/latest/meta-data/i-%d"`+
+			`}]}`,
+			i, i, i, i, i, i))
+	}
+	awsEC2.WriteString(`]}`)
+
 	return []tokenSavingScenario{
 		{name: "small file read (inline tier)", body: smallFile, intent: "main function"},
 		{name: "npm install with progress bar", body: npmInstall.String(), intent: ""},
@@ -134,6 +196,8 @@ func buildScenarios() []tokenSavingScenario {
 		{name: "pytest 200 PASS + 1 FAIL + traceback", body: pytest.String(), intent: ""},
 		{name: "cargo build 250 compile + 2 errors", body: cargo.String(), intent: ""},
 		{name: "gh api 50 issues (structured noise)", body: ghIssues.String(), intent: ""},
+		{name: "kubectl get 20 pods -o json", body: kubectl.String(), intent: ""},
+		{name: "aws ec2 describe 15 instances", body: awsEC2.String(), intent: ""},
 	}
 }
 
