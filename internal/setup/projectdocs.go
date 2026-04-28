@@ -90,8 +90,13 @@ var markdownProjectBlockBody = "## Context Discipline\n" +
 	"\"error message\", \"imports\"). Without `intent` the tool returns raw\n" +
 	"bytes and the token savings are lost.\n" +
 	"\n" +
-	"On DFMT failure, report it to the user. Do NOT silently fall back to\n" +
-	"the native tool — that defeats the routing.\n" +
+	"On DFMT failure, report it to the user (one short line — which call,\n" +
+	"what error) and then fall back to the native tool so the session is\n" +
+	"not blocked. The ban is on *silent* fallback — every switch must be\n" +
+	"announced. After a fallback, drop a brief `dfmt_remember` note tagged\n" +
+	"`gap` when practical, so the journal records that a call was bypassed.\n" +
+	"If the native tool is also denied (permission rule, sandbox refusal),\n" +
+	"stop and ask the user; do not retry blindly.\n" +
 	"\n" +
 	"### Session memory\n" +
 	"\n" +
@@ -134,7 +139,18 @@ var agentsMdProjectBlockBody = "# Context Discipline — REQUIRED\n" +
 	"from the output. The `intent` lets DFMT return the relevant portion of\n" +
 	"a large output without flooding the context.\n" +
 	"\n" +
-	"## Rule 2 — Record user decisions\n" +
+	"## Rule 2 — On DFMT failure, report and fall back\n" +
+	"\n" +
+	"DFMT is a strong preference, not a hard dependency. If a `dfmt_*` tool\n" +
+	"errors, times out, or is unavailable, report the failure to the user\n" +
+	"(one short line — which call, what error) and continue with the native\n" +
+	"equivalent so the session is not blocked. The ban is on *silent*\n" +
+	"fallback — every switch must be announced. After a fallback, drop a\n" +
+	"brief `dfmt_remember` note tagged `gap` when practical. If the native\n" +
+	"tool is also denied (permission rule, sandbox refusal), stop and ask\n" +
+	"the user; do not retry blindly.\n" +
+	"\n" +
+	"## Rule 3 — Record user decisions\n" +
 	"\n" +
 	"When the user states a preference or correction (\"use X instead of Y\",\n" +
 	"\"do not modify Z\"), call `dfmt_remember` with a `decision` tag so the\n" +
@@ -158,8 +174,10 @@ var cursorrulesProjectBlockBody = "# Context Discipline\n" +
 	"# argument describing what you need from the output.\n" +
 	"#\n" +
 	"# Call dfmt_remember to record user decisions so they survive context\n" +
-	"# compaction. On any dfmt_* failure, report it — do not fall back to\n" +
-	"# the native tool silently.\n" +
+	"# compaction. On any dfmt_* failure, report it (one line) and then fall\n" +
+	"# back to the native tool — the ban is on *silent* fallback, not on\n" +
+	"# fallback itself. If the native tool is also denied, stop and ask the\n" +
+	"# user.\n" +
 	"#\n" +
 	"# See full rules in AGENTS.md.\n"
 

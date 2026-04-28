@@ -69,13 +69,19 @@ terminal.
 
 ### Error handling
 
+DFMT is a strong preference, not a hard dependency. The agent must not be blocked when DFMT misbehaves.
+
 | DFMT error | Required action |
 |---|---|
-| Tool returns error | Report to user. Do NOT fall back to native tool. |
-| Tool times out | Retry once with shorter intent, then report. |
-| Tool unavailable | Report to user immediately. |
+| Tool returns error | Report to user (one line — which call, what error), then fall back to the native tool. |
+| Tool times out | Retry once with a shorter intent. If that fails, report and fall back. |
+| Tool unavailable / connection refused | Report immediately and fall back. |
 
-**Never do this**: `Failed to use dfmt_exec, falling back to native Bash.`
+The rule is "no **silent** fallback" — every switch to a native tool must be announced. After a fallback, drop a brief `dfmt_remember` note tagged `gap` when practical, so the journal records that a call was bypassed.
+
+**Don't do this**: silently switch to native `Bash` after a DFMT timeout. **Do this**: "dfmt_exec timed out on the test run; falling back to native Bash for this call."
+
+**Both layers denied.** If the native tool is also blocked (permission rule, interactive deny, sandbox refusal), stop. Report both failures in one concise message and ask the user how to proceed — allow the native tool, fix DFMT, or skip the step. Two refusals is a real block, not a puzzle to solve silently. Do not retry the same call, and do not attempt to route around either layer.
 
 ### Rules
 
@@ -85,7 +91,7 @@ terminal.
 2. **Intent required**: every DFMT call includes `intent` describing
    exactly what you need from the output. Without `intent` the tool
    returns raw bytes — defeating the savings.
-3. **On DFMT failure**: report. Do not silently fall back.
+3. **On DFMT failure**: report the failure (one line) and then fall back to the native tool so the session isn't blocked. The ban is on *silent* fallback — every switch must be announced. If the native tool is also denied, stop and ask the user; don't retry blindly.
 4. **Token savings**: DFMT returns excerpts, not full output. The
    `intent` field is the lever.
 5. **Session memory**: after a substantive decision (closed bug,
@@ -285,3 +291,53 @@ one, update the other in the same commit. The format is:
 
 If the divergence between the two files grows, prefer collapsing to a
 pointer-style CLAUDE.md and keeping all content here.
+
+<!-- dfmt:v1 begin -->
+# Context Discipline — REQUIRED
+
+This project uses DFMT to keep large tool outputs from exhausting the
+context window. **Read this section at the start of every conversation
+in this project.**
+
+## Rule 1 — Prefer DFMT tools over native tools
+
+Always use DFMT's MCP tools when an output might exceed 2 KB:
+
+| Native     | DFMT replacement |
+|------------|------------------|
+| `Bash`     | `dfmt_exec`      |
+| `Read`     | `dfmt_read`      |
+| `WebFetch` | `dfmt_fetch`     |
+| `Glob`     | `dfmt_glob`      |
+| `Grep`     | `dfmt_grep`      |
+| `Edit`     | `dfmt_edit`      |
+| `Write`    | `dfmt_write`     |
+
+Include an `intent` argument on every call, describing what you need
+from the output. The `intent` lets DFMT return the relevant portion of
+a large output without flooding the context.
+
+## Rule 2 — On DFMT failure, report and fall back
+
+DFMT is a strong preference, not a hard dependency. If a `dfmt_*` tool
+errors, times out, or is unavailable, report the failure to the user
+(one short line — which call, what error) and continue with the native
+equivalent so the session is not blocked. The ban is on *silent*
+fallback — every switch must be announced. After a fallback, drop a
+brief `dfmt_remember` note tagged `gap` when practical. If the native
+tool is also denied (permission rule, sandbox refusal), stop and ask
+the user; do not retry blindly.
+
+## Rule 3 — Record user decisions
+
+When the user states a preference or correction ("use X instead of Y",
+"do not modify Z"), call `dfmt_remember` with a `decision` tag so the
+choice survives context compaction.
+
+## Why these rules matter
+
+Some agents do not provide hooks to enforce these rules automatically.
+**Compliance is your responsibility as the agent.** A single raw shell
+output above 8 KB can push earlier context out of the window, erasing
+the conversation's history. Following the rules above preserves it.
+<!-- dfmt:v1 end -->
