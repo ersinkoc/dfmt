@@ -118,6 +118,90 @@ func TestIndexSearchBM25NoMatch(t *testing.T) {
 	}
 }
 
+// TestIndexSearchTrigramFindsSyntheticMarker pins the fallback contract:
+// a token like "xj7q3" that BM25 may treat as noise (digit-mixed, no
+// dictionary stem) is still locatable via trigram intersection. Closes
+// the audit finding "synthetic markers stay invisible to dfmt_search".
+func TestIndexSearchTrigramFindsSyntheticMarker(t *testing.T) {
+	ix := NewIndex()
+	e := Event{
+		ID:   "marker-evt",
+		TS:   time.Now(),
+		Type: EvtNote,
+		Data: map[string]any{"message": "AUDIT_PROBE_XJ7Q3 is the marker"},
+	}
+	e.Sig = e.ComputeSig()
+	ix.Add(e)
+
+	hits := ix.SearchTrigram("xj7q3", 10)
+	if len(hits) == 0 {
+		t.Fatal("SearchTrigram returned no hits for indexed substring 'xj7q3'")
+	}
+	if hits[0].ID != "marker-evt" {
+		t.Errorf("SearchTrigram top hit = %q, want marker-evt", hits[0].ID)
+	}
+	if hits[0].Layer != 2 {
+		t.Errorf("SearchTrigram hit layer = %d, want 2", hits[0].Layer)
+	}
+}
+
+// TestIndexSearchTrigramRanksByTokenCount pins the score contract:
+// when one document matches more query tokens than another, it must
+// outrank. The score field carries the count of distinct query tokens
+// that fully match.
+func TestIndexSearchTrigramRanksByTokenCount(t *testing.T) {
+	ix := NewIndex()
+
+	high := Event{
+		ID:   "high",
+		TS:   time.Now(),
+		Type: EvtNote,
+		Data: map[string]any{"message": "alpha beta gamma delta"},
+	}
+	high.Sig = high.ComputeSig()
+	ix.Add(high)
+
+	low := Event{
+		ID:   "low",
+		TS:   time.Now(),
+		Type: EvtNote,
+		Data: map[string]any{"message": "only alpha here"},
+	}
+	low.Sig = low.ComputeSig()
+	ix.Add(low)
+
+	hits := ix.SearchTrigram("alpha beta gamma", 10)
+	if len(hits) < 2 {
+		t.Fatalf("expected both docs to score, got %d hits", len(hits))
+	}
+	if hits[0].ID != "high" {
+		t.Errorf("top hit = %q, want high (matched 3 tokens vs 1)", hits[0].ID)
+	}
+	if hits[0].Score <= hits[1].Score {
+		t.Errorf("top score %v not > runner-up %v", hits[0].Score, hits[1].Score)
+	}
+}
+
+// TestIndexSearchTrigramNoMatch pins the empty-result contract: a
+// query with no overlapping trigrams must return nil, not silently
+// fall through to "all documents".
+func TestIndexSearchTrigramNoMatch(t *testing.T) {
+	ix := NewIndex()
+	e := Event{
+		ID:   "evt",
+		TS:   time.Now(),
+		Type: EvtNote,
+		Data: map[string]any{"message": "alpha beta"},
+	}
+	e.Sig = e.ComputeSig()
+	ix.Add(e)
+
+	hits := ix.SearchTrigram("zzznotpresent", 10)
+	if len(hits) != 0 {
+		t.Errorf("SearchTrigram returned %d hits for absent substring", len(hits))
+	}
+}
+
 func TestIndexRemove(t *testing.T) {
 	ix := NewIndex()
 

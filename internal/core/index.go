@@ -230,6 +230,89 @@ func (ix *Index) SearchBM25(query string, limit int) []ScoredHit {
 	return results
 }
 
+// SearchTrigram is the substring-match fallback layer. BM25 is the
+// primary search path, but it relies on the Porter stemmer and the
+// project's stopword list; tokens that the tokenizer drops or splits
+// awkwardly (synthetic markers like "AUDIT_PROBE_XJ7Q3", UUID-style
+// IDs, mixed-case all-caps acronyms) silently become unsearchable.
+// Trigram match restores them: the query is tokenized identically to
+// indexed text, every token of length >= 3 contributes its trigrams,
+// and a doc is scored by how many query tokens it covers.
+//
+// Score is the count of matched query tokens (so a doc that matches
+// 3 of 4 query tokens outranks one that matches only 1). Layer is set
+// to 2 so the response can report which layer produced the hit, and
+// the per-tier BM25 layer (1) still wins on direct ties.
+func (ix *Index) SearchTrigram(query string, limit int) []ScoredHit {
+	ix.mu.RLock()
+	defer ix.mu.RUnlock()
+
+	tokens := TokenizeFull(query, nil)
+	if len(tokens) == 0 {
+		return nil
+	}
+
+	// hits[docID] = number of distinct query tokens that fully match.
+	hits := make(map[string]int)
+	for _, tok := range tokens {
+		matched := ix.trigramDocsForToken(tok)
+		if len(matched) == 0 {
+			continue
+		}
+		seen := make(map[string]struct{}, len(matched))
+		for _, id := range matched {
+			if _, dup := seen[id]; dup {
+				continue
+			}
+			seen[id] = struct{}{}
+			hits[id]++
+		}
+	}
+	if len(hits) == 0 {
+		return nil
+	}
+
+	h := &hitHeap{}
+	for id, count := range hits {
+		heap.Push(h, ScoredHit{ID: id, Score: float64(count), Layer: 2})
+	}
+
+	var results []ScoredHit
+	for h.Len() > 0 && len(results) < limit {
+		results = append(results, heap.Pop(h).(ScoredHit))
+	}
+	return results
+}
+
+// trigramDocsForToken returns the doc IDs whose indexed text contains
+// every trigram of the lowercased token. Tokens shorter than 3 chars
+// return nil (no trigram coverage possible). A miss on any single
+// trigram short-circuits to nil — the document does not contain the
+// token as a substring, so further intersections cannot rescue it.
+func (ix *Index) trigramDocsForToken(token string) []string {
+	if len(token) < 3 {
+		return nil
+	}
+	tok := strings.ToLower(token)
+	var result []string
+	for i := 0; i <= len(tok)-3; i++ {
+		tg := tok[i : i+3]
+		pl, ok := ix.trigramPL[tg]
+		if !ok {
+			return nil
+		}
+		if i == 0 {
+			result = append([]string(nil), pl.IDs...)
+		} else {
+			result = intersection(result, pl.IDs)
+		}
+		if len(result) == 0 {
+			return nil
+		}
+	}
+	return result
+}
+
 // ScoredHit represents a scored search result.
 type ScoredHit struct {
 	ID    string

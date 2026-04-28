@@ -505,17 +505,30 @@ func (h *Handlers) Search(ctx context.Context, params SearchParams) (*SearchResp
 	}
 
 	var hits []core.ScoredHit
+	resolvedLayer := params.Layer
 
 	switch params.Layer {
 	case "trigram":
-		// Trigram search would go here
-		hits = nil
+		hits = h.index.SearchTrigram(params.Query, params.Limit)
 	case "fuzzy":
 		// Fuzzy search would go here
 		hits = nil
 	default:
-		// Default to BM25
+		// Default: BM25 first, then trigram fallback when BM25 returns
+		// nothing. BM25 misses synthetic markers (AUDIT_PROBE_XJ7Q3),
+		// UUIDs, and other tokens that the Porter stemmer drops or
+		// splits awkwardly; trigram match restores them. Reporting the
+		// resolved layer back lets clients distinguish a true miss
+		// from a fallback hit.
 		hits = h.index.SearchBM25(params.Query, params.Limit)
+		if len(hits) > 0 {
+			resolvedLayer = "bm25"
+		} else {
+			hits = h.index.SearchTrigram(params.Query, params.Limit)
+			if len(hits) > 0 {
+				resolvedLayer = "trigram"
+			}
+		}
 	}
 
 	results := make([]SearchHit, len(hits))
@@ -529,7 +542,7 @@ func (h *Handlers) Search(ctx context.Context, params SearchParams) (*SearchResp
 
 	return &SearchResponse{
 		Results: results,
-		Layer:   params.Layer,
+		Layer:   resolvedLayer,
 	}, nil
 }
 
