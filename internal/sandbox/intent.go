@@ -445,6 +445,10 @@ func NormalizeOutput(s string) string {
 	s = stripANSI(s)
 	s = collapseCarriageReturns(s)
 	s = runLengthEncode(s)
+	// Git diff `index` line drop: every file block in a `git diff`
+	// emits an `index <hash>..<hash> <mode>` line that's wire-noise
+	// for an LLM. CompactGitDiff drops them; no-op on non-diff input.
+	s = CompactGitDiff(s)
 	// Stack-trace path collapsing: when consecutive Python/Go frames
 	// share a file path (recursive code), continuation frames get a
 	// short marker instead of the full path repeated. Conservative

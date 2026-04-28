@@ -222,7 +222,31 @@ func buildScenarios() []tokenSavingScenario {
 		{name: "kubectl get 20 pods -o yaml", body: kubectlYAML(), intent: ""},
 		{name: "fetched binary blob (PNG)", body: pngBlob(), intent: ""},
 		{name: "deep recursive Python traceback", body: deepPyTraceback(), intent: ""},
+		{name: "git diff 20 files (index lines)", body: gitDiff20Files(), intent: ""},
 	}
+}
+
+// gitDiff20Files synthesises a multi-file diff — typical `git diff`
+// over a 20-file change set. Each file emits the four canonical
+// header lines (diff/index/---/+++) plus a small hunk; the index
+// lines are what the compactor drops.
+func gitDiff20Files() string {
+	var b strings.Builder
+	for i := 1; i <= 20; i++ {
+		b.WriteString(fmt.Sprintf(`diff --git a/pkg/file_%d.go b/pkg/file_%d.go
+index a1b2c3d4..e5f6789a 100644
+--- a/pkg/file_%d.go
++++ b/pkg/file_%d.go
+@@ -10,7 +10,7 @@ func handler%d(req Request) Response {
+ 	if req.ID == "" {
+ 		return ErrorResponse("missing ID")
+ 	}
+-	return process%d(req)
++	return process%dV2(req)
+ }
+`, i, i, i, i, i, i, i))
+	}
+	return b.String()
 }
 
 // deepPyTraceback synthesises a 30-frame Python traceback through the
