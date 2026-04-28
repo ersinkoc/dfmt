@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"encoding/json"
+	"os"
 	"regexp"
 	"strings"
 )
@@ -25,7 +26,27 @@ var structuredNoiseFields = map[string]struct{}{
 	"node_id":    {},
 	"url":        {},
 	"html_url":   {},
+	// Pagination metadata: agents reasoning about a list of items
+	// rarely need the page cursor. The data structure below is
+	// returned by GitHub, GitLab, AWS, and most pageable REST APIs.
+	"pagination":  {},
+	"page_info":   {},
+	"next_token":  {},
+	"prev_token":  {},
+	"next_page":   {},
+	"prev_page":   {},
+	"total_count": {},
+	"total_pages": {},
+	"has_more":    {},
+	"cursor":      {},
 }
+
+// structuredDropIDEnv, when set to "1", makes walkDropNoise also drop
+// the `id` key. Off by default because numeric IDs are sometimes the
+// only stable handle for an object — opt-in for agents that don't
+// reason over them and want the wire savings. Recorded in ADR-0010 as
+// a deferred follow-up.
+const structuredDropIDEnv = "DFMT_STRUCTURED_DROP_ID"
 
 // structuredNoiseSuffix is matched against any key not already in the field
 // set. Cloud REST APIs sprinkle dozens of `*_url` fields per object
@@ -202,12 +223,27 @@ func compactNDJSON(s string) string {
 	return strings.Join(lines, "\n")
 }
 
-// walkDropNoise recurses into v, dropping keys named in structuredNoiseFields
-// or matching structuredNoiseSuffix. Scalars and nil pass through unchanged.
-// Arrays preserve order. Map iteration order is non-deterministic but we
-// re-marshal via json.Marshal which sorts keys alphabetically — so the
-// output is stable regardless of input map ordering.
+// walkDropNoise recurses into v, dropping keys named in structuredNoiseFields,
+// keys matching structuredNoiseSuffix, optionally `id` (when DFMT_STRUCTURED_DROP_ID=1),
+// and values that decoded as JSON null / empty string / empty array / empty
+// object. Scalars and non-empty values pass through unchanged. Arrays
+// preserve order. Map iteration order is non-deterministic but we re-marshal
+// via json.Marshal which sorts keys alphabetically — output is stable.
+//
+// The empty-value drop matters because cloud-CLI JSON is sprinkled with
+// `"description": null`, `"labels": []`, `"metadata": {}`. Each costs
+// ~15-30 bytes on the wire and carries zero information for an LLM. A
+// caller that genuinely needed to distinguish "absent" from "null" must
+// use Return:"raw" to opt out of the entire compaction layer.
 func walkDropNoise(v any) any {
+	dropID := os.Getenv(structuredDropIDEnv) == "1"
+	return walkDropNoiseWithFlags(v, dropID)
+}
+
+// walkDropNoiseWithFlags is the recursive worker. Split from walkDropNoise
+// so the env-var lookup happens once per top-level call rather than once
+// per recursion step.
+func walkDropNoiseWithFlags(v any, dropID bool) any {
 	switch t := v.(type) {
 	case map[string]any:
 		out := make(map[string]any, len(t))
@@ -218,16 +254,48 @@ func walkDropNoise(v any) any {
 			if strings.HasSuffix(k, structuredNoiseSuffix) {
 				continue
 			}
-			out[k] = walkDropNoise(val)
+			if dropID && k == "id" {
+				continue
+			}
+			walked := walkDropNoiseWithFlags(val, dropID)
+			if isEmptyJSONValue(walked) {
+				continue
+			}
+			out[k] = walked
 		}
 		return out
 	case []any:
-		out := make([]any, len(t))
-		for i, val := range t {
-			out[i] = walkDropNoise(val)
+		out := make([]any, 0, len(t))
+		for _, val := range t {
+			walked := walkDropNoiseWithFlags(val, dropID)
+			// Array elements: keep nil/empty positions when they
+			// carry positional meaning (rare). We drop top-level
+			// keys of empty value but preserve array positions —
+			// dropping `[1, null, 2]` to `[1, 2]` would silently
+			// corrupt index-based consumers.
+			out = append(out, walked)
 		}
 		return out
 	default:
 		return v
 	}
+}
+
+// isEmptyJSONValue reports whether v is a JSON-empty value: nil, "",
+// empty slice, or empty map. Used to drop keys whose value is
+// information-free. Numeric 0 / boolean false are NOT empty — they
+// carry signal (a count of zero is not the same as an absent count).
+func isEmptyJSONValue(v any) bool {
+	if v == nil {
+		return true
+	}
+	switch t := v.(type) {
+	case string:
+		return t == ""
+	case []any:
+		return len(t) == 0
+	case map[string]any:
+		return len(t) == 0
+	}
+	return false
 }

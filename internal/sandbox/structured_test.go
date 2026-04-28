@@ -192,6 +192,80 @@ func TestCompactStructured_NormalizeOutputIntegration(t *testing.T) {
 	}
 }
 
+// TestCompactStructured_DropsEmptyValues: null / "" / [] / {} carry no
+// information for an LLM consumer. Each drop saves ~15-30 bytes per
+// occurrence and the wire shape stays valid JSON.
+func TestCompactStructured_DropsEmptyValues(t *testing.T) {
+	in := `{"title":"x","description":null,"labels":[],"metadata":{},"count":0,"flag":false,"score":3.14,"items":[1,2,3]}`
+	out := CompactStructured(in)
+	if out == in {
+		t.Fatal("expected compaction; input unchanged")
+	}
+	for _, banned := range []string{"description", "labels", "metadata"} {
+		if strings.Contains(out, banned) {
+			t.Errorf("empty-value field %q leaked: %s", banned, out)
+		}
+	}
+	// Numeric 0, boolean false, populated arrays/objects must survive.
+	for _, want := range []string{"\"count\":0", "\"flag\":false", "\"score\":3.14", "[1,2,3]"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("non-empty value %q lost: %s", want, out)
+		}
+	}
+}
+
+// TestCompactStructured_DropsPagination: list-style responses include a
+// pagination block per page. Agents reasoning about items rarely need
+// the cursor; drop them.
+func TestCompactStructured_DropsPagination(t *testing.T) {
+	in := `{"items":[{"name":"a"},{"name":"b"}],"pagination":{"next":"abc","prev":null,"total":50},"next_token":"xyz","total_count":50,"has_more":true}`
+	out := CompactStructured(in)
+	for _, banned := range []string{"pagination", "next_token", "total_count", "has_more"} {
+		if strings.Contains(out, banned) {
+			t.Errorf("pagination field %q leaked: %s", banned, out)
+		}
+	}
+	if !strings.Contains(out, "\"name\":\"a\"") {
+		t.Errorf("items lost: %s", out)
+	}
+}
+
+// TestCompactStructured_DropIDEnvKnob: with the env var set, numeric IDs
+// are also dropped. Off by default to preserve object identity.
+func TestCompactStructured_DropIDEnvKnob(t *testing.T) {
+	in := `{"id":12345,"title":"x","name":"y"}`
+
+	// Default: id stays.
+	t.Setenv(structuredDropIDEnv, "")
+	out := CompactStructured(in)
+	if !strings.Contains(out, "\"id\":12345") {
+		t.Errorf("id should be retained by default; got %s", out)
+	}
+
+	// Opt-in: id is dropped.
+	t.Setenv(structuredDropIDEnv, "1")
+	out = CompactStructured(in)
+	if strings.Contains(out, "\"id\":") {
+		t.Errorf("DFMT_STRUCTURED_DROP_ID=1 should drop id; got %s", out)
+	}
+	if !strings.Contains(out, "\"title\":\"x\"") {
+		t.Errorf("non-id fields must survive: %s", out)
+	}
+}
+
+// TestCompactStructured_PreservesArrayPositions: nulls inside an array
+// keep their positions — index-based consumers would break otherwise.
+// Only top-level *keys* whose value is empty get dropped; array
+// elements are positional.
+func TestCompactStructured_PreservesArrayPositions(t *testing.T) {
+	in := `{"vals":[1,null,2,"",3]}`
+	out := CompactStructured(in)
+	// JSON marshal of empty string in array stays `""`. Verify length.
+	if !strings.Contains(out, "[1,null,2,\"\",3]") {
+		t.Errorf("array positions altered: %s", out)
+	}
+}
+
 // TestCompactStructured_LeadingWhitespace: real-world JSON often arrives
 // with a leading newline (e.g. shell here-docs, indented `gh api` output).
 // The detection must skip whitespace before the brace check.
