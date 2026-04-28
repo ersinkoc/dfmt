@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/ersinkoc/dfmt/internal/config"
+	"github.com/ersinkoc/dfmt/internal/core"
 	"github.com/ersinkoc/dfmt/internal/logging"
 	"github.com/ersinkoc/dfmt/internal/project"
 	"github.com/ersinkoc/dfmt/internal/transport"
@@ -30,6 +31,27 @@ type Client struct {
 	network    string
 	address    string
 	timeout    time.Duration
+
+	// sessionID is sent on every HTTP request as the X-DFMT-Session header
+	// so the daemon's wire-dedup cache (ADR-0011) keys per-CLI-session.
+	// Multiple sub-calls within one CLI invocation share this ID and
+	// benefit from "(unchanged; same content_id)" short-circuiting on
+	// repeated reads. Two distinct CLI invocations (different processes)
+	// get independent IDs unless the user exports DFMT_SESSION explicitly
+	// — useful for shell loops that want a stable bucket across commands.
+	sessionID string
+}
+
+// resolveSessionID returns the session ID to use for outbound HTTP calls.
+// Order: DFMT_SESSION env var if set (lets shells share a bucket across
+// commands by exporting once), otherwise a fresh ULID minted at client
+// construction time. The ULID is unique across CLI invocations even when
+// two of them race against the same daemon.
+func resolveSessionID() string {
+	if v := os.Getenv("DFMT_SESSION"); v != "" {
+		return v
+	}
+	return string(core.NewULID(time.Now()))
 }
 
 // readPortFile parses the port file written by HTTPServer.writePortFile.
@@ -106,6 +128,7 @@ func NewClient(projectPath string) (*Client, error) {
 		network:    network,
 		address:    address,
 		timeout:    5 * time.Second,
+		sessionID:  resolveSessionID(),
 	}
 
 	// Try to connect; if fails, auto-start daemon and retry
@@ -756,6 +779,9 @@ func (c *Client) doHTTP(method string, req transport.Request) ([]byte, error) {
 		return nil, err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
+	if c.sessionID != "" {
+		httpReq.Header.Set("X-DFMT-Session", c.sessionID)
+	}
 
 	resp, err := client.Do(httpReq)
 	if err != nil {
