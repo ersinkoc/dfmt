@@ -1578,6 +1578,129 @@ func TestSandboxGlobEnforcesPerFileReadPolicy(t *testing.T) {
 // that the read deny-list refuses (`.env`, `secrets/**`, `id_rsa`, etc.).
 // Pre-fix, the directory-level PolicyCheck only refused if the wd itself
 // was denied, so per-file deny rules were dead in the grep path.
+// TestSandboxGrepPathScopesSearch pins the contract for the new req.Path
+// argument: matches outside the named subtree must NOT appear in the
+// response, even when they would match the pattern. Closes the long-
+// standing bug where dfmt_grep returned repo-wide matches regardless
+// of the path argument because path was silently dropped during JSON
+// unmarshal and the impl walked from the working directory.
+func TestSandboxGrepPathScopesSearch(t *testing.T) {
+	tmp := t.TempDir()
+	subA := filepath.Join(tmp, "sub-a")
+	subB := filepath.Join(tmp, "sub-b")
+	for _, d := range []string{subA, subB} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(subA, "hit.go"), []byte("// MARKER_TOKEN inside sub-a\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(subB, "noise.go"), []byte("// MARKER_TOKEN inside sub-b — must not appear\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmp, "top.go"), []byte("// MARKER_TOKEN at top — must not appear\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	sb := NewSandbox(tmp)
+	resp, err := sb.Grep(context.Background(), GrepReq{
+		Pattern: "MARKER_TOKEN",
+		Path:    "sub-a",
+	})
+	if err != nil {
+		t.Fatalf("Grep with path=sub-a: %v", err)
+	}
+	if len(resp.Matches) != 1 {
+		t.Fatalf("expected 1 match scoped to sub-a, got %d: %+v", len(resp.Matches), resp.Matches)
+	}
+	if !strings.Contains(resp.Matches[0].File, "sub-a") {
+		t.Errorf("match file %q not under sub-a", resp.Matches[0].File)
+	}
+}
+
+// TestSandboxGrepPathRecursesIntoNestedDirs proves the new walk reaches
+// files at depth >= 3, fixing the silent depth-2 ceiling imposed by the
+// old `filepath.Glob(absWd + "/**/*")` pattern (Go's stdlib Glob does
+// NOT expand ** as a recursive wildcard).
+func TestSandboxGrepPathRecursesIntoNestedDirs(t *testing.T) {
+	tmp := t.TempDir()
+	deep := filepath.Join(tmp, "a", "b", "c")
+	if err := os.MkdirAll(deep, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(deep, "deep.go"), []byte("// DEEP_MARKER\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	sb := NewSandbox(tmp)
+	resp, err := sb.Grep(context.Background(), GrepReq{
+		Pattern: "DEEP_MARKER",
+		Files:   "*.go",
+	})
+	if err != nil {
+		t.Fatalf("Grep: %v", err)
+	}
+	if len(resp.Matches) != 1 {
+		t.Fatalf("expected 1 deep match, got %d: %+v", len(resp.Matches), resp.Matches)
+	}
+}
+
+// TestSandboxGrepPathRejectsTraversal pins that an agent cannot escape
+// the working directory by passing path="..". The walk must refuse to
+// start, not silently widen scope to the parent.
+func TestSandboxGrepPathRejectsTraversal(t *testing.T) {
+	tmp := t.TempDir()
+	sub := filepath.Join(tmp, "project")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmp, "outside.txt"), []byte("OUTSIDE_TOKEN\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	sb := NewSandbox(sub)
+	_, err := sb.Grep(context.Background(), GrepReq{
+		Pattern: "OUTSIDE_TOKEN",
+		Path:    "..",
+	})
+	if err == nil {
+		t.Fatal("Grep with path=.. must return an error, not silently widen scope")
+	}
+	if !strings.Contains(err.Error(), "escapes working directory") {
+		t.Errorf("expected escape error, got: %v", err)
+	}
+}
+
+// TestSandboxGrepPathSingleFile covers the case where path resolves to
+// a file rather than a directory: the walk must visit just that file.
+func TestSandboxGrepPathSingleFile(t *testing.T) {
+	tmp := t.TempDir()
+	target := filepath.Join(tmp, "target.go")
+	other := filepath.Join(tmp, "other.go")
+	if err := os.WriteFile(target, []byte("// FILE_MARKER\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(other, []byte("// FILE_MARKER\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	sb := NewSandbox(tmp)
+	resp, err := sb.Grep(context.Background(), GrepReq{
+		Pattern: "FILE_MARKER",
+		Path:    "target.go",
+	})
+	if err != nil {
+		t.Fatalf("Grep: %v", err)
+	}
+	if len(resp.Matches) != 1 {
+		t.Fatalf("expected 1 match for single-file path, got %d: %+v", len(resp.Matches), resp.Matches)
+	}
+	if !strings.HasSuffix(resp.Matches[0].File, "target.go") {
+		t.Errorf("match file %q is not target.go", resp.Matches[0].File)
+	}
+}
+
 func TestSandboxGrepEnforcesPerFileReadPolicy(t *testing.T) {
 	tmp := t.TempDir()
 	if err := os.WriteFile(filepath.Join(tmp, "code.go"), []byte("// no secret here\n"), 0o600); err != nil {

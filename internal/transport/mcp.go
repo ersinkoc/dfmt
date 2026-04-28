@@ -533,9 +533,13 @@ func (m *MCPProtocol) handleToolsList(req *MCPRequest) (*MCPResponse, error) {
 						"type":        "string",
 						"description": "Search pattern (regex)",
 					},
+					"path": map[string]any{
+						"type":        "string",
+						"description": "Directory or file to scope the search to (relative to project root or absolute under it). Defaults to the project root.",
+					},
 					"files": map[string]any{
 						"type":        "string",
-						"description": "File pattern (e.g., *.go, *.txt)",
+						"description": "Basename glob (e.g., *.go, *.txt). Applied per visited file under the search root.",
 					},
 					"intent": map[string]any{
 						"type":        "string",

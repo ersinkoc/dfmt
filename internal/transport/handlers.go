@@ -1208,6 +1208,7 @@ type GlobResponse struct {
 // GrepParams are the parameters for the Grep method.
 type GrepParams struct {
 	Pattern         string `json:"pattern"`
+	Path            string `json:"path,omitempty"`
 	Files           string `json:"files,omitempty"`
 	Intent          string `json:"intent,omitempty"`
 	CaseInsensitive bool   `json:"case_insensitive,omitempty"`
@@ -1323,6 +1324,7 @@ func (h *Handlers) Grep(ctx context.Context, params GrepParams) (*GrepResponse, 
 	defer release()
 	req := sandbox.GrepReq{
 		Pattern:         params.Pattern,
+		Path:            params.Path,
 		Files:           params.Files,
 		Intent:          params.Intent,
 		CaseInsensitive: params.CaseInsensitive,

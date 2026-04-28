@@ -118,9 +118,16 @@ type GlobResp struct {
 }
 
 // GrepReq is a request to grep files.
+//
+// Path scopes the walk root. Empty means the working directory; a
+// relative value resolves against it; an absolute value is rejected
+// unless it lies under the working directory. Files is a basename glob
+// applied per visited file (e.g. "*.go"). Both can be combined: Path
+// narrows the directory, Files filters the basenames within.
 type GrepReq struct {
 	Pattern         string `json:"pattern"` // Search pattern (regex)
-	Files           string `json:"files"`   // File pattern (e.g., "*.go")
+	Path            string `json:"path"`    // Directory or file to scope the walk to (relative to wd or absolute under wd)
+	Files           string `json:"files"`   // Basename glob (e.g., "*.go")
 	Intent          string `json:"intent"`  // Intent for filtering results
 	CaseInsensitive bool   `json:"case_insensitive"`
 	Context         int    `json:"context"` // Lines of context around matches

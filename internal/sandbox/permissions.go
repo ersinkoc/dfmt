@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net"
 	"net/http"
 	"net/url"
@@ -1409,71 +1410,101 @@ func (s *SandboxImpl) Grep(ctx context.Context, req GrepReq) (GrepResp, error) {
 		return GrepResp{}, fmt.Errorf("invalid pattern: %w", err)
 	}
 
-	// Find files to search
-	var filePattern string
-	if req.Files != "" {
-		filePattern = req.Files
-		if !filepath.IsAbs(filePattern) {
-			filePattern = filepath.Join(absWd, filePattern)
+	// Resolve the walk root. req.Path scopes the search to a subtree (or
+	// a single file); without it the walk descends from absWd. The path
+	// is untrusted input, so we clean + absolutize + reject anything
+	// that escapes absWd. Per-file PolicyCheck below is the second line
+	// of defense, so even a symlink that points outside absWd cannot
+	// leak content.
+	searchRoot := absWd
+	if req.Path != "" {
+		p := filepath.Clean(req.Path)
+		if !filepath.IsAbs(p) {
+			p = filepath.Join(absWd, p)
 		}
-	} else {
-		filePattern = filepath.Join(absWd, "**", "*")
+		rel, rerr := filepath.Rel(absWd, p)
+		if rerr != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return GrepResp{}, fmt.Errorf("grep path escapes working directory: %s", req.Path)
+		}
+		if _, serr := os.Stat(p); serr != nil {
+			return GrepResp{}, fmt.Errorf("grep path: %w", serr)
+		}
+		searchRoot = p
 	}
 
-	matches, err := filepath.Glob(filePattern)
-	if err != nil {
-		return GrepResp{}, fmt.Errorf("file pattern: %w", err)
-	}
-
-	// Search in files
+	// Walk recursively from searchRoot. The previous implementation used
+	// filepath.Glob(absWd + "/**/*") which silently degraded to a
+	// non-recursive depth-2 match — Go's stdlib Glob does NOT treat **
+	// as a recursive wildcard, so matches in nested dirs (the typical
+	// case) were missing. WalkDir walks the actual tree.
 	var grepMatches []GrepMatch
-	for _, f := range matches {
+	totalFiles := 0
+	walkErr := filepath.WalkDir(searchRoot, func(path string, d fs.DirEntry, werr error) error {
+		if werr != nil {
+			// Unreadable dir/file — skip and continue.
+			return nil
+		}
 		if len(grepMatches) >= 100 {
-			break
+			return filepath.SkipAll
 		}
-		fi, err := os.Stat(f)
-		if err != nil || fi.IsDir() {
-			continue
-		}
-
-		// Check path is within working directory
-		rel, _ := filepath.Rel(absWd, f)
-		if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-			continue
+		if d.IsDir() {
+			return nil
 		}
 
-		// F-02: deny-rule enforcement. The directory-level PolicyCheck above
-		// only blocks if the wd itself is denied; per-file rules like
-		// `read **/.env*` need to be applied here, before reading the file.
-		// Without this, dfmt_grep "API_KEY" --files "**/*" surfaces secrets
-		// that direct `dfmt_read .env` would refuse.
-		if perr := s.PolicyCheck("read", f); perr != nil {
-			continue
+		// Defense in depth: every visited file must still resolve under
+		// absWd. Catches a symlink dropped into the walked subtree
+		// pointing at /etc/shadow et al.
+		rel, rerr := filepath.Rel(absWd, path)
+		if rerr != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return nil
 		}
 
-		data, err := os.ReadFile(f)
-		if err != nil {
-			continue
+		// Files glob: a basename pattern (e.g. "*.go") applied per file.
+		// Empty pattern matches everything. Matches are basename-only by
+		// design — agents asking for "*.go" want every .go file under
+		// the search root, not just the top level.
+		if req.Files != "" {
+			if ok, _ := filepath.Match(req.Files, d.Name()); !ok {
+				return nil
+			}
 		}
+
+		// F-02: per-file deny-rule enforcement. The directory-level
+		// PolicyCheck above only blocks if the wd itself is denied;
+		// per-file rules like `read **/.env*` need to be applied here,
+		// before reading. Without this, dfmt_grep "API_KEY" --files "*"
+		// would surface secrets that direct dfmt_read of .env refuses.
+		if perr := s.PolicyCheck("read", path); perr != nil {
+			return nil
+		}
+
+		data, rerr := os.ReadFile(path)
+		if rerr != nil {
+			return nil
+		}
+		totalFiles++
 
 		lines := strings.Split(string(data), "\n")
 		for lineNum, line := range lines {
 			if pattern.MatchString(line) {
-				relPath, _ := filepath.Rel(absWd, f)
 				grepMatches = append(grepMatches, GrepMatch{
-					File:    relPath,
+					File:    rel,
 					Line:    lineNum + 1,
 					Content: line,
 				})
 				if len(grepMatches) >= 100 {
-					break
+					return filepath.SkipAll
 				}
 			}
 		}
+		return nil
+	})
+	if walkErr != nil && !errors.Is(walkErr, filepath.SkipAll) {
+		return GrepResp{}, fmt.Errorf("grep walk: %w", walkErr)
 	}
 
 	// Generate summary
-	summary := fmt.Sprintf("Found %d matches in %d files", len(grepMatches), len(matches))
+	summary := fmt.Sprintf("Found %d matches in %d files", len(grepMatches), totalFiles)
 
 	// Intent-based filtering on matches
 	var filteredMatches []GrepMatch
