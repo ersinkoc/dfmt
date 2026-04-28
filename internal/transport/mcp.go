@@ -345,6 +345,24 @@ func (m *MCPProtocol) handleInitialize(req *MCPRequest) (*MCPResponse, error) {
 	}, nil
 }
 
+// Per-parameter description text that's emitted on every tools/list call.
+// Hoisted into named constants so the long prose ships once in source and
+// the wire-bytes per session stay under control. Each tools/list response
+// previously paid ~470 bytes for each `intent` description and ~360 for
+// each `return` description, repeated across exec/read/fetch — about 2 KB
+// of redundant prose per session start. The trimmed forms keep the
+// "STRONGLY RECOMMENDED" hint and a couple of examples (the parts the
+// agent actually uses to decide whether to set the field) and drop the
+// long-form rationale (which lives in ADRs 0010/0011 for human readers).
+
+const intentDescExec = "STRONGLY RECOMMENDED. Short phrase about what you need (e.g. 'failing tests', 'imports'). Filters response to matching excerpts; saves 70-90% tokens vs raw."
+
+const intentDescRead = "STRONGLY RECOMMENDED. Short phrase about what you need (e.g. 'database config', 'TODO comments'). Filters response to matching excerpts; saves 70-90% tokens vs raw."
+
+const intentDescFetch = "STRONGLY RECOMMENDED. Short phrase about what you need (e.g. 'API rate limits', 'auth endpoints'). Filters response to matching excerpts; saves 70-90% tokens vs raw."
+
+const returnModeDesc = "Output mode: 'auto' inlines small / summarizes large (default), 'raw' full inline, 'summary' summary+matches only, 'search' matches+vocab only."
+
 func (m *MCPProtocol) handleToolsList(req *MCPRequest) (*MCPResponse, error) {
 	// Self-tuning telemetry: append observed compression ratios to the
 	// exec/read/fetch descriptions so the agent sees up-to-date evidence
@@ -372,12 +390,12 @@ func (m *MCPProtocol) handleToolsList(req *MCPRequest) (*MCPResponse, error) {
 					},
 					"intent": map[string]any{
 						"type":        "string",
-						"description": "STRONGLY RECOMMENDED. A short phrase describing what you actually need from the output (e.g. 'failing tests', 'imports', 'error message'). When provided, the response is filtered down to matching excerpts plus a summary, saving 70-90% of tokens vs the raw output. Without intent, large outputs (>4KB) return only a summary and the full bytes are stashed for later retrieval — set return=\"raw\" if you genuinely need the full output.",
+						"description": intentDescExec,
 					},
 					"return": map[string]any{
 						"type":        "string",
 						"enum":        []string{"auto", "raw", "summary", "search"},
-						"description": "Output mode. 'auto' (default): inline if small, summary+matches if large. 'raw': always inline (full token cost — use only when you need the bytes). 'summary': summary + intent-matches, never inline. 'search': matches + vocabulary only, the most token-efficient mode.",
+						"description": returnModeDesc,
 						"default":     "auto",
 					},
 					"timeout": map[string]any{
@@ -401,7 +419,7 @@ func (m *MCPProtocol) handleToolsList(req *MCPRequest) (*MCPResponse, error) {
 					},
 					"intent": map[string]any{
 						"type":        "string",
-						"description": "STRONGLY RECOMMENDED. A short phrase describing what you need from the file (e.g. 'database config', 'TODO comments', 'exported types'). When provided, the response is filtered to matching excerpts. Without intent, files larger than 4KB return a summary only and the full content is stashed for retrieval; small files always inline.",
+						"description": intentDescRead,
 					},
 					"offset": map[string]any{
 						"type":        "integer",
@@ -416,7 +434,7 @@ func (m *MCPProtocol) handleToolsList(req *MCPRequest) (*MCPResponse, error) {
 					"return": map[string]any{
 						"type":        "string",
 						"enum":        []string{"auto", "raw", "summary", "search"},
-						"description": "Output mode. 'auto' (default): inline if small, summary+matches if large. 'raw': always inline (full token cost — use only when you need the bytes). 'summary': summary + intent-matches, never inline. 'search': matches + vocabulary only, the most token-efficient mode.",
+						"description": returnModeDesc,
 						"default":     "auto",
 					},
 				},
@@ -435,7 +453,7 @@ func (m *MCPProtocol) handleToolsList(req *MCPRequest) (*MCPResponse, error) {
 					},
 					"intent": map[string]any{
 						"type":        "string",
-						"description": "STRONGLY RECOMMENDED. A short phrase describing what you need from the response (e.g. 'API rate limits', 'auth endpoints', 'error codes'). When provided, the response is filtered to matching excerpts. Without intent, responses larger than 4KB return a summary only and the full body is stashed.",
+						"description": intentDescFetch,
 					},
 					"method": map[string]any{
 						"type":        "string",
@@ -445,7 +463,7 @@ func (m *MCPProtocol) handleToolsList(req *MCPRequest) (*MCPResponse, error) {
 					"return": map[string]any{
 						"type":        "string",
 						"enum":        []string{"auto", "raw", "summary", "search"},
-						"description": "Output mode. 'auto' (default): inline if small, summary+matches if large. 'raw': always inline (full token cost — use only when you need the bytes). 'summary': summary + intent-matches, never inline. 'search': matches + vocabulary only, the most token-efficient mode.",
+						"description": returnModeDesc,
 						"default":     "auto",
 					},
 					"timeout": map[string]any{
