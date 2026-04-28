@@ -32,21 +32,30 @@ func runTokenSavingReport() {
 	scenarios := buildScenarios()
 
 	fmt.Println("\n=== Token-Saving Wire-Bytes Report ===")
-	fmt.Printf("%-44s %10s %10s %10s %10s\n", "Scenario", "Raw", "Legacy", "Modern", "Savings")
-	fmt.Println(strings.Repeat("-", 90))
-	totalLegacy, totalModern := 0, 0
+	// ADR-0012: the Tokens column shows the approximated agent-side
+	// cost of the Modern wire payload. Bytes are what the daemon
+	// writes; tokens are what the agent pays. They differ by content
+	// shape (CJK ≈ 2 bytes/token, English ≈ 4) and the divergence is
+	// what motivates the token-aware policy thresholds.
+	fmt.Printf("%-44s %10s %10s %10s %10s %10s\n",
+		"Scenario", "Raw", "Legacy", "Modern", "Savings", "Tokens")
+	fmt.Println(strings.Repeat("-", 100))
+	totalLegacy, totalModern, totalTokens := 0, 0, 0
 	for _, sc := range scenarios {
 		legacy := legacyWireBytes(sc.body, sc.intent)
-		modern := modernWireBytes(sc.body, sc.intent)
+		modern, modernPayload := modernWireBytesAndPayload(sc.body, sc.intent)
+		tokens := sandbox.ApproxTokens(modernPayload)
 		saved := 100.0 * float64(legacy-modern) / float64(legacy)
-		fmt.Printf("%-44s %10d %10d %10d %9.1f%%\n",
-			truncName(sc.name, 44), len(sc.body), legacy, modern, saved)
+		fmt.Printf("%-44s %10d %10d %10d %9.1f%% %10d\n",
+			truncName(sc.name, 44), len(sc.body), legacy, modern, saved, tokens)
 		totalLegacy += legacy
 		totalModern += modern
+		totalTokens += tokens
 	}
-	fmt.Println(strings.Repeat("-", 90))
+	fmt.Println(strings.Repeat("-", 100))
 	totalSaved := 100.0 * float64(totalLegacy-totalModern) / float64(totalLegacy)
-	fmt.Printf("%-44s %10s %10d %10d %9.1f%%\n", "TOTAL", "", totalLegacy, totalModern, totalSaved)
+	fmt.Printf("%-44s %10s %10d %10d %9.1f%% %10d\n",
+		"TOTAL", "", totalLegacy, totalModern, totalSaved, totalTokens)
 	fmt.Println()
 }
 
@@ -432,6 +441,16 @@ func legacyWireBytes(body, intent string) int {
 //   - MCP envelope: 27-byte sentinel in content[0].text, payload only in
 //     structuredContent.
 func modernWireBytes(body, intent string) int {
+	n, _ := modernWireBytesAndPayload(body, intent)
+	return n
+}
+
+// modernWireBytesAndPayload returns the wire byte count alongside the
+// raw payload string so callers can compute downstream metrics
+// (e.g. ApproxTokens for the ADR-0012 Tokens column) without re-running
+// the full filter pipeline. The payload is the JSON-marshaled
+// structuredContent — what the agent will actually parse.
+func modernWireBytesAndPayload(body, intent string) (int, string) {
 	normalized := sandbox.NormalizeOutput(body)
 	out := sandbox.ApplyReturnPolicy(normalized, intent, "auto")
 	payload := wirePayload(out)
@@ -442,7 +461,8 @@ func modernWireBytes(body, intent string) int {
 		Content:           []map[string]string{{"type": "text", "text": "dfmt: see structuredContent"}},
 		StructuredContent: payload,
 	}
-	return len(mustJSON(envelope))
+	full := mustJSON(envelope)
+	return len(full), string(mustJSON(payload))
 }
 
 // wirePayload converts an ApplyReturnPolicy result into the same struct

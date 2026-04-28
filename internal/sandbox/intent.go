@@ -370,14 +370,21 @@ func ApplyReturnPolicy(content, intent, returnMode string) FilteredOutput {
 		// matches + vocabulary on top would duplicate the same bytes the
 		// agent is about to read inline — pure token waste. The agent can
 		// scan the inlined body itself to satisfy the intent.
-		if len(content) <= InlineThreshold {
+		// Inline tier gate uses approximated token count, not raw bytes
+		// (ADR-0012). A 4KB CJK body and a 4KB English body cost the
+		// agent very different amounts of token budget; the byte gate
+		// handed CJK callers a doubled-up budget. ApproxTokens
+		// normalizes the boundary across scripts.
+		contentTokens := ApproxTokens(content)
+		if contentTokens <= InlineTokenThreshold {
 			out.Body = content
 			return out
 		}
-		// Mid-tier (4 KB – 64 KB): a handful of matches + a short vocab
-		// is enough to navigate. Big-tier: the historical 10/20 caps.
+		// Mid-tier: handful of matches + short vocab. Big-tier: 10/20
+		// caps. Threshold expressed in tokens so CJK bodies get the
+		// same treatment English bodies do at the same agent cost.
 		matchN, vocabN := 5, 10
-		if len(content) > MediumThreshold {
+		if contentTokens > MediumTokenThreshold {
 			matchN, vocabN = 10, 20
 		}
 		out.Summary = GenerateSummary(content, keywords)
@@ -408,7 +415,7 @@ func ApplyReturnPolicy(content, intent, returnMode string) FilteredOutput {
 		// verdict lines in test/build output; tail is the fallback when
 		// neither keywords nor signals landed.
 		if len(out.Matches) == 0 {
-			out.Body = tailLines(content, TailBytes)
+			out.Body = tailTokenSnippet(content, TailTokens)
 		}
 		return out
 	}
@@ -535,6 +542,50 @@ func runLengthEncode(s string) string {
 		i++
 	}
 	return strings.Join(out, "\n")
+}
+
+// tailTokenSnippet returns a tail of s that approximates `tokenBudget`
+// tokens (ADR-0012). Computes the equivalent byte budget via
+// ApproxTokens, then defers to tailLines for the UTF-8-aware cut.
+//
+// The conversion is direction-aware: short-circuit when the whole
+// body already fits the token budget (no cut needed). For longer
+// bodies, we estimate the byte budget by walking back from the end,
+// counting tokens until the budget is met. A simple bytes×4 lookup
+// would over-cut on CJK content (where 1 byte ≠ 4 tokens) — the
+// step-walk handles mixed scripts correctly.
+func tailTokenSnippet(s string, tokenBudget int) string {
+	if tokenBudget <= 0 || ApproxTokens(s) <= tokenBudget {
+		return s
+	}
+	// Walk back from the end accumulating tokens until budget met.
+	// We count by stepping over runes (so the cut lands on a rune
+	// boundary naturally) — same complexity as tailLines.
+	tokens := 0
+	bytePos := len(s)
+	for bytePos > 0 {
+		// Step back one rune.
+		prev := bytePos - 1
+		for prev > 0 && !utf8.RuneStart(s[prev]) {
+			prev--
+		}
+		// Count this rune.
+		if r := s[prev]; r < 128 {
+			// ASCII byte: ~0.25 tokens. Accumulate fractionally
+			// using a counter.
+			tokens++ // over-count by 4× to keep integer math
+		} else {
+			tokens += 4 // multi-byte rune ≈ 1 token, scaled to match ASCII counter
+		}
+		if tokens >= tokenBudget*4 {
+			bytePos = prev
+			break
+		}
+		bytePos = prev
+	}
+	// Defer to tailLines using the byte budget we just computed —
+	// it handles newline alignment + the marker prefix uniformly.
+	return tailLines(s, len(s)-bytePos)
 }
 
 // tailLines returns the last maxBytes of s, aligned to a newline boundary

@@ -182,11 +182,36 @@ const DefaultExecTimeout = 60 * time.Second
 // MaxExecTimeout is the maximum allowed execution timeout.
 const MaxExecTimeout = 300 * time.Second
 
-// InlineThreshold is the max size for inline return (4 KB).
+// InlineThreshold is the legacy byte-based inline cap (4 KB). Retained
+// for tests that pin the historical boundary and for the Windows
+// PowerShell truncation fallback. The active policy boundary is
+// InlineTokenThreshold (ADR-0012).
 const InlineThreshold = 4 * 1024
 
-// MediumThreshold is the max size for summary return (64 KB).
+// MediumThreshold is the legacy byte-based summary cap (64 KB).
+// Retained alongside InlineThreshold; active policy uses
+// MediumTokenThreshold.
 const MediumThreshold = 64 * 1024
 
-// MaxRawBytes is the maximum size for raw return (256 KB).
+// MaxRawBytes caps raw-return mode + Windows PowerShell stdout
+// truncation (256 KB). Stays byte-based — it protects against
+// runaway-output blowup, which is naturally a byte concern.
 const MaxRawBytes = 256 * 1024
+
+// InlineTokenThreshold is the policy gate for the inline tier
+// (ADR-0012). Bodies under this many approximated tokens ship inline;
+// over it, they go through summary+matches. ≈4 KB English text /
+// ≈2-3 KB CJK — the latter being exactly the calibration point: a
+// 1024-token CJK body costs the same as a 1024-token English body
+// even though their byte counts differ by ~2×.
+const InlineTokenThreshold = 1024
+
+// MediumTokenThreshold is the policy gate for the medium tier where
+// the auto policy starts shipping more matches/vocabulary. ≈64 KB
+// English text. ADR-0012.
+const MediumTokenThreshold = 16384
+
+// TailTokens is the budget for the "tail" snippet shown when no
+// keyword matches landed. ≈2 KB English / ≈30-50 lines of typical
+// log output. ADR-0012.
+const TailTokens = 512
