@@ -219,7 +219,50 @@ func buildScenarios() []tokenSavingScenario {
 		{name: "aws ec2 describe 15 instances", body: awsEC2.String(), intent: ""},
 		{name: "kubectl ... | jq -c .items[] (NDJSON)", body: ndjson.String(), intent: ""},
 		{name: "fetched doc page (HTML boilerplate)", body: htmlDocPage(), intent: ""},
+		{name: "kubectl get 20 pods -o yaml", body: kubectlYAML(), intent: ""},
 	}
+}
+
+// kubectlYAML builds a typical multi-pod YAML output. K8s metadata
+// (creationTimestamp, resourceVersion, uid, selfLink, managedFields)
+// dominates the wire; the compactor drops them all. Mirror of the
+// JSON kubectl scenario for the YAML pipeline.
+func kubectlYAML() string {
+	var b strings.Builder
+	for i := 1; i <= 20; i++ {
+		if i > 1 {
+			b.WriteString("---\n")
+		}
+		b.WriteString(fmt.Sprintf(`apiVersion: v1
+kind: Pod
+metadata:
+  name: worker-%d
+  namespace: prod
+  uid: abc-1234-def-%d
+  resourceVersion: "99887%d"
+  creationTimestamp: "2024-03-15T08:30:00Z"
+  selfLink: /api/v1/namespaces/prod/pods/worker-%d
+  generation: 1
+  managedFields:
+  - apiVersion: v1
+    fieldsType: FieldsV1
+    manager: kubelet
+    operation: Update
+  labels:
+    app: worker
+    tier: backend
+spec:
+  containers:
+  - name: app
+    image: acme/worker:v1.2.%d
+    ports:
+    - containerPort: 8080
+status:
+  phase: Running
+  podIP: 10.0.0.%d
+`, i, i, i, i, i, i))
+	}
+	return b.String()
 }
 
 // htmlDocPage builds a representative documentation/marketing page shape:

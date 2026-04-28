@@ -443,6 +443,10 @@ func NormalizeOutput(s string) string {
 	// CompactStructured is a no-op on non-JSON, partial JSON, or NDJSON,
 	// so it's safe to run unconditionally.
 	s = CompactStructured(s)
+	// YAML companion: same drop-list, applied to YAML-shaped input
+	// (kubectl -o yaml, helm get manifest). Detection is conservative
+	// — only fires on `---` separators or apiVersion:/kind: headers.
+	s = CompactYAML(s)
 	// HTML → markdown conversion (ADR-0008 full path). When the body is
 	// HTML-shaped, tokenize it and emit markdown — drops boilerplate
 	// elements wholesale, converts headings/lists/code/links/tables to

@@ -280,6 +280,102 @@ func TestCompactStructured_LeadingWhitespace(t *testing.T) {
 	}
 }
 
+// TestCompactYAML_DropsKubernetesNoise: kubectl -o yaml shape with the
+// canonical metadata noise (creationTimestamp, resourceVersion, uid,
+// selfLink, managedFields). Detection fires on apiVersion: header.
+func TestCompactYAML_DropsKubernetesNoise(t *testing.T) {
+	in := `apiVersion: v1
+kind: Pod
+metadata:
+  name: worker-1
+  namespace: prod
+  uid: abc-1234
+  resourceVersion: "99887"
+  creationTimestamp: "2024-03-15T08:30:00Z"
+  selfLink: /api/v1/namespaces/prod/pods/worker-1
+spec:
+  containers:
+  - name: app
+    image: acme/worker:v1.2.3
+status:
+  phase: Running
+  podIP: 10.0.0.1
+`
+	out := CompactYAML(in)
+	if out == in {
+		t.Fatal("expected YAML to be compacted")
+	}
+	for _, banned := range []string{"creationTimestamp", "selfLink"} {
+		if strings.Contains(out, banned) {
+			t.Errorf("noise field %q leaked: %s", banned, out)
+		}
+	}
+	for _, want := range []string{"name: worker-1", "phase: Running", "podIP: 10.0.0.1"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("payload field %q missing: %s", want, out)
+		}
+	}
+}
+
+// TestCompactYAML_NotYAMLPassesThrough: text without YAML markers must
+// not be mangled. The detection is prefix/anchor based.
+func TestCompactYAML_NotYAMLPassesThrough(t *testing.T) {
+	cases := []string{
+		"plain text without YAML markers\n",
+		"# a markdown heading\n\nSome prose\n",
+		"",
+		`{"key":"value"}`,
+		"<!doctype html><html><body>x</body></html>",
+	}
+	for _, in := range cases {
+		t.Run(in, func(t *testing.T) {
+			if got := CompactYAML(in); got != in {
+				t.Errorf("non-YAML must pass through; got %q", got)
+			}
+		})
+	}
+}
+
+// TestCompactYAML_MultiDocSeparators: `---` document separators are
+// preserved across compaction. Each doc is processed independently.
+func TestCompactYAML_MultiDocSeparators(t *testing.T) {
+	in := `---
+apiVersion: v1
+kind: Service
+metadata:
+  name: svc-a
+  creationTimestamp: "2024-01-01T00:00:00Z"
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: pod-b
+  creationTimestamp: "2024-02-02T00:00:00Z"
+`
+	out := CompactYAML(in)
+	if out == in {
+		t.Fatal("multi-doc YAML should compact")
+	}
+	if strings.Contains(out, "creationTimestamp") {
+		t.Errorf("noise leaked in multi-doc: %s", out)
+	}
+	if !strings.Contains(out, "svc-a") || !strings.Contains(out, "pod-b") {
+		t.Errorf("doc names lost: %s", out)
+	}
+	if !strings.Contains(out, "---") {
+		t.Errorf("doc separator lost: %s", out)
+	}
+}
+
+// TestCompactYAML_NormalizeOutputIntegration: pipeline-level wiring.
+func TestCompactYAML_NormalizeOutputIntegration(t *testing.T) {
+	in := "apiVersion: v1\nkind: Pod\nmetadata:\n  name: x\n  creationTimestamp: \"t\"\n"
+	out := NormalizeOutput(in)
+	if strings.Contains(out, "creationTimestamp") {
+		t.Errorf("NormalizeOutput must invoke CompactYAML: %s", out)
+	}
+}
+
 // TestCompactHTML_StripsBoilerplate: the canonical doc-page shape — most
 // of the wire is script/style/nav/footer. The stripped form keeps the
 // actual content (article text, headings) and discards the chrome.

@@ -1,10 +1,13 @@
 package sandbox
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"regexp"
 	"strings"
+
+	"gopkg.in/yaml.v3"
 )
 
 // structuredNoiseFields names keys whose values are nearly always wire bloat
@@ -19,6 +22,7 @@ import (
 // stable handle for an object, and silently dropping them changes the
 // semantics of the response. A future env knob could opt in.
 var structuredNoiseFields = map[string]struct{}{
+	// snake_case (REST/JSON) noise — gh, gitlab, generic OpenAPI.
 	"created_at": {},
 	"updated_at": {},
 	"etag":       {},
@@ -26,6 +30,19 @@ var structuredNoiseFields = map[string]struct{}{
 	"node_id":    {},
 	"url":        {},
 	"html_url":   {},
+	// camelCase (Kubernetes/Helm/AWS YAML) noise — same intent, the
+	// metadata-blob keys that carry no signal for an LLM. Listed
+	// alongside snake_case rather than via case-insensitive matching
+	// because case folding could clash with legitimately different
+	// keys (e.g. `Url` vs `url` in some hand-rolled schemas).
+	"createdAt":         {},
+	"updatedAt":         {},
+	"creationTimestamp": {},
+	"resourceVersion":   {},
+	"selfLink":          {},
+	"managedFields":     {},
+	"ownerReferences":   {},
+	"generation":        {},
 	// Pagination metadata: agents reasoning about a list of items
 	// rarely need the page cursor. The data structure below is
 	// returned by GitHub, GitLab, AWS, and most pageable REST APIs.
@@ -39,6 +56,9 @@ var structuredNoiseFields = map[string]struct{}{
 	"total_pages": {},
 	"has_more":    {},
 	"cursor":      {},
+	// AWS-specific pagination markers (PascalCase + the lowercase form).
+	"NextToken":  {},
+	"NextMarker": {},
 }
 
 // structuredDropIDEnv, when set to "1", makes walkDropNoise also drop
@@ -54,6 +74,136 @@ const structuredDropIDEnv = "DFMT_STRUCTURED_DROP_ID"
 // them by hand would miss the next one Github adds. Suffix matching catches
 // the family.
 const structuredNoiseSuffix = "_url"
+
+// yamlDetectPrefix matches the most reliable shape-markers for YAML:
+// either a `---` document separator on its own line, or an `apiVersion:`
+// / `kind:` field at the document root (the canonical Kubernetes/Helm
+// shape). We keep this conservative because YAML is a syntactic
+// superset of "any indented text" — false positives would mangle
+// arbitrary log output. Bench-relevant shapes (`kubectl get -o yaml`,
+// `helm get manifest`) are caught.
+var yamlDetectPrefix = regexp.MustCompile(`(?m)^(?:---\s*$|apiVersion:\s|kind:\s)`)
+
+// CompactYAML detects YAML-shaped input and removes the same noise
+// fields CompactStructured drops from JSON. Walks the decoded document
+// tree, applies walkDropNoise, re-marshals via yaml.v3 (the project's
+// permitted dep). Returns input unchanged when:
+//   - input doesn't match the YAML detection prefix,
+//   - decoding fails,
+//   - the compacted form is not strictly smaller (cap regression).
+//
+// Multi-document YAML (`---` separated) is handled doc-by-doc; an
+// invalid doc mid-stream aborts the whole transform (same contract as
+// the NDJSON path).
+func CompactYAML(s string) string {
+	if s == "" {
+		return s
+	}
+	if !yamlDetectPrefix.MatchString(s) {
+		return s
+	}
+
+	// Split on `---` document separators; yaml.v3's streaming decoder
+	// would also work but the doc-by-doc loop here lets us bail out on
+	// any failure without leaving a partial transform on the wire.
+	docs := splitYAMLDocs(s)
+	if len(docs) == 0 {
+		return s
+	}
+
+	var compacted []string
+	dropID := os.Getenv(structuredDropIDEnv) == "1"
+	for _, doc := range docs {
+		trimmed := strings.TrimSpace(doc)
+		if trimmed == "" {
+			compacted = append(compacted, "")
+			continue
+		}
+		var v any
+		if err := yaml.Unmarshal([]byte(doc), &v); err != nil {
+			return s
+		}
+		walked := walkDropNoiseWithFlags(yamlNormalizeMaps(v), dropID)
+		// yaml.v3's default Marshal uses 4-space indent; SetIndent(2)
+		// matches the Kubernetes/Helm convention the input arrived in
+		// and prevents the re-marshal from inflating bytes past the
+		// input size (which would trigger the cap-regression guard).
+		var buf bytes.Buffer
+		enc := yaml.NewEncoder(&buf)
+		enc.SetIndent(2)
+		if err := enc.Encode(walked); err != nil {
+			_ = enc.Close()
+			return s
+		}
+		if err := enc.Close(); err != nil {
+			return s
+		}
+		compacted = append(compacted, strings.TrimRight(buf.String(), "\n"))
+	}
+	joined := strings.Join(compacted, "\n---\n")
+	if len(joined) >= len(s) {
+		return s
+	}
+	return joined
+}
+
+// splitYAMLDocs splits a multi-doc YAML string on `---` lines into
+// individual documents. Single-doc input returns a one-element slice.
+// Leading `---` is allowed (some emitters always prefix it).
+func splitYAMLDocs(s string) []string {
+	lines := strings.Split(s, "\n")
+	var docs []string
+	var cur strings.Builder
+	flush := func() {
+		if cur.Len() > 0 {
+			docs = append(docs, cur.String())
+			cur.Reset()
+		}
+	}
+	for _, ln := range lines {
+		if strings.TrimSpace(ln) == "---" {
+			flush()
+			continue
+		}
+		cur.WriteString(ln)
+		cur.WriteByte('\n')
+	}
+	flush()
+	return docs
+}
+
+// yamlNormalizeMaps converts yaml.v3's `map[any]any` to `map[string]any`
+// so walkDropNoise (which keys on string) can process it. YAML allows
+// non-string keys but every real-world emitter uses strings; non-string
+// keys are stringified via fmt's default representation.
+func yamlNormalizeMaps(v any) any {
+	switch t := v.(type) {
+	case map[any]any:
+		out := make(map[string]any, len(t))
+		for k, val := range t {
+			ks, ok := k.(string)
+			if !ok {
+				continue // drop non-string keys; cloud YAML doesn't use them
+			}
+			out[ks] = yamlNormalizeMaps(val)
+		}
+		return out
+	case map[string]any:
+		out := make(map[string]any, len(t))
+		for k, val := range t {
+			out[k] = yamlNormalizeMaps(val)
+		}
+		return out
+	case []any:
+		out := make([]any, len(t))
+		for i, val := range t {
+			out[i] = yamlNormalizeMaps(val)
+		}
+		return out
+	default:
+		return v
+	}
+}
 
 // htmlBoilerplateBlocks matches HTML elements whose contents are nearly
 // always wire bloat for an LLM consumer reading documentation pages: inline
