@@ -1429,56 +1429,101 @@ func runDoctor(args []string) int {
 // reordered table row or new sentence flips the answer. False
 // positives are acceptable here because the cure ("run `dfmt init` to
 // refresh") is one command and idempotent.
-// checkSandboxToolchains probes the effective sandbox PATH (inherited
-// PATH + cfg.Exec.PathPrepend) for the language toolchains the agent is
-// most likely to invoke (`go`, `node`, `python`). For each one missing,
-// it scans well-known install locations and, if it finds a candidate,
-// prints a copy-pasteable `exec.path_prepend:` block the operator can
-// paste into `.dfmt/config.yaml`. Warning-only — never flips the doctor
-// exit code, because plenty of valid setups don't need any of these.
+// checkSandboxToolchains probes the *running daemon* — not the doctor
+// process — for the language toolchains the agent is most likely to
+// invoke (`go`, `node`, `python`). The earlier implementation looked
+// up tools against the doctor's own PATH, which on Windows hosts
+// running their daemon under WSL bash or via an agent harness with a
+// stripped env produced false positives: doctor reported ✓ while the
+// sandbox subprocess actually returned exit 127.
+//
+// Probe matrix per tool:
+//
+//   - `command -v <tool>`           — bare name, the agent's most
+//                                     common invocation form.
+//   - `command -v <tool>.exe`       — Windows binary form. WSL bash
+//                                     sees Windows toolchains under
+//                                     /mnt/c/... but only the .exe
+//                                     suffixed name resolves under
+//                                     Linux-PATH semantics; the
+//                                     bare name 127s. Detecting this
+//                                     pattern lets doctor explain
+//                                     why path_prepend won't help and
+//                                     point at Git Bash / .exe suffix
+//                                     as the actual fix.
+//
+// Warning-only — never flips the doctor exit code, because plenty of
+// valid setups don't need any of these.
 func checkSandboxToolchains(dir string) {
-	cfg, _ := config.Load(dir)
-	prepend := []string(nil)
-	if cfg != nil {
-		prepend = cfg.Exec.PathPrepend
+	if !client.DaemonRunning(dir) {
+		fmt.Println("[i] Sandbox toolchain probe skipped — daemon not running. Tools will be probed on the next dfmt call.")
+		return
 	}
-
-	// Build the same effective PATH the sandbox would assemble: prepend
-	// dirs first, then the daemon's inherited PATH.
-	parts := append([]string{}, prepend...)
-	if p := os.Getenv("PATH"); p != "" {
-		parts = append(parts, strings.Split(p, string(os.PathListSeparator))...)
-	}
-	effectivePATH := strings.Join(parts, string(os.PathListSeparator))
-
-	tools := []string{"go", "node", "python"}
-	if runtime.GOOS == "windows" {
-		// `python` on Windows is often only `python.exe`; LookPath
-		// already adds .exe, so just keep the unsuffixed name. `python3`
-		// is unusual on Windows so don't probe it.
-	} else {
-		tools = append(tools, "python3")
-	}
-
-	missing := []string{}
-	for _, t := range tools {
-		if _, err := lookPathIn(t, effectivePATH); err == nil {
-			fmt.Printf("✓ Sandbox PATH sees %s\n", t)
-			continue
-		}
-		fmt.Printf("[!] Sandbox PATH cannot find %s — exec calls for %s will return 'exit 127'\n", t, t)
-		missing = append(missing, t)
-	}
-	if len(missing) == 0 {
+	cl, err := client.NewClient(dir)
+	if err != nil {
+		fmt.Printf("[!] Sandbox toolchain probe skipped — could not connect to daemon: %v\n", err)
 		return
 	}
 
-	suggestions := suggestToolchainDirs(missing)
+	tools := []string{"go", "node", "python"}
+	if runtime.GOOS != "windows" {
+		tools = append(tools, "python3")
+	}
+
+	type probe struct {
+		tool        string
+		bareOK      bool
+		bareStdout  string
+		exeOK       bool
+		exeStdout   string
+	}
+	var (
+		results       []probe
+		bareMissing   []string
+		wslExeOnly    []string // bare 127's but .exe works → WSL-bash mismatch
+	)
+
+	for _, t := range tools {
+		var p probe
+		p.tool = t
+		p.bareStdout, p.bareOK = probeSandboxTool(cl, t)
+		if !p.bareOK {
+			// Only check .exe variant when the bare name failed and we're
+			// on a host where Windows binaries are reachable (Windows host
+			// or any host whose daemon may be WSL-bashing into /mnt/c).
+			if runtime.GOOS == "windows" {
+				p.exeStdout, p.exeOK = probeSandboxTool(cl, t+".exe")
+			}
+		}
+		results = append(results, p)
+
+		switch {
+		case p.bareOK:
+			fmt.Printf("✓ Sandbox can call %s — %s\n", t, p.bareStdout)
+		case p.exeOK:
+			fmt.Printf("[!] Sandbox sees %s.exe but NOT %s — daemon is using a Linux-PATH shell (likely WSL bash). Agents calling '%s ...' will get exit 127.\n", t, t, t)
+			fmt.Printf("        path: %s\n", p.exeStdout)
+			wslExeOnly = append(wslExeOnly, t)
+		default:
+			fmt.Printf("[!] Sandbox cannot find %s — exec calls for %s will return exit 127.\n", t, t)
+			bareMissing = append(bareMissing, t)
+		}
+	}
+
+	if len(wslExeOnly) > 0 {
+		fmt.Println("    The daemon is in WSL bash, which doesn't auto-suffix .exe like Windows cmd does. Two ways to fix:")
+		fmt.Println("      - Reorder PATH so Git Bash (`C:\\Program Files\\Git\\usr\\bin`) wins over WSL bash, then restart the daemon (`dfmt stop`).")
+		fmt.Println("      - Or have the agent invoke the .exe form (`go.exe version`, `node.exe --version`).")
+	}
+
+	if len(bareMissing) == 0 {
+		return
+	}
+	suggestions := suggestToolchainDirs(bareMissing)
 	if len(suggestions) == 0 {
 		fmt.Println("    (no install candidates found in the usual locations; install the toolchain or set PATH in the shell that starts dfmt)")
 		return
 	}
-
 	fmt.Println("    Add these to .dfmt/config.yaml so the sandbox can see them:")
 	fmt.Println("")
 	fmt.Println("    exec:")
@@ -1490,17 +1535,25 @@ func checkSandboxToolchains(dir string) {
 	fmt.Println("    Then restart the daemon: `dfmt stop` (auto-restarts on next call).")
 }
 
-// lookPathIn is exec.LookPath restricted to a caller-supplied PATH
-// rather than the process env. Lets doctor probe the sandbox's
-// effective PATH (which may include path_prepend dirs not visible to
-// the doctor process itself).
-func lookPathIn(name, pathEnv string) (string, error) {
-	saved := os.Getenv("PATH")
-	if err := os.Setenv("PATH", pathEnv); err != nil {
-		return "", err
+// probeSandboxTool runs `command -v <name>` through the daemon's exec
+// pipeline and returns the resolved path (stdout) plus whether the
+// probe succeeded (exit 0). Bash builtin `command -v` is used so we
+// don't rely on /usr/bin/which being installed inside the daemon's
+// shell environment. 3-second timeout — version probes shouldn't take
+// longer; a slower one means a hung subprocess that doctor must not
+// wait on.
+func probeSandboxTool(cl *client.Client, name string) (path string, ok bool) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	resp, err := cl.Exec(ctx, transport.ExecParams{
+		Code:    "command -v " + name,
+		Intent:  "tool probe",
+		Timeout: 2,
+	})
+	if err != nil || resp == nil || resp.Exit != 0 {
+		return "", false
 	}
-	defer func() { _ = os.Setenv("PATH", saved) }()
-	return exec.LookPath(name)
+	return strings.TrimSpace(resp.Stdout), true
 }
 
 // suggestToolchainDirs scans well-known install locations for the
