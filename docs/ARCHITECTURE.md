@@ -185,10 +185,19 @@ stateDiagram-v2
     ShuttingDown --> NotRunning: journal flushed,<br/>index persisted, lock released
 ```
 
-The lock is a real `flock(2)` on Unix and a named handle on Windows
-(`internal/daemon/flock_*.go`). It is the only reason a second
-`dfmt` process gives up gracefully instead of fighting for the
-socket.
+The lock lives at `<project>/.dfmt/lock` (mode 0o600). It is a
+real `flock(2) LOCK_EX|LOCK_NB` on Unix
+(`internal/daemon/flock_unix.go` via `golang.org/x/sys/unix`) and
+a `LockFileEx` byte-range lock on Windows
+(`internal/daemon/flock_windows.go` — lazy-loads `kernel32.dll`,
+locks 1 byte at offset 0 with
+`LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY`). Both paths
+are **always non-blocking**, so a second `dfmt daemon` invocation
+fails fast with `LockError` rather than queuing behind the
+incumbent. The file mode 0o600 isn't what enforces exclusivity —
+the kernel-level lock does — it's just so other local users on a
+shared host don't learn that dfmt is running for the owning user
+(F-G-LOW-1).
 
 Auto-start is in `internal/client/client.go`:
 
@@ -283,31 +292,72 @@ Global flags are pulled out before dispatch so subcommands never see
 them. `--project` overrides project discovery; `--json` switches the
 CLI to machine-readable output.
 
-> **Two version strings.** `cmd/dfmt/version.go` exports
-> `var version = "dev"`, set at build time via `-ldflags
-> "-X main.version=$VERSION"`. This is the value `dfmt --version`
-> prints. Separately, `internal/cli/cli.go` exports a hard-coded
-> `const Version = "0.1.0"` used by handlers that want a stable
-> identifier (e.g., the MCP `serverInfo.version`). The two can
-> diverge — release tags drive the ldflag value while `cli.Version`
-> is bumped manually.
+> **Three version strings, none of which reference each other.**
+> (1) `cmd/dfmt/version.go` exports `var version = "dev"`, set at
+> build time via `-ldflags "-X main.version=$VERSION"`. This is what
+> `dfmt --version` prints. (2) `internal/cli/cli.go` exports a
+> hard-coded `const Version = "0.1.0"`, asserted by `cli_test.go`
+> but not currently consumed by production callers — it is a
+> reserved constant. (3) `internal/transport/mcp.go::handleInitialize`
+> emits the literal string `"0.1.0"` directly in the
+> `serverInfo.version` field. The three values are independent:
+> bumping `cli.Version` does not change MCP `serverInfo.version`,
+> and a release-tagged ldflag bump leaves both untouched. They
+> happen to share the value `0.1.0` today; if any one drifts the
+> others stay frozen.
 
 ### 4.2 `cmd/dfmt-bench/main.go` — benchmarking binary
 
 A separate binary that exercises the same packages directly. Modes:
 `tokenize`, `index`, `search`, `exec`, `tokensaving`, `all`.
 
+The four micro-benchmarks each report ops/sec for a single hot
+function on hardcoded inputs:
+
+| Mode       | Function under test                              | Loop                                                                                          |
+|------------|--------------------------------------------------|-----------------------------------------------------------------------------------------------|
+| `tokenize` | `core.Tokenize`                                  | 10K iterations on a 200-byte text + 1K iterations on a 2 KB text (10x-repeated).              |
+| `index`    | `core.Index.Add`                                 | Pre-load 100 `EvtFileEdit` events, then 1K `Add` calls of `EvtNote` events.                    |
+| `search`   | `core.Index.SearchBM25`                          | Pre-load 50 events rotating through 8 query terms, then 500 calls to `SearchBM25("file edit commit", 10)`. |
+| `exec`     | `sandbox.Sandbox.Exec` (bash runtime, real fork) | 50× `echo 'hello'` + 20× `ls -la /tmp`. Times the full sandbox+process round-trip, not just dispatch. |
+
+`exec` is the only mode that touches the OS process boundary —
+on Windows it requires `bash` on PATH (Git Bash, MSYS2, or WSL)
+and `/tmp` to exist; missing prerequisites silently inflate the
+per-op time rather than failing the run, since the bench does not
+check exit status. `all` runs all four micro-benches and then
+calls `runTokenSavingReport` via `defer` so users see both the
+ops/sec table and the wire-byte savings report in one invocation.
+
 `tokensaving` is **not** an end-to-end benchmark of real agent
 sessions — it is a synthetic comparison of *legacy* vs *modern*
 wire bytes for six canonical scenarios baked into
 `tokensaving.go::buildScenarios`:
 
-1. small file read (inline tier)
-2. `npm install` with progress bar (ANSI noise, no intent)
-3. spinner retry-loop spam (no intent)
-4. `go test` 200 PASS + 1 FAIL + panic (no intent)
-5. `pytest` 200 PASS + 1 FAIL + traceback (no intent)
-6. `cargo build` 250 compile + 2 errors (no intent)
+| # | Scenario                          | Body shape                                                      | Intent passed   |
+|---|-----------------------------------|------------------------------------------------------------------|-----------------|
+| 1 | small file read (inline tier)     | 7-line `package main` Go file                                     | `"main function"` |
+| 2 | `npm install` with progress bar   | 21 CR-overwrite progress lines + final summary                    | `""` (empty)    |
+| 3 | spinner retry-loop spam           | 50 identical "dialing host…" lines + "connected"                  | `""`            |
+| 4 | `go test` 200 PASS + 1 FAIL + panic | 200 `=== RUN`/`--- PASS:` blocks + FAIL + panic + `FAIL` summary | `""`            |
+| 5 | `pytest` 200 PASS + 1 FAIL + traceback | 200 `PASSED` lines + FAILED + traceback + AssertionError       | `""`            |
+| 6 | `cargo build` 250 compile + 2 errors | 250 `Compiling some_crate` lines + 2 error[Exxxx] entries        | `""`            |
+
+Two simulators wrap the same `ApplyReturnPolicy` to model the
+before/after sizes:
+
+- **`legacyWireBytes`** — calls `ApplyReturnPolicy` (no
+  `NormalizeOutput`), then re-inflates the response with the legacy
+  MCP envelope: full payload duplicated into `content[0].text`
+  *and* `structuredContent`. The bench note explicitly admits this
+  understates real legacy waste — the original "empty intent →
+  inline full body" leak no longer has reproducible code, so the
+  legacy figure models only the envelope duplication (a flat ≈ 50%
+  tax independent of body size).
+- **`modernWireBytes`** — runs `NormalizeOutput` first, then
+  `ApplyReturnPolicy`, then writes the modern envelope: the
+  27-byte sentinel `"dfmt: see structuredContent"` in
+  `content[0].text` and payload only in `structuredContent`.
 
 The output is a side-by-side byte count and percent-saved per row,
 plus a total. The numbers are pure JSON byte counts the MCP
@@ -388,9 +438,9 @@ Each `runX()` function follows the same shape:
 git-hook / shell-integration `dfmt capture <kind>` invocations into
 `transport.RememberParams`.
 
-> **Subcommand maturity caveats.** Two subcommands shown above are
-> partially implemented and worth knowing about before relying on
-> them in operator scripts:
+> **Subcommand maturity caveats.** Three subcommands shown above
+> are partially implemented and worth knowing about before relying
+> on them in operator scripts:
 >
 > - **`dfmt tail`** — `runTail` (`dispatch.go:1920`) prints
 >   `"Streaming events..."` and returns; `--follow` prints
@@ -403,6 +453,13 @@ git-hook / shell-integration `dfmt capture <kind>` invocations into
 >   for a future `get`/`set` UX; today the only way to change a
 >   config value is to edit `.dfmt/config.yaml` directly. Use
 >   `--json` to dump the full parsed config for inspection.
+> - **`dfmt task done <id>`** — `runTask` (`dispatch.go:1630`)
+>   simply prints `"Task <id> marked done"` and returns. It does
+>   **not** journal a `task.done` event, does not look up the
+>   referenced task, and does not validate the ID. The
+>   `dfmt task <subject>` path is fully wired and creates a
+>   `task.create` event via `runRemember` — only the `done`
+>   sub-path is the stub.
 >
 > All other subcommands in the mind-map are fully wired.
 
@@ -468,10 +525,18 @@ sequenceDiagram
 | `transport.Serve`    | until shutdown  | HTTP / socket / TCP accept loop                            |
 | `journal sync ticker`| until shutdown  | Periodic `fsync()` in batched mode                         |
 
-Activity is tracked through `lastActivityNs` (atomic int64). Every
-RPC entry calls `handlers.Touch()`, which simply stores `time.Now()`
-without contention. The idle monitor compares it to the timeout —
-no `time.AfterFunc`, no timer goroutine leaks.
+Activity is tracked through `lastActivityNs` (atomic int64). The
+`transport.Handlers` package does not import `daemon` — instead the
+daemon injects a `func()` callback at construction time via
+`handlers.SetActivityFn(d.Touch)`, and every public RPC entry point
+(`Remember`, `Search`, `Recall`, `Stats`, `Stream`, `Exec`, `Read`,
+`Fetch`, `Glob`, `Grep`, `Edit`, `Write` — 12 handlers in total) calls
+the unexported `h.touch()` shim as its first statement. `h.touch()`
+takes the read lock, copies the callback pointer, releases, and invokes
+it; the daemon's `Touch()` then stores `time.Now().UnixNano()` without
+further contention. The idle monitor compares this timestamp to the
+timeout on each tick — no `time.AfterFunc`, no timer goroutine leaks,
+and no transport→daemon import cycle.
 
 ### 6.3 Stop sequence
 
@@ -567,11 +632,53 @@ flowchart LR
 Implements MCP 2024-11-05 enough to satisfy strict validators (Cursor,
 Continue). Supports:
 
-- `initialize` — capability handshake.
+- `initialize` — capability handshake. The reply is built by
+  `MCPProtocol.handleInitialize` (`internal/transport/mcp.go`) and
+  consists of three fixed pieces:
+  - `protocolVersion`: `"2024-11-05"` (from
+    `config.DefaultMCPProtocolVersion`). DFMT does **not** echo the
+    client's requested version — it always answers with its own
+    pinned constant. Strict clients that demand version negotiation
+    will see a mismatch; permissive clients (Claude Code, Cursor,
+    Continue, Codex, Cline) accept it.
+  - `capabilities`: `{"tools": {"listChanged": false}}`. The empty
+    `tools` object would suffice per spec, but a *missing* `tools`
+    field causes Claude Code to skip `tools/list` entirely and the
+    server appears to expose nothing — hence the explicit struct.
+    `listChanged: false` advertises that DFMT will not push
+    `notifications/tools/list_changed`; tool descriptions are still
+    self-tuning, but the agent re-reads them only on its own
+    refresh cadence.
+  - `serverInfo`: `{"name": "dfmt", "version": "0.1.0"}`. **Both
+    literals are hardcoded** in `handleInitialize`; the
+    `serverInfo.version` does **not** track the binary's actual
+    `cli.Version` (set via `-ldflags "-X .../cli.Version=..."`).
+    Inspectors looking at MCP `serverInfo` to identify a release
+    will always see `0.1.0` until the literal is replaced with
+    `cli.Version`.
+- **`notifications/initialized` (no response)** — JSON-RPC
+  notifications are messages without an `id`. The dispatch loop
+  short-circuits at `Handle()` with `if req.ID == nil { return nil,
+  nil }`; callers must treat `(nil, nil)` as "no response on the
+  wire". Replying to a notification is a protocol violation —
+  Claude Code in particular treats a server that responds to
+  `notifications/initialized` as broken and disconnects.
 - `tools/list` — eleven tools (table below). Descriptions are
   **self-tuning**: observed compression ratios from past
   exec/read/fetch calls are appended so the agent gets up-to-date
-  evidence that `intent` is paying off.
+  evidence that `intent` is paying off. Mechanics:
+  - Per-type aggregation keyed on `tool.exec` / `tool.read` /
+    `tool.fetch` etc. into `toolCompression{n, rawBytes,
+    returnedBytes}` (`MCPProtocol.statsCache`).
+  - **Cache TTL: 60 s** (`toolStatsTTL`) — `tools/list` polls and
+    reconnects within a session reuse the cached aggregation
+    instead of re-streaming the journal each time.
+  - **Sample floor: 5** (`toolStatsMinSamples`) — below this the
+    description suffix is **suppressed entirely**; advertising
+    "savings: ~0% over 1 call" on a fresh project would be noise.
+  - Stale cache is recomputed by streaming the journal and
+    summing `data.raw_bytes` / `data.returned_bytes` over the
+    `tool.*` events of each type.
 - `tools/call` — dispatches into the handlers.
 - `ping` — health check.
 
@@ -588,6 +695,19 @@ Continue). Supports:
 | `dfmt_search`    | Search    | `query`                        | BM25 over journal.                                             |
 | `dfmt_recall`    | Recall    | (none)                         | `budget` (bytes), `format` (md/json/xml).                      |
 | `dfmt_stats`     | Stats     | (none)                         | TTL-cached aggregates.                                         |
+
+The `dfmt remember` CLI subcommand mirrors the MCP tool but routes
+through `client → daemon → handlers.Remember` and exposes the token
+fields as top-level flags (`-input-tokens`, `-output-tokens`,
+`-cached-tokens`, `-model`) instead of a `data` object — the dispatcher
+in `internal/cli/dispatch.go::runRemember` merges any non-zero/non-empty
+token fields into the event's data map before forwarding. Positional
+arguments after the flags become tags. Example:
+
+```
+dfmt remember -type note -model claude-opus-4-7 -input-tokens 18000 \
+  -cached-tokens 12500 "summary of audit pass 30"
+```
 
 The MCP request loop has a `recover()` wrapper so a panic in any one
 handler does not kill the daemon.
@@ -681,6 +801,46 @@ fast. The server writes its actual port to `.dfmt/port`
 (`{"port":N}`, mode 0600) so the CLI client can find it without
 parsing logs.
 
+#### Request-level security middleware
+
+`HTTPServer.wrapSecurity` runs before every non-health-probe
+handler. It exists because a TCP-loopback dashboard is reachable by
+any browser the user opens — including a malicious page that
+attempts DNS rebinding or cross-origin XHRs:
+
+```mermaid
+flowchart TB
+    A[Incoming HTTP request] --> B{Always: set<br/>X-Content-Type-Options: nosniff}
+    B --> C{Path == /healthz or /readyz?}
+    C -- yes --> Z[next.ServeHTTP — bypass]
+    C -- no --> D{Host header valid?}
+    D -- no --> E[403 host header rejected]
+    D -- yes --> F{Origin header set?}
+    F -- empty --> H[next.ServeHTTP]
+    F -- yes --> G{Origin same-origin to listener?}
+    G -- no --> I[403 cross-origin request rejected]
+    G -- yes --> H
+```
+
+**Host validation (F-17 closure).** On TCP listeners, accepted
+`Host` values are exactly: the literal listener address (e.g.
+`127.0.0.1:54321`), `localhost:<port>`, or `[::1]:<port>`. Anything
+else is 403. This blocks DNS rebinding: an attacker-controlled
+domain that briefly resolves to `127.0.0.1` would arrive with
+`Host: attacker.com` and be rejected. On Unix-socket listeners the
+Host header is whatever the client put there — filesystem
+permissions are the gate, not the header.
+
+**Origin validation.** Cross-origin XHRs are refused unless the
+`Origin` matches `http://<listener-address>`. Empty Origin (typical
+for direct browser navigation, curl, server-to-server) passes.
+Unix-socket listeners reject all non-empty origins outright since
+there is no meaningful "same origin" notion for a Unix socket.
+
+**Health probes bypass both checks** so liveness/readiness
+monitoring tools can hit `/healthz` and `/readyz` without
+masquerading as the dashboard.
+
 ### 7.3 Handlers (`internal/transport/handlers.go`)
 
 The longest file in the project (≈ 1 450 lines). It is the actual
@@ -740,10 +900,42 @@ Important design choices:
 
 ### 7.4 JSON-RPC codec (`jsonrpc.go`, `rpc_params.go`)
 
-A handwritten JSON-RPC 2.0 codec — one of the reasons DFMT keeps the
-dependency list tiny. Strict params decoder splits `-32602`
-(invalid params) from `-32603` (internal error) so MCP clients show
-the right diagnostic.
+A handwritten JSON-RPC 2.0 codec — one of the reasons DFMT keeps
+the dependency list tiny.
+
+**Frame discipline.** The wire is line-delimited: one JSON value
+per line, terminated by `\n`. `Codec.readCappedLine` reads byte by
+byte until `\n` or **`MaxJSONRPCLineBytes` (1 MiB)** — without the
+cap a misbehaving peer that never sends a newline could grow the
+read buffer without bound and OOM the daemon. The codec owns its
+`bufio.Reader` and reuses it across calls so bytes buffered past a
+line boundary (pipelined requests on the socket transport) are not
+dropped on the next `ReadRequest` / `ReadResponse`.
+
+`WriteRequest` / `WriteResponse` rely on `json.Encoder.Encode`,
+which already appends a trailing newline. An earlier version
+emitted an extra `"\n"` after the encode call, producing `{…}\n\n`
+on the wire; the receiver then surfaced the bare second `\n` as an
+empty frame, `json.Unmarshal` failed with "unexpected end of JSON
+input", and `handleConn` closed the connection. The bug only hit
+the socket transport's pipelined loop because single-shot HTTP
+opens one request per connection.
+
+**Strict params decoder (`decodeParams`).** Three guards:
+
+| Guard                              | Behavior                                                                                                                          |
+|------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------|
+| Empty / nil body                   | Accepted; `dst` is left at its zero value. RFC says a method may take no params — treating that as malformed would be wrong.      |
+| `dec.DisallowUnknownFields()`      | A request with `{"limt":10}` instead of `{"limit":10}` previously returned a successful empty result (silent typo); now it fails. |
+| `dec.More()` after first decode    | A second JSON value sharing the same line (rare but possible from buggy clients) is rejected as a malformed envelope.             |
+
+Decode failures are wrapped as `*ParamsError`; the connection loop
+uses `IsParamsError` (an `errors.As` shim) to map them to JSON-RPC
+**`-32602`** ("Invalid params"). Bare `json.Unmarshal` errors that
+are not `ParamsError` flow through to **`-32603`** ("Internal
+error"). Before this split everything fell through to `-32603`,
+which is wrong per RFC and made client-side typo diagnosis
+impossible — `"internal error"` tells the caller nothing.
 
 ---
 
@@ -841,25 +1033,47 @@ forward-looking integrity hook: useful evidence for tooling that
 imports the journal externally, not a runtime guarantee that the
 daemon catches in-place tampering.
 
-> **Two type spaces.** The constants in `core/event.go` (left column
-> of the enum above) are the *named* event types used by capture
-> sources. Sandbox tool calls are journaled with **dynamic** type
-> strings — `tool.exec`, `tool.read`, `tool.fetch`, `tool.glob`,
-> `tool.grep`, `tool.edit`, `tool.write` — that are not in the enum
-> at all. They flow through the same `Event` struct (`Type` is just
-> a string), are always priority **P4**, source **mcp**, and the
-> `intent` parameter lands in the `Tags` slice. Stats and the
-> dashboard pivot on these dynamic types to compute byte savings,
-> so renaming them is a wire-compat change.
+> **Three type spaces.** Three distinct sources of `Event.Type`
+> strings show up in `journal.jsonl`:
+>
+> 1. **Named enum** (`core/event.go`, left column above): the
+>    capture-source events — `file.read`, `git.commit`, `note`,
+>    `prompt`, etc.
+> 2. **`tool.*` sandbox calls** — emitted by `transport/handlers`
+>    on every Exec/Read/Fetch/Glob/Grep/Edit/Write. Always
+>    priority **P4**, source **mcp**, with `intent` in `Tags`.
+>    Stats and the dashboard pivot on these strings to compute
+>    byte savings, so renaming any of them is a wire-compat
+>    change.
+> 3. **`journal.rotate` tombstone** — written by `Rotate()` when
+>    the active segment exceeds `MaxBytes` (see §8.3). Its `Data`
+>    carries `{rotationID, ts}` and its ULID is intentionally
+>    backdated 1 ms so it sorts before the post-rotation event
+>    sequence in the new segment.
+>
+> All three flow through the same `Event` struct since `Type` is a
+> raw string — the enum is convention, not validation.
 
-> **Orphaned constants.** `EvtShellCmd` (`shell.cmd`) is defined and
-> has a `capture.ShellCapture.BuildCommand` helper, but **neither
-> is called from production code**. The `dfmt capture shell` CLI
-> subcommand exists, but it builds a `note` event (P4, source
-> `shell`) with `cmd` / `cwd` in `data` — not an `EvtShellCmd`. And
-> the installed bash/zsh/fish hooks emit only `env.cwd`, not shell
-> commands. The constant is reserved for a future feature; treat it
-> as test-only today.
+> **Orphaned constants and builders.** `EvtShellCmd` (`shell.cmd`)
+> is defined and has a `capture.ShellCapture.BuildCommand` helper,
+> but **neither is called from production code**. The `dfmt capture
+> shell` CLI subcommand exists, but it builds a `note` event (P4,
+> source `shell`) with `cmd` / `cwd` in `data` — not an
+> `EvtShellCmd`. The installed bash/zsh/fish hooks emit only
+> `env.cwd` (`EvtEnvCwd`), not shell commands. The constant is
+> reserved for a future feature; treat it as test-only today.
+>
+> The pattern extends to the rest of `internal/capture/`: every
+> exported builder helper in `git.go` and `shell.go` —
+> `NewGitCapture`, `BuildCommit`, `BuildCheckout`, `BuildPush`,
+> `GitLog`, `NewShellCapture`, `BuildCommand`, `DetectShell` — is
+> referenced **only** from `git_shell_test.go`. The live capture
+> path bypasses these helpers entirely: shell/git hooks shell out
+> to `dfmt capture …`, which dispatches to
+> `internal/cli/dispatch.go::buildCaptureParams` and constructs the
+> `RememberParams` inline (see §10.2 / §10.3). `internal/capture/`
+> is effectively `fswatch.go` plus reserved scaffolding — see the
+> Reserved code table at end of §18.
 
 ### 8.2 Classifier
 
@@ -930,6 +1144,32 @@ flowchart LR
 > segments stay as plain `.jsonl` on disk regardless of the
 > setting. Treat the flag as reserved for a future feature.
 
+**Rotate() detail.** The actual rotation sequence:
+
+1. **No-op short-circuit** when `hiCursor == ""` (no events written
+   since the last rotation — typical at idle restart).
+2. **Tombstone event** appended to the active file: `Type =
+   "journal.rotate"`, `Data = {rotationID: <hiCursor>, ts:
+   <RFC3339Nano>}`. The tombstone's ULID is generated with
+   `time.Now().Add(-time.Millisecond)` so its lexicographic ID
+   sorts strictly before any subsequent post-rotation event a
+   reader compares against.
+3. **`Sync()` the tombstone** before close so a crash between
+   rename and reopen leaves the rotated segment ending in a
+   well-formed marker.
+4. **Close → rename** active file to
+   `journal.jsonl.<hiCursor>.jsonl` (the cursor IS the segment ID,
+   not a fresh ULID).
+5. **Reopen** new active file at original path with `O_APPEND |
+   0o600`.
+6. **Reset `hiCursor = ""`** so the next event's ID seeds the new
+   segment's cursor.
+
+The tombstone's payload (`type: "journal.rotate"`, an enum value
+not in `event.go`) is a dynamic event type — a third one alongside
+the named-enum events and the `tool.*` sandbox call types from
+§8.1.
+
 Two durability modes:
 
 - **`durable`** — `fsync()` after every write. Survives kernel crash;
@@ -948,6 +1188,57 @@ to find the highest event ID and seeds `hiCursor` so subsequent
 `Checkpoint` calls and rotations behave correctly. Crash mid-write
 typically leaves a partial trailing line, which the scanner skips
 (it scans past trailing junk to keep recovery robust).
+
+**Append concurrency.** `Append`'s lock discipline is non-trivial:
+
+1. **Marshal outside the lock** — `json.Marshal(e)` is CPU-bound
+   and shares no state, so it runs lock-free; only the file write
+   needs the mutex.
+2. **Re-check `ctx.Err()` after lock acquire** — a caller that
+   cancelled while waiting on `j.mu` does *not* sneak its append
+   through after the cancel landed.
+3. **Size limit check under the lock** — without this, two
+   concurrent appends could both observe `Size() < maxBytes` and
+   then push the journal past the cap (TOCTOU).
+4. **`Sync()` only in `durable` mode** — `batched` mode relies on
+   the `periodicSync` ticker (default 100 ms) running in a separate
+   goroutine.
+5. After a successful write, `j.hiCursor = e.ID` so the next
+   `Checkpoint` returns this ID.
+
+**Stream layout.** `Stream(ctx, from)` reads rotated segments
+*before* the active file so callers see chronological history:
+
+```mermaid
+flowchart LR
+    A[journal.jsonl.01HABC...jsonl<br/>oldest] --> B[journal.jsonl.01HXYZ...jsonl<br/>newer rotation]
+    B --> C[journal.jsonl<br/>active file]
+    C --> D[chan Event<br/>buffered 100]
+```
+
+`journalSegments(activePath)` globs `journal.jsonl.*.jsonl`, sorts
+lexicographically (ULID order = chronological), and appends the
+active path last. An unreadable rotated segment is **skipped, not
+fatal** — a single corrupt file doesn't black out subsequent
+history. Per-line malformed JSON is logged at warn level
+(`journalWarnf`) and skipped (V-9 closure: was silently dropped
+before).
+
+**Cursor pagination.** Passing a non-empty `from` to `Stream` skips
+events until the ID matches `from`, then starts emitting. Used by
+the index-rebuild path so a daemon restart only replays the tail
+beyond the persisted cursor.
+
+**Scanner buffer pinned to `maxEventBytes`.** `bufio.Scanner.Buffer`
+is sized at exactly the same 1 MiB cap that `Append` enforces, so
+a line longer than the cap is silently skipped by the scanner —
+which doubles as a data-integrity guardrail: any line that would
+exceed the cap is by definition corrupt or tampered, since `Append`
+refuses to write it.
+
+`Checkpoint(ctx)` returns `j.hiCursor` (the ID of the most-recently
+appended event) under the lock. Callers persist this alongside the
+index so the next start replays only the tail.
 
 ### 8.4 Index
 
@@ -980,6 +1271,42 @@ flowchart TB
 > trigram path and `core.Levenshtein` exist for a future fuzzy-search
 > layer (see §8.5 Search layers — `trigram` and `fuzzy` cases are
 > reserved). Today both are dead weight in the hot path.
+
+**What text gets indexed.** `Index.eventText(e)` concatenates
+(space-joined): `string(e.Type)` + every entry in `e.Tags` + every
+**string-typed value** in `e.Data`. Non-string `Data` values (ints,
+maps, nested structs) are silently skipped — an event whose payload
+is `{"line_count": 42}` contributes nothing to the index beyond its
+type and tags. Refs are also not indexed.
+
+**Term-frequency width.** `PostingList.TFs` is `uint32`, not
+`uint16`. The 65 536 ceiling matters in the wild: a journaled log
+buffer that contains the same identifier 70 000 times (huge build
+output, repeated panic stacks) would silently corrupt BM25 scoring
+under `uint16`. The bigger field costs ~6 bytes per posting and
+buys correctness on the long-tail.
+
+**Add is idempotent.** A second `Add(e)` for an event ID already in
+`docLen` is a no-op — prevents `totalDocs` drift and duplicate
+posting entries when a caller (a retry path, an FSWatch
+re-emission) submits the same event twice. The journal is the
+authority; the index re-derives.
+
+**Remove and avgDocLen drift.** `Index.Remove(id)` exists for the
+rare path where an event must be retracted (tombstones, test
+seams). It walks every posting list to splice out the entry, and
+**recomputes `avgDocLen` from scratch** by summing surviving
+`docLen` entries — incremental subtraction would drift over many
+removes.
+
+**Persist locking.** `Index.Persist(path)` does **not** hold
+`ix.mu` across `json.Marshal`. `MarshalJSON` itself takes
+`ix.mu.RLock()`, and Go's `RWMutex` starves a pending reader
+behind a pending writer — re-entering RLock while already holding
+it would deadlock under write contention. The marshal is
+lock-free at the outer call; concurrent `Add`/`Remove` operations
+can still race the snapshot, but the journal is the durable
+truth, so a slightly-stale persisted index is safe.
 
 Persistence (`index_persist.go`) uses **custom JSON** marshaling.
 The original implementation tried `encoding/gob`, but Go's gob can't
@@ -1014,11 +1341,95 @@ post-processing where available.
 
 ### 8.6 Tokenization
 
-`Tokenize()` is unicode-aware: any letter, digit, or `_` joins the
-current token; everything else breaks it. Tokens are kept if their
-length is between 2 and 64 bytes. The Porter stemmer runs on the
-result. English and Turkish stopwords are baked in as constants —
-no stopword files to ship.
+`TokenizeFull(s, stopwords)` is unicode-aware: any letter, digit,
+or `_` joins the current token; everything else breaks it. Tokens
+are kept if their length is between **2 and 64 characters**. Output
+is lowercased before the stopword filter, then the Porter stemmer
+runs on the survivors.
+
+> **Two stopword lists, only one is wired.** The codebase exposes
+> three stopword maps:
+>
+> | Symbol                          | Location              | Entries  | Used in production?                          |
+> |---------------------------------|-----------------------|----------|----------------------------------------------|
+> | `englishStopwords` (unexported) | `tokenize.go`         | ~25      | **Yes** — the implicit default when callers pass `nil` |
+> | `EnglishStopwords` (exported)   | `core.go`             | ~70      | **No** — only test files reference it        |
+> | `TurkishStopwords` (exported)   | `core.go`             | 14       | **No** — only test files reference it        |
+>
+> Every production call site (`Index.Add`, `Index.SearchBM25`,
+> `content.summarize`, `trigram.Add`) passes `nil`, so the exported
+> 70-entry English list and the 14-entry Turkish list never apply
+> to indexed text. The doc's earlier "English and Turkish stopwords
+> are baked in" claim was correct about the constants existing but
+> wrong about them being applied. To opt in, callers would need to
+> pass the desired map as the second arg to `TokenizeFull` — the
+> current call sites do not.
+
+### 8.7 ULID generation (`internal/core/ulid.go`)
+
+DFMT mints its own 16-byte sortable IDs in-process — the journal,
+index, and content store all rely on the **monotonic-within-millisecond**
+ordering it guarantees, so the implementation details are
+load-bearing.
+
+```mermaid
+flowchart TB
+    A[caller: NewULID(ts)] --> B[lock muGen]
+    B --> C{ts.UnixMilli<br/>== lastTime?}
+    C -- yes --> D["increment lastRandom[]<br/>(big-endian +1, cascade carry)"]
+    C -- no --> E[lastTime = ms]
+    E --> F[crypto/rand.Read lastRandom]
+    F --> G{success?}
+    G -- yes --> H[encode 16 bytes:<br/>6B ms + 10B random]
+    G -- no --> I["fallback: pid<<32 | ctr<br/>XOR ts.UnixNano()"]
+    I --> H
+    D --> H
+    H --> J[hex.EncodeToString → 32-char string]
+    J --> K[unlock muGen, return]
+```
+
+Layout (16 bytes total):
+
+| Bytes | Field         | Encoded as                                                |
+|-------|---------------|-----------------------------------------------------------|
+| 0–5   | timestamp     | 48-bit big-endian milliseconds since Unix epoch           |
+| 6–15  | randomness    | 80 bits from `crypto/rand.Read`, or fallback (see below)  |
+
+Encoded with `encoding/hex`, **not** Crockford Base32 — output is
+**32 hex chars**, double the length of a spec-compliant 26-char
+ULID. This is intentional (no external dependency), but external
+inspectors that decode "real" ULIDs will reject these.
+
+Three properties matter for callers:
+
+- **Same-ms monotonic increment.** When two `NewULID` calls land in
+  the same millisecond, the second does **not** re-roll randomness —
+  it increments `lastRandom[9]` with carry cascading toward
+  `lastRandom[0]` (`for i := 9; i >= 0; i--`). This is the mechanism
+  behind the doc's recurring "ULID order = chronological" claim:
+  without it, two events stamped with the same ms could sort in
+  random order and the journal's `journalSegments()` lexicographic
+  walk would lose chronology. It also lets `Rotate()` backdate the
+  tombstone by 1 ms (§8.3) and trust that ordering holds.
+- **Package-level serialization.** `lastTime`, `lastRandom`, and
+  `ulidFallbackCtr` are package globals guarded by `muGen`. Every
+  ULID minted in the daemon process — whether by the journal,
+  content store, classifier, or capture pipeline — passes through
+  this single mutex. For a single-tenant daemon the contention is
+  invisible; multi-tenant rework would need to revisit it.
+- **`crypto/rand` fallback.** If `rand.Read` fails (extremely rare
+  outside of constrained sandboxes), DFMT does **not** crash. It
+  logs once via `logging.Warnf`, increments `ulidFallbackCtr`, and
+  derives `lastRandom` from a `pid<<32 | counter` mix XOR'd with
+  `ts.UnixNano()`. IDs from this path remain unique-per-process
+  (the counter guarantees it) but lose unpredictability — anyone
+  using ULIDs as security tokens elsewhere should not, but DFMT
+  doesn't.
+
+`ULID.Time()` is the inverse: decode the first 6 bytes (12 hex
+chars) back to `time.UnixMilli`. The journal uses this to convert
+the cursor in `journal.jsonl.<ULID>.jsonl` segment names into
+human-readable timestamps for `dfmt list-rotated`.
 
 ---
 
@@ -1120,16 +1531,27 @@ so DNS rebinding cannot smuggle a request past the policy.
 
 ### 9.4 Intent extraction (`intent.go`)
 
-Output filtering is driven by the `return` parameter
-(`auto` / `raw` / `summary` / `search`) and the actual size of the
-captured output. Constants are in `sandbox.go`:
+Output filtering runs `NormalizeOutput` first to strip terminal
+noise, then `ApplyReturnPolicy` to choose between inlining the body
+and returning excerpts. The four `return` modes:
 
-| Output size                                  | `auto` (default) behavior                                |
-|----------------------------------------------|----------------------------------------------------------|
-| ≤ 4 KiB (`InlineThreshold`)                  | inline body only — no summary, matches, or vocabulary    |
-| 4 KiB – 64 KiB (`MediumThreshold`)           | summary + 5 BM25 matches + 10 vocabulary terms           |
-| &gt; 64 KiB                                  | summary + 10 BM25 matches + 20 vocabulary terms          |
-| `raw` mode                                   | full body inline, capped at 256 KiB (`MaxRawBytes`)      |
+| Mode                | What gets populated                                                                                       |
+|---------------------|-----------------------------------------------------------------------------------------------------------|
+| `raw`               | `Body` only (full content, capped at 256 KiB / `MaxRawBytes` upstream). No summary, matches, or vocab.    |
+| `search`            | `Matches` (up to 10) + `Vocabulary` (up to 20). **No body, no summary** — leanest mode.                   |
+| `summary`           | `Summary` + `Matches` (up to 10) + `Vocabulary` (up to 20). **Never inlines body**, even for tiny content. |
+| `auto` / `""` (default) | Tier-dependent (table below).                                                                          |
+
+The default `auto` path is the interesting one — it's the policy
+that closed the previous "empty intent silently returned full body"
+token leak:
+
+| Output size                                  | `auto` behavior                                                                                                                            |
+|----------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------|
+| ≤ 4 KiB (`InlineThreshold`)                  | inline body only — no summary, matches, or vocab. The body is short enough that excerpts would just duplicate it.                          |
+| 4 KiB – 64 KiB (`MediumThreshold`)           | summary + up to 5 matches + 10 vocab terms; signals merge ahead of keyword matches.                                                        |
+| &gt; 64 KiB                                  | summary + up to 10 matches + 20 vocab terms.                                                                                               |
+| any non-inline tier with **zero matches**    | **Tail-bias fallback**: `Body` carries the last `TailBytes` of content. Covers verdict-at-the-end output (`go test`, `npm build`, CI logs) when neither keywords nor signals landed. |
 
 Matches are scored by BM25 against the `intent` keywords. **Kind-aware
 signal promotion** is always on (`internal/sandbox/signals.go`):
@@ -1148,14 +1570,74 @@ Tiering is by **output size**, not by event priority. Earlier drafts
 of this document conflated the two; the actual tier check is purely
 a byte threshold.
 
+> **Where the `Summary` text comes from.** The string in
+> `out.Summary` is produced by `sandbox.GenerateSummary(content,
+> keywords)` (`internal\sandbox\intent.go`), not by the more elaborate
+> kind-aware `content.Summarizer` in `internal\content\summarize.go`.
+> `GenerateSummary` is intentionally simple: it counts non-blank lines,
+> and either returns `"Total lines: N"` (no keywords) or
+> `"Found K matching lines out of N total. Top matches:\nL{n}: …"`
+> with up to 5 keyword-matching lines truncated to 80 chars each. The
+> richer `content.Summarizer` (warnings detection, top-phrase
+> extraction, kind-aware logic for `ChunkKindLog` / `ChunkKindMarkdown`)
+> ships in the binary and is fully tested but is not currently wired
+> to any production code path — only the package's own
+> `summarize_test.go` and `store_test.go` instantiate it. It's a
+> reserved capability, similar in status to the orphaned `retrieve`
+> package called out in §11.1.
+
+**`NormalizeOutput` (runs upstream of every return mode).** Three
+passes, each targeting a dominant noise source in shell-captured
+output:
+
+1. **`stripANSI`** — removes CSI (`\x1b[...m`) and OSC escape
+   sequences. Other categories (VT52, 7-bit single-shifts) are too
+   rare in modern tool output to be worth pattern-matching; if they
+   show up, the caller should opt into `return=raw` anyway.
+2. **`collapseCarriageReturns`** — for every logical line, reduces
+   `...A\rB\rC` runs to just `C`. Per-line walk so a CR inside line
+   3 doesn't eat content from line 1; trailing `\r` of CRLF lines is
+   trimmed before the LastIndex scan so well-formed CRLF files
+   aren't collapsed to empty strings.
+3. **`runLengthEncode`** — collapses N consecutive identical lines
+   to one + a `(repeated N times)` annotation. Targets spinner
+   loops (`dialing...` × 30) and retry-with-backoff bursts.
+
+This runs **before** `ApplyReturnPolicy` and the content-store stash
+so neither has to budget tokens for terminal animations. It also
+runs **before** the redactor — escape sequences can split a secret
+across positions and break the redactor's regex anchors, so the
+order matters.
+
 ### 9.5 Edit / Write atomicity
 
-`internal/safefs/safefs.go` is the symlink-safe write helper. It
-writes to a temp file in the destination directory, fsyncs it, and
-atomically renames over the target. Symlink targets in protected
-paths (e.g. `.dfmt/`) are refused outright — that closed F-08, which
-was the case where a malicious symlink turned a write into a path
-traversal.
+`internal/safefs/safefs.go` is the symlink-safe write helper.
+Three exported functions, one threat model:
+
+| Function                                        | What it does                                                                                       |
+|-------------------------------------------------|----------------------------------------------------------------------------------------------------|
+| `CheckNoSymlinks(baseDir, path)`                | Walks `path` segment-by-segment from `baseDir`, calling `Lstat` on each. Refuses any segment whose mode is `os.ModeSymlink` or any non-final segment that isn't a directory. Missing components stop the walk successfully (caller creates them). Inspection-only — no writes. |
+| `WriteFile(baseDir, path, data, mode)`          | `CheckNoSymlinks` + `os.WriteFile`. Symlinks at any inspected component are refused. **TOCTOU residual**: between the Lstat check and `os.WriteFile`'s O_CREAT|O_TRUNC open, a sufficiently capable attacker could swap a symlink in. Documented in the package godoc. |
+| `WriteFileAtomic(baseDir, path, data, mode)`    | `CheckNoSymlinks` + temp file in same dir + Sync + `os.Chmod` (best-effort on Windows) + `os.Rename` over the target. `rename(2)` **replaces** a pre-existing symlink at the leaf rather than writing through it, so this helper closes the TOCTOU window at the target itself. |
+
+Trust model: **`baseDir` is trusted and not inspected**. Symlinks
+*above* `baseDir` (notably macOS's `/var → /private/var`) are
+accepted as system policy; only segments *below* are checked. Both
+arguments must be absolute — relative inputs are refused.
+
+`Edit` and `Write` from the sandbox call `WriteFileAtomic` (closes
+F-R-LOW-1 from the security audit). `daemon.pid`, `.dfmt/port`, and
+the `~/.dfmt/daemons.json` registry use `safefs.WriteFile` /
+`WriteFileAtomic` for the same reason. Symlink targets in protected
+paths (e.g. `.dfmt/`) are refused outright — that closed F-08,
+which was the case where a malicious symlink turned a write into a
+path traversal.
+
+Tradeoff at `WriteFileAtomic`: rename-over breaks any pre-existing
+hard links to the target (the file ID changes). Acceptable for
+agent-driven file editing — hard links are rare in source trees and
+the alternative (write-through) would re-open the symlink-leaf
+attack the helper exists to close.
 
 ### 9.6 Sandbox environment passthrough and block-list
 
@@ -1369,11 +1851,21 @@ sequenceDiagram
 
 The three hooks pass slightly different positional arguments:
 
-| Hook            | Invocation                                                          |
-|-----------------|---------------------------------------------------------------------|
-| `post-commit`   | `dfmt capture git commit "$COMMIT_HASH" "$COMMIT_MSG"`              |
-| `post-checkout` | `dfmt capture git checkout "$REF" "$IS_BRANCH"` — `IS_BRANCH` is `true`/`false` based on `git show-ref --verify --quiet refs/heads/$REF` |
-| `pre-push`      | `dfmt capture git push "$REMOTE" "$BRANCH"` — `BRANCH` from `git symbolic-ref --short HEAD` |
+| Hook            | Invocation                                                          | Variable bindings inside the hook |
+|-----------------|---------------------------------------------------------------------|-----------------------------------|
+| `post-commit`   | `dfmt capture git commit "$COMMIT_HASH" "$COMMIT_MSG"`              | `COMMIT_HASH` = `git rev-parse HEAD`; `COMMIT_MSG` = `git log -1 --format=%s` |
+| `post-checkout` | `dfmt capture git checkout "$REF" "$IS_BRANCH"`                     | `REF = $1` (git passes prev-HEAD ref as $1, new-HEAD ref as $2, flag as $3 — the script reads only `$1`); `IS_BRANCH` is `true`/`false` based on `git show-ref --verify --quiet refs/heads/$REF` |
+| `pre-push`      | `dfmt capture git push "$REMOTE" "$BRANCH"`                         | `REMOTE = $1`; `BRANCH = git symbolic-ref --short HEAD` |
+
+> **`post-checkout` quirk.** Git's documented hook contract sets `$1`
+> to the **previous** HEAD ref, `$2` to the new one, and `$3` to a
+> branch-vs-file flag. The shell script reads only `$1` and re-derives
+> `IS_BRANCH` itself, so the journaled `ref` is the SHA of where the
+> user came *from*, not where the checkout landed — and `is_branch` is
+> almost always `"false"` because `refs/heads/<sha>` is rarely a real
+> branch ref. Operators relying on `git.checkout` events to track
+> branch destinations should treat the field as historical context,
+> not destination identity.
 
 The hooks rely on `command -v dfmt` for runtime PATH resolution —
 they are emitted verbatim from the embedded
@@ -1382,7 +1874,9 @@ an absolute path at install time (`installHookContent` /
 `installShellHookContent` explicitly ignore the `dfmtBin` argument
 they receive). A missing binary degrades each hook to a no-op
 rather than failing the commit, and the `dfmt capture …` invocation
-is backgrounded with `&` so a slow daemon-start never blocks `git`.
+is backgrounded with `&` and stderr-suppressed with `2>/dev/null`
+so neither a slow daemon-start nor an error message can block or
+clutter `git`'s own output.
 
 > **Different from MCP configs.** Per-agent MCP configs *do* pin an
 > absolute path via `setup.ResolveDFMTCommand()` (§12), because the
@@ -1395,10 +1889,19 @@ is backgrounded with `&` so a slow daemon-start never blocks `git`.
 `dfmt shell-init <shell>` prints a `here-doc` block for the user to
 source. The actual hook scripts are embedded in the binary at
 `internal/cli/hooks/{bash.sh,zsh.sh,fish.fish}` and are emitted
-verbatim, with one substitution: any leading `dfmt` is replaced
-with the absolute path of the running binary (resolved by
-`os.Executable()`) so sourced hooks invoke the correct dfmt even
-when PATH changes later.
+**verbatim**: the hook scripts use `command -v dfmt` and `dfmt
+capture env.cwd` directly, relying on PATH at runtime.
+
+> **Dead-code quirk.** `runShellInit` calls `os.Executable()` and
+> formats the result through `filepath.ToSlash`, then passes the
+> resolved path to `installShellHookContent(raw, dfmtBin)`. That
+> function's body is `_ = dfmtBin; return raw` — the absolute path
+> is computed and immediately discarded. Same story as git hooks
+> (§10.2): a single global PATH-resolved `dfmt` is the design, so
+> the hooks degrade to a no-op if the binary is missing rather than
+> failing the user's prompt. The `os.Executable()` call is residual
+> from an earlier substitution implementation and could be removed
+> alongside `installShellHookContent`'s parameter.
 
 Bash (`hooks/bash.sh`) — wires a `PROMPT_COMMAND` callback:
 
@@ -1692,7 +2195,16 @@ non-destructive**:
    missing** — a user-customised config is never clobbered.
 3. Append `.dfmt/` to `.gitignore` **only if `.gitignore` already
    exists** — DFMT will not create a `.gitignore` unprompted; that
-   is the user's call.
+   is the user's call. The "is `.dfmt` already ignored?" check is
+   `project.IsDfmtIgnored` (`gitignore.go`), which walks the file
+   line-by-line, skips comments and blanks, accepts the four
+   canonical spellings (`.dfmt`, `.dfmt/`, `/.dfmt`, `/.dfmt/`),
+   and honours **last-match-wins negation** (`!.dfmt` after an
+   earlier `.dfmt` rule reverses to "not ignored", so DFMT will
+   re-append). V-6 closure: the previous `bytes.Contains(content,
+   ".dfmt/")` substring check produced false positives (a comment
+   mentioning `.dfmt/` defeated the append) and false negatives
+   (entries without trailing slash never matched).
 4. Merge DFMT's tool-allowlist + hooks into project-local
    `.claude/settings.json`. The merge is itself idempotent and
    refuses to write to `~/.claude/settings.json` (that would
@@ -1702,6 +2214,63 @@ non-destructive**:
 The auto-init path means an agent dropped into any random folder
 gets a working DFMT setup on the first MCP call without the user
 having to remember to run `dfmt init`.
+
+### 12.3 Uninstall sequence (`dfmt setup --uninstall`)
+
+The uninstall is manifest-driven and runs in a fixed order. The
+ordering matters because some steps depend on data the previous
+step writes/removes:
+
+```mermaid
+flowchart TB
+    A[runSetupUninstall] --> B[setup.LoadManifest]
+    B --> C{For each FileEntry}
+    C --> D{f.Kind}
+    D -- Strip --> E[StripDFMTBlock<br/>preserve user content,<br/>remove only marker block,<br/>delete file if empty]
+    D -- Delete or empty --> F[os.Remove path]
+    F --> G{path.dfmt.bak exists?}
+    G -- yes --> H[os.Rename .dfmt.bak → path<br/>restores original]
+    G -- no --> I[done]
+    D -- unknown --> J[warn + skip]
+    E --> K
+    H --> K
+    I --> K
+    J --> K
+    K[Done with manifest]
+    K --> L[setup.UnpatchClaudeCodeUserJSON<br/>~/.claude.json — NOT in manifest]
+    L --> M[setup.SaveManifest empty]
+```
+
+**`UnpatchClaudeCodeUserJSON`** does the surgical clean of the
+shared `~/.claude.json`:
+
+- Removes `mcpServers.dfmt` (top-level, user-scope).
+- Removes `projects[*].mcpServers.dfmt` (per-project entries).
+- Prunes `mcpServers` keys whose maps are now empty so the file
+  doesn't accumulate `"mcpServers": {}` stubs across
+  uninstall/reinstall cycles.
+- **Deliberately preserves** the three trust flags
+  (`hasTrustDialogAccepted`,
+  `hasClaudeMdExternalIncludesApproved`,
+  `hasClaudeMdExternalIncludesWarningShown`) — DFMT cannot tell
+  whether the user accepted them independently, so removing them
+  would silently un-trust projects the user already trusts.
+- Atomic tmp+rename so a concurrent Claude Code write cannot
+  corrupt the file mid-update.
+
+The "manifest excludes `~/.claude.json`" rule from §12.1 is what
+makes this surgical clean necessary: a `FileKindDelete` entry would
+have called `os.Remove` on that shared user file, blowing away
+unrelated Claude Code state. Closes F-G-INFO-2 from the security
+audit, where uninstall used to leave a stale `mcpServers.dfmt`
+entry pointing at a now-missing binary, surfacing as "failed to
+start MCP server" on the next Claude Code launch.
+
+`dfmt setup --verify` (without `--uninstall`) is the read-only
+counterpart: it walks the manifest and reports which tracked files
+are still in place, which were removed externally, and which are
+out of sync with the canonical block body. Used after a setup
+re-run to confirm wire-up health without re-installing.
 
 ---
 
@@ -2149,15 +2718,57 @@ OpenAI matcher; AWS prefix list runs before `generic_secret`). The
 | Token       | `jwt`               | three `.`-separated base64-url segments (`eyJ…eyJ…`)                            |
 
 Plus a separate **field-name pass** (`Redact` walks `event.Data` map
-keys): keys matching `password`, `api_key`, `apikey`, `private_key`,
-`secret`, `oauth`, `token`, etc. — case-insensitive substring match,
-so `customer_api_key` redacts. The body for those keys is replaced
-with `[REDACTED]` regardless of whether its value matches any regex.
+keys via `IsSensitiveKey(name)`). Crucially this is **not** a pure
+substring scan — that earlier implementation produced false positives
+on `MONKEY` / `PRIMARY_KEY` (both contain a literal `key` substring).
+The current logic in `internal/redact/redact.go` runs two passes per
+key:
 
-Both the regex set and the field-name set are case-insensitive.
-Each regex uses bounded character classes and no nested quantifiers
-to keep `ReplaceAllString` linear on multi-MB inputs (sandbox
-stdout, journal lines).
+1. **Compound substrings** (`sensitiveCompounds`, 11 entries): pure
+   `strings.Contains` on the lowercased key. Hits: `apikey`, `api_key`,
+   `access_token`, `refresh_token`, `session_token`, `private_key`,
+   `secret_key`, `access_key`, `signing_key`, `auth_key`, `oauth`.
+   This catches compound forms like `customer_api_key` and embedded
+   `oauth` even when surrounding tokens are not sensitive on their
+   own.
+2. **Word-boundary tokens** (`sensitiveTokens`, 16 entries): the key
+   is split on non-alphanumeric runes **and** camelCase transitions
+   (`tokenizeKey` — letter↔digit and lower→upper boundaries both
+   count), then each lowercased token is checked against the set:
+   `password`, `passwd`, `pwd`, `secret`, `token`, `auth`, `jwt`,
+   `bearer`, `credential`, `credentials`, `cred`, `creds`, `pat`,
+   `private`, `session`, `apikey`. So `OAuthToken` → `[o, auth,
+   token]` (matches `auth` and `token`), but `MONKEY` → `[monkey]`
+   (no match — `key` deliberately is *not* in this set; F-20).
+
+A field whose name passes either check has its body replaced with
+`[REDACTED]` regardless of whether the value matches any regex
+above. The two passes are case-insensitive and complement each
+other: compound-substring catches glued credential names that
+tokenization would lose; word-boundary token catches single-word
+sensitive names that substring matching would over-flag.
+
+The field-name set is fully case-insensitive (`IsSensitiveKey`
+lowercases the input). The regex set is **mixed**: generic shapes
+that span multiple case styles (`aws_secret`, `db_url_creds`,
+`generic_secret`, `bearer_token`, `basic_auth`) carry an explicit
+`(?i)` flag, while provider-specific patterns are deliberately
+case-sensitive — the case is part of the prefix signal (lowercase
+`xoxb-`, `ghp_`, `sk-ant-` vs uppercase `AKIA`, `ASIA`, `SK`),
+and a case-insensitive match would dilute the label-quality
+guarantee. Each regex uses bounded character classes and no
+nested quantifiers so `ReplaceAllString` stays linear on multi-MB
+inputs (sandbox stdout, journal lines).
+
+The `env_export` pattern is special-cased: its placeholder regex
+in `commonPatterns` is registered only so `RedactWithStats`
+accounting has a stable name to key against. The actual matching
+happens in `redactEnvExport`, called by `Redact()` / `RedactWithStats()`
+when they encounter the `env_export` slot — the function uses
+`ReplaceAllStringFunc` to extract the variable name and decide
+whether to redact via `IsSensitiveKey(NAME)`. So `HOME=/tmp` and
+`DEBUG=true` pass through; `OPENAI_API_KEY=sk-…` and
+`AWS_SECRET_ACCESS_KEY=…` are scrubbed.
 
 The package doc is explicit that this is **best-effort**, not a
 guarantee: a bare 40-char AWS secret with no nearby `secret_key`
@@ -2253,6 +2864,10 @@ Everything else (BM25, Porter stemmer, MCP protocol, JSON-RPC 2.0,
 HTML parser, ULID, levenshtein) is in-tree. Adding a dependency
 needs an ADR in `docs/adr/`.
 
+> **In-tree ≠ in-use.** Several of these implementations exist as
+> reserved capabilities with full test coverage but no production
+> caller — see the consolidated list at the end of §18.
+
 ### 17.4 Dev scripts
 
 - `dev.ps1` — primary developer loop on Windows (the maintainer's
@@ -2267,9 +2882,19 @@ needs an ADR in `docs/adr/`.
   Linux / macOS / FreeBSD on amd64 / arm64 supported.
 - `Makefile` — POSIX-friendly mirror of `dev.ps1` (build, test, lint,
   fmt, install, release, clean).
-- `scripts/cleanup_user_claude_json.go` — one-shot rescue tool for
-  the rare case where a half-finished setup leaves a malformed
-  `~/.claude.json`.
+- `scripts/cleanup_user_claude_json.go` — one-shot rescue tool
+  guarded by `//go:build ignore` so it doesn't ship in normal
+  builds; invoked via `go run scripts/cleanup_user_claude_json.go`.
+  It does **not** repair malformed JSON — it strips
+  *test-pollution* `projects[*]` entries that older `cli` test
+  runs wrote to a developer's real `~/.claude.json` before
+  `TestMain` learned to isolate `HOME`. Heuristics: hard-coded
+  `/proc/invalid/path` and `/tmp/test-dfmt-init`, anything with
+  `/temp/test` (Windows AppData\Local\Temp\Test\* normalizes to
+  forward slashes), `/tmp/Test*` (Linux), and
+  `/var/folders/.../Test*` (macOS). Writes a timestamped
+  `.cleanup-<YYYYMMDD-HHMMSS>.bak` next to the original before
+  the temp+rename overwrite.
 - `scripts/test-mcp.ps1` — quick MCP-stdio smoke test against the
   freshly built binary.
 - `build-test.ps1` / `run-build-test.{bat,cmd,ps1,sh}` — minimal CI
@@ -2318,9 +2943,9 @@ internal/
 │   ├── dispatch.go          subcommand router (~3 300 LOC)
 │   └── hooks_embed.go       embedded git-hook scripts
 ├── client/
-│   ├── client.go            CLI ↔ daemon RPC + auto-spawn
-│   ├── process_unix.go      detached spawn (Unix)
-│   ├── process_windows.go   detached spawn (Windows)
+│   ├── client.go            CLI ↔ daemon RPC + detached auto-spawn (exec.Command + cmd.Start)
+│   ├── process_unix.go      isProcessRunningPlatform — kill -0 / Signal(0) liveness probe
+│   ├── process_windows.go   isProcessRunningPlatform — OpenProcess + GetExitCodeProcess; ERROR_ACCESS_DENIED treated as alive (different-user daemon)
 │   └── registry.go          cross-process daemon registry
 ├── config/
 │   ├── config.go            YAML loading + validation
@@ -2328,7 +2953,7 @@ internal/
 ├── content/
 │   ├── content.go           ChunkSet / Chunk types
 │   ├── store.go             ephemeral content store, size-evicted at 64 MiB
-│   └── summarize.go         intent-blind summary generator
+│   └── summarize.go         kind-aware Summarizer (warnings + top phrases) — reserved, not wired (see §9.4)
 ├── core/
 │   ├── core.go              package-level helpers
 │   ├── event.go             EventType / Priority / Source / Event
@@ -2340,15 +2965,15 @@ internal/
 │   ├── porter.go            Porter stemmer
 │   ├── trigram.go           trigram fallback index
 │   ├── bm25.go              BM25 scoring math
-│   ├── levenshtein.go       edit distance
+│   ├── levenshtein.go       edit distance + FuzzyMatch — reserved, not wired (see end of §18)
 │   └── ulid.go              ULID generator (sortable IDs)
 ├── daemon/
 │   ├── daemon.go            lifecycle, goroutines, idle monitor
 │   ├── lock.go              singleton-lock abstraction
-│   ├── flock_unix.go        flock(2) impl
-│   ├── flock_windows.go     named-handle impl
-│   ├── process_unix.go      pid file management
-│   └── process_windows.go   pid file management
+│   ├── flock_unix.go        flock(2) LOCK_EX|LOCK_NB via golang.org/x/sys/unix
+│   ├── flock_windows.go     LockFileEx byte-range lock via lazy kernel32.dll load
+│   ├── process_unix.go      processExistsPlatform — kill -0 / Signal(0)
+│   └── process_windows.go   processExistsPlatform — OpenProcess + GetExitCodeProcess (no ACCESS_DENIED special case — daemon-side variant treats access-denied as dead)
 ├── capture/
 │   ├── capture.go           event source constants + helpers
 │   ├── fswatch.go           shared FSWatcher logic
@@ -2394,6 +3019,27 @@ internal/
     ├── log.go               leveled stderr logger
     └── logging.go           init / configuration
 ```
+
+### Reserved code (in-tree, fully tested, not wired)
+
+DFMT's "no dependencies" stance produces some collateral: a few
+implementations live in the binary with full test coverage but no
+production caller. Cataloged here so future contributors don't ship
+work assuming these paths are live:
+
+| Symbol / package                              | Location                        | Status                                                                                          |
+|-----------------------------------------------|---------------------------------|-------------------------------------------------------------------------------------------------|
+| `internal/retrieve/` (whole package)          | `retrieve/{snapshot,render_md}` | `handlers.Recall` does the recall work directly; `SnapshotBuilder` is unimported (§11.1).       |
+| `content.Summarizer` (kind-aware summary)     | `content/summarize.go`          | Production `Summary` text comes from `sandbox.GenerateSummary` instead (§9.4).                  |
+| `core.EnglishStopwords` (~70 entries)         | `core/core.go`                  | All call sites pass `nil` to `TokenizeFull`; the unexported 25-entry list applies (§8.6).       |
+| `core.TurkishStopwords` (14 entries)          | `core/core.go`                  | Same as above — never reached.                                                                  |
+| `core.Levenshtein` + `core.FuzzyMatch`        | `core/levenshtein.go`           | Defined and tested; no caller outside the package's own tests.                                  |
+| `capture.{GitCapture,ShellCapture}` builders   | `capture/{git,shell}.go`        | `NewGitCapture`, `BuildCommit`, `BuildCheckout`, `BuildPush`, `GitLog`, `NewShellCapture`, `BuildCommand`, `DetectShell` — only `git_shell_test.go` references them. The live capture path is `dispatch.go::buildCaptureParams` constructing `RememberParams` inline (§10.2 / §10.3); only `capture/fswatch.go` is wired. |
+
+Treat each row as a tripwire: if a future commit makes one of these
+load-bearing, the corresponding row should be deleted and the
+relevant section in §8/§9/§11 updated to match. Conversely, a
+prolonged unwired status is a candidate for a removal ADR.
 
 ---
 
