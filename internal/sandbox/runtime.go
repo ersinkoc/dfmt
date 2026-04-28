@@ -2,8 +2,10 @@ package sandbox
 
 import (
 	"context"
+	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -93,13 +95,52 @@ func (r *Runtimes) getVersion(ctx context.Context, path string) string {
 	return versionUnknown
 }
 
-// lookPath is a testable wrapper around exec.LookPath.
+// lookPath is a testable wrapper around exec.LookPath. On Windows, the
+// `bash` lookup is special-cased: Git Bash takes priority over whatever
+// exec.LookPath would return (typically C:\Windows\System32\bash.exe,
+// the WSL launcher). Reason: WSL bash drops into Linux-PATH semantics
+// where unsuffixed Windows binaries (`go`, `node`, `python`) don't
+// resolve, so every dfmt_exec on a Windows box that has both Git Bash
+// and WSL installed silently 127s on the agent's first toolchain
+// invocation. Git Bash uses Windows-PATH semantics and resolves the
+// .exe form transparently.
 var lookPath = func(name string) (string, error) {
+	if runtime.GOOS == "windows" && strings.EqualFold(name, "bash") {
+		if p, ok := findGitBashWindows(); ok {
+			return p, nil
+		}
+	}
 	path, err := exec.LookPath(name)
 	if err != nil {
 		return "", err
 	}
 	return filepath.Clean(path), nil
+}
+
+// gitBashCandidates lists the canonical install paths for Git for
+// Windows' bash.exe, in priority order. The MINGW64 layout
+// (`<root>\usr\bin\bash.exe`) is what `git --version` resolves to on a
+// stock Git for Windows install; the older `<root>\bin\bash.exe`
+// layout is included for legacy installs. Both 64-bit and 32-bit
+// program-files locations are covered. Exposed as a package var so
+// tests can replace it.
+var gitBashCandidates = []string{
+	`C:\Program Files\Git\usr\bin\bash.exe`,
+	`C:\Program Files\Git\bin\bash.exe`,
+	`C:\Program Files (x86)\Git\usr\bin\bash.exe`,
+	`C:\Program Files (x86)\Git\bin\bash.exe`,
+}
+
+// findGitBashWindows returns the first existing bash.exe from
+// gitBashCandidates, or ok=false if none exists. Exposed as a var so
+// tests can stub it independently of the candidate list.
+var findGitBashWindows = func() (string, bool) {
+	for _, p := range gitBashCandidates {
+		if fi, err := os.Stat(p); err == nil && !fi.IsDir() {
+			return filepath.Clean(p), true
+		}
+	}
+	return "", false
 }
 
 // DetectRuntimes is a convenience function to probe all runtimes.

@@ -210,6 +210,96 @@ func TestRuntimesGet(t *testing.T) {
 	}
 }
 
+// TestLookPathBashPrefersGitBashOnWindows pins the new contract: when
+// findGitBashWindows returns a path, lookPath("bash") must return that
+// path verbatim, not whatever exec.LookPath surfaced. Closes the WSL-
+// bash mismatch where unsuffixed Windows binaries silently 127'd.
+func TestLookPathBashPrefersGitBashOnWindows(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows-only behavior")
+	}
+	pinned := `C:\fake\git\bash.exe`
+	orig := findGitBashWindows
+	findGitBashWindows = func() (string, bool) { return pinned, true }
+	defer func() { findGitBashWindows = orig }()
+
+	got, err := lookPath("bash")
+	if err != nil {
+		t.Fatalf("lookPath(bash): %v", err)
+	}
+	if got != pinned {
+		t.Errorf("lookPath(bash) = %q, want %q", got, pinned)
+	}
+}
+
+// TestLookPathBashFallsBackWhenNoGitBash ensures that when Git Bash is
+// not installed, lookPath behaves exactly like the old code did — i.e.
+// it falls through to exec.LookPath. We don't assert a specific value
+// because what's on PATH varies by host; we only assert the function
+// doesn't crash and the special-case isn't sticky after stubbing.
+func TestLookPathBashFallsBackWhenNoGitBash(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows-only behavior")
+	}
+	orig := findGitBashWindows
+	findGitBashWindows = func() (string, bool) { return "", false }
+	defer func() { findGitBashWindows = orig }()
+
+	// No assertion on the value — just that we get either a path or an
+	// error, never a silent empty success.
+	if got, err := lookPath("bash"); err == nil && got == "" {
+		t.Error("lookPath returned empty path with no error")
+	}
+}
+
+// TestLookPathOnNonWindowsSkipsGitBash verifies the special case is
+// gated by GOOS. On Linux/macOS, findGitBashWindows must not be called
+// — Git Bash is a Windows concept; touching it elsewhere would just
+// add overhead.
+func TestLookPathOnNonWindowsSkipsGitBash(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("non-Windows behavior")
+	}
+	orig := findGitBashWindows
+	findGitBashWindows = func() (string, bool) {
+		t.Fatal("findGitBashWindows must not be called on non-Windows")
+		return "", false
+	}
+	defer func() { findGitBashWindows = orig }()
+
+	// We don't care whether the call succeeds — just that the
+	// findGitBashWindows hook above doesn't fire.
+	_, _ = lookPath("bash")
+}
+
+// TestFindGitBashScansCandidatesInOrder pins that findGitBashWindows
+// walks the candidate list in declaration order and returns the first
+// existing entry. Without this, a stale earlier candidate could shadow
+// the canonical Git for Windows install path.
+func TestFindGitBashScansCandidatesInOrder(t *testing.T) {
+	tmp := t.TempDir()
+	first := filepath.Join(tmp, "first", "bash.exe")  // intentionally not created
+	second := filepath.Join(tmp, "second", "bash.exe") // exists; should win
+	if err := os.MkdirAll(filepath.Dir(second), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(second, []byte("fake bash"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	origList := gitBashCandidates
+	gitBashCandidates = []string{first, second}
+	defer func() { gitBashCandidates = origList }()
+
+	got, ok := findGitBashWindows()
+	if !ok {
+		t.Fatal("findGitBashWindows returned !ok despite second candidate existing")
+	}
+	if got != filepath.Clean(second) {
+		t.Errorf("got %q, want %q", got, filepath.Clean(second))
+	}
+}
+
 func TestRuntime(t *testing.T) {
 	rt := Runtime{
 		Lang:       "bash",
