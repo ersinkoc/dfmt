@@ -205,3 +205,100 @@ func TestCompactStructured_LeadingWhitespace(t *testing.T) {
 		t.Errorf("title must survive: %q", out)
 	}
 }
+
+// TestCompactHTML_StripsBoilerplate: the canonical doc-page shape — most
+// of the wire is script/style/nav/footer. The stripped form keeps the
+// actual content (article text, headings) and discards the chrome.
+func TestCompactHTML_StripsBoilerplate(t *testing.T) {
+	in := `<!DOCTYPE html>
+<html>
+<head><title>Doc page</title>
+<script>window.gtag=function(){};</script>
+<style>body{margin:0}</style>
+</head>
+<body>
+<nav><ul><li><a href="/">Home</a></li><li><a href="/x">X</a></li></ul></nav>
+<main><h1>Real content</h1><p>The actual answer is here.</p></main>
+<aside><div>Related links sidebar</div></aside>
+<footer>Copyright 2024</footer>
+<script>analytics.track('page')</script>
+</body>
+</html>`
+	out := CompactHTML(in)
+	if out == in {
+		t.Fatal("expected HTML to be compacted")
+	}
+	for _, banned := range []string{
+		"window.gtag", "body{margin", "Related links sidebar",
+		"Copyright 2024", "analytics.track", "<title>",
+	} {
+		if strings.Contains(out, banned) {
+			t.Errorf("boilerplate %q leaked: %s", banned, out)
+		}
+	}
+	for _, want := range []string{"Real content", "actual answer"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("content %q lost: %s", want, out)
+		}
+	}
+}
+
+// TestCompactHTML_NotHTMLPassesThrough: plain text containing the word
+// "<script>" — e.g. a code review comment or a Stack Overflow answer
+// quoted as plain text — must not be eaten by the regex.
+func TestCompactHTML_NotHTMLPassesThrough(t *testing.T) {
+	cases := []string{
+		"plain text with <script>console.log()</script> as a literal",
+		"# Markdown heading\n\n```html\n<script>x</script>\n```\n",
+		"",
+		"{\"key\":\"value\"}",
+		"<div>div without doctype is not detected as HTML</div>",
+	}
+	for _, in := range cases {
+		t.Run(in, func(t *testing.T) {
+			if got := CompactHTML(in); got != in {
+				t.Errorf("non-HTML input must pass through; got %q", got)
+			}
+		})
+	}
+}
+
+// TestCompactHTML_CaseInsensitive: matches uppercase tags too. Some
+// generated/legacy HTML still uses <SCRIPT> or <Style>; stripping must
+// be case-blind.
+func TestCompactHTML_CaseInsensitive(t *testing.T) {
+	in := `<!DOCTYPE HTML><html><HEAD><STYLE>body{}</STYLE></HEAD><body>kept</body></html>`
+	out := CompactHTML(in)
+	for _, banned := range []string{"STYLE", "<HEAD>"} {
+		if strings.Contains(out, banned) {
+			t.Errorf("case-insensitive strip missed %q: %s", banned, out)
+		}
+	}
+	if !strings.Contains(out, "kept") {
+		t.Errorf("body content lost: %s", out)
+	}
+}
+
+// TestCompactHTML_DoctypeOnlyMustWork: real pages often use `<!doctype html>`
+// (lowercase) without the `<html>` tag immediately after. Detection must
+// hit on doctype alone.
+func TestCompactHTML_DoctypeOnlyMustWork(t *testing.T) {
+	in := `<!doctype html>
+<head><script>x()</script></head>
+<body>content</body>`
+	out := CompactHTML(in)
+	if strings.Contains(out, "x()") {
+		t.Errorf("script not stripped under doctype-only detection: %s", out)
+	}
+}
+
+// TestCompactHTML_NormalizeOutputIntegration: pipeline-level wiring check.
+// Without this, a future refactor that re-orders NormalizeOutput could
+// silently disable HTML compaction.
+func TestCompactHTML_NormalizeOutputIntegration(t *testing.T) {
+	in := `<!doctype html><html><head><style>x{}</style></head><body><p>kept</p></body></html>`
+	out := NormalizeOutput(in)
+	if strings.Contains(out, "x{}") {
+		t.Errorf("NormalizeOutput must invoke CompactHTML: %s", out)
+	}
+}

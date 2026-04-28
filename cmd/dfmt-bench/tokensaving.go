@@ -218,7 +218,79 @@ func buildScenarios() []tokenSavingScenario {
 		{name: "kubectl get 20 pods -o json", body: kubectl.String(), intent: ""},
 		{name: "aws ec2 describe 15 instances", body: awsEC2.String(), intent: ""},
 		{name: "kubectl ... | jq -c .items[] (NDJSON)", body: ndjson.String(), intent: ""},
+		{name: "fetched doc page (HTML boilerplate)", body: htmlDocPage(), intent: ""},
 	}
+}
+
+// htmlDocPage builds a representative documentation/marketing page shape:
+// most of the wire is chrome (analytics, css, nav, footer, sidebar) with
+// a small content island in <main>. Exercises ADR-0008's lite path.
+func htmlDocPage() string {
+	var b strings.Builder
+	b.WriteString(`<!DOCTYPE html>
+<html lang="en">
+<head>
+<title>API Reference - Foo Library</title>
+<meta charset="utf-8">
+<link rel="stylesheet" href="/static/main.css">
+<style>
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;margin:0;padding:0}
+.nav{background:#fff;border-bottom:1px solid #e0e0e0;padding:1rem 2rem}
+.sidebar{width:280px;float:left;background:#f5f5f5;padding:2rem;min-height:100vh}
+.content{margin-left:280px;padding:2rem}
+.footer{background:#222;color:#aaa;padding:3rem 2rem;font-size:0.9rem}
+`)
+	for i := 0; i < 30; i++ {
+		b.WriteString(`.cls-` + fmt.Sprint(i) + `{display:block;margin:0.5rem 0;color:#333}`)
+	}
+	b.WriteString(`</style>
+<script>
+(function(w,d,s,l,i){w[l]=w[l]||[];w[l].push({'gtm.start':new Date().getTime(),event:'gtm.js'});
+var f=d.getElementsByTagName(s)[0],j=d.createElement(s),dl=l!='dataLayer'?'&l='+l:'';
+j.async=true;j.src='https://www.googletagmanager.com/gtm.js?id='+i+dl;f.parentNode.insertBefore(j,f);
+})(window,document,'script','dataLayer','GTM-XXXXXX');
+</script>
+</head>
+<body>
+<nav class="nav">
+<ul><li><a href="/">Home</a></li><li><a href="/docs">Docs</a></li><li><a href="/api">API</a></li><li><a href="/blog">Blog</a></li><li><a href="/about">About</a></li></ul>
+</nav>
+<aside class="sidebar">
+<h3>API Reference</h3>
+<ul>
+`)
+	for i := 0; i < 25; i++ {
+		b.WriteString(`<li><a href="/api/method-` + fmt.Sprint(i) + `">method ` + fmt.Sprint(i) + `</a></li>`)
+	}
+	b.WriteString(`</ul>
+</aside>
+<main class="content">
+<h1>parseConfig(input, options)</h1>
+<p>Parses a configuration string and returns a structured Config object. Throws <code>ParseError</code> on malformed input.</p>
+<h2>Parameters</h2>
+<ul>
+<li><code>input</code> (string) - The configuration source.</li>
+<li><code>options</code> (object) - Parser options. <code>strict</code> (boolean, default true) enables strict-mode validation.</li>
+</ul>
+<h2>Returns</h2>
+<p>A <code>Config</code> object on success. Throws <code>ParseError</code> with a <code>line</code> and <code>column</code> property on failure.</p>
+<h2>Example</h2>
+<pre><code>const cfg = parseConfig(src, { strict: false });
+console.log(cfg.section('database').get('host'));</code></pre>
+</main>
+<footer class="footer">
+<div class="footer-cols">
+<div><h4>Product</h4><ul><li>Features</li><li>Pricing</li><li>Roadmap</li></ul></div>
+<div><h4>Company</h4><ul><li>About</li><li>Blog</li><li>Careers</li></ul></div>
+<div><h4>Legal</h4><ul><li>Privacy</li><li>Terms</li><li>Cookies</li></ul></div>
+</div>
+<p>&copy; 2024 Foo Library. All rights reserved.</p>
+</footer>
+<script>window.analytics=window.analytics||[];analytics.track('pageview');</script>
+<script async src="https://cdn.example.com/widget.js"></script>
+</body>
+</html>`)
+	return b.String()
 }
 
 // legacyWireBytes simulates the pre-overhaul pipeline:

@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"encoding/json"
+	"regexp"
 	"strings"
 )
 
@@ -32,6 +33,59 @@ var structuredNoiseFields = map[string]struct{}{
 // them by hand would miss the next one Github adds. Suffix matching catches
 // the family.
 const structuredNoiseSuffix = "_url"
+
+// htmlBoilerplateBlocks matches HTML elements whose contents are nearly
+// always wire bloat for an LLM consumer reading documentation pages: inline
+// scripts/styles, HTML comments, nav, footer, aside, and the entire head.
+// The (?is) flags make `.` match newlines and the match case-insensitive
+// so `<SCRIPT>` and `<Footer>` are caught alongside the usual lowercase.
+// Non-greedy bodies (`.*?`) prevent runaway matches when a page has multiple
+// <script> blocks. The list is conservative: <header> and <main> stay in
+// because some sites put the actual content in <header>/<main>; the cost
+// of a false positive on a content-bearing element is much higher than
+// the cost of leaving boilerplate that occupies <body> directly.
+//
+// This is the ADR-0008 "lite" path. A full tokenizer-driven HTML→markdown
+// converter is still on the roadmap; until it lands, regex strip is the
+// pragmatic 80-percent solution. See ADR-0008's implementation note.
+var htmlBoilerplateBlocks = regexp.MustCompile(
+	`(?is)<script[^>]*>.*?</script>|` +
+		`<style[^>]*>.*?</style>|` +
+		`<!--.*?-->|` +
+		`<nav[^>]*>.*?</nav>|` +
+		`<footer[^>]*>.*?</footer>|` +
+		`<aside[^>]*>.*?</aside>|` +
+		`<head[^>]*>.*?</head>|` +
+		`<noscript[^>]*>.*?</noscript>|` +
+		`<svg[^>]*>.*?</svg>`,
+)
+
+// htmlDetectPrefix matches a leading `<!doctype html` or `<html` (case-
+// insensitive). We require an HTML-shaped prefix rather than a body scan
+// because random text containing a `<script>` literal (e.g. a code review
+// comment) shouldn't trigger the strip.
+var htmlDetectPrefix = regexp.MustCompile(`(?is)^\s*(?:<!doctype\s+html|<html\b)`)
+
+// CompactHTML removes script/style/comment/nav/footer/aside/head/noscript/svg
+// blocks from HTML-shaped input. Detection is prefix-based — a body must
+// start with a doctype or `<html>` tag — so plain text containing the word
+// "<script>" stays untouched. Returns input unchanged when:
+//   - input is not HTML-shaped,
+//   - the stripped form is not strictly smaller than the input (cap
+//     regression guard, same contract as CompactStructured).
+func CompactHTML(s string) string {
+	if s == "" {
+		return s
+	}
+	if !htmlDetectPrefix.MatchString(s) {
+		return s
+	}
+	out := htmlBoilerplateBlocks.ReplaceAllString(s, "")
+	if len(out) >= len(s) {
+		return s
+	}
+	return out
+}
 
 // CompactStructured detects JSON-shaped input and removes noise fields
 // recursively. Two shapes are handled:

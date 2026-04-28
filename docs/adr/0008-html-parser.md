@@ -111,3 +111,9 @@ Revisit if:
 - Users report significant loss of meaning in markdown conversions for real pages they rely on. Mitigation: grow the supported element set, or — if widespread — reconsider `x/net/html`.
 - We gain another concrete need for something in `x/net` (http2 support, websocket client). At that point, adding `x/net` as a permitted prefix becomes a separate decision we evaluate on its own merits, and may retroactively justify switching HTML parsing over.
 - The tokenizer accumulates enough bug reports that its maintenance cost exceeds what `x/net/html` would have cost. Unlikely given the narrow scope, but possible.
+
+## Implementation Status (Updated 2026-04-28)
+
+- **Lite path landed:** `CompactHTML` in `internal/sandbox/structured.go` strips `<script>`, `<style>`, `<!--…-->`, `<nav>`, `<footer>`, `<aside>`, `<head>`, `<noscript>`, and `<svg>` blocks via case-insensitive non-greedy regex. Detection is prefix-gated by a leading `<!doctype html>` or `<html>` so plain text containing `<script>` literals stays untouched. `NormalizeOutput` runs it after `CompactStructured`. Bench scenario `fetched doc page (HTML boilerplate)` lands at 72.2% wire savings (5042 raw → 1438 modern).
+- **Full tokenizer + markdown walker still deferred:** the original ADR scope (~550 lines: tokenizer, walker, golden-corpus tests, entity map) lands in a future PR. The lite path is the 80-percent solution; the full converter improves index quality for `dfmt_search` over fetched pages, which is the deferred win.
+- Caller/wire impact: `dfmt.fetch` responses for documentation pages drop ~70% before reaching the policy filter, so the structured response budgets (matches, vocabulary) operate on de-noised content. No API surface change.

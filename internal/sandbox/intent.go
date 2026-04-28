@@ -443,6 +443,13 @@ func NormalizeOutput(s string) string {
 	// CompactStructured is a no-op on non-JSON, partial JSON, or NDJSON,
 	// so it's safe to run unconditionally.
 	s = CompactStructured(s)
+	// HTML lite-compaction (ADR-0008): when the body looks like an HTML
+	// document, strip script/style/comment/nav/footer/aside/head boiler-
+	// plate. CompactHTML is detection-gated by the leading `<!doctype>`
+	// / `<html>` so plain text containing `<script>` literals stays
+	// untouched. The full tokenizer-driven HTML→markdown converter is
+	// still deferred; this is the 80-percent solution.
+	s = CompactHTML(s)
 	return s
 }
 
