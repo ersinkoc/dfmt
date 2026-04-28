@@ -4,11 +4,22 @@ import (
 	"encoding/json"
 	"encoding/xml"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/ersinkoc/dfmt/internal/core"
 )
+
+// internThreshold is the minimum number of times a path must appear before
+// it earns a reference slot. Below this, interning costs more than it
+// saves: a `[r17]` token is ~5 bytes plus the table entry (`r17=`/`path`/`,`
+// is ~len(path)+5 bytes), so the breakeven is roughly when the verbatim
+// emission exceeds (5 * count + len(path) + 5). For paths around 20 chars
+// the math says count >= 2 already wins, but 3 is the conservative pick:
+// it eliminates regressions on short paths where the per-event overhead
+// catches up to the table overhead.
+const internThreshold = 3
 
 // MarkdownRenderer renders a snapshot as markdown.
 type MarkdownRenderer struct{}
@@ -31,6 +42,17 @@ func (r *MarkdownRenderer) Render(snap *Snapshot) string {
 		return b.String()
 	}
 
+	// Build the path-reference table before rendering events. Paths that
+	// appear >= internThreshold times get a short `[rNN]` token; the table
+	// printed at the top maps tokens back to the full path. Snapshots with
+	// long path lists (file watcher firing on a hot directory across an
+	// hour-long session) shrink dramatically; small snapshots see no
+	// change because nothing crosses the threshold.
+	refs := buildPathRefs(snap.Events)
+	if len(refs) > 0 {
+		writeRefTable(&b, refs)
+	}
+
 	// Group by type
 	byType := make(map[core.EventType][]core.Event)
 	for _, e := range snap.Events {
@@ -44,7 +66,7 @@ func (r *MarkdownRenderer) Render(snap *Snapshot) string {
 	if evts, ok := byType[core.EvtDecision]; ok && len(evts) > 0 {
 		b.WriteString("### Decisions\n\n")
 		for _, e := range evts {
-			r.renderEvent(&b, e)
+			r.renderEvent(&b, e, refs)
 		}
 		b.WriteString("\n")
 	}
@@ -53,7 +75,7 @@ func (r *MarkdownRenderer) Render(snap *Snapshot) string {
 	if evts, ok := byType[core.EvtTaskCreate]; ok && len(evts) > 0 {
 		b.WriteString("### Tasks\n\n")
 		for _, e := range evts {
-			r.renderEvent(&b, e)
+			r.renderEvent(&b, e, refs)
 		}
 		b.WriteString("\n")
 	}
@@ -62,7 +84,7 @@ func (r *MarkdownRenderer) Render(snap *Snapshot) string {
 	if evts, ok := byType[core.EvtFileEdit]; ok && len(evts) > 0 {
 		b.WriteString("### File Edits\n\n")
 		for _, e := range evts {
-			r.renderEvent(&b, e)
+			r.renderEvent(&b, e, refs)
 		}
 		b.WriteString("\n")
 	}
@@ -74,7 +96,7 @@ func (r *MarkdownRenderer) Render(snap *Snapshot) string {
 			title = strings.ToUpper(string(title[0])) + title[1:]
 			fmt.Fprintf(&b, "### %s\n\n", title)
 			for _, e := range evts {
-				r.renderEvent(&b, e)
+				r.renderEvent(&b, e, refs)
 			}
 			b.WriteString("\n")
 		}
@@ -86,7 +108,7 @@ func (r *MarkdownRenderer) Render(snap *Snapshot) string {
 		if typ != core.EvtDecision && typ != core.EvtTaskCreate &&
 			typ != core.EvtFileEdit && !strings.HasPrefix(string(typ), "git.") {
 			for _, e := range evts {
-				r.renderEvent(&b, e)
+				r.renderEvent(&b, e, refs)
 			}
 		}
 	}
@@ -94,7 +116,7 @@ func (r *MarkdownRenderer) Render(snap *Snapshot) string {
 	return b.String()
 }
 
-func (r *MarkdownRenderer) renderEvent(b *strings.Builder, e core.Event) {
+func (r *MarkdownRenderer) renderEvent(b *strings.Builder, e core.Event, refs map[string]string) {
 	fmt.Fprintf(b, "- **[%s]** %s", e.Priority, e.Type)
 	if e.Actor != "" {
 		fmt.Fprintf(b, " by %s", e.Actor)
@@ -105,12 +127,64 @@ func (r *MarkdownRenderer) renderEvent(b *strings.Builder, e core.Event) {
 			fmt.Fprintf(b, "  - %s\n", msg)
 		}
 		if path, ok := e.Data["path"].(string); ok {
-			fmt.Fprintf(b, "  - `%s`\n", path)
+			if tok, refed := refs[path]; refed {
+				fmt.Fprintf(b, "  - [%s]\n", tok)
+			} else {
+				fmt.Fprintf(b, "  - `%s`\n", path)
+			}
 		}
 	}
 	if len(e.Tags) > 0 {
 		fmt.Fprintf(b, "  - Tags: %s\n", strings.Join(e.Tags, ", "))
 	}
+}
+
+// buildPathRefs scans the event list, counts path occurrences, and returns
+// a map from path -> short reference token (`r0`, `r1`, ...) for those
+// appearing at or above internThreshold. Token assignment is alphabetical
+// by path so the same input always produces the same output — important
+// for diffability of snapshots across runs.
+func buildPathRefs(events []core.Event) map[string]string {
+	freq := make(map[string]int)
+	for _, e := range events {
+		if e.Data == nil {
+			continue
+		}
+		if path, ok := e.Data["path"].(string); ok && path != "" {
+			freq[path]++
+		}
+	}
+	var hot []string
+	for p, c := range freq {
+		if c >= internThreshold {
+			hot = append(hot, p)
+		}
+	}
+	if len(hot) == 0 {
+		return nil
+	}
+	sort.Strings(hot)
+	out := make(map[string]string, len(hot))
+	for i, p := range hot {
+		out[p] = fmt.Sprintf("r%d", i)
+	}
+	return out
+}
+
+// writeRefTable emits the path-reference legend at the top of the snapshot.
+// Format: a single line so the table doesn't bloat short snapshots, with
+// entries comma-separated. Agents that see a `[r17]` token in an event
+// scan up to find its expansion. The table sits between the snapshot
+// header and the Events section so it's the first thing parsed.
+func writeRefTable(b *strings.Builder, refs map[string]string) {
+	tokens := make([]string, 0, len(refs))
+	for p, t := range refs {
+		tokens = append(tokens, fmt.Sprintf("%s=`%s`", t, p))
+	}
+	sort.Strings(tokens)
+	b.WriteString("**Refs:** ")
+	b.WriteString(strings.Join(tokens, ", "))
+	b.WriteString("\n\n")
 }
 
 // JSONRenderer renders a snapshot as JSON.

@@ -56,6 +56,18 @@ type Handlers struct {
 	// dedup window pays for itself.
 	dedupHits atomic.Int64
 
+	// sentMu guards sentCache + sentOrder. Cross-call wire dedup tracks
+	// which content_ids have already been emitted to *the agent* (vs the
+	// storage-side dedupCache which tracks what's already in the chunk
+	// store). When a tool response would carry a content_id seen here
+	// before, the heavy fields (Stdout/Body/Summary/Matches/Vocabulary)
+	// are dropped and the agent gets a thin "(unchanged; same content_id)"
+	// acknowledgement. See ADR-0009. The agent can opt out with
+	// Return:"raw" when it needs the bytes again.
+	sentMu    sync.Mutex
+	sentCache map[string]time.Time // content_id -> expiresAt
+	sentOrder []string             // FIFO eviction queue, capped at sentCap
+
 	// statsCache memoises the result of Stats() across the dashboard's
 	// poll interval. Without it every /api/stats hit re-streams the full
 	// journal — at 10 MiB rotated max + active that's hundreds of ms per
@@ -94,6 +106,23 @@ const dedupTTL = 30 * time.Second
 // arbitrary live ones — the cache is a best-effort optimization, missing a
 // dedup never breaks correctness.
 const dedupCap = 64
+
+// sentTTL is the window during which a content_id we've already emitted to
+// the agent is considered "still in the agent's context." 10 minutes is
+// 20× dedupTTL because wire dedup wants to remember across an entire agent
+// turn, not just a short retry burst. ADR-0009.
+const sentTTL = 10 * time.Minute
+
+// sentCap caps the wire-dedup cache. 256 entries is 4× dedupCap because the
+// wire layer needs a longer memory than the storage layer — the storage
+// cache evicts on every fresh stash; the wire cache sees a cache hit only
+// when the agent re-reads bytes it has already seen.
+const sentCap = 256
+
+// sentUnchangedSummary is the sentinel summary text the agent sees when wire
+// dedup short-circuits a response. Constant so callers (and tests) can pin
+// equality without depending on the exact phrasing leaking elsewhere.
+const sentUnchangedSummary = "(unchanged; same content_id)"
 
 // errNoProject is returned by memory-tool handlers (Remember, Recall, Stats,
 // Stream) when the MCP server is running in degraded mode — i.e. dfmt mcp
@@ -308,6 +337,55 @@ func (h *Handlers) dedupRecord(key, contentID string) {
 		}
 	}
 	h.dedupCache[key] = dedupEntry{contentID: contentID, expiresAt: now.Add(dedupTTL)}
+}
+
+// seenBefore reports whether the agent has already received this content_id
+// within sentTTL. Empty IDs are never "seen" — callers that pass "" have no
+// content to dedupe and short-circuit elsewhere. Expired entries are removed
+// lazily so the lookup path stays O(1) on the common (cache-miss) case.
+func (h *Handlers) seenBefore(contentID string) bool {
+	if contentID == "" {
+		return false
+	}
+	h.sentMu.Lock()
+	defer h.sentMu.Unlock()
+	if h.sentCache == nil {
+		return false
+	}
+	expires, ok := h.sentCache[contentID]
+	if !ok {
+		return false
+	}
+	if time.Now().After(expires) {
+		delete(h.sentCache, contentID)
+		return false
+	}
+	return true
+}
+
+// markSent records that the agent has received this content_id, with expiry
+// sentTTL into the future. FIFO eviction: when the cache is full we drop the
+// oldest entry (front of sentOrder) regardless of TTL. Re-adding an existing
+// ID refreshes its expiry but does not re-queue it — preventing the same ID
+// from occupying multiple slots in the FIFO under a busy retry loop.
+func (h *Handlers) markSent(contentID string) {
+	if contentID == "" {
+		return
+	}
+	h.sentMu.Lock()
+	defer h.sentMu.Unlock()
+	if h.sentCache == nil {
+		h.sentCache = make(map[string]time.Time, sentCap)
+	}
+	if _, exists := h.sentCache[contentID]; !exists {
+		if len(h.sentOrder) >= sentCap {
+			oldest := h.sentOrder[0]
+			h.sentOrder = h.sentOrder[1:]
+			delete(h.sentCache, oldest)
+		}
+		h.sentOrder = append(h.sentOrder, contentID)
+	}
+	h.sentCache[contentID] = time.Now().Add(sentTTL)
 }
 
 // redactString returns s with sensitive data scrubbed, or s unchanged if no
@@ -1075,6 +1153,30 @@ func (h *Handlers) Exec(ctx context.Context, params ExecParams) (*ExecResponse, 
 	rawStash := h.redactString(resp.RawStdout) + stderr
 	contentID := h.stashContent("exec-stdout", "sandbox.exec", params.Intent, rawStash)
 
+	// Wire dedup (ADR-0009): if the same content_id was emitted earlier in
+	// this daemon's lifetime, the agent already has these bytes. Strip the
+	// payload to a thin acknowledgement and let the agent opt back in via
+	// Return:"raw" when it actually needs them again. We log the invocation
+	// at full byte size before short-circuiting so dashboard stats reflect
+	// the work that ran.
+	if params.Return != "raw" && h.seenBefore(contentID) {
+		h.logEvent(ctx, "tool.exec", params.Intent, map[string]any{
+			"code":                params.Code,
+			"lang":                params.Lang,
+			"exit":                resp.Exit,
+			"duration":            resp.DurationMs,
+			core.KeyRawBytes:      len(rawStash),
+			core.KeyReturnedBytes: len(sentUnchangedSummary),
+		})
+		return &ExecResponse{
+			Exit:       resp.Exit,
+			Summary:    sentUnchangedSummary,
+			DurationMs: resp.DurationMs,
+			TimedOut:   resp.TimedOut,
+			ContentID:  contentID,
+		}, nil
+	}
+
 	stdout := h.redactString(resp.Stdout)
 	summary := h.redactString(resp.Summary)
 	matches := h.redactMatches(resp.Matches)
@@ -1096,6 +1198,7 @@ func (h *Handlers) Exec(ctx context.Context, params ExecParams) (*ExecResponse, 
 		core.KeyReturnedBytes: returnedBytes,
 	})
 
+	h.markSent(contentID)
 	return &ExecResponse{
 		Exit:       resp.Exit,
 		Stdout:     stdout,
@@ -1168,6 +1271,24 @@ func (h *Handlers) Read(ctx context.Context, params ReadParams) (*ReadResponse, 
 	rawStash := h.redactString(resp.RawContent)
 	contentID := h.stashContent("file-read", params.Path, params.Intent, rawStash)
 
+	// Wire dedup short-circuit. See ADR-0009 and the matching block in Exec
+	// for the full rationale.
+	if params.Return != "raw" && h.seenBefore(contentID) {
+		h.logEvent(ctx, "tool.read", params.Intent, map[string]any{
+			"path":                params.Path,
+			"read_bytes":          resp.ReadBytes,
+			"size":                resp.Size,
+			core.KeyRawBytes:      len(rawStash),
+			core.KeyReturnedBytes: len(sentUnchangedSummary),
+		})
+		return &ReadResponse{
+			Summary:   sentUnchangedSummary,
+			Size:      resp.Size,
+			ReadBytes: resp.ReadBytes,
+			ContentID: contentID,
+		}, nil
+	}
+
 	redContent := h.redactString(resp.Content)
 	summary := h.redactString(resp.Summary)
 	matches := h.redactMatches(resp.Matches)
@@ -1186,6 +1307,7 @@ func (h *Handlers) Read(ctx context.Context, params ReadParams) (*ReadResponse, 
 		core.KeyReturnedBytes: returnedBytes,
 	})
 
+	h.markSent(contentID)
 	return &ReadResponse{
 		Content:   redContent,
 		Summary:   summary,
@@ -1282,6 +1404,26 @@ func (h *Handlers) Fetch(ctx context.Context, params FetchParams) (*FetchRespons
 	rawStash := h.redactString(resp.RawBody)
 	contentID := h.stashContent("fetch", params.URL, params.Intent, rawStash)
 
+	// Wire dedup short-circuit. See ADR-0009. Status + Headers are kept
+	// because they carry HTTP-level metadata (e.g. caching headers, redirect
+	// chains) the agent may still want to reason about even when the body
+	// hasn't changed.
+	if params.Return != "raw" && h.seenBefore(contentID) {
+		h.logEvent(ctx, "tool.fetch", params.Intent, map[string]any{
+			"url":                 params.URL,
+			"status":              resp.Status,
+			core.KeyRawBytes:      len(rawStash),
+			core.KeyReturnedBytes: len(sentUnchangedSummary),
+		})
+		return &FetchResponse{
+			Status:    resp.Status,
+			Headers:   resp.Headers,
+			Summary:   sentUnchangedSummary,
+			TimedOut:  resp.TimedOut,
+			ContentID: contentID,
+		}, nil
+	}
+
 	redBody := h.redactString(resp.Body)
 	summary := h.redactString(resp.Summary)
 	matches := h.redactMatches(resp.Matches)
@@ -1299,6 +1441,7 @@ func (h *Handlers) Fetch(ctx context.Context, params FetchParams) (*FetchRespons
 		core.KeyReturnedBytes: returnedBytes,
 	})
 
+	h.markSent(contentID)
 	return &FetchResponse{
 		Status:     resp.Status,
 		Headers:    resp.Headers,

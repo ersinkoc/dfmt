@@ -8,6 +8,8 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/ersinkoc/dfmt/internal/core"
 )
 
 // TailBytes is the size of the tail snippet we keep on the auto path when no
@@ -34,7 +36,10 @@ var ansiCSI = regexp.MustCompile(`\x1b\[[0-9;?]*[A-Za-z]`)
 // the rest of the output.
 var ansiOSC = regexp.MustCompile(`\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)`)
 
-// englishStopwords for intent parsing.
+// englishStopwords for intent parsing. Combined with core.TurkishStopwords
+// via isStopword so vocabulary/keyword extraction stays clean on multilingual
+// content — without the merge, Turkish "ile"/"için"/"olan" would dominate
+// the vocabulary list for any Turkish input.
 var englishStopwords = map[string]struct{}{
 	"a": {}, "an": {}, "and": {}, "are": {}, "as": {}, "at": {}, "be": {}, "by": {},
 	"for": {}, "from": {}, "has": {}, "he": {}, "in": {}, "is": {}, "it": {},
@@ -45,6 +50,20 @@ var englishStopwords = map[string]struct{}{
 	"your": {}, "have": {}, "had": {}, "do": {}, "does": {}, "did": {}, "can": {},
 	"could": {}, "would": {}, "should": {}, "may": {}, "might": {}, "must": {},
 	"shall": {}, "am": {}, "been": {}, "being": {},
+}
+
+// isStopword folds the English set above with core.TurkishStopwords so a
+// single lookup covers both languages. The merge is at-call-site rather than
+// at-init-time to avoid a one-time copy and keep the two source tables
+// independently maintainable.
+func isStopword(tok string) bool {
+	if _, ok := englishStopwords[tok]; ok {
+		return true
+	}
+	if _, ok := core.TurkishStopwords[tok]; ok {
+		return true
+	}
+	return false
 }
 
 // ExtractKeywords parses an intent string into searchable keywords.
@@ -62,7 +81,7 @@ func ExtractKeywords(intent string) []string {
 		} else {
 			if current.Len() >= 2 {
 				tok := current.String()
-				if _, ok := englishStopwords[tok]; !ok {
+				if !isStopword(tok) {
 					tokens = append(tokens, tok)
 				}
 			}
@@ -72,7 +91,7 @@ func ExtractKeywords(intent string) []string {
 
 	if current.Len() >= 2 {
 		tok := current.String()
-		if _, ok := englishStopwords[tok]; !ok {
+		if !isStopword(tok) {
 			tokens = append(tokens, tok)
 		}
 	}
@@ -114,8 +133,13 @@ func MatchContent(content string, keywords []string, maxMatches int) []ContentMa
 
 		score := scoreLine(line, keywords)
 		if score > 0 {
+			// Long log lines (200+ chars) are penalised in scoring but were
+			// still serialised in full — paying ~250 bytes per match for
+			// content the agent rarely needs past the first ~120 chars.
+			// truncate is rune-aligned, so non-ASCII (Turkish, CJK) lines
+			// don't get cut mid-rune.
 			excerpts = append(excerpts, Excerpt{
-				Text:  line,
+				Text:  truncate(line, 120),
 				Score: score,
 				Line:  i + 1,
 			})
@@ -194,20 +218,20 @@ func GenerateSummary(content string, keywords []string) string {
 		return "(empty)"
 	}
 
+	// Summary historically re-listed the top matches inline. The same lines
+	// also ship in the response's Matches[] field, so the wire was paying
+	// for them twice — and the inline listing was always the smaller, less
+	// useful copy (truncated to 80 chars). Now Summary just states the
+	// counts; the agent reads Matches[] for the actual lines.
 	if len(keywords) > 0 {
 		matches := MatchContent(content, keywords, 5)
 		if len(matches) > 0 {
-			var parts []string
-			for _, m := range matches {
-				parts = append(parts, fmt.Sprintf("L%d: %s", m.Line, truncate(m.Text, 80)))
-			}
-			return fmt.Sprintf("Found %d matching lines out of %d total. Top matches:\n%s",
-				len(matches), total, strings.Join(parts, "\n"))
+			return fmt.Sprintf("%d lines, %d matched", total, len(matches))
 		}
-		return fmt.Sprintf("No matches found for intent. Total lines: %d", total)
+		return fmt.Sprintf("%d lines, no matches for intent", total)
 	}
 
-	return fmt.Sprintf("Total lines: %d", total)
+	return fmt.Sprintf("%d lines", total)
 }
 
 // ExtractVocabulary returns distinctive terms from content. maxTerms caps the
@@ -227,7 +251,7 @@ func ExtractVocabulary(content string, maxTerms int) []string {
 		} else {
 			if current.Len() >= 3 && current.Len() <= 32 {
 				tok := current.String()
-				if _, ok := englishStopwords[tok]; !ok {
+				if !isStopword(tok) {
 					freq[tok]++
 				}
 			}
@@ -237,7 +261,7 @@ func ExtractVocabulary(content string, maxTerms int) []string {
 
 	if current.Len() >= 3 && current.Len() <= 32 {
 		tok := current.String()
-		if _, ok := englishStopwords[tok]; !ok {
+		if !isStopword(tok) {
 			freq[tok]++
 		}
 	}
@@ -323,14 +347,23 @@ func ApplyReturnPolicy(content, intent, returnMode string) FilteredOutput {
 		if len(keywords) > 0 {
 			out.Matches = MatchContent(content, keywords, 10)
 		}
-		out.Vocabulary = ExtractVocabulary(content, 20)
+		// Gate vocabulary when matches already cover >= half the budget.
+		// At that point vocab tokens are mostly the same words the matches
+		// surface, paying wire bytes for redundant signal. The threshold
+		// (matchN/2) leaves room for vocab when matches are sparse and the
+		// agent still needs a navigation hint.
+		if len(out.Matches) < 5 {
+			out.Vocabulary = ExtractVocabulary(content, 20)
+		}
 		return out
 	case "summary":
 		out.Summary = GenerateSummary(content, keywords)
 		if len(keywords) > 0 {
 			out.Matches = MatchContent(content, keywords, 10)
 		}
-		out.Vocabulary = ExtractVocabulary(content, 20)
+		if len(out.Matches) < 5 {
+			out.Vocabulary = ExtractVocabulary(content, 20)
+		}
 		return out
 	default: // "auto" or ""
 		// Inline-tier: body already carries everything. Adding summary +
@@ -361,7 +394,11 @@ func ApplyReturnPolicy(content, intent, returnMode string) FilteredOutput {
 		// matches; the matchN budget caps the combined output.
 		signals := extractSignalLines(content)
 		out.Matches = mergeSignalsIntoMatches(signals, matches, matchN)
-		out.Vocabulary = ExtractVocabulary(content, vocabN)
+		// Same gate as search/summary: when matches fill at least half the
+		// budget, vocab is duplicating signal the agent will already see.
+		if len(out.Matches) < matchN/2 {
+			out.Vocabulary = ExtractVocabulary(content, vocabN)
+		}
 		// Tail-bias: matches+summary+vocab miss the most common "useful
 		// information lives at the end" pattern (go test, npm build, CI
 		// run). Without this, the agent had to follow up with return=raw
@@ -400,6 +437,12 @@ func NormalizeOutput(s string) string {
 	s = stripANSI(s)
 	s = collapseCarriageReturns(s)
 	s = runLengthEncode(s)
+	// Structured-output compaction (ADR-0010): when the body is a valid
+	// JSON object/array — typical of `gh api`, `kubectl get -o json`,
+	// `aws ... --output json` — drop hypermedia/timestamp noise fields.
+	// CompactStructured is a no-op on non-JSON, partial JSON, or NDJSON,
+	// so it's safe to run unconditionally.
+	s = CompactStructured(s)
 	return s
 }
 

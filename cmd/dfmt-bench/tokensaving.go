@@ -94,6 +94,38 @@ func buildScenarios() []tokenSavingScenario {
 
 	smallFile := "package main\n\nimport \"fmt\"\n\nfunc main() {\n\tfmt.Println(\"hello\")\n}\n"
 
+	// gh api issue list — exercises ADR-0010's structured-output compaction.
+	// Each issue carries the canonical Github noise fields (URL family,
+	// timestamps, etag, _links) that the compactor strips before the policy
+	// filter sees the body.
+	var ghIssues strings.Builder
+	ghIssues.WriteString("[")
+	for i := 1; i <= 50; i++ {
+		if i > 1 {
+			ghIssues.WriteString(",")
+		}
+		ghIssues.WriteString(fmt.Sprintf(`{`+
+			`"id":%d,`+
+			`"node_id":"MDU6SXNzdWUx%d",`+
+			`"url":"https://api.github.com/repos/foo/bar/issues/%d",`+
+			`"html_url":"https://github.com/foo/bar/issues/%d",`+
+			`"events_url":"https://api.github.com/repos/foo/bar/issues/%d/events",`+
+			`"labels_url":"https://api.github.com/repos/foo/bar/issues/%d/labels{/name}",`+
+			`"comments_url":"https://api.github.com/repos/foo/bar/issues/%d/comments",`+
+			`"repository_url":"https://api.github.com/repos/foo/bar",`+
+			`"number":%d,`+
+			`"title":"Bug %d in parser",`+
+			`"state":"open",`+
+			`"body":"The parser crashes on input %d.",`+
+			`"created_at":"2024-01-15T10:00:00Z",`+
+			`"updated_at":"2024-02-20T14:30:00Z",`+
+			`"etag":"W/\"abc%d\"",`+
+			`"_links":{"self":{"href":"..."}}`+
+			`}`,
+			i, i, i, i, i, i, i, i, i, i, i))
+	}
+	ghIssues.WriteString("]")
+
 	return []tokenSavingScenario{
 		{name: "small file read (inline tier)", body: smallFile, intent: "main function"},
 		{name: "npm install with progress bar", body: npmInstall.String(), intent: ""},
@@ -101,6 +133,7 @@ func buildScenarios() []tokenSavingScenario {
 		{name: "go test 200 PASS + 1 FAIL + panic", body: goTest.String(), intent: ""},
 		{name: "pytest 200 PASS + 1 FAIL + traceback", body: pytest.String(), intent: ""},
 		{name: "cargo build 250 compile + 2 errors", body: cargo.String(), intent: ""},
+		{name: "gh api 50 issues (structured noise)", body: ghIssues.String(), intent: ""},
 	}
 }
 

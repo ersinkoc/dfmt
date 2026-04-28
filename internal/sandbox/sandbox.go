@@ -97,12 +97,17 @@ type FetchResp struct {
 	TimedOut   bool           // True if fetch timed out
 }
 
-// ContentMatch represents an intent-matched excerpt.
+// ContentMatch represents an intent-matched excerpt. Score is intentionally
+// dropped from the wire — it drives in-memory ranking but agents never read
+// it back, so paying the bytes per match is pure waste. Field names are
+// lowercased via JSON tags for the same reason: every match line that crosses
+// the wire as `"Text"`/`"Source"`/`"Line"` instead of `"text"`/`"source"`/`"line"`
+// burns ~12 bytes that the model has to tokenize.
 type ContentMatch struct {
-	Text   string  // Matched text excerpt
-	Score  float64 // Relevance score
-	Source string  // Source file or URL
-	Line   int     // Line number (for files)
+	Text   string  `json:"text"`
+	Score  float64 `json:"-"`
+	Source string  `json:"source,omitempty"`
+	Line   int     `json:"line,omitempty"`
 }
 
 // GlobReq is a request to glob files.
