@@ -71,7 +71,7 @@ Output size cap: if the *output* of compaction is larger than the input (patholo
 
 **False positives — non-JSON output that starts with `{` or `[`.** Pretty-printed Python dict reprs, Lisp output, certain `tree`(1) emoji modes. `json.Valid` weeds these out. The cost of the check is the parse pass, but the alternative — eyeballing for a more rigorous detector — is the same parse pass dressed up.
 
-**NDJSON (newline-delimited JSON, e.g. `kubectl get pods -o json | jq -c '.items[]'`).** First-line check fails because the document has multiple roots. NDJSON falls through to no-op. A future ADR could add per-line detection; deferred.
+**NDJSON (newline-delimited JSON, e.g. `kubectl get pods -o json | jq -c '.items[]'`).** ~~First-line check fails because the document has multiple roots. NDJSON falls through to no-op. A future ADR could add per-line detection; deferred.~~ **Landed 2026-04-28 in `compactNDJSON` / `looksLikeNDJSON`.** Single-document parse runs first (cheaper); on failure the body is line-walked. The first non-JSON line aborts the whole transform — better to ship the bytes as-is than to half-rewrite a stream where one record is a stray log line. Two non-blank-line minimum prevents single-doc shapes (with stray whitespace) from re-entering the NDJSON path. Bench scenario `kubectl ... | jq -c .items[]` lands at ~55% wire savings, in line with the single-doc kubectl/aws/gh numbers.
 
 **Drop list as code, not config.** Per project policy on adding new dependencies, a YAML- or JSON-driven drop list is overkill. The list will rarely change; when it does, the change ships with a code review. Operators who need a different list can always pre-process bodies in their own wrapper.
 

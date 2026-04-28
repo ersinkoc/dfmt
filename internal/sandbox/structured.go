@@ -34,9 +34,20 @@ var structuredNoiseFields = map[string]struct{}{
 const structuredNoiseSuffix = "_url"
 
 // CompactStructured detects JSON-shaped input and removes noise fields
-// recursively. Returns input unchanged when:
-//   - input is not valid JSON,
-//   - input does not begin with `{` or `[`,
+// recursively. Two shapes are handled:
+//
+//  1. Single-document JSON — the body parses as one valid JSON value
+//     starting with `{` or `[`. Walked once, noise fields dropped, re-
+//     marshaled compact.
+//  2. NDJSON — newline-delimited JSON, one document per line. Common
+//     output of `jq -c '.items[]'` and `kubectl get … -o json | jq -c …`
+//     pipelines. Each line is compacted independently; lines that aren't
+//     JSON pass through unchanged so partial-NDJSON (one log line in the
+//     middle) doesn't blow up the whole transform.
+//
+// Returns input unchanged when:
+//   - input is empty or whitespace-only,
+//   - input is neither single-document JSON nor multi-line NDJSON,
 //   - the compacted form is not strictly smaller than the input (cap
 //     regression guard — pathological cases must not increase wire bytes).
 //
@@ -50,25 +61,91 @@ func CompactStructured(s string) string {
 	if first != '{' && first != '[' {
 		return s
 	}
-	if !json.Valid([]byte(trimmed)) {
+	// Try single-document first — cheaper than walking the body for newlines.
+	if json.Valid([]byte(trimmed)) {
+		var v any
+		if err := json.Unmarshal([]byte(trimmed), &v); err == nil {
+			out, err := json.Marshal(walkDropNoise(v))
+			if err == nil && len(out) < len(s) {
+				return string(out)
+			}
+		}
 		return s
 	}
-	var v any
-	if err := json.Unmarshal([]byte(trimmed), &v); err != nil {
+	// Single-document parse failed. Try NDJSON: each non-blank line must
+	// be valid JSON on its own. We decide eagerly — the first non-JSON
+	// non-blank line aborts and the original is returned, so a stray log
+	// line embedded in a JSON stream doesn't get reformatted.
+	if !looksLikeNDJSON(trimmed) {
 		return s
 	}
-	walked := walkDropNoise(v)
-	out, err := json.Marshal(walked)
-	if err != nil {
-		return s
-	}
+	out := compactNDJSON(trimmed)
 	if len(out) >= len(s) {
-		// Compaction failed to shrink (e.g. JSON of only drop-list keys
-		// produced "{}", but the input was already small). Returning the
-		// original keeps the contract that NormalizeOutput is monotone.
 		return s
 	}
-	return string(out)
+	return out
+}
+
+// looksLikeNDJSON returns true when s contains at least two non-blank lines
+// and every non-blank line is valid JSON. The two-line minimum prevents the
+// degenerate single-line case (already handled above) from re-entering this
+// path. It also blocks the false-positive where one valid JSON line is
+// surrounded by blank lines — that's a single-doc shape someone added
+// whitespace to.
+func looksLikeNDJSON(s string) bool {
+	lines := strings.Split(s, "\n")
+	nonBlank := 0
+	for _, ln := range lines {
+		ln = strings.TrimSpace(ln)
+		if ln == "" {
+			continue
+		}
+		if !json.Valid([]byte(ln)) {
+			return false
+		}
+		nonBlank++
+		if nonBlank >= 2 {
+			// Don't keep validating once the threshold is met — the first
+			// two valid lines are enough to commit to the NDJSON path. If
+			// a later line is invalid, compactNDJSON itself returns early.
+			return true
+		}
+	}
+	return false
+}
+
+// compactNDJSON walks the input line-by-line, compacting each JSON line in
+// place and preserving blank lines (some pipelines deliberately separate
+// records with blank lines for readability). If any non-blank line fails
+// to parse mid-stream — which looksLikeNDJSON's two-line check can't
+// catch — we abort and return the original; better to ship the body as-is
+// than to ship a half-rewritten mess.
+func compactNDJSON(s string) string {
+	lines := strings.Split(s, "\n")
+	for i, ln := range lines {
+		stripped := strings.TrimSpace(ln)
+		if stripped == "" {
+			continue
+		}
+		if !json.Valid([]byte(stripped)) {
+			return s
+		}
+		var v any
+		if err := json.Unmarshal([]byte(stripped), &v); err != nil {
+			return s
+		}
+		out, err := json.Marshal(walkDropNoise(v))
+		if err != nil {
+			return s
+		}
+		// Only adopt the compacted form if it's smaller — line-level
+		// monotonicity is the same contract single-doc CompactStructured
+		// upholds.
+		if len(out) < len(stripped) {
+			lines[i] = string(out)
+		}
+	}
+	return strings.Join(lines, "\n")
 }
 
 // walkDropNoise recurses into v, dropping keys named in structuredNoiseFields

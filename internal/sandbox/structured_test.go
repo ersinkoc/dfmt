@@ -90,14 +90,73 @@ func TestCompactStructured_NotJSON(t *testing.T) {
 	}
 }
 
-// TestCompactStructured_NDJSONUnchanged: line-delimited JSON has multiple
-// roots and isn't valid JSON as a single document; the function must
-// no-op rather than try to parse the first line in isolation.
-func TestCompactStructured_NDJSONUnchanged(t *testing.T) {
+// TestCompactStructured_NDJSON_LinesGetCompacted: ADR-0010's deferred
+// NDJSON support, now active. Each line is compacted independently —
+// noise fields gone from each record, line boundaries preserved.
+func TestCompactStructured_NDJSON_LinesGetCompacted(t *testing.T) {
+	in := `{"k":1,"title":"first","created_at":"2024-01-01T00:00:00Z","url":"https://x"}
+{"k":2,"title":"second","created_at":"2024-02-02T00:00:00Z","html_url":"https://y"}
+{"k":3,"title":"third","node_id":"abc","etag":"W/\"v1\""}`
+	out := CompactStructured(in)
+	if out == in {
+		t.Fatal("NDJSON should be compacted; got input unchanged")
+	}
+	for _, banned := range []string{"created_at", "node_id", "etag", "html_url", "\"url\":"} {
+		if strings.Contains(out, banned) {
+			t.Errorf("noise field %q leaked: %s", banned, out)
+		}
+	}
+	for _, want := range []string{"first", "second", "third"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("payload term %q lost: %s", want, out)
+		}
+	}
+	// Must still be NDJSON-shaped (3 lines).
+	if got := strings.Count(out, "\n"); got != 2 {
+		t.Errorf("expected 2 newlines (3 lines); got %d in %q", got, out)
+	}
+}
+
+// TestCompactStructured_NDJSON_PartialAborts: a single non-JSON line in
+// the middle of an otherwise-NDJSON body forces the whole transform to
+// no-op. Mangling pipelines that emit log lines between JSON records
+// would be worse than shipping the original bytes.
+func TestCompactStructured_NDJSON_PartialAborts(t *testing.T) {
 	in := `{"k":1,"created_at":"a"}
+this is a log line, not JSON
 {"k":2,"created_at":"b"}`
 	if got := CompactStructured(in); got != in {
-		t.Errorf("NDJSON must pass through unchanged; got %q", got)
+		t.Errorf("partial NDJSON must pass through unchanged; got %q", got)
+	}
+}
+
+// TestCompactStructured_NDJSON_PreservesBlankLines: some pipelines emit
+// blank-line-separated records for readability. Blank lines must survive
+// and not be parsed as JSON.
+func TestCompactStructured_NDJSON_PreservesBlankLines(t *testing.T) {
+	in := `{"k":1,"created_at":"a"}
+
+{"k":2,"created_at":"b"}`
+	out := CompactStructured(in)
+	if out == in {
+		t.Fatal("NDJSON with blank-line separator should still compact records")
+	}
+	if !strings.Contains(out, "\n\n") {
+		t.Errorf("blank line separator lost: %q", out)
+	}
+}
+
+// TestCompactStructured_SingleLineNDJSON_FallsThrough: one JSON object on
+// one line is the single-doc path, not NDJSON. Make sure the NDJSON
+// detection's two-line minimum doesn't pull it in by accident.
+func TestCompactStructured_SingleLineNDJSON_FallsThrough(t *testing.T) {
+	in := `{"k":1,"title":"x","created_at":"a"}`
+	out := CompactStructured(in)
+	if out == in {
+		t.Errorf("single-doc JSON should still be compacted via the single-doc path")
+	}
+	if strings.Contains(out, "created_at") {
+		t.Errorf("noise field leaked: %s", out)
 	}
 }
 

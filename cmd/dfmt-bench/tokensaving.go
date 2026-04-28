@@ -188,6 +188,25 @@ func buildScenarios() []tokenSavingScenario {
 	}
 	awsEC2.WriteString(`]}`)
 
+	// kubectl get pods -o json | jq -c '.items[]' — NDJSON shape, one
+	// pod per line. Exercises ADR-0010's NDJSON path; without it the
+	// body falls through structured detection (multi-root → not valid
+	// JSON) and ships uncompacted.
+	var ndjson strings.Builder
+	for i := 1; i <= 30; i++ {
+		ndjson.WriteString(fmt.Sprintf(`{`+
+			`"apiVersion":"v1","kind":"Pod",`+
+			`"metadata":{`+
+			`"name":"worker-%d","namespace":"prod",`+
+			`"uid":"abc-%d","resourceVersion":"99887%d",`+
+			`"creationTimestamp":"2024-03-15T08:30:00Z",`+
+			`"selfLink":"/api/v1/namespaces/prod/pods/worker-%d"`+
+			`},`+
+			`"status":{"phase":"Running","podIP":"10.0.0.%d"}`+
+			`}`+"\n",
+			i, i, i, i, i))
+	}
+
 	return []tokenSavingScenario{
 		{name: "small file read (inline tier)", body: smallFile, intent: "main function"},
 		{name: "npm install with progress bar", body: npmInstall.String(), intent: ""},
@@ -198,6 +217,7 @@ func buildScenarios() []tokenSavingScenario {
 		{name: "gh api 50 issues (structured noise)", body: ghIssues.String(), intent: ""},
 		{name: "kubectl get 20 pods -o json", body: kubectl.String(), intent: ""},
 		{name: "aws ec2 describe 15 instances", body: awsEC2.String(), intent: ""},
+		{name: "kubectl ... | jq -c .items[] (NDJSON)", body: ndjson.String(), intent: ""},
 	}
 }
 
