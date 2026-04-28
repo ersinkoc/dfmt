@@ -220,7 +220,25 @@ func buildScenarios() []tokenSavingScenario {
 		{name: "kubectl ... | jq -c .items[] (NDJSON)", body: ndjson.String(), intent: ""},
 		{name: "fetched doc page (HTML boilerplate)", body: htmlDocPage(), intent: ""},
 		{name: "kubectl get 20 pods -o yaml", body: kubectlYAML(), intent: ""},
+		{name: "fetched binary blob (PNG)", body: pngBlob(), intent: ""},
 	}
+}
+
+// pngBlob produces a synthetic binary body — PNG magic header followed
+// by ~16 KB of opaque bytes. The pre-refusal pipeline shipped these
+// as best-effort UTF-8 (high byte count + zero signal); the refusal
+// path replaces them with a one-line summary.
+func pngBlob() string {
+	var b strings.Builder
+	b.WriteString("\x89PNG\r\n\x1a\n")
+	for i := 0; i < 4000; i++ {
+		// Mix of bytes that are NOT valid UTF-8 — the kind of payload
+		// an actual PNG IDAT chunk produces. Repeating triple keeps
+		// the body deterministic and bench-stable.
+		b.WriteString("\xff\x00\xab")
+		b.WriteString("\x12\x34\x56")
+	}
+	return b.String()
 }
 
 // kubectlYAML builds a typical multi-pod YAML output. K8s metadata

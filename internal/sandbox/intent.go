@@ -434,6 +434,14 @@ func NormalizeOutput(s string) string {
 	if s == "" {
 		return s
 	}
+	// Binary refusal runs first: if the body is non-UTF-8 (PNG, PDF,
+	// gzip, ELF, …) shipping the bytes as text wastes token budget
+	// AND breaks JSON-RPC encoding. Replace with a one-line summary
+	// the agent can reason about. Subsequent transforms (ANSI, JSON,
+	// HTML compaction) are no-ops on the summary string.
+	if compacted := CompactBinary(s); compacted != s {
+		return compacted
+	}
 	s = stripANSI(s)
 	s = collapseCarriageReturns(s)
 	s = runLengthEncode(s)
