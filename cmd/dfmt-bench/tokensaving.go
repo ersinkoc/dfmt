@@ -221,7 +221,23 @@ func buildScenarios() []tokenSavingScenario {
 		{name: "fetched doc page (HTML boilerplate)", body: htmlDocPage(), intent: ""},
 		{name: "kubectl get 20 pods -o yaml", body: kubectlYAML(), intent: ""},
 		{name: "fetched binary blob (PNG)", body: pngBlob(), intent: ""},
+		{name: "deep recursive Python traceback", body: deepPyTraceback(), intent: ""},
 	}
+}
+
+// deepPyTraceback synthesises a 30-frame Python traceback through the
+// same source file — typical "stack overflow on recursion" shape.
+// Without path collapsing, the long path repeats 30 times.
+func deepPyTraceback() string {
+	var b strings.Builder
+	b.WriteString("Traceback (most recent call last):\n")
+	const path = "/home/user/repo/src/very/deeply/nested/package/recurse.py"
+	for i := 30; i >= 1; i-- {
+		b.WriteString(fmt.Sprintf("  File \"%s\", line %d, in step_%d\n", path, 1000+i, i))
+		b.WriteString(fmt.Sprintf("    return step_%d()\n", i-1))
+	}
+	b.WriteString("RecursionError: maximum recursion depth exceeded\n")
+	return b.String()
 }
 
 // pngBlob produces a synthetic binary body — PNG magic header followed

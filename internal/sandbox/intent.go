@@ -445,6 +445,11 @@ func NormalizeOutput(s string) string {
 	s = stripANSI(s)
 	s = collapseCarriageReturns(s)
 	s = runLengthEncode(s)
+	// Stack-trace path collapsing: when consecutive Python/Go frames
+	// share a file path (recursive code), continuation frames get a
+	// short marker instead of the full path repeated. Conservative
+	// 3-frame threshold leaves flat traces untouched.
+	s = CompactStackTracePaths(s)
 	// Structured-output compaction (ADR-0010): when the body is a valid
 	// JSON object/array — typical of `gh api`, `kubectl get -o json`,
 	// `aws ... --output json` — drop hypermedia/timestamp noise fields.
