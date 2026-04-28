@@ -1596,6 +1596,54 @@ func TestHandlersRememberWithTags(t *testing.T) {
 	}
 }
 
+// TestHandlersRememberPersistsMessage pins the contract that the
+// `message` parameter — advertised on dfmt_remember's MCP schema — is
+// stored in the event's Data so it can be searched and rendered by
+// recall. Closes the audit-discovered defect where the handler
+// silently dropped the field, leaving the recall snapshot tag-only
+// and dfmt_search blind to anything in the message body.
+func TestHandlersRememberPersistsMessage(t *testing.T) {
+	idx := core.NewIndex()
+	journal := &mockJournal{}
+	h := NewHandlers(idx, journal, nil)
+
+	const msg = "audit verification marker XJ7Q3 must reach the index"
+	resp, err := h.Remember(context.Background(), RememberParams{
+		Type:    "note",
+		Message: msg,
+		Tags:    []string{"audit"},
+	})
+	if err != nil {
+		t.Fatalf("Remember: %v", err)
+	}
+
+	// Verify the journal recorded the message in Data.
+	if len(journal.events) != 1 {
+		t.Fatalf("expected 1 journaled event, got %d", len(journal.events))
+	}
+	got, ok := journal.events[0].Data["message"]
+	if !ok {
+		t.Fatal("event Data is missing the 'message' key")
+	}
+	if got != msg {
+		t.Errorf("event Data['message'] = %v, want %q", got, msg)
+	}
+
+	// Verify the index now retrieves the event by a word from the
+	// message body — closes the regression at the search layer too.
+	hits := idx.SearchBM25("verification", 5)
+	found := false
+	for _, h := range hits {
+		if h.ID == resp.ID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("SearchBM25 did not return the just-remembered event ID; hits=%+v", hits)
+	}
+}
+
 func TestHandlersRememberWithRefs(t *testing.T) {
 	idx := core.NewIndex()
 	journal := &mockJournal{}

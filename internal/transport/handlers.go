@@ -393,9 +393,16 @@ func (h *Handlers) Remember(ctx context.Context, params RememberParams) (*Rememb
 	if h.journal == nil {
 		return nil, errNoProject
 	}
-	// Handle direct token fields - add to Data map
+	// Handle direct token fields and the Message field — both are
+	// advertised as MCP `dfmt_remember` parameters but the previous
+	// version of this handler silently dropped Message. Result: the
+	// recall snapshot showed a tag-only line ("[p3] #audit #preserve")
+	// and dfmt_search could not find any word from the message body —
+	// only tags. Closes the audit-discovered defect "Remember.Message
+	// silently dropped from indexed event."
 	data := params.Data
-	if params.InputTokens > 0 || params.OutputTokens > 0 || params.CachedTokens > 0 || params.Model != "" {
+	hasTokenFields := params.InputTokens > 0 || params.OutputTokens > 0 || params.CachedTokens > 0 || params.Model != ""
+	if hasTokenFields || params.Message != "" {
 		if data == nil {
 			data = make(map[string]any)
 		}
@@ -410,6 +417,12 @@ func (h *Handlers) Remember(ctx context.Context, params RememberParams) (*Rememb
 		}
 		if params.Model != "" {
 			data[core.KeyModel] = params.Model
+		}
+		if params.Message != "" {
+			// Use the literal "message" key — that is the convention
+			// the recall renderer (`internal/retrieve`) and the test
+			// fixtures already follow.
+			data["message"] = params.Message
 		}
 	}
 
