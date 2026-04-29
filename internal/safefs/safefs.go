@@ -87,6 +87,50 @@ func CheckNoSymlinks(baseDir, path string) error {
 	return nil
 }
 
+// ErrPathOutsideRoot is returned by EnsureResolvedUnder when path's symlink-
+// resolved location escapes the root.
+var ErrPathOutsideRoot = errors.New("path resolves outside root")
+
+// EnsureResolvedUnder is the read-tier containment check: it tolerates
+// symlinks AS LONG AS path's fully-resolved target still falls under the
+// fully-resolved root. The CheckNoSymlinks helper above is the strict
+// "no symlinks anywhere" check used by writes; this one is the looser
+// gate appropriate for read-only primitives that walk a directory tree
+// and must refuse to follow a symlink leaf out of the project.
+//
+// Both arguments must be absolute. The returned path is the resolved
+// target on success.
+//
+// Why this exists: filepath.Rel is purely lexical — a symlink leaf inside
+// root whose target lives at /etc/passwd computes a relative path that
+// looks contained, so the lexical check passes and a subsequent os.ReadFile
+// follows the link to the secret. Glob and Grep had this gap; Read closed
+// it inline; this helper centralizes the pattern.
+func EnsureResolvedUnder(path, root string) (string, error) {
+	if !filepath.IsAbs(path) {
+		return "", fmt.Errorf("safefs: path not absolute: %s", path)
+	}
+	if !filepath.IsAbs(root) {
+		return "", fmt.Errorf("safefs: root not absolute: %s", root)
+	}
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return "", fmt.Errorf("safefs: evalsymlinks %s: %w", path, err)
+	}
+	resolvedRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return "", fmt.Errorf("safefs: evalsymlinks root %s: %w", root, err)
+	}
+	rel, err := filepath.Rel(resolvedRoot, resolved)
+	if err != nil {
+		return "", fmt.Errorf("safefs: rel %s: %w", path, err)
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("%w: %s", ErrPathOutsideRoot, path)
+	}
+	return resolved, nil
+}
+
 // WriteFile writes data to path with mode after CheckNoSymlinks(baseDir, path)
 // succeeds. Existing regular-file targets are overwritten in place; symlinks
 // or non-regular files anywhere along the path are refused.

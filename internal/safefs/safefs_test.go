@@ -222,6 +222,99 @@ func TestWriteFileAtomic_ReplacesSymlinkAsRegular(t *testing.T) {
 	}
 }
 
+func TestEnsureResolvedUnder_AbsoluteOnly(t *testing.T) {
+	abs := mustAbs(t, t.TempDir())
+	if _, err := EnsureResolvedUnder("relative", abs); err == nil {
+		t.Error("relative path should error")
+	}
+	if _, err := EnsureResolvedUnder(abs, "relative"); err == nil {
+		t.Error("relative root should error")
+	}
+}
+
+func TestEnsureResolvedUnder_AllowsContainedFile(t *testing.T) {
+	root := mustAbs(t, t.TempDir())
+	target := filepath.Join(root, "sub", "file.txt")
+	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, []byte("hi"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := EnsureResolvedUnder(target, root)
+	if err != nil {
+		t.Errorf("contained file: %v", err)
+	}
+	if resolved == "" {
+		t.Error("resolved path should not be empty")
+	}
+}
+
+func TestEnsureResolvedUnder_AllowsSymlinkInsideRoot(t *testing.T) {
+	root := mustAbs(t, t.TempDir())
+	requireSymlinks(t, root)
+	target := filepath.Join(root, "real.txt")
+	if err := os.WriteFile(target, []byte("ok"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "alias.txt")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+	if _, err := EnsureResolvedUnder(link, root); err != nil {
+		t.Errorf("symlink-inside-root should be allowed: %v", err)
+	}
+}
+
+func TestEnsureResolvedUnder_RefusesSymlinkLeafEscapingRoot(t *testing.T) {
+	// V-01: this is the Glob/Grep bypass. A symlink leaf whose path is
+	// lexically inside root but whose target lives outside root must be
+	// refused — otherwise os.ReadFile on the path follows the link to
+	// the secret.
+	root := mustAbs(t, t.TempDir())
+	requireSymlinks(t, root)
+	outside := mustAbs(t, t.TempDir())
+	outsideTarget := filepath.Join(outside, "secret.txt")
+	if err := os.WriteFile(outsideTarget, []byte("hunter2"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "innocent.txt")
+	if err := os.Symlink(outsideTarget, link); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+	_, err := EnsureResolvedUnder(link, root)
+	if err == nil {
+		t.Fatal("symlink-leaf-out-of-root should error")
+	}
+	if !errors.Is(err, ErrPathOutsideRoot) {
+		t.Errorf("want ErrPathOutsideRoot, got: %v", err)
+	}
+}
+
+func TestEnsureResolvedUnder_RefusesPathOutsideRoot(t *testing.T) {
+	root := mustAbs(t, t.TempDir())
+	other := mustAbs(t, t.TempDir())
+	target := filepath.Join(other, "elsewhere.txt")
+	if err := os.WriteFile(target, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := EnsureResolvedUnder(target, root)
+	if err == nil {
+		t.Fatal("path outside root should error")
+	}
+	if !errors.Is(err, ErrPathOutsideRoot) {
+		t.Errorf("want ErrPathOutsideRoot, got: %v", err)
+	}
+}
+
+func TestEnsureResolvedUnder_RefusesNonexistentPath(t *testing.T) {
+	root := mustAbs(t, t.TempDir())
+	target := filepath.Join(root, "does-not-exist.txt")
+	if _, err := EnsureResolvedUnder(target, root); err == nil {
+		t.Error("nonexistent path should error (callers are about to ReadFile)")
+	}
+}
+
 func mustAbs(t *testing.T, p string) string {
 	t.Helper()
 	abs, err := filepath.Abs(p)
