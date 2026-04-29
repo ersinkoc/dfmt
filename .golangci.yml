@@ -237,11 +237,15 @@ linters:
         linters:
           - typecheck
 
-lint:
-  issues:
-    max-issues-per-linter: 0
-    max-same-issues: 0
-  formatters:
-    enable:
-      - gofmt
-      - goimports
+# golangci-lint v2 schema: `issues` and `formatters` are top-level blocks.
+# The pre-v0.2.0 layout nested them under a `lint:` parent that v2 rejects
+# with `additional properties 'lint' not allowed`. v2.4.0 uncovered the
+# drift; the old `latest` pin masked it.
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
