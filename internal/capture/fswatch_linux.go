@@ -61,8 +61,19 @@ func linuxWatchLoop(w *FSWatcher, fd int, dirPath string) {
 		}
 
 		for offset := 0; offset < n; {
+			// V-09: defense-in-depth bounds checks. The kernel contract
+			// always emits whole inotify events, but a future kernel bug
+			// or a partial Read shouldn't let us index past the buffer
+			// from the unsafe.Pointer cast (16-byte header) or the name
+			// slice (header + variable-length name).
+			if offset+16 > n {
+				break
+			}
 			event := (*unix.InotifyEvent)(unsafe.Pointer(&buf[offset]))
 			nameLen := int(event.Len)
+			if nameLen < 0 || offset+16+nameLen > n {
+				break
+			}
 
 			var name string
 			if nameLen > 0 {
