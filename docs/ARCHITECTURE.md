@@ -292,19 +292,23 @@ Global flags are pulled out before dispatch so subcommands never see
 them. `--project` overrides project discovery; `--json` switches the
 CLI to machine-readable output.
 
-> **Three version strings, none of which reference each other.**
-> (1) `cmd/dfmt/version.go` exports `var version = "dev"`, set at
-> build time via `-ldflags "-X main.version=$VERSION"`. This is what
-> `dfmt --version` prints. (2) `internal/cli/cli.go` exports a
-> hard-coded `const Version = "0.1.0"`, asserted by `cli_test.go`
-> but not currently consumed by production callers — it is a
-> reserved constant. (3) `internal/transport/mcp.go::handleInitialize`
-> emits the literal string `"0.1.0"` directly in the
-> `serverInfo.version` field. The three values are independent:
-> bumping `cli.Version` does not change MCP `serverInfo.version`,
-> and a release-tagged ldflag bump leaves both untouched. They
-> happen to share the value `0.1.0` today; if any one drifts the
-> others stay frozen.
+> **One version string, four readers** (consolidated in v0.2.0).
+> The single source of truth is `internal/version.Current` (declared
+> in `internal/version/version.go`). The build sets it via
+>
+> ```
+> -ldflags "-X github.com/ersinkoc/dfmt/internal/version.Current=$VERSION"
+> ```
+>
+> Four consumers read the same variable: (1) `cmd/dfmt/main.go`'s
+> `--version` printer, (2) `internal/cli.Version` (a re-export
+> preserved for older callers), (3) `internal/core.Version` (same),
+> and (4) `internal/transport/mcp.go::handleInitialize`'s
+> `serverInfo.version` field. Bumping the ldflag now updates every
+> reader simultaneously. The pre-v0.2.0 layout shipped three
+> independent strings that drifted between releases — the
+> consolidation closed that drift. `cmd/dfmt/version.go` is now an
+> empty placeholder; the legacy `-X main.version=…` form is gone.
 
 ### 4.2 `cmd/dfmt-bench/main.go` — benchmarking binary
 
@@ -649,13 +653,14 @@ Continue). Supports:
     `notifications/tools/list_changed`; tool descriptions are still
     self-tuning, but the agent re-reads them only on its own
     refresh cadence.
-  - `serverInfo`: `{"name": "dfmt", "version": "0.1.0"}`. **Both
-    literals are hardcoded** in `handleInitialize`; the
-    `serverInfo.version` does **not** track the binary's actual
-    `cli.Version` (set via `-ldflags "-X .../cli.Version=..."`).
-    Inspectors looking at MCP `serverInfo` to identify a release
-    will always see `0.1.0` until the literal is replaced with
-    `cli.Version`.
+  - `serverInfo`: `{"name": "dfmt", "version": version.Current}`.
+    `Name` is hardcoded `"dfmt"`; `Version` reads
+    `internal/version.Current`, which is the same build-time
+    string `dfmt --version` prints. Set the version via
+    `-ldflags "-X github.com/ersinkoc/dfmt/internal/version.Current=v0.2.0"`
+    at release time. Inspectors that scrape `serverInfo` for a
+    release identifier and the `--version` output now agree on
+    every cut (closes the v0.1 drift).
 - **`notifications/initialized` (no response)** — JSON-RPC
   notifications are messages without an `id`. The dispatch loop
   short-circuits at `Handle()` with `if req.ID == nil { return nil,
@@ -1025,13 +1030,26 @@ classDiagram
     Event --> Source
 ```
 
-The `Sig` field is `sha256(canonical_json)[:16hex]` and is computed on
-every `Append`. **`Event.Validate()` exists but is currently called
-only from tests** — production read paths (`journal.Stream`, index
-replay) do **not** re-verify the signature. Treat the field as a
-forward-looking integrity hook: useful evidence for tooling that
-imports the journal externally, not a runtime guarantee that the
-daemon catches in-place tampering.
+The `Sig` field is `sha256(canonical_json)[:16hex]` and is computed
+inside `Append` (`internal/core/journal.go:190` — `e.Sig =
+e.ComputeSig()` runs **before** marshal, so the value travels with
+the event into the JSONL line). It is then **re-verified on every
+read** by `Stream`/`scanLastID`: each line that decodes successfully
+hits `if !e.Validate() { skip + journalWarnf }` at
+`internal/core/journal.go:351`. Mismatches surface as warnings and
+the offending event is skipped — the read paths and index replay no
+longer trust JSON-decoded events on faith.
+
+Backwards compatibility: events written before signing was wired
+have `Sig == ""`. `Validate()` returns `true` for the empty-Sig case
+so old segments replay cleanly; only **non-empty Sigs that disagree
+with the recomputed canonical hash** trigger the warn-and-skip
+path. The contract is "tampering detection," not "missing-signature
+rejection."
+
+Closes the read-path verification gap from earlier audits — the
+daemon now catches in-place tampering at scan time, not just in
+external tooling.
 
 > **Three type spaces.** Three distinct sources of `Event.Type`
 > strings show up in `journal.jsonl`:
@@ -1330,14 +1348,30 @@ break search.
 ### 8.5 Search layers
 
 The Search RPC accepts an optional `layer` parameter
-(`bm25` / `trigram` / `fuzzy`). At present only **`bm25`** is
-implemented; `trigram` and `fuzzy` are reserved cases in the switch
-that return an empty result set. The default when `layer` is
-omitted is `bm25`. The default `limit` when omitted is 10.
+(`bm25` / `trigram` / `fuzzy`). The default when `layer` is omitted
+is **BM25 with trigram fallback**: BM25 runs first; if it returns
+zero hits the handler retries the same query against the trigram
+posting list and reports `Layer: "trigram"` so callers can
+distinguish a true miss from a fallback hit
+(`internal/transport/handlers.go::Search`). The fallback closes a
+class of misses where BM25 silently drops synthetic markers
+(`AUDIT_PROBE_XJ7Q3`), UUIDs, and other tokens that the Porter
+stemmer mangles or splits. `fuzzy` remains a reserved case that
+returns no results today (Levenshtein scaffolding lives in
+`core/levenshtein.go` but is unwired — see §18 reserved code).
+Default `limit` when omitted is 10.
 
-Hits carry `id`, `score`, and `layer` (an integer rank, not the
-string above). `type` and `source` are populated by the caller's
-post-processing where available.
+Hits carry `id`, `score`, `layer` (integer rank), and an opt-in
+**`excerpt`** field — a ≤80-byte rune-aligned snippet drawn from the
+event's most caller-relevant text (`message` / `path` / `type`,
+chosen by `Index.Excerpt(id)`). The excerpt is what makes
+`dfmt_search` viable as a single round-trip discovery tool: an agent
+gets the score *and* enough surrounding text to decide whether to
+follow up with `dfmt_recall`, instead of paying a second wire round
+to fetch the body. Events written before the excerpt feature land
+with the field omitted (`omitempty`); the index can re-derive an
+excerpt for legacy events on lookup if their data still satisfies
+the indexer.
 
 ### 8.6 Tokenization
 
@@ -1347,23 +1381,24 @@ are kept if their length is between **2 and 64 characters**. Output
 is lowercased before the stopword filter, then the Porter stemmer
 runs on the survivors.
 
-> **Two stopword lists, only one is wired.** The codebase exposes
-> three stopword maps:
+> **Three stopword lists, two wired today.** The codebase exposes:
 >
-> | Symbol                          | Location              | Entries  | Used in production?                          |
-> |---------------------------------|-----------------------|----------|----------------------------------------------|
-> | `englishStopwords` (unexported) | `tokenize.go`         | ~25      | **Yes** — the implicit default when callers pass `nil` |
-> | `EnglishStopwords` (exported)   | `core.go`             | ~70      | **No** — only test files reference it        |
-> | `TurkishStopwords` (exported)   | `core.go`             | 14       | **No** — only test files reference it        |
+> | Symbol                          | Location              | Entries  | Used in production?                                                                  |
+> |---------------------------------|-----------------------|----------|--------------------------------------------------------------------------------------|
+> | `englishStopwords` (unexported) | `sandbox/intent.go`   | ~60      | **Yes** — the intent-keyword extractor folds this with the Turkish set in `isStopword` |
+> | `core.TurkishStopwords` (exported) | `core/core.go`     | 14       | **Yes** — `sandbox/intent.go::isStopword` calls it on every keyword extraction so Turkish "ile" / "için" / "olan" don't dominate vocabulary lists for Turkish-text inputs |
+> | `core.EnglishStopwords` (exported) | `core/core.go`     | ~70      | **No** — only test files reference it; reserved for a future `Index.Add` opt-in path |
 >
-> Every production call site (`Index.Add`, `Index.SearchBM25`,
-> `content.summarize`, `trigram.Add`) passes `nil`, so the exported
-> 70-entry English list and the 14-entry Turkish list never apply
-> to indexed text. The doc's earlier "English and Turkish stopwords
-> are baked in" claim was correct about the constants existing but
-> wrong about them being applied. To opt in, callers would need to
-> pass the desired map as the second arg to `TokenizeFull` — the
-> current call sites do not.
+> Index-side production callers (`Index.Add`, `Index.SearchBM25`,
+> `content.summarize`, `trigram.Add`) all pass `nil`, so the
+> 70-entry exported English list never reaches indexed text. The
+> *intent extractor* is the lone production caller of the bilingual
+> filter today — sufficient for the keyword-matching path that
+> drives `dfmt_search` excerpts and `ApplyReturnPolicy` matches, but
+> the index proper still tokenizes raw. Wiring the index to the
+> exported maps is a Reserved-code candidate (§18); doing it
+> requires an ADR because it changes which terms appear in legacy
+> projects' BM25 postings.
 
 ### 8.7 ULID generation (`internal/core/ulid.go`)
 
@@ -1470,8 +1505,17 @@ contains no `redact` calls; the redactor reference lives in
 
 ```yaml
 allow:
-  exec: git, npm, pnpm, pytest, cargo, go, echo, ls, cat, find,
-        grep, dir, pwd, whoami, wc, tail, node, python (and "X *" forms)
+  exec:
+    # Core developer toolchain (each rule pairs `cmd` and `cmd *`):
+    git, npm, pnpm, yarn, bun, npx, pnpx, bunx, deno
+    pytest, cargo, go, node, python
+    tsc, tsx, ts-node                  # TypeScript runners
+    vitest, jest                        # JS/TS test runners
+    eslint, prettier                    # JS/TS lint + format
+    vite, next, webpack                 # bundler / dev server
+    make
+    # POSIX read-only shell helpers:
+    echo, ls, cat, find, grep, dir, pwd, whoami, wc, tail
   read:  **
   write: **
   edit:  **
@@ -1490,15 +1534,49 @@ deny:
          file://*
 ```
 
+The expanded JS/TS toolchain rules (`yarn`/`bun`/`npx`/`tsc`/
+`vitest`/`eslint`/`vite`/…) are deliberate: without them every
+TypeScript or modern-Node project would have to ship an override in
+`.dfmt/permissions.yaml` just to run its own test runner, defeating
+the zero-config posture. Only **direct invocation** is what the
+extra rules cover — `npm run test` and `pnpm vitest` were already
+allowed via the package-manager rules above.
+
 A `LoadPolicy(path)` function exists in `permissions.go` to parse
 the `allow:exec:base-cmd *` line format from
 `.dfmt/permissions.yaml`, but as of this writing **the daemon does
 not call it** — `sandbox.NewSandbox(projectPath)` always installs
 `DefaultPolicy()` (see §13.4). Every denial error still ends with
 a one-line hint pointing at `.dfmt/permissions.yaml`, on the
-assumption that the loader will land in a near-term sprint;
+assumption that the loader will land in v0.3 (see [`docs/ROADMAP.md`](ROADMAP.md));
 operators relying on those hints today will find their overrides
 silently ignored.
+
+### 9.1.1 Allow-rule trailing-space contract (V-20)
+
+Every allow-list entry above ships in **pairs**: a bare `cmd` and a
+`cmd *`. The space + `*` is the **end-of-token marker**, not a
+glob-flair. Without it, `allow:exec:git` would match `git` but
+**not** `git status` (`Match` would compare full string `"git status"`
+against pattern `"git"` and reject), and a single `allow:exec:git*`
+without the space would unsafely match `git-shell`,
+`git-receive-pack`, or any `git`-prefixed binary on PATH.
+
+The contract is therefore: **`<cmd>` allows the bare command,
+`<cmd> *` allows the command followed by any arguments**. Operator-
+written rules in `.dfmt/permissions.yaml` MUST follow the same
+pattern. When you add a new exec allow, ship the pair:
+
+```yaml
+allow:
+  exec:
+    - mytool
+    - mytool *
+```
+
+Closes V-20 from the validation pass — earlier drafts that wrote
+`allow:exec:mytool*` (no space) accepted unwanted command-name
+prefix collisions.
 
 ### 9.2 Recursive bypass
 
@@ -1546,12 +1624,34 @@ The default `auto` path is the interesting one — it's the policy
 that closed the previous "empty intent silently returned full body"
 token leak:
 
-| Output size                                  | `auto` behavior                                                                                                                            |
+| Tier (by `ApproxTokens`)                     | `auto` behavior                                                                                                                            |
 |----------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------|
-| ≤ 4 KiB (`InlineThreshold`)                  | inline body only — no summary, matches, or vocab. The body is short enough that excerpts would just duplicate it.                          |
-| 4 KiB – 64 KiB (`MediumThreshold`)           | summary + up to 5 matches + 10 vocab terms; signals merge ahead of keyword matches.                                                        |
-| &gt; 64 KiB                                  | summary + up to 10 matches + 20 vocab terms.                                                                                               |
+| ≤ `InlineTokenThreshold`                     | inline body only — no summary, matches, or vocab. The body is short enough that excerpts would just duplicate it.                          |
+| `InlineTokenThreshold` – `MediumTokenThreshold` | summary + up to 5 matches + 10 vocab terms; signals merge ahead of keyword matches.                                                     |
+| &gt; `MediumTokenThreshold`                  | summary + up to 10 matches + 20 vocab terms.                                                                                               |
 | any non-inline tier with **zero matches**    | **Tail-bias fallback**: `Body` carries the last `TailBytes` of content. Covers verdict-at-the-end output (`go test`, `npm build`, CI logs) when neither keywords nor signals landed. |
+
+**Tiering is by approximated tokens, not raw bytes** (ADR-0012,
+`internal/sandbox/tokens.go`). The boundary function is
+
+```
+ApproxTokens(s) = ascii_bytes/4 + non_ascii_runes
+```
+
+— ASCII text amortizes ~4 bytes per BPE token, every non-ASCII rune
+spends roughly one token on its own (CJK, Cyrillic, Turkish ç/ğ/ş,
+Arabic, …). The earlier byte-cinsinden tier check handed CJK and
+Turkish callers a doubled-up budget: a 4 KiB Japanese log was
+inlined "because it's small," but cost the agent ~4× the tokens an
+English log of the same byte count would. ApproxTokens normalizes
+the inlay/excerpt boundary across scripts; the caller's *agent
+budget* is what we're trying to protect, not the wire size.
+
+I/O hard caps (`MaxFetchBodyBytes` 8 MiB, `MaxRawBytes` 256 KiB
+Windows-truncation ceiling, `MaxSandboxReadBytes` 4 MiB) stay byte-
+based — those defend the daemon against runaway sources, where
+"how many bytes the OS gave us" is the relevant axis. Token budgets
+defend the agent from the daemon, which is the orthogonal axis.
 
 Matches are scored by BM25 against the `intent` keywords. **Kind-aware
 signal promotion** is always on (`internal/sandbox/signals.go`):
@@ -1565,10 +1665,6 @@ signals merged ahead of the keyword matches. Net effect: a `go test`
 run with no intent still surfaces which test failed. Vocabulary is
 a small set of distinctive terms the caller can use to refine the
 next call.
-
-Tiering is by **output size**, not by event priority. Earlier drafts
-of this document conflated the two; the actual tier check is purely
-a byte threshold.
 
 > **Where the `Summary` text comes from.** The string in
 > `out.Summary` is produced by `sandbox.GenerateSummary(content,
@@ -1586,28 +1682,105 @@ a byte threshold.
 > reserved capability, similar in status to the orphaned `retrieve`
 > package called out in §11.1.
 
-**`NormalizeOutput` (runs upstream of every return mode).** Three
-passes, each targeting a dominant noise source in shell-captured
-output:
+**`NormalizeOutput` (runs upstream of every return mode).** Ten
+ordered passes in `internal/sandbox/intent.go::NormalizeOutput`,
+each targeting a dominant noise class in shell- and HTTP-captured
+output. The order is load-bearing — earlier passes assume UTF-8 text
+and would break on binary input; later passes assume the body has
+already been stripped of terminal animations:
 
-1. **`stripANSI`** — removes CSI (`\x1b[...m`) and OSC escape
-   sequences. Other categories (VT52, 7-bit single-shifts) are too
-   rare in modern tool output to be worth pattern-matching; if they
-   show up, the caller should opt into `return=raw` anyway.
-2. **`collapseCarriageReturns`** — for every logical line, reduces
-   `...A\rB\rC` runs to just `C`. Per-line walk so a CR inside line
-   3 doesn't eat content from line 1; trailing `\r` of CRLF lines is
-   trimmed before the LastIndex scan so well-formed CRLF files
-   aren't collapsed to empty strings.
-3. **`runLengthEncode`** — collapses N consecutive identical lines
-   to one + a `(repeated N times)` annotation. Targets spinner
-   loops (`dialing...` × 30) and retry-with-backoff bursts.
+1. **`CompactBinary`** (`binary.go`, **early-out**) — if the body
+   is non-UTF-8 or carries a known magic number (PNG, PDF, gzip,
+   ELF, Zip, JPEG, …), replace the entire payload with a one-line
+   `(binary; type=…; N bytes; sha256=…)` summary and **return
+   immediately**. Subsequent passes are no-ops on text, so they would
+   waste cycles or produce nonsense on binary; the early-out makes
+   the rest of the pipeline UTF-8-safe by construction.
+2. **`stripANSI`** — removes CSI (`\x1b[...m`) and OSC escape
+   sequences. Runs early so escape bytes can't split a downstream
+   regex anchor (the redactor and `CompactGitDiff` both anchor on
+   line starts).
+3. **`collapseCarriageReturns`** — for every logical line, reduces
+   `...A\rB\rC` runs to just `C` (per-line so a CR in line 3 can't
+   eat line 1; trailing CRLF `\r` trimmed before the LastIndex scan
+   so well-formed CRLF files aren't collapsed to empty).
+4. **`runLengthEncode`** — collapses ≥ `rleMinReps` (4) consecutive
+   identical lines to one + a `(repeated N times)` annotation.
+   Targets spinner loops and retry-with-backoff bursts; threshold
+   is 4 because two duplicates compress to longer than the original
+   once the annotation is paid for.
+5. **`CompactGitDiff`** (`diff.go`) — drops the `index <hash>..<hash>
+   <mode>` line every `git diff` file-block emits. Pure wire noise
+   for an LLM; no-op on non-diff input.
+6. **`CompactStackTracePaths`** (`stacktrace.go`) — when ≥ 3
+   consecutive Python or Go stack-trace frames share the same source
+   path (recursive code), continuation frames get a short `…` marker
+   instead of repeating the path verbatim. Conservative — flat
+   traces stay verbatim.
+7. **`CompactStructured`** (`structured.go`, ADR-0010) — when the
+   body parses as a JSON object/array (or NDJSON), drop hypermedia
+   noise (`*_url`, `_links`, pagination cursors), timestamp twins
+   (`created_at` next to `updated_at`), Kubernetes housekeeping
+   (`creationTimestamp`, `resourceVersion`, `selfLink`,
+   `managedFields`), AWS pagination (`NextToken`), null/empty
+   values. Targets `gh api`, `kubectl get -o json`,
+   `aws ... --output json`. No-op on partial or non-JSON input.
+8. **`CompactYAML`** (`structured.go`) — same drop-list applied to
+   YAML-shaped bodies (`kubectl -o yaml`, `helm get manifest`).
+   Detection is conservative: only fires when a `---` separator or
+   `apiVersion:`/`kind:` header is present, so a regular config file
+   passes through.
+9. **`CompactMarkdownFrontmatter`** (`structured.go`) — strips
+   leading YAML frontmatter (`---\nkey: …\n---`) from `.md` bodies.
+   Detection is anchored at the very start so a `---` separator
+   inside a CHANGELOG body stays intact.
+10. **`ConvertHTML`** (`htmlmd.go`, ADR-0008) — when the body is
+    HTML-shaped, run the bundled tokenizer (`htmltok.go`) and
+    markdown walker. Drops `<script>` / `<style>` / `<nav>` /
+    `<footer>` / `<aside>` / `<head>` / `<noscript>` / `<svg>` /
+    `<form>` / `<button>` / `<iframe>` wholesale; emits markdown
+    for headings, lists, code blocks (with language hint), tables
+    (with GFM separator), blockquotes, definition lists, links,
+    images. On cap-regression (output > input) falls back to the
+    lite-path regex strip (`CompactHTML`) so the pipeline never
+    inflates wire bytes.
 
-This runs **before** `ApplyReturnPolicy` and the content-store stash
-so neither has to budget tokens for terminal animations. It also
-runs **before** the redactor — escape sequences can split a secret
-across positions and break the redactor's regex anchors, so the
-order matters.
+The pipeline runs **before** `ApplyReturnPolicy` and the content-
+store stash so neither has to budget tokens for terminal animations
+or boilerplate HTML. It also runs **before** the redactor — escape
+sequences and HTML tag boundaries can both split a secret across
+positions and break the redactor's anchors.
+
+### 9.4.1 Cross-call wire dedup (ADR-0009 / ADR-0011)
+
+Two wire-saving steps stack on top of `NormalizeOutput`:
+
+**Stash-side dedup (per-process, ADR-0009).** When the transport
+handler stashes an output into the content store, it keys the
+chunk-set ID on `sha256(kind, source, redacted_body)` for a 30-
+second window (cap 64 distinct bodies). A repeated read of the same
+file in a tight agent loop returns the **same `content_id`** instead
+of writing a fresh chunk-set per call. The journal records each call
+with the same `content_id`, so `dfmt_stats` accounting still
+attributes raw/returned bytes to each call separately, but disk
+writes collapse.
+
+**Per-session wire dedup (ADR-0011).** The MCP layer also tracks
+which `content_id`s the agent has *already received in this session*.
+When a tool call would emit a body whose `content_id` is in that
+seen-set, the response substitutes the literal sentinel
+`(unchanged; same content_id)` for the body and the matches/vocab
+arrays are still computed — but the bulk payload skips the wire.
+Drops the cost of the common "agent re-reads file foo.go three
+times in five turns" pattern from N×|body| down to |body| + (N−1)×27
+bytes. The seen-set lives in `MCPProtocol.seenContentIDs`, is
+process-lifetime, and is reset on `dfmt mcp` restart (i.e. when the
+agent disconnects).
+
+Set `DFMT_MCP_LEGACY_CONTENT=1` if you have a strict-MCP client
+that ignores `structuredContent` and needs the duplicated text-
+content envelope (the dedup mechanism still applies; only the
+envelope shape changes).
 
 ### 9.5 Edit / Write atomicity
 
@@ -2206,10 +2379,20 @@ non-destructive**:
    mentioning `.dfmt/` defeated the append) and false negatives
    (entries without trailing slash never matched).
 4. Merge DFMT's tool-allowlist + hooks into project-local
-   `.claude/settings.json`. The merge is itself idempotent and
-   refuses to write to `~/.claude/settings.json` (that would
-   silently rewrite a user-scope settings file the agent shares
-   across projects).
+   `.claude/settings.json` via
+   `setup.writeProjectClaudeSettings(dir)`
+   (`internal/setup/projectinit.go`). The merge is **structural,
+   not destructive**: any pre-existing user keys
+   (`mcp.callTimeoutMs`, `defaultMode`, `outputStyle`, statusline
+   commands, custom permission entries, …) are preserved verbatim;
+   DFMT's MCP tool allow entries and the `PreToolUse` /
+   `PreCompact` / `SessionStart` hooks are union-merged with
+   duplicate detection so re-running auto-init is a true no-op.
+   The helper **refuses to write under `$HOME/.claude/`** so the
+   user-scope settings file the agent shares across projects is
+   never touched (commit aacb1a6 closed the previous clobber bug
+   where DFMT overwrote the user's whole settings file when
+   auto-init ran in a folder under `$HOME/.claude/`).
 
 The auto-init path means an agent dropped into any random folder
 gets a working DFMT setup on the first MCP call without the user
@@ -2812,8 +2995,11 @@ flags:
 - **`CGO_ENABLED=0`** — pure-Go static binaries, no libc dependency.
 - **`-trimpath`** — strips local file paths from the binary for
   reproducibility.
-- **`-ldflags "-s -w -X main.version=${TAG}"`** — strips debug info
-  and DWARF symbols, embeds the tag name as `version`.
+- **`-ldflags "-s -w -X github.com/ersinkoc/dfmt/internal/version.Current=${TAG}"`**
+  — strips debug info and DWARF symbols, injects the tag name into
+  `internal/version.Current` (the post-v0.2.0 single source of
+  truth read by `dfmt --version`, MCP `serverInfo.version`, and
+  the `cli.Version` / `core.Version` re-exports).
 - **`sha256sums.txt`** is generated alongside the binaries and
   uploaded to the release.
 
@@ -2919,6 +3105,10 @@ revisit. Current set:
 | 0006 | Sandboxed Tool Execution In Scope      | Reverses earlier exclusion; sandbox is first-class.               |
 | 0007 | Content Store ≠ Event Journal          | Two stores, shared index infra, different lifecycles.             |
 | 0008 | Bundled HTML Parser                    | ≈ 350 lines bundled; no `x/net/html` dep.                         |
+| 0009 | Cross-Call Content Dedup               | Stash keys on `sha256(kind, source, body)`; identical bodies in 30 s share one chunk-set ID. |
+| 0010 | Structured Output Awareness            | NormalizeOutput strips JSON / NDJSON / YAML noise + Markdown frontmatter before tier gating. |
+| 0011 | Per-Session Wire Dedup                 | Already-emitted `content_id`s return a 27-byte sentinel instead of repeating the body on the wire. |
+| 0012 | Token-Aware Budgets                    | Tier gating uses `ApproxTokens(s) = ascii_bytes/4 + non_ascii_runes`; CJK / Turkish bodies hit the same agent-cost threshold as English. |
 
 `docs/adr/ADR-INDEX.md` is the always-current index. Add a new ADR
 when introducing a component, changing component interactions,
@@ -2985,8 +3175,15 @@ internal/
 │   ├── sandbox.go           operation surface
 │   ├── runtime.go           subprocess + HTTP runtime
 │   ├── permissions.go       Policy / DefaultPolicy / PolicyCheck
-│   ├── intent.go            BM25 intent extraction + size-tiered output
-│   └── signals.go           signal forwarding to child processes
+│   ├── intent.go            NormalizeOutput pipeline + tier-gated ApplyReturnPolicy
+│   ├── tokens.go            ApproxTokens — ascii/4 + non_ascii_runes (ADR-0012)
+│   ├── signals.go           kind-aware signal regexes (panic, FAIL, error:, …)
+│   ├── binary.go            CompactBinary — magic-number sniff + UTF-8 refusal
+│   ├── diff.go              CompactGitDiff — drop `index <hash>..<hash>` lines
+│   ├── stacktrace.go        CompactStackTracePaths — collapse repeated frame paths
+│   ├── structured.go        CompactStructured/CompactYAML/CompactMarkdownFrontmatter (ADR-0010)
+│   ├── htmltok.go           bundled HTML tokenizer (ADR-0008)
+│   └── htmlmd.go            ConvertHTML — HTML→markdown walker
 ├── setup/
 │   ├── setup.go             write MCP configs, manifest tracking
 │   ├── detect.go            agent auto-detection (9 agents)
@@ -3166,12 +3363,16 @@ newest-first.
 …
 ```
 
-Output format is selectable via `format` (`md` / `json` / `xml`) but
-the markdown form above is the default and the one most agents
-consume after a context compaction.
+Output format is selectable via `format` (`md` / `json` / `xml`) on
+the request, but the production handler currently always emits
+markdown — wiring the format switch is on the v0.3 roadmap (see
+[`docs/ROADMAP.md`](ROADMAP.md)). The markdown form above is what
+most agents consume after a context compaction.
 
 ---
 
-*Document version: DFMT v0.2.x line. Update this file whenever a
-package gains, loses, or moves a public surface, or whenever a flow
-diagram in §6, §7, §9, §10 or §11 stops matching reality.*
+*Document version: DFMT v0.2.0 release line. Update this file
+whenever a package gains, loses, or moves a public surface, or
+whenever a flow diagram in §6, §7, §9, §10 or §11 stops matching
+reality. Mirror notable schema/wire changes in `CHANGELOG.md` and
+`docs/ROADMAP.md` in the same commit.*

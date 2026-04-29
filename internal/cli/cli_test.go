@@ -114,8 +114,13 @@ func TestPrintUsage(t *testing.T) {
 }
 
 func TestVersion(t *testing.T) {
-	if Version != "0.1.0" {
-		t.Errorf("Version = %s, want '0.1.0'", Version)
+	// Version is build-time-injected via internal/version.Current. The
+	// untagged default is "v0.2.0" (the most-recently-released line);
+	// release builds override via ldflags. Either is acceptable so long
+	// as the string is non-empty — an empty Version would mean the
+	// re-export wiring broke.
+	if Version == "" {
+		t.Error("Version is empty; expected build-time-injected value or v0.2.0 default")
 	}
 }
 

@@ -10,6 +10,7 @@ import (
 
 	"github.com/ersinkoc/dfmt/internal/config"
 	"github.com/ersinkoc/dfmt/internal/core"
+	"github.com/ersinkoc/dfmt/internal/version"
 )
 
 // mcpLegacyContentSentinel is what we put in content[0].text when the modern
@@ -334,7 +335,7 @@ func (m *MCPProtocol) handleInitialize(req *MCPRequest) (*MCPResponse, error) {
 		},
 		ServerInfo: MCPServerInfo{
 			Name:    "dfmt",
-			Version: "0.1.0",
+			Version: version.Current,
 		},
 	}
 

@@ -1238,9 +1238,10 @@ func TestMCPServerCapabilities(t *testing.T) {
 }
 
 func TestMCPServerInfo(t *testing.T) {
+	const wantVersion = "test-version-0.0.0"
 	info := MCPServerInfo{
 		Name:    "dfmt",
-		Version: "0.1.0",
+		Version: wantVersion,
 	}
 
 	data, err := json.Marshal(info)
@@ -1256,8 +1257,8 @@ func TestMCPServerInfo(t *testing.T) {
 	if decoded.Name != "dfmt" {
 		t.Errorf("Name = %s, want 'dfmt'", decoded.Name)
 	}
-	if decoded.Version != "0.1.0" {
-		t.Errorf("Version = %s, want '0.1.0'", decoded.Version)
+	if decoded.Version != wantVersion {
+		t.Errorf("Version = %s, want %q", decoded.Version, wantVersion)
 	}
 }
 

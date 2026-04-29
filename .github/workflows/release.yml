@@ -31,7 +31,10 @@ jobs:
           VERSION: ${{ github.ref_name }}
         run: |
           mkdir -p dist
-          LDFLAGS="-s -w -X main.version=${VERSION}"
+          # Single source of truth: internal/version.Current. The legacy
+          # `-X main.version=...` form was retired alongside cmd/dfmt/version.go
+          # in the v0.2.0 consolidation.
+          LDFLAGS="-s -w -X github.com/ersinkoc/dfmt/internal/version.Current=${VERSION}"
           build() {
             local os="$1" arch="$2" ext="$3"
             local out="dist/dfmt-${os}-${arch}${ext}"

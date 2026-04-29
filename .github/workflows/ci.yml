@@ -55,5 +55,11 @@ jobs:
       - name: golangci-lint
         uses: golangci/golangci-lint-action@9fae48acfc02a90574d7c304a1758ef9895495fa # v7
         with:
-          version: latest
+          # Pin the linter version, not just the action. `latest` made
+          # CI non-deterministic — a new lint rule landing upstream could
+          # turn a previously-green PR red without any change in this
+          # repository. Bump alongside ADR review when we want the new
+          # rules in. The action (`@v7`) targets the golangci-lint v2.x
+          # line, so this version must come from the v2 release series.
+          version: v2.4.0
           args: --timeout=5m

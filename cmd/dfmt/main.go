@@ -5,11 +5,12 @@ import (
 	"os"
 
 	"github.com/ersinkoc/dfmt/internal/cli"
+	"github.com/ersinkoc/dfmt/internal/version"
 )
 
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "--version" {
-		fmt.Printf("dfmt %s\n", version)
+		fmt.Printf("dfmt %s\n", version.Current)
 		return
 	}
 

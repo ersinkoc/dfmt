@@ -189,8 +189,11 @@ func TestFuzzyMatch(t *testing.T) {
 }
 
 func TestConstants(t *testing.T) {
-	if Version != "0.1.0" {
-		t.Errorf("Version = %s, want '0.1.0'", Version)
+	// Version mirrors internal/version.Current, set at build time via
+	// ldflags; see internal/version/version.go. The untagged default is
+	// non-empty, so emptiness is the only meaningful failure here.
+	if Version == "" {
+		t.Error("Version is empty; expected build-time-injected value or v0.2.0 default")
 	}
 	if ULIDLen != 26 {
 		t.Errorf("ULIDLen = %d, want 26", ULIDLen)

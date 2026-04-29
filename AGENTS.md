@@ -268,11 +268,12 @@ wired today:
 ### Session memory
 
 Events are prioritized (p1–p4). On compaction, `dfmt_recall` rebuilds
-a snapshot under a byte budget; lower-tier content drops first.
-Frequently-occurring path strings get a Refs table at the top of the
-markdown snapshot + `[rN]` token references in events (path interning
-kicks in at ≥3 occurrences) so 50 events of the same path don't
-repeat the full string 50 times.
+a snapshot under a byte budget; lower-tier content drops first. Path
+interning (Refs table at the top + `[rN]` token references, kicks in
+at ≥3 occurrences) is implemented in `internal/retrieve/render_md.go`
+but **not yet wired** to the production recall handler in
+`internal/transport/handlers.go::Recall`; wiring is on the v0.3
+roadmap.
 
 `dfmt_search` returns hits with a short `excerpt` field (≤80 bytes,
 rune-aligned) drawn from the event's `message` / `path` / `type` —

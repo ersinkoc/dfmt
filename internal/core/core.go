@@ -2,12 +2,16 @@ package core
 
 import (
 	"time"
+
+	"github.com/ersinkoc/dfmt/internal/version"
 )
 
-const (
-	// Version is the DFMT version.
-	Version = "0.1.0"
+// Version is the DFMT version. Mirrors internal/version.Current — the
+// single build-time-injected source of truth. Kept as a re-export to
+// preserve the historical core.Version reference.
+var Version = version.Current
 
+const (
 	// ULIDLen is the length of a ULID string.
 	ULIDLen = 26
 

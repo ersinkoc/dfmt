@@ -125,9 +125,9 @@ Cross-call wire dedup: a `content_id` already emitted to the agent in this sessi
 
 Five ingestion paths feed the journal: MCP calls (live), CLI commands like `dfmt remember` / `dfmt task` (live), filesystem watcher (opt-in), git hooks (opt-in via `dfmt install-hooks`), shell integration (opt-in via `dfmt shell-init`).
 
-### Recall (`internal/retrieve/`)
+### Recall (`internal/transport/handlers.go::Recall`)
 
-`dfmt_recall` rebuilds a markdown snapshot under a byte budget. Per-tier streaming with FIFO eviction — lower-priority content drops first when the budget tightens. Frequently-occurring path strings get a Refs table at the top + `[rN]` token references in events (path interning kicks in at ≥3 occurrences) so 50 events of the same path don't repeat the full string 50 times.
+`dfmt_recall` rebuilds a markdown snapshot under a byte budget. Per-tier streaming with FIFO eviction — lower-priority content drops first when the budget tightens. Path interning (Refs table at the top of the snapshot + `[rN]` token references in events, kicks in at ≥3 occurrences) is implemented in `internal/retrieve/render_md.go` but **not yet wired** to the production recall path; wiring is tracked on the v0.3 roadmap (see `docs/ROADMAP.md`).
 
 `dfmt_search` returns hits with a short `excerpt` field (≤80 bytes, rune-aligned) drawn from the event's `message` / `path` / `type` — agents can decide whether to drill in without a follow-up `dfmt_recall` round-trip.
 

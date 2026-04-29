@@ -3,11 +3,18 @@ package main
 import (
 	"os"
 	"testing"
+
+	"github.com/ersinkoc/dfmt/internal/version"
 )
 
 func TestVersion(t *testing.T) {
-	if version != "dev" {
-		t.Errorf("version = %s, want 'dev'", version)
+	// version source moved from `var version` in cmd/dfmt/version.go
+	// to internal/version.Current in v0.2.0. The default is non-empty
+	// (the most-recently-released tag); release builds override via
+	// ldflags. Either is acceptable, emptiness is the only failure
+	// mode that means the wiring broke.
+	if version.Current == "" {
+		t.Error("version.Current is empty; expected build-time-injected value or default")
 	}
 }
 

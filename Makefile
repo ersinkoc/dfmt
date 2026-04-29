@@ -1,7 +1,10 @@
 .PHONY: build test lint fmt clean install release
 
 VERSION := $(shell git describe --tags --always 2>/dev/null || echo "dev")
-LDFLAGS := -X main.version=$(VERSION)
+# Single source of truth for the version string. Pre-v0.2.0 builds set
+# main.version; that path is gone. Every consumer now reads
+# internal/version.Current — see internal/version/version.go.
+LDFLAGS := -X github.com/ersinkoc/dfmt/internal/version.Current=$(VERSION)
 
 # Build targets
 build:
