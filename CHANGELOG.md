@@ -29,6 +29,62 @@ Internal package shapes (`internal/...`) are NOT covered by SemVer.
 
 _None yet._
 
+## [0.2.1] — 2026-04-29
+
+Patch release. The v0.2.0 binaries shipped before a Linux-only
+security regression and a CI-toolchain mismatch were diagnosed
+under WSL; v0.2.1 republishes the same feature set with both
+closed. No wire-format or behaviour changes for end users on
+Windows or macOS — Linux operators should upgrade.
+
+### Security
+
+- **F-03 closure on Linux** —
+  `internal/sandbox/permissions.go::globMatch` previously called
+  `filepath.ToSlash` to normalise path separators before matching
+  deny rules. `ToSlash` is a no-op on Unix because `\` is a valid
+  filename byte there, so a Windows-shaped path like
+  `C:\proj\.env` would slip past a `**/.env*` deny rule when the
+  daemon ran on Linux/WSL — re-opening the same gap F-03 had
+  closed for Windows hosts. Switched to a cross-platform
+  `strings.ReplaceAll(text, "\\", "/")` so both axes are
+  normalised regardless of host OS. Regression test:
+  `internal/sandbox/sandbox_test.go::TestGlobMatch_NormalizesPathSeparatorsForAllPathOps`.
+
+### Fixed
+
+- **`internal/content/store_ttl_test.go::TestStore_PruneExpiredCountsDropped`** —
+  live sets used `Created = now-1h` with `TTL = 1h`, putting their
+  expiration at exactly `now`. On a fast Linux runner
+  `PruneExpired` would observe `now+ε > expiry` and reap them too
+  (dropped=5 instead of 3). Bumped the live-set TTL to 24 h.
+- **`internal/sandbox/sandbox_test.go::TestSandboxEditReadOnly`** —
+  on POSIX, `rename(2)` checks the parent directory's mode, not
+  the target file's, so a `0o444` file inside a `0o755` parent is
+  still atomically replaceable by its owner. The test now also
+  locks the parent directory to `0o555` (and restores it in a
+  `defer` so `t.TempDir` cleanup can remove it). Windows behaviour
+  is unchanged.
+- **CI: golangci-lint v2.4.0 → v2.11.4** — v2.4.0 was built with
+  go1.25 and panicked inside `go/types.(*Checker).initFiles` with
+  `"file requires newer Go version go1.26 (application built with
+  go1.25)"` once `setup-go@v5` started installing the go1.26
+  toolchain. v2.11.4 is the first v2.x release built with go1.26.1
+  and runs clean against this tree. The bump also turned on
+  staticcheck QF1012; the 12 `WriteString(fmt.Sprintf(…))` sites in
+  `cmd/dfmt-bench/tokensaving.go` were converted to
+  `fmt.Fprintf(&builder, …)` (byte-identical bench output).
+
+### Internal
+
+- `internal/transport/http.go` — hoisted `runtime.GOOS == "windows"`
+  literal into a `goosWindows` const (goconst threshold once Linux
+  platform-only files compile in).
+- `.golangci.yml` — added `internal/capture/fswatch*` exclusion
+  for goconst (event-type literals `"create"` / `"modify"` /
+  `"delete"` mirror inotify / `ReadDirectoryChangesW` operations
+  and reading them inline is what one expects).
+
 ## [0.2.0] — 2026-04-29
 
 First public release after the original v0.1.x prototype. Headline
@@ -146,5 +202,6 @@ for v0.3.x:
   are accepted and validated but unwired to the corresponding
   consumer (see ARCHITECTURE.md §13.0 wired/unwired table).
 
-[Unreleased]: https://github.com/ersinkoc/dfmt/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/ersinkoc/dfmt/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/ersinkoc/dfmt/releases/tag/v0.2.1
 [0.2.0]: https://github.com/ersinkoc/dfmt/releases/tag/v0.2.0
