@@ -22,6 +22,14 @@ var (
 )
 
 // ULID is a Universally Unique Lexicographically Sortable Identifier.
+//
+// V-07 contract: ULID is an event identifier, NOT a security token. The
+// crypto/rand fallback below degrades to pid+counter+nanotime when the OS
+// entropy pool refuses to read — fine for "make sure two events in the
+// same millisecond don't collide," but unsuitable for auth tokens,
+// session IDs, CSRF nonces, or any value an attacker could be motivated
+// to predict. Anyone repurposing this type for that role MUST replace
+// the fallback with a hard error.
 type ULID string
 
 // NewULID generates a new ULID.
