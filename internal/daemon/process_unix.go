@@ -20,3 +20,7 @@ func processExistsPlatform(pid int) bool {
 	}
 	return p.Signal(syscall.Signal(0)) == nil
 }
+
+// geteuid returns the effective user ID on Unix. Used by Start to warn the
+// operator if the daemon is running as root (V-15).
+func geteuid() int { return os.Geteuid() }

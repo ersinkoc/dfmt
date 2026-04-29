@@ -25,3 +25,9 @@ func processExistsPlatform(pid int) bool {
 	}
 	return code == windowsStillActive
 }
+
+// geteuid returns -1 on Windows: the POSIX euid concept does not apply,
+// so the V-15 root-warn check in Daemon.Start is a no-op on this platform.
+// Windows daemons running as SYSTEM should be flagged separately if that
+// ever becomes a relevant threat surface.
+func geteuid() int { return -1 }

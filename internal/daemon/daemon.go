@@ -132,6 +132,14 @@ func New(projectPath string, cfg *config.Config) (*Daemon, error) {
 	// Create sandbox; cfg.Exec.PathPrepend is the project's escape hatch
 	// when the daemon's inherited PATH does not see the user's toolchains
 	// (Go, Node, Python). dirs are prepended for every exec call.
+	//
+	// V-11: surface configuration smells (missing dirs, world-writable
+	// entries) so the operator notices a planted-binary risk at start
+	// instead of after compromise. We do not refuse the daemon — the
+	// PathPrepend semantics are operator-trusted by design.
+	for _, w := range sandbox.ValidatePathPrepend(cfg.Exec.PathPrepend) {
+		logging.Warnf("path_prepend: %s", w)
+	}
 	sb := sandbox.NewSandbox(projectPath).WithPathPrepend(cfg.Exec.PathPrepend)
 
 	// Create handlers
@@ -254,6 +262,15 @@ func New(projectPath string, cfg *config.Config) (*Daemon, error) {
 func (d *Daemon) Start(ctx context.Context) error {
 	if !d.running.CompareAndSwap(false, true) {
 		return errors.New("daemon already running")
+	}
+
+	// V-15: warn the operator if the daemon is starting as root. Every
+	// sandbox PolicyCheck then runs at root privilege — the deny-list is
+	// the only thing standing between an agent's argv and an arbitrary
+	// privileged write. The default project workflow does not need root,
+	// so flag this as almost certainly a misconfiguration.
+	if euid := geteuid(); euid == 0 {
+		logging.Warnf("daemon running as root (euid=0); sandbox runs every command at root privilege. Run as your user account instead.")
 	}
 
 	lock, lerr := AcquireLock(d.projectPath)
