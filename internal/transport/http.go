@@ -19,6 +19,7 @@ import (
 )
 
 const (
+	goosWindows    = "windows"
 	jsonRPCVersion = "2.0"
 	// methodXxx are the JSON-RPC method names accepted on the HTTP and socket
 	// transports. They use dot namespacing for historical reasons and remain
@@ -783,7 +784,7 @@ func pathsEqualForRuntime(a, b string) bool {
 	if a == b {
 		return true
 	}
-	if runtime.GOOS == "windows" {
+	if runtime.GOOS == goosWindows {
 		return strings.EqualFold(a, b)
 	}
 	return false

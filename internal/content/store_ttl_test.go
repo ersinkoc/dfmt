@@ -134,12 +134,18 @@ func TestStore_PruneExpiredCountsDropped(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
-	// 3 expired, 2 live.
+	// 3 expired, 2 live. The live sets must outlive PruneExpired's clock —
+	// previously we used Created=now-1h and TTL=1h, so the expiration time
+	// landed at exactly `now`, and on a fast Linux CI runner the racing
+	// PruneExpired call would see `now+ε > expiry` and reap the live sets
+	// too. A 24h TTL on the live sets removes that fence-post entirely
+	// without changing what the test asserts.
 	now := time.Now()
 	for i, exp := range []bool{true, true, false, true, false} {
 		id := "id" + string(rune('1'+i))
-		set := &ChunkSet{ID: id, Created: now.Add(-time.Hour), TTL: time.Hour}
+		set := &ChunkSet{ID: id, Created: now, TTL: 24 * time.Hour}
 		if exp {
+			set.Created = now.Add(-time.Hour)
 			set.TTL = time.Millisecond // expired immediately
 		}
 		if err := s.PutChunkSet(set); err != nil {

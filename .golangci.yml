@@ -350,6 +350,17 @@ linters:
       - path: internal/sandbox/permissions\.go$
         linters:
           - goconst
+      # ─── goconst: capture FS event-type literals ───────────────────────
+      # `create` / `modify` / `delete` appear in the cross-platform
+      # fswatch.go switch and the per-OS fswatch_(linux|windows).go event
+      # producers. They are FS event-type names mirroring inotify /
+      # ReadDirectoryChangesW operations; reading them as literals is what
+      # one expects when grepping for `case "create":`. Linux build sees
+      # an extra file (fswatch_linux.go) so the count crosses the goconst
+      # threshold there but not on Windows.
+      - path: internal/capture/fswatch(_linux|_windows)?\.go$
+        linters:
+          - goconst
       # ─── gocritic: registry_test.go path-literal ───────────────────────
       # Test deliberately uses `/proj/seed-N` (a virtual path that never
       # resolves on disk); filepathJoin's warning is a false positive

@@ -297,15 +297,19 @@ func LoadPolicy(path string) (*Policy, error) {
 func globMatch(pattern, text string, op string) bool {
 	// Normalize Windows path separators for every path-style op so rules
 	// written with forward slashes (e.g. "**/id_rsa", "**/.env*") match
-	// `C:\Users\x\id_rsa` and `C:\proj\.env` on Windows. F-03 closure: the
-	// previous version normalized only the read op, so an agent on Windows
-	// could write through the deny list because `**/.env*` did not match
-	// the backslash-separated cleanPath. Fetch URLs already use forward
-	// slashes, so ToSlash is a no-op there but kept for symmetry. Exec text
-	// is a shell command (not a path) and must NOT be normalized.
+	// `C:\Users\x\id_rsa` and `C:\proj\.env` regardless of which OS dfmt
+	// is running on. F-03 closure: the previous version normalized only
+	// the read op, so an agent on Windows could write through the deny
+	// list because `**/.env*` did not match the backslash-separated
+	// cleanPath. We use strings.ReplaceAll, NOT filepath.ToSlash, because
+	// the latter is a no-op on Unix (where '\' is a valid filename byte)
+	// and that lets a Windows-shaped path slip past the deny rules when
+	// the daemon happens to run under WSL/Linux. Exec text is a shell
+	// command (not a path) and must NOT be normalized — `git\branch` is a
+	// literal-backslash arg and reparsing it would corrupt the matcher.
 	if op != "exec" {
-		text = filepath.ToSlash(text)
-		pattern = filepath.ToSlash(pattern)
+		text = strings.ReplaceAll(text, `\`, "/")
+		pattern = strings.ReplaceAll(pattern, `\`, "/")
 	}
 	// For exec operations, use shell-style globbing where * matches anything including /
 	// For path-style ops, * doesn't match / (path segments)

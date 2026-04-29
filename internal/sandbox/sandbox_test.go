@@ -2065,38 +2065,43 @@ func TestSandboxWriteOutsideWorkingDir(t *testing.T) {
 }
 
 func TestSandboxEditReadOnly(t *testing.T) {
-	tmpfile, err := os.CreateTemp("", "dfmt-readonly-test-*")
-	if err != nil {
-		t.Fatalf("CreateTemp failed: %v", err)
+	// Use a dedicated parent dir we can also chmod read-only — Edit goes
+	// through safefs.WriteFileAtomic which writes a tempfile then rename(2)s
+	// it over the target. On POSIX, rename ignores the target file's mode
+	// and only checks the parent directory's write bit, so a 0o444 file in
+	// a 0o755 parent is still overwritable by the file's owner. To exercise
+	// the "Edit must fail" path consistently across platforms we lock down
+	// both. (Windows enforces the file's read-only flag at OpenFile time,
+	// independent of parent mode, so the parent chmod is a no-op there but
+	// harmless.)
+	parent := t.TempDir()
+	tmppath := filepath.Join(parent, "readonly.txt")
+	if err := os.WriteFile(tmppath, []byte("readonly content\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
 	}
-	defer os.Remove(tmpfile.Name())
 
-	tmppath := tmpfile.Name()
-	if _, err := tmpfile.WriteString("readonly content\n"); err != nil {
-		t.Fatalf("WriteString failed: %v", err)
-	}
-	tmpfile.Close()
-
-	// Make file read-only
-	if err := os.Chmod(tmppath, 0444); err != nil {
+	if err := os.Chmod(tmppath, 0o444); err != nil {
 		t.Skip("Cannot change permissions on this platform")
 	}
-	defer os.Chmod(tmppath, 0644)
+	defer os.Chmod(tmppath, 0o644)
+	if err := os.Chmod(parent, 0o555); err != nil {
+		t.Skip("Cannot change parent permissions on this platform")
+	}
+	// Restore parent mode so t.TempDir's cleanup can remove the dir.
+	defer os.Chmod(parent, 0o755)
 
-	wd := filepath.Dir(tmppath)
 	policy := DefaultPolicy()
 	policy.Allow = append(policy.Allow, Rule{Op: "write", Text: "**"})
-	sb := NewSandboxWithPolicy(wd, policy)
+	sb := NewSandboxWithPolicy(parent, policy)
 	ctx := context.Background()
 
-	// Try to edit read-only file
-	_, err = sb.Edit(ctx, EditReq{
+	_, err := sb.Edit(ctx, EditReq{
 		Path:      filepath.Base(tmppath),
 		OldString: "readonly",
 		NewString: "modified",
 	})
 	if err == nil {
-		t.Error("Edit should fail on read-only file")
+		t.Error("Edit should fail on read-only file in read-only parent")
 	}
 }
 
