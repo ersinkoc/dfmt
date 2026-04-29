@@ -181,6 +181,13 @@ func (j *journalImpl) Append(ctx context.Context, e Event) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	// Sign the event before persisting. ComputeSig uses the canonical JSON
+	// (id, ts, project, type, priority, source, actor, data, refs, tags) so
+	// the Sig is a tractable 16-char prefix of SHA-256 over the stable form.
+	// Events written before this fix have Sig == ""; Validate() handles them
+	// by treating empty-Sig as "unverified but acceptable" (skip on content
+	// mismatch but not on missing Sig alone).
+	e.Sig = e.ComputeSig()
 	// Marshal event outside the lock (CPU-bound, no shared state).
 	data, err := json.Marshal(e)
 	if err != nil {
@@ -336,6 +343,14 @@ func streamFile(ctx context.Context, path string, ch chan<- Event, foundFromPtr 
 			// truncated mid-line. See V-9 in security-report/.
 			journalWarnf("warning: journal %s: skip malformed line: %v (snippet=%q)\n",
 				path, err, snippetForWarn(line))
+			continue
+		}
+		// Defensive: verify event integrity even on the read path.
+		// Events are always server-generated (ULID, time.Now, source),
+		// but Validate guards against a corrupted or tampered journal.
+		if !e.Validate() {
+			journalWarnf("warning: journal %s: skip event with invalid signature id=%s type=%s\n",
+				path, e.ID, e.Type)
 			continue
 		}
 

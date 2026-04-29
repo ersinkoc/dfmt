@@ -403,3 +403,4 @@ Some agents do not provide hooks to enforce these rules automatically.
 output above 8 KB can push earlier context out of the window, erasing
 the conversation's history. Following the rules above preserves it.
 <!-- dfmt:v1 end -->
+

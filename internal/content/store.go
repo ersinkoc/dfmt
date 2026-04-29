@@ -443,9 +443,9 @@ func (s *Store) LoadChunkSet(id string) (*ChunkSet, error) {
 
 	gz, err := gzip.NewReader(f)
 	if err != nil {
+		f.Close()
 		return nil, err
 	}
-	defer gz.Close()
 
 	// V-10: cap decompressed bytes as defense-in-depth against zip-bomb
 	// behaviour. The store is daemon-write-only on a 0o600 file so a
@@ -455,9 +455,12 @@ func (s *Store) LoadChunkSet(id string) (*ChunkSet, error) {
 	// MaxSize and never approach this floor in practice).
 	var set ChunkSet
 	if err := json.NewDecoder(io.LimitReader(gz, maxDecompressedChunkSetBytes)).Decode(&set); err != nil {
+		gz.Close()
+		f.Close()
 		return nil, err
 	}
-
+	gz.Close()
+	f.Close()
 	return &set, nil
 }
 

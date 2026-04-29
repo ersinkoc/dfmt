@@ -167,7 +167,12 @@ func canonicalize(v any) any {
 }
 
 // Validate checks if the event's signature is valid.
+// Empty Sig is treated as "pre-fix event — skip validation but accept".
+// Non-empty Sig must match ComputeSig() computed from the current canonical form.
 func (e *Event) Validate() bool {
+	if e.Sig == "" {
+		return true // pre-fix event, accept without verification
+	}
 	return e.Sig == e.ComputeSig()
 }
 
