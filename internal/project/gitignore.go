@@ -10,7 +10,7 @@ import "bytes"
 // makes the check think the directory is already ignored) and false negatives
 // for entries written without the trailing slash. This matcher walks
 // .gitignore line-by-line, skips comments and blank lines, accepts the four
-// canonical spellings (`.dfmt`, `.dfmt/`, `/.dfmt`, `/.dfmt/`), and honours
+// canonical spellings (`.dfmt`, `.dfmt/`, `/.dfmt`, `/.dfmt/`), and honors
 // a leading `!` negation per .gitignore last-match-wins semantics.
 //
 // See V-6 in security-report/.

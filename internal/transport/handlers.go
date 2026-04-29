@@ -73,15 +73,15 @@ type Handlers struct {
 	// journal — at 10 MiB rotated max + active that's hundreds of ms per
 	// poll. Mirrors the TTL pattern used by MCPProtocol.compressionStats
 	// for its own per-tool aggregation.
-	statsCacheMu sync.Mutex
-	statsCache   *StatsResponse
+	statsCacheMu  sync.Mutex
+	statsCache    *StatsResponse
 	statsCachedAt time.Time
 }
 
 // statsTTL is how long Stats() returns the memoised result before
 // re-streaming the journal. 5 seconds keeps the dashboard's poll loop cheap
 // while still showing fresh data at human-perceptible rates. Declared as
-// var (not const) so tests can override it to assert cache behaviour
+// var (not const) so tests can override it to assert cache behavior
 // without sleeping.
 var statsTTL = 5 * time.Second
 
@@ -1630,7 +1630,7 @@ func (h *Handlers) Write(ctx context.Context, params WriteParams) (*WriteRespons
 
 	// F-11: do NOT journal raw `params.Content`. Every dfmt_write of a
 	// secrets-laden file (env, config, key) would otherwise land verbatim in
-	// the journal — only pattern-redacted, not sanitised. A truncated SHA-256
+	// the journal — only pattern-redacted, not sanitized. A truncated SHA-256
 	// plus byte count keeps the audit trail (same write detectable across
 	// time) without exposing the payload.
 	sum := sha256.Sum256([]byte(params.Content))

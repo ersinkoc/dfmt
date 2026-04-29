@@ -38,7 +38,7 @@ func TestRunInit_AgentFlagWritesNonDetected(t *testing.T) {
 
 // TestRunInit_EmptyAgentListFallsBackToDetect proves the override-or-
 // detect dispatch: passing an empty list must use setup.Detect() (the
-// historical behaviour), not write nothing. We can't deterministically
+// historical behavior), not write nothing. We can't deterministically
 // assert which files appear because Detect() depends on the test host,
 // but we can assert the function returns without panicking and the
 // loop branch is exercised — anything else would indicate the empty-

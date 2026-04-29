@@ -1,6 +1,6 @@
 // Package logging is a minimal level-filtered logger used by every
 // component that previously wrote `fmt.Fprintf(os.Stderr, "warning:
-// ...")` directly. Centralising the writes lets the operator silence
+// ...")` directly. Centralizing the writes lets the operator silence
 // chatter via DFMT_LOG=error in CI and surfaces a single sink that
 // tests can capture without monkey-patching os.Stderr.
 //

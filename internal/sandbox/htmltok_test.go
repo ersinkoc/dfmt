@@ -37,7 +37,7 @@ func TestTokenizeHTML_SimpleParagraph(t *testing.T) {
 }
 
 // TestTokenizeHTML_AttributesAllQuoteStyles: HTML in the wild uses all
-// three quoting styles. Tokenizer must recognise each and decode
+// three quoting styles. Tokenizer must recognize each and decode
 // entity-encoded values uniformly.
 func TestTokenizeHTML_AttributesAllQuoteStyles(t *testing.T) {
 	got := tokenizeHTML(`<a href="https://x.com" title='a&amp;b' class=link>x</a>`)

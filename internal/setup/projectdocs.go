@@ -244,7 +244,7 @@ func projectBlockBodyFor(agentID string) string {
 }
 
 // UpsertDFMTBlock atomically writes a DFMT-marked block into the
-// instruction file at filePath. Behaviour:
+// instruction file at filePath. Behavior:
 //
 //   - File does not exist: create it with a single marker-delimited block.
 //   - File exists, marker absent: append the block (separated by a blank

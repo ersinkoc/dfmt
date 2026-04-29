@@ -77,7 +77,7 @@ func TestStatsCacheReturnsMemoisedResult(t *testing.T) {
 }
 
 // TestStatsCacheNoCacheBypassReturnsFresh pins the StatsParams.NoCache
-// behaviour: when set, the handler MUST skip the cache-read path even
+// behavior: when set, the handler MUST skip the cache-read path even
 // inside the TTL window, so a `dfmt stats` CLI call after a fresh
 // journal append sees the new event instead of the 5-second-stale
 // memoised count.

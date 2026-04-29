@@ -51,6 +51,9 @@ coverage.html
 *.bak
 *.backup
 
+# Local diagnostic helpers (cross-compile drivers, etc.)
+.tmp_linux_check/
+
 # === Dev-only build/test scripts (never commit) ===
 /run-build-test.*
 /build-test.ps1

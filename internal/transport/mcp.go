@@ -39,7 +39,7 @@ type MCPProtocol struct {
 	// cache (ADR-0011). Generated as a ULID at construction time so each
 	// `dfmt mcp` subprocess gets a unique bucket; optionally augmented in
 	// handleInitialize with the client's name/version when the agent
-	// honours the MCP `clientInfo` payload — useful for the dashboard's
+	// honors the MCP `clientInfo` payload — useful for the dashboard's
 	// session list. The ULID alone guarantees uniqueness, so missing
 	// clientInfo is harmless. Mutated only by handleInitialize, which
 	// runs before any tool call, so no mutex is needed.

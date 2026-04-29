@@ -39,8 +39,8 @@ func EnsureProjectInitialized(dir string) error {
 		return fmt.Errorf("create %s: %w", dfmtDir, err)
 	}
 
-	// 0o600 to match other .dfmt/ artefacts. Only write when missing so a
-	// user-customised config.yaml is never clobbered on re-run / auto-init.
+	// 0o600 to match other .dfmt/ artifacts. Only write when missing so a
+	// user-customized config.yaml is never clobbered on re-run / auto-init.
 	configPath := filepath.Join(dfmtDir, "config.yaml")
 	if _, err := os.Stat(configPath); os.IsNotExist(err) {
 		if werr := os.WriteFile(configPath, []byte(config.DefaultConfigYAML()), 0o600); werr != nil {
@@ -86,7 +86,7 @@ func EnsureProjectInitialized(dir string) error {
 //
 // User-scope is off-limits: if dir resolves to the user's home directory, the
 // function is a no-op. dfmt's permissions/deny rules only make sense inside an
-// initialised project, and clobbering ~/.claude/settings.json would destroy
+// initialized project, and clobbering ~/.claude/settings.json would destroy
 // the user's global Claude Code configuration.
 func writeProjectClaudeSettings(dir string) error {
 	if isUserHome(dir) {
@@ -112,7 +112,7 @@ func writeProjectClaudeSettings(dir string) error {
 
 	preCompact := `dfmt recall --save --format md`
 	var sessionStart string
-	if runtime.GOOS == "windows" {
+	if runtime.GOOS == goosWindows {
 		sessionStart = `if (Test-Path .dfmt/last-recall.md) { Write-Host '--- Previous session summary ---'; Get-Content .dfmt/last-recall.md; Write-Host '--- End of previous session ---' }`
 	} else {
 		sessionStart = `if [ -f .dfmt/last-recall.md ]; then echo '--- Previous session summary ---' && cat .dfmt/last-recall.md && echo '--- End of previous session ---'; fi`

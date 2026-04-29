@@ -76,7 +76,7 @@ type HTTPServer struct {
 	mu          sync.Mutex
 	running     bool
 	// doneCh is closed by Stop so the shutdown-watcher goroutine exits even
-	// when the Start ctx is never cancelled (common: daemon passes a fresh
+	// when the Start ctx is never canceled (common: daemon passes a fresh
 	// stopCtx to Stop). Without this the watcher goroutine leaks for every
 	// Start/Stop cycle.
 	doneCh chan struct{}
@@ -184,7 +184,7 @@ func (s *HTTPServer) Start(ctx context.Context) error {
 	s.running = true
 	s.doneCh = make(chan struct{})
 
-	// Shutdown watcher exits on either the Start ctx being cancelled or Stop
+	// Shutdown watcher exits on either the Start ctx being canceled or Stop
 	// closing doneCh, whichever comes first.
 	doneCh := s.doneCh
 	server := s.server

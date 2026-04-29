@@ -238,7 +238,7 @@ func TestWireDedup_SessionIsolation(t *testing.T) {
 
 // TestWireDedup_NoSessionFallsBackToDefault: paths that haven't been threaded
 // with WithSessionID still dedupe (under a single shared "default" bucket).
-// Preserves behaviour for every test and any pre-ADR-0011 caller that
+// Preserves behavior for every test and any pre-ADR-0011 caller that
 // hasn't been migrated yet.
 func TestWireDedup_NoSessionFallsBackToDefault(t *testing.T) {
 	body := "default-bucket content\n"

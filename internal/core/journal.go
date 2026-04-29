@@ -204,7 +204,7 @@ func (j *journalImpl) Append(ctx context.Context, e Event) error {
 	defer j.mu.Unlock()
 
 	// Re-check ctx after the (potentially blocking) lock acquire. A caller
-	// that cancelled while waiting on j.mu shouldn't get its append snuck
+	// that canceled while waiting on j.mu shouldn't get its append snuck
 	// through after the cancel.
 	if err := ctx.Err(); err != nil {
 		return err

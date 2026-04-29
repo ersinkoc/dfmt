@@ -49,7 +49,7 @@ func FuzzRedact(f *testing.F) {
 
 		// Idempotence: running Redact on already-redacted output should be
 		// a fixed point. If not, an attacker could feed redacted output
-		// back through a chain and observe behavioural divergence.
+		// back through a chain and observe behavioral divergence.
 		out2 := r.Redact(out1)
 		if out1 != out2 {
 			t.Fatalf("not idempotent:\n in:  %q\n one: %q\n two: %q", s, out1, out2)

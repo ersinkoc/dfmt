@@ -11,7 +11,10 @@ import (
 	"time"
 )
 
-const versionUnknown = "unknown"
+const (
+	versionUnknown = "unknown"
+	goosWindows    = "windows"
+)
 
 // Runtime represents a detected language runtime.
 type Runtime struct {
@@ -105,7 +108,7 @@ func (r *Runtimes) getVersion(ctx context.Context, path string) string {
 // invocation. Git Bash uses Windows-PATH semantics and resolves the
 // .exe form transparently.
 var lookPath = func(name string) (string, error) {
-	if runtime.GOOS == "windows" && strings.EqualFold(name, "bash") {
+	if runtime.GOOS == goosWindows && strings.EqualFold(name, "bash") {
 		if p, ok := findGitBashWindows(); ok {
 			return p, nil
 		}

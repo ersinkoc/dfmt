@@ -14,7 +14,7 @@ import (
 // one — pipelined readers then surfaced the empty frame as "unexpected end
 // of JSON input". This fuzz target generates random method strings, params,
 // and ID values, writes N requests, reads them back, and asserts that
-// every read deserialises into a request with the same method.
+// every read deserializes into a request with the same method.
 //
 // Failure modes the fuzzer is designed to surface:
 //   - any double-newline framing regression (catches the original bug)

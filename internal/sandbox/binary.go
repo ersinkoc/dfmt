@@ -34,7 +34,7 @@ const binaryDetectSampleBytes = 512
 // even a handful is a strong signal.
 const binaryNullByteThreshold = 1
 
-// binaryMagicSignatures pins the file headers we recognise without a
+// binaryMagicSignatures pins the file headers we recognize without a
 // full UTF-8 scan. Each entry is the first few bytes of a common
 // binary container; matching one bypasses the UTF-8 fallback (which
 // some malformed-text inputs would also fail). The list is small

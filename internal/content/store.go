@@ -448,7 +448,7 @@ func (s *Store) LoadChunkSet(id string) (*ChunkSet, error) {
 	}
 
 	// V-10: cap decompressed bytes as defense-in-depth against zip-bomb
-	// behaviour. The store is daemon-write-only on a 0o600 file so a
+	// behavior. The store is daemon-write-only on a 0o600 file so a
 	// malicious payload requires the daemon process to be already
 	// compromised, but the cost of a 64-MiB ceiling is zero for any
 	// legitimate ChunkSet (chunks are bounded by the store's own

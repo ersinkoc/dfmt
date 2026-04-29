@@ -2011,7 +2011,7 @@ func (s *SandboxImpl) execImpl(ctx context.Context, req ExecReq, rt Runtime) (Ex
 	// Strip terminal noise (ANSI color/cursor, CR-overwrites, repeat-spam)
 	// before either the return-policy filter or the content-store stash sees
 	// the bytes. Tools that paint their own UI (npm install, gradle, cargo,
-	// any Go test with -v + a coloured runner) routinely produce output
+	// any Go test with -v + a colored runner) routinely produce output
 	// whose token count is dominated by escape sequences and progress-bar
 	// rewrites — none of which the agent can act on. We do this on RAW
 	// stdout, not after redaction, because escape sequences can split a
@@ -2119,7 +2119,7 @@ func prependPATH(env []string, dirs []string) []string {
 func buildEnv(extra map[string]string) []string {
 	var env []string
 
-	if runtime.GOOS == "windows" {
+	if runtime.GOOS == goosWindows {
 		// Windows: use system PATH so cmd, powershell, git, go, node etc. are found
 		env = []string{
 			"PATH=" + os.Getenv("PATH"),

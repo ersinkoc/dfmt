@@ -445,7 +445,7 @@ func (w *walker) findRecentAnchorHref() string {
 
 // extractCodeLanguage reads the language hint from a <code> element's
 // class attribute. GitHub-style is `class="language-go"`; some sites
-// use `class="lang-go"` or `class="hljs go"` — we recognise the first
+// use `class="lang-go"` or `class="hljs go"` — we recognize the first
 // form precisely and let the rest pass without a hint.
 func extractCodeLanguage(attrs map[string]string) string {
 	class := attrs["class"]

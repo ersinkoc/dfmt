@@ -355,7 +355,7 @@ func runQuickstart(args []string) int {
 	}
 	// Inject DFMT routing block into each detected agent's project
 	// instruction file. See writeProjectInstructionFiles for rationale.
-	// quickstart honours the same --agent override as setup so the
+	// quickstart honors the same --agent override as setup so the
 	// project-doc and MCP-config writes converge on the same agent
 	// set when the operator picks one explicitly.
 	var qsExplicitIDs []string
@@ -897,7 +897,7 @@ func signalStopProcess(pid int, force bool) {
 	// error (taskkill /F path above is what actually kills on Windows).
 	// Using os.Kill instead of syscall.SIGKILL keeps this file buildable
 	// on Windows where syscall.SIGKILL is not defined.
-	sig := os.Signal(os.Interrupt)
+	sig := os.Interrupt // os.Signal-typed; widening on assignment below works
 	if force {
 		sig = os.Kill
 	}
@@ -1186,7 +1186,7 @@ func runDoctor(args []string) int {
 //
 // The check covers only Kind=FileKindStrip entries (project doc
 // injections); Kind=delete (~/.claude/mcp.json etc.) are out of scope
-// — those are full-file artefacts, not blocks within user content.
+// — those are full-file artifacts, not blocks within user content.
 //
 // Comparison is whitespace-tolerant on the *boundary* (we trim
 // trailing newlines from both sides) but strict on the body. A single
@@ -1204,17 +1204,17 @@ func runDoctor(args []string) int {
 // Probe matrix per tool:
 //
 //   - `command -v <tool>`           — bare name, the agent's most
-//                                     common invocation form.
+//     common invocation form.
 //   - `command -v <tool>.exe`       — Windows binary form. WSL bash
-//                                     sees Windows toolchains under
-//                                     /mnt/c/... but only the .exe
-//                                     suffixed name resolves under
-//                                     Linux-PATH semantics; the
-//                                     bare name 127s. Detecting this
-//                                     pattern lets doctor explain
-//                                     why path_prepend won't help and
-//                                     point at Git Bash / .exe suffix
-//                                     as the actual fix.
+//     sees Windows toolchains under
+//     /mnt/c/... but only the .exe
+//     suffixed name resolves under
+//     Linux-PATH semantics; the
+//     bare name 127s. Detecting this
+//     pattern lets doctor explain
+//     why path_prepend won't help and
+//     point at Git Bash / .exe suffix
+//     as the actual fix.
 //
 // Warning-only — never flips the doctor exit code, because plenty of
 // valid setups don't need any of these.
@@ -1235,16 +1235,15 @@ func checkSandboxToolchains(dir string) {
 	}
 
 	type probe struct {
-		tool        string
-		bareOK      bool
-		bareStdout  string
-		exeOK       bool
-		exeStdout   string
+		tool       string
+		bareOK     bool
+		bareStdout string
+		exeOK      bool
+		exeStdout  string
 	}
 	var (
-		results       []probe
-		bareMissing   []string
-		wslExeOnly    []string // bare 127's but .exe works → WSL-bash mismatch
+		bareMissing []string
+		wslExeOnly  []string // bare 127's but .exe works → WSL-bash mismatch
 	)
 
 	for _, t := range tools {
@@ -1259,7 +1258,6 @@ func checkSandboxToolchains(dir string) {
 				p.exeStdout, p.exeOK = probeSandboxTool(cl, t+".exe")
 			}
 		}
-		results = append(results, p)
 
 		switch {
 		case p.bareOK:
@@ -1869,8 +1867,8 @@ func goToolchainAtLeast(version string, wantMajor, wantMinor, wantPatch int) boo
 // openInBrowser launches the OS-default browser pointed at url. Each
 // platform has a different conventional helper; this uses the same
 // helper that desktop environments dispatch to when the user clicks a
-// link, so behaviour matches the user's defaults (e.g., a default
-// browser change is honoured on the next call).
+// link, so behavior matches the user's defaults (e.g., a default
+// browser change is honored on the next call).
 //
 // Safety: url is constructed by runDashboard from a fixed scheme
 // (http://127.0.0.1:<int>/dashboard) so there is no shell-injection
@@ -2779,9 +2777,9 @@ func runMCP(_ []string) int {
 	handlers.SetProject(proj)
 	mcp := transport.NewMCPProtocol(handlers)
 
-	// Per-process cancellable context. Cancelled on stdin EOF (deferred
+	// Per-process cancellable context. Canceled on stdin EOF (deferred
 	// cancel below) or on SIGINT/SIGTERM (signal goroutine). Threaded into
-	// every mcp.Handle call so a long-running tool invocation honours
+	// every mcp.Handle call so a long-running tool invocation honors
 	// graceful shutdown — pre-fix, handleToolsCall used context.Background()
 	// and a Ctrl-C waited for the handler's own per-call timeout.
 	mcpCtx, mcpCancel := context.WithCancel(context.Background())

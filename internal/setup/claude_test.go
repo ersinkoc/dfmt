@@ -432,7 +432,7 @@ func TestUnpatchClaudeCodeUserJSON_RemovesProjectScopeMCPLeavesTrustFlags(t *tes
 				"hasTrustDialogAccepted":                  true,
 				"hasClaudeMdExternalIncludesApproved":     true,
 				"hasClaudeMdExternalIncludesWarningShown": true,
-				"customKey":                               "preserved",
+				"customKey": "preserved",
 				"mcpServers": map[string]any{
 					"dfmt":      map[string]any{"command": "/old/dfmt"},
 					"otherTool": map[string]any{"command": "/keep"},

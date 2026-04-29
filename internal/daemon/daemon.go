@@ -24,6 +24,15 @@ import (
 	"github.com/ersinkoc/dfmt/internal/transport"
 )
 
+const (
+	// ephemeralLoopback is the default bind for the daemon's HTTP listener:
+	// IPv4 loopback with an ephemeral port (CLI clients read the actual port
+	// from .dfmt/port). Held as a constant so the test cross-checks share
+	// the literal.
+	ephemeralLoopback = "127.0.0.1:0"
+	goosWindows       = "windows"
+)
+
 // Server is the interface for network servers (Unix socket or TCP).
 type Server interface {
 	Start(ctx context.Context) error
@@ -158,9 +167,10 @@ func New(projectPath string, cfg *config.Config) (*Daemon, error) {
 	// Create server based on platform - use HTTPServer for HTTP support (dashboard, API)
 	var server Server
 	var httpServer *transport.HTTPServer
-	tcpOptIn := cfg != nil && cfg.Transport.HTTP.Enabled && cfg.Transport.HTTP.Bind != ""
+	// cfg is non-nil here — the New() entry replaces nil with &config.Config{}.
+	tcpOptIn := cfg.Transport.HTTP.Enabled && cfg.Transport.HTTP.Bind != ""
 	switch {
-	case runtime.GOOS == "windows":
+	case runtime.GOOS == goosWindows:
 		// On Windows, use TCP with HTTPServer for full HTTP support.
 		// Bind to the IPv4 loopback explicitly so we don't race between
 		// ::1 and 127.0.0.1 — the client also dials 127.0.0.1 to avoid
@@ -172,7 +182,7 @@ func New(projectPath string, cfg *config.Config) (*Daemon, error) {
 		// honor it so the dashboard URL is stable. Port file is still
 		// written either way — CLI clients always read it so they don't
 		// need to know whether the bind is fixed or ephemeral.
-		bind := "127.0.0.1:0"
+		bind := ephemeralLoopback
 		if tcpOptIn {
 			bind = cfg.Transport.HTTP.Bind
 		}
@@ -445,7 +455,7 @@ func (d *Daemon) Stop(ctx context.Context) error {
 
 		// (5) Persist the index while the journal is still open for Checkpoint.
 		//
-		// Skip persist if an async rebuild was in flight and got cancelled
+		// Skip persist if an async rebuild was in flight and got canceled
 		// before completing. In that case d.index holds events only up to
 		// some Y, but journal.Checkpoint returns the latest event ID X > Y,
 		// and writing a cursor that says "indexed up to X" would lie — next

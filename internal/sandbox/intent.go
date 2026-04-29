@@ -133,8 +133,8 @@ func MatchContent(content string, keywords []string, maxMatches int) []ContentMa
 
 		score := scoreLine(line, keywords)
 		if score > 0 {
-			// Long log lines (200+ chars) are penalised in scoring but were
-			// still serialised in full — paying ~250 bytes per match for
+			// Long log lines (200+ chars) are penalized in scoring but were
+			// still serialized in full — paying ~250 bytes per match for
 			// content the agent rarely needs past the first ~120 chars.
 			// truncate is rune-aligned, so non-ASCII (Turkish, CJK) lines
 			// don't get cut mid-rune.

@@ -81,7 +81,8 @@ func Stem(word string) string {
 	}
 
 	// Step 1b: Porter spec is EED → EE when measure(stem) > 0.
-	// "agreed" (m=1) → "agree", not "agre".
+	// "agreed" (m=1) → "agree", not "agr-e-e". (Stemmer output illustration —
+	// the truncated form is the wrong outcome the rule guards against.)
 	if strings.HasSuffix(s, "eed") {
 		stem := removeSuffix(s, "eed")
 		if measure(stem) > 0 {

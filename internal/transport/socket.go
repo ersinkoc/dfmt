@@ -114,7 +114,7 @@ func (s *SocketServer) Start(ctx context.Context) error {
 // server has been stopped — otherwise we'd spin at 100% CPU on the
 // "listener closed" error that follows Stop(). Previously the select's
 // default branch just `continue`d, which only exited if the Start ctx was
-// cancelled — but daemon.Stop uses a fresh ctx, so the goroutine would
+// canceled — but daemon.Stop uses a fresh ctx, so the goroutine would
 // spin forever.
 func (s *SocketServer) serve(ctx context.Context) {
 	// Recover from any panic in the accept loop. handleConn has its own

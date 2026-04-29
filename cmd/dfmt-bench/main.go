@@ -47,6 +47,7 @@ Operations:
 	}
 
 	var results []Result
+	var runTokenSaving bool
 
 	switch op {
 	case "all":
@@ -54,9 +55,9 @@ Operations:
 		results = append(results, benchIndex()...)
 		results = append(results, benchSearch()...)
 		results = append(results, benchExec()...)
-		// Token-savings report writes its own table; trigger after the
-		// numeric results above have printed so users see both views.
-		defer runTokenSavingReport()
+		// Token-savings report runs after the numeric table below so users
+		// see both views in order.
+		runTokenSaving = true
 	case "tokenize":
 		results = append(results, benchTokenize()...)
 	case "index":
@@ -76,6 +77,10 @@ Operations:
 	fmt.Println(strings.Repeat("-", 60))
 	for _, r := range results {
 		fmt.Printf("%-20s %15.2f %12s %10d\n", r.Name, r.OpsPerSec, r.Duration.Round(time.Millisecond), r.Bytes)
+	}
+
+	if runTokenSaving {
+		runTokenSavingReport()
 	}
 }
 

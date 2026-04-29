@@ -10,7 +10,7 @@ import (
 
 // TestJournalAppendHonorsCtx pins finding #19: Append must observe ctx
 // cancellation. Pre-fix the ctx parameter was accepted but ignored, so a
-// caller that cancelled (e.g., daemon shutdown mid-write) had no way to
+// caller that canceled (e.g., daemon shutdown mid-write) had no way to
 // abort the append before it landed on disk.
 func TestJournalAppendHonorsCtx(t *testing.T) {
 	tmp := t.TempDir()
@@ -32,7 +32,7 @@ func TestJournalAppendHonorsCtx(t *testing.T) {
 	}
 	err = j.Append(ctx, ev)
 	if err == nil {
-		t.Fatal("Append on cancelled ctx returned nil; want context.Canceled")
+		t.Fatal("Append on canceled ctx returned nil; want context.Canceled")
 	}
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("Append err = %v, want errors.Is(err, context.Canceled)", err)
@@ -40,7 +40,7 @@ func TestJournalAppendHonorsCtx(t *testing.T) {
 }
 
 // TestJournalCheckpointHonorsCtx is the Checkpoint sibling of the Append
-// test. The journal's Checkpoint takes the lock; a cancelled ctx must
+// test. The journal's Checkpoint takes the lock; a canceled ctx must
 // short-circuit before doing any work.
 func TestJournalCheckpointHonorsCtx(t *testing.T) {
 	tmp := t.TempDir()
@@ -55,7 +55,7 @@ func TestJournalCheckpointHonorsCtx(t *testing.T) {
 
 	_, err = j.Checkpoint(ctx)
 	if err == nil {
-		t.Fatal("Checkpoint on cancelled ctx returned nil; want context.Canceled")
+		t.Fatal("Checkpoint on canceled ctx returned nil; want context.Canceled")
 	}
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("Checkpoint err = %v, want errors.Is(err, context.Canceled)", err)
@@ -63,7 +63,7 @@ func TestJournalCheckpointHonorsCtx(t *testing.T) {
 }
 
 // TestJournalAppendNoCancelStillWorks is the negative control: if ctx is
-// not cancelled, Append returns successfully. Without this, a buggy
+// not canceled, Append returns successfully. Without this, a buggy
 // ctx.Err() check that always returns an error would slip through.
 func TestJournalAppendNoCancelStillWorks(t *testing.T) {
 	tmp := t.TempDir()

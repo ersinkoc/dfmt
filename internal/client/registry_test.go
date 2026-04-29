@@ -172,7 +172,7 @@ func TestRegistryListVsRegisterRace(t *testing.T) {
 	// trigger the saveSnapshot path).
 	for i := 0; i < 20; i++ {
 		r.Register(DaemonEntry{
-			ProjectPath: filepath.Join("/proj", "seed-"+strconv.Itoa(i)),
+			ProjectPath: "/proj/seed-" + strconv.Itoa(i),
 			PID:         1, // PID 1 reads as "not running" → triggers dead-entry sweep in List
 			Port:        i,
 		})

@@ -23,8 +23,8 @@ func main() {
 	cleaned := args[:0]
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
-		switch {
-		case arg == "--project":
+		switch arg {
+		case "--project":
 			if i+1 >= len(args) {
 				fmt.Fprintln(os.Stderr, "dfmt: --project requires a value")
 				os.Exit(1)
@@ -37,7 +37,7 @@ func main() {
 			_ = os.Setenv("DFMT_PROJECT", val)
 			cli.SetGlobalProject(val)
 			i++
-		case arg == "--json":
+		case "--json":
 			cli.SetGlobalJSON(true)
 		default:
 			cleaned = append(cleaned, arg)

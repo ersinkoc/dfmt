@@ -41,7 +41,7 @@ type FSWatcher struct {
 
 	// debounceMap tracks the last emit time per path for non-blocking debounce.
 	// Access is guarded by debounceMu.
-	debounceMu sync.Mutex
+	debounceMu  sync.Mutex
 	debounceMap map[string]time.Time
 	// cleanupTicker periodically removes stale entries from debounceMap to
 	// prevent unbounded growth. Entries older than 10× debounceMs are purged.
@@ -68,11 +68,11 @@ func (w *FSWatcher) SetProject(p string) { w.projectPath = p }
 // NewFSWatcher creates a new filesystem watcher.
 func NewFSWatcher(path string, ignore []string, debounceMs int) (*FSWatcher, error) {
 	w := &FSWatcher{
-		path:       path,
-		ignore:     ignore,
-		debounceMs: debounceMs,
-		events:     make(chan core.Event, 100),
-		stopCh:     make(chan struct{}),
+		path:        path,
+		ignore:      ignore,
+		debounceMs:  debounceMs,
+		events:      make(chan core.Event, 100),
+		stopCh:      make(chan struct{}),
 		debounceMap: make(map[string]time.Time),
 	}
 	if debounceMs > 0 {

@@ -109,7 +109,7 @@ func PatchClaudeCodeUserJSON(projectPath string, setUserScopeMCP bool) error {
 		// and "D:/CODEBOX") even though they refer to the same project. PS
 		// JSON parsers refuse such files outright, so collapse the variants
 		// into the canonical key before patching.
-		if runtime.GOOS == "windows" {
+		if runtime.GOOS == goosWindows {
 			canonical, _ := projects[key].(map[string]any)
 			if canonical == nil {
 				canonical = map[string]any{}

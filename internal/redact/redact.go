@@ -44,7 +44,7 @@ var commonPatterns = []*redactPattern{
 	{name: "openai_key", regex: regexp.MustCompile(`sk-[A-Za-z0-9_-]{40,}`), repl: "[OPENAI_KEY]"},
 
 	// GitHub classic PATs (ghp/gho/ghu/ghs/ghr) and modern fine-grained PATs
-	// (github_pat_…, 82-char body). Both forms catalogued at:
+	// (github_pat_…, 82-char body). Both forms cataloged at:
 	// https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/about-authentication-to-github
 	{name: "github_token", regex: regexp.MustCompile(`(ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_]{36,}`), repl: "[GITHUB_TOKEN]"},
 	// Body length is variable in the wild (commonly 70–84 chars including

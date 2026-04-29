@@ -20,7 +20,7 @@ import (
 // connWG up by one (no real conn — pure phantom counter), call Stop on a
 // goroutine, observe that it does NOT return immediately, then release
 // the phantom and observe that Stop now returns. This isolates the drain
-// behaviour from listener/Read interactions, which on Unix do not unblock
+// behavior from listener/Read interactions, which on Unix do not unblock
 // each other (closing a listener does not interrupt existing reads).
 func TestSocketServerStopWaitsForInflightConn(t *testing.T) {
 	if runtime.GOOS == "windows" {
@@ -51,7 +51,7 @@ func TestSocketServerStopWaitsForInflightConn(t *testing.T) {
 	// Stop should NOT have returned yet — it's blocked in connWG.Wait().
 	select {
 	case <-stopDone:
-		t.Fatal("Stop returned before phantom conn drained; WaitGroup not honoured")
+		t.Fatal("Stop returned before phantom conn drained; WaitGroup not honored")
 	case <-time.After(100 * time.Millisecond):
 	}
 

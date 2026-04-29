@@ -53,7 +53,7 @@ func ResolveDFMTCommand() string {
 // set it to Unix-style forms like "/c/Users/foo" which filepath.Join cannot use.
 func HomeDir() string {
 	if home := os.Getenv("HOME"); home != "" {
-		if runtime.GOOS != "windows" || filepath.IsAbs(home) {
+		if runtime.GOOS != goosWindows || filepath.IsAbs(home) {
 			return home
 		}
 	}
@@ -91,7 +91,7 @@ type AgentEntry struct {
 
 // FileKind drives uninstall's per-entry teardown strategy. Empty string
 // (zero value) means delete-the-whole-file, which is the historical
-// behaviour for entries written before this field existed; new code
+// behavior for entries written before this field existed; new code
 // should set Kind explicitly.
 const (
 	// FileKindDelete: os.Remove the path on uninstall, optionally
@@ -113,7 +113,7 @@ const (
 // All fields use omitempty for both encodings. The legacy on-disk
 // manifests written by older dfmt versions had unconditional fields
 // (`"Path":""`, etc.); JSON unmarshal is case-insensitive and accepts
-// missing fields as zero values, so dropping the empty serialisations
+// missing fields as zero values, so dropping the empty serializations
 // is forward-compatible. The asymmetry where only Kind had omitempty
 // produced manifests like:
 //
@@ -136,7 +136,7 @@ type FileEntry struct {
 // underlying filesystem is case-insensitive, so the comparison is too;
 // on Unix-like systems it is exact.
 func samePath(a, b string) bool {
-	if runtime.GOOS == "windows" {
+	if runtime.GOOS == goosWindows {
 		return strings.EqualFold(a, b)
 	}
 	return a == b

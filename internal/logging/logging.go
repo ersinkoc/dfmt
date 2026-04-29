@@ -86,7 +86,7 @@ func InitDefault() {
 	Init(Config{Level: "info", Format: "text", Output: "stdout"})
 }
 
-// ensureLogger guarantees Logger is initialised under concurrent first-
+// ensureLogger guarantees Logger is initialized under concurrent first-
 // callers (V-04). Double-checked locking: the fast-path read avoids the
 // mutex when Logger is already populated; under the lock we re-check
 // because another goroutine may have raced in.

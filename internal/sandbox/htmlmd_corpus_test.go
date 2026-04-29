@@ -28,7 +28,7 @@ var htmlCorpusFixtures = []corpusFixture{
 			"## Parameters",
 			"## Returns",
 			"## Errors",
-			"```go",   // language hint preserved on code block
+			"```go", // language hint preserved on code block
 			"loadConfig",
 		},
 		dropTags: []string{"<script", "<style", "<nav", "<footer", "<aside", "<head>"},

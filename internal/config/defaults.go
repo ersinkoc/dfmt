@@ -8,7 +8,7 @@ package config
 // the watcher feeds back into the journal — a self-amplifying loop that
 // fills the journal with its own writes within seconds of enabling fs
 // capture. The other entries are tuned for typical project noise: build
-// artefacts, dependency caches, IDE state, and compiler outputs that
+// artifacts, dependency caches, IDE state, and compiler outputs that
 // produce thousands of events per second during a normal workday.
 func DefaultConfigYAML() string {
 	return `# DFMT Configuration

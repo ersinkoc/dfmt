@@ -26,7 +26,7 @@ import (
 
 // pythonFrameRegex matches a Python traceback frame's file line:
 //
-//	  File "/path/to/foo.py", line 42, in funcname
+//	File "/path/to/foo.py", line 42, in funcname
 //
 // Capture groups: indent, path, line+function tail. The path is what
 // we collapse on consecutive matches.

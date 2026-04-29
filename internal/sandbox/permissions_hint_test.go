@@ -13,7 +13,7 @@ import (
 // pointer they came to depend on.
 func TestPolicyDenyHint_AllOps(t *testing.T) {
 	cases := []struct {
-		op         string
+		op          string
 		mustContain string
 	}{
 		{"exec", ".dfmt/permissions.yaml"},

@@ -389,4 +389,3 @@ func isASCIIWhitespace(c byte) bool {
 	}
 	return false
 }
-

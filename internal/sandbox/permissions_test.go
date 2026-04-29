@@ -588,8 +588,8 @@ func TestExecImplMaxTimeout(t *testing.T) {
 	}
 }
 
-// TestExecImplTimeoutCancelled tests that execution is canceled on timeout.
-func TestExecImplTimeoutCancelled(t *testing.T) {
+// TestExecImplTimeoutCanceled tests that execution is canceled on timeout.
+func TestExecImplTimeoutCanceled(t *testing.T) {
 	rt, ok := runtimes.Get("sh")
 	if !ok || !rt.Available {
 		rt, ok = runtimes.Get("bash")
@@ -802,7 +802,7 @@ func TestBuildEnvDFMTExecPrefix(t *testing.T) {
 	}
 }
 
-// TestPrependPATHEmpty pins the no-op behaviour: an empty or nil dirs
+// TestPrependPATHEmpty pins the no-op behavior: an empty or nil dirs
 // slice must return env unchanged. Closes the recurring "exit 127"
 // regression test surface for projects that have not configured
 // exec.path_prepend.
@@ -882,7 +882,7 @@ func TestPrependPATHAddsWhenAbsent(t *testing.T) {
 // language toolchains.
 func TestWithPathPrependOnExec(t *testing.T) {
 	if runtime.GOOS == "windows" {
-		t.Skip("bash echo behaviour differs on Windows; covered by the prependPATH unit tests")
+		t.Skip("bash echo behavior differs on Windows; covered by the prependPATH unit tests")
 	}
 	bash, err := exec.LookPath("bash")
 	if err != nil {

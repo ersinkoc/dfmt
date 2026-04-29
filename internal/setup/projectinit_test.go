@@ -261,7 +261,7 @@ func TestEnsureProjectInitializedPreservesRichSettings(t *testing.T) {
 		"autoUpdatesChannel": "latest",
 		"effortLevel":        "xhigh",
 		"enabledPlugins": map[string]any{
-			"github@claude-plugins-official":   true,
+			"github@claude-plugins-official":     true,
 			"playwright@claude-plugins-official": true,
 		},
 		"env": map[string]any{

@@ -83,7 +83,7 @@ func TestRedact_AWSSecretCrossLineAndCamelCase(t *testing.T) {
 	}
 }
 
-// TestRedact_AWSSecretFalsePositiveBounds documents the boundary behaviour:
+// TestRedact_AWSSecretFalsePositiveBounds documents the boundary behavior:
 // a 40-char base64 with NO marker nearby, or a 41-char base64, must NOT be
 // classified as an AWS secret (avoids false positives on JWT segments,
 // random hashes, etc.).
@@ -153,11 +153,11 @@ func TestRedactEnvExport(t *testing.T) {
 	r := NewRedactor()
 
 	cases := []struct {
-		name       string
-		input      string
-		mustHave   string
-		mustLack   string
-		mustKeep   string // content that should remain unchanged (e.g. the var name)
+		name     string
+		input    string
+		mustHave string
+		mustLack string
+		mustKeep string // content that should remain unchanged (e.g. the var name)
 	}{
 		{"export SECRET", "export SECRET=hunter2", "SECRET=[REDACTED]", "hunter2", "SECRET"},
 		{"inline PASSWORD", "DB_PASSWORD=supersecret", "DB_PASSWORD=[REDACTED]", "supersecret", "DB_PASSWORD"},
@@ -285,7 +285,7 @@ func TestIsSensitiveKey(t *testing.T) {
 		{"cred", true},
 		{"creds", true},
 		{"cred_id", true},
-		{"pat", true},      // Personal Access Token
+		{"pat", true},       // Personal Access Token
 		{"pat_token", true}, // both tokens hit
 		{"oauth_token", true},
 		{"OAuthToken", true},
@@ -298,12 +298,12 @@ func TestIsSensitiveKey(t *testing.T) {
 		{"signing_key", true},
 
 		// F-20: previously false positives — must now NOT match.
-		{"MONKEY", false},        // contained "key" as substring
+		{"MONKEY", false}, // contained "key" as substring
 		{"monkey", false},
-		{"PRIMARY_KEY", false},   // DB primary key, not a secret
+		{"PRIMARY_KEY", false}, // DB primary key, not a secret
 		{"key_value_store", false},
 		{"keystore", false},
-		{"path", false},          // contains "pat"
+		{"path", false}, // contains "pat"
 		{"PATH", false},
 		{"mypath", false},
 		{"keyboard", false},
@@ -565,7 +565,7 @@ func TestRedactExpandedProviders(t *testing.T) {
 			secret: "ABCDEFGHIJKLMNOPQRSTUVWX",
 		},
 		{
-			name:   "discord bot token in prose",
+			name: "discord bot token in prose",
 			// Real-shape Discord bot token: 24-char base64 user-id, dot, 6+ char timestamp, dot, 27+ char hmac.
 			input:  "header Bot MTI3OTk2NjYzNDk1NDM5MTg4OQ.GxYzAB.aabbccddeeffgghhiijjkkllmm0123XX please",
 			label:  "[DISCORD_TOKEN]",
@@ -667,9 +667,9 @@ func TestRedactExpandedNoFalsePositives(t *testing.T) {
 	safe := []string{
 		"see the design doc at https://example.com/path/key-results-q3",
 		"the function returns a sk- error code on failure",
-		"AKIA is the prefix for AWS keys",       // bare prefix only, no 16-char body
-		"my postgres://localhost is up",         // no credentials in URL
-		"connect to mongodb+srv://cluster.foo/", // no credentials
+		"AKIA is the prefix for AWS keys",        // bare prefix only, no 16-char body
+		"my postgres://localhost is up",          // no credentials in URL
+		"connect to mongodb+srv://cluster.foo/",  // no credentials
 		"SG.is.a.fine.abbreviation.for.sendgrid", // wrong segment lengths
 	}
 
@@ -740,7 +740,7 @@ func TestRedactPasswordField_NoFalsePositives(t *testing.T) {
 }
 
 // TestRedactAnthropicBeforeOpenAI confirms ordering: an Anthropic key is
-// labelled [ANTHROPIC_KEY], not [OPENAI_KEY], even though both prefixes
+// labeled [ANTHROPIC_KEY], not [OPENAI_KEY], even though both prefixes
 // start with "sk-".
 func TestRedactAnthropicBeforeOpenAI(t *testing.T) {
 	r := NewRedactor()

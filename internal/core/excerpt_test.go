@@ -91,7 +91,7 @@ func TestIndex_Excerpt_RemoveCleans(t *testing.T) {
 	}
 }
 
-// TestIndex_Excerpt_NotPersisted: serialise + deserialise an Index
+// TestIndex_Excerpt_NotPersisted: serialize + deserialize an Index
 // (the dfmt-on-disk path); excerpts come back empty because they're
 // re-built from the journal on daemon load. Pinning this so a future
 // "let's just add excerpts to JSON" change is a deliberate decision,
@@ -111,7 +111,7 @@ func TestIndex_Excerpt_NotPersisted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Marshal: %v", err)
 	}
-	// excerpts must NOT appear in the serialised form. Probe with the
+	// excerpts must NOT appear in the serialized form. Probe with the
 	// full multi-word phrase — individual stems will of course appear
 	// in stem_pl, but the verbatim sentence shape is unique to the
 	// excerpt path.

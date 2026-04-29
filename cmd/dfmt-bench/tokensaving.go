@@ -235,7 +235,7 @@ func buildScenarios() []tokenSavingScenario {
 	}
 }
 
-// gitDiff20Files synthesises a multi-file diff — typical `git diff`
+// gitDiff20Files synthesizes a multi-file diff — typical `git diff`
 // over a 20-file change set. Each file emits the four canonical
 // header lines (diff/index/---/+++) plus a small hunk; the index
 // lines are what the compactor drops.
@@ -258,7 +258,7 @@ index a1b2c3d4..e5f6789a 100644
 	return b.String()
 }
 
-// deepPyTraceback synthesises a 30-frame Python traceback through the
+// deepPyTraceback synthesizes a 30-frame Python traceback through the
 // same source file — typical "stack overflow on recursion" shape.
 // Without path collapsing, the long path repeats 30 times.
 func deepPyTraceback() string {
@@ -266,7 +266,7 @@ func deepPyTraceback() string {
 	b.WriteString("Traceback (most recent call last):\n")
 	const path = "/home/user/repo/src/very/deeply/nested/package/recurse.py"
 	for i := 30; i >= 1; i-- {
-		b.WriteString(fmt.Sprintf("  File \"%s\", line %d, in step_%d\n", path, 1000+i, i))
+		b.WriteString(fmt.Sprintf("  File %q, line %d, in step_%d\n", path, 1000+i, i))
 		b.WriteString(fmt.Sprintf("    return step_%d()\n", i-1))
 	}
 	b.WriteString("RecursionError: maximum recursion depth exceeded\n")

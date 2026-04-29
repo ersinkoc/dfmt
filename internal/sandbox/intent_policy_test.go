@@ -269,7 +269,7 @@ func TestNormalizeOutput_RunLengthEncodes(t *testing.T) {
 
 // TestNormalizeOutput_NoEscapeFastPath verifies the strip-ansi fast path
 // when the string contains no ESC byte — the regex shouldn't even run.
-// This is mostly a behaviour assertion; the perf benefit isn't measured
+// This is mostly a behavior assertion; the perf benefit isn't measured
 // here.
 func TestNormalizeOutput_NoEscapeFastPath(t *testing.T) {
 	in := "plain text\nno escapes\n"

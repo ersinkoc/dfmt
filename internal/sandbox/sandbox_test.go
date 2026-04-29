@@ -278,7 +278,7 @@ func TestLookPathOnNonWindowsSkipsGitBash(t *testing.T) {
 // the canonical Git for Windows install path.
 func TestFindGitBashScansCandidatesInOrder(t *testing.T) {
 	tmp := t.TempDir()
-	first := filepath.Join(tmp, "first", "bash.exe")  // intentionally not created
+	first := filepath.Join(tmp, "first", "bash.exe")   // intentionally not created
 	second := filepath.Join(tmp, "second", "bash.exe") // exists; should win
 	if err := os.MkdirAll(filepath.Dir(second), 0o755); err != nil {
 		t.Fatal(err)

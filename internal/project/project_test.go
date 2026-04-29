@@ -194,4 +194,3 @@ func TestConstants(t *testing.T) {
 		t.Errorf("CursorFileName = %q, want 'index.cursor'", CursorFileName)
 	}
 }
-

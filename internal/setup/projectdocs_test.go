@@ -150,7 +150,7 @@ func TestUpsertDFMTBlock_RefusesMalformed(t *testing.T) {
 	}
 }
 
-// TestUpsertDFMTBlock_RejectsBodyWithMarkers: defence-in-depth — if a
+// TestUpsertDFMTBlock_RejectsBodyWithMarkers: defense-in-depth — if a
 // caller hands us body text that itself contains the markers, we'd
 // generate ambiguous content (multiple begin tags). Refuse explicitly.
 func TestUpsertDFMTBlock_RejectsBodyWithMarkers(t *testing.T) {
@@ -612,7 +612,7 @@ func TestExtractDFMTBlock_NoMarkersIsNotFound(t *testing.T) {
 	}
 }
 
-// TestStyleBodiesDoNotContainOwnMarkers — defence-in-depth. If someone
+// TestStyleBodiesDoNotContainOwnMarkers — defense-in-depth. If someone
 // edits a body and accidentally includes the marker text, UpsertDFMTBlock
 // would refuse with the body-contains-markers error. Catch that at test
 // time, not first-call-from-init.

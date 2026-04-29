@@ -31,11 +31,11 @@ func TestWarnf_PreservesLegacyFormat(t *testing.T) {
 // DFMT_LOG=error CI use case (silence warnings, surface errors only).
 func TestLevelFiltering(t *testing.T) {
 	cases := []struct {
-		threshold        Level
-		wantDebug        bool
-		wantInfo         bool
-		wantWarn         bool
-		wantError        bool
+		threshold Level
+		wantDebug bool
+		wantInfo  bool
+		wantWarn  bool
+		wantError bool
 	}{
 		{LevelDebug, true, true, true, true},
 		{LevelInfo, false, true, true, true},
@@ -74,7 +74,7 @@ func TestLevelFiltering(t *testing.T) {
 
 // TestConcurrentWrites_NoInterleaving — Warnf is called from many
 // goroutines (daemon's serve loop, fswatcher, journal periodic sync).
-// The mutex must serialise writes so no log line interleaves another's
+// The mutex must serialize writes so no log line interleaves another's
 // formatted output.
 func TestConcurrentWrites_NoInterleaving(t *testing.T) {
 	var buf bytes.Buffer

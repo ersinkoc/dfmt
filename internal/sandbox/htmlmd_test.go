@@ -80,7 +80,7 @@ func TestConvertHTML_CodeBlockWithLang(t *testing.T) {
 
 // TestConvertHTML_CodeBlockNoLang: <pre><code> without language hint
 // produces a bare fence — markdown renderers default to no syntax
-// highlighting, which is the right behaviour.
+// highlighting, which is the right behavior.
 func TestConvertHTML_CodeBlockNoLang(t *testing.T) {
 	got := convert(`<pre><code>raw block</code></pre>`)
 	if !strings.Contains(got, "```\nraw block\n```") {
