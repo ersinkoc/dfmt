@@ -18,10 +18,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ersinkoc/dfmt/internal/config"
 	"github.com/ersinkoc/dfmt/internal/core"
-	"github.com/ersinkoc/dfmt/internal/logging"
 	"github.com/ersinkoc/dfmt/internal/project"
+	"github.com/ersinkoc/dfmt/internal/setup"
 	"github.com/ersinkoc/dfmt/internal/transport"
 )
 
@@ -99,8 +98,12 @@ const maxRPCResponseBytes = 16 << 20
 // If the project is not initialized, it auto-initializes.
 // If the daemon is not running, it automatically starts it.
 func NewClient(projectPath string) (*Client, error) {
-	// Auto-init project if not initialized
-	if err := autoInitProject(projectPath); err != nil {
+	// Auto-init project if not initialized. Delegates to setup so the
+	// `dfmt init` and lazy-client init paths converge on the same merge-
+	// safe writer for .claude/settings.json. The legacy inline implementation
+	// here clobbered the file with a hardcoded template, dropping any user-
+	// owned plugins/env/statusLine entries on first RPC for a fresh project.
+	if err := setup.EnsureProjectInitialized(projectPath); err != nil {
 		return nil, fmt.Errorf("auto-init project: %w", err)
 	}
 
@@ -199,104 +202,6 @@ func (c *Client) ensureDaemon(projectPath string) error {
 		}
 	}
 	return errors.New("daemon failed to start")
-}
-
-// autoInitProject initializes the project if .dfmt/ doesn't exist.
-func autoInitProject(projectPath string) error {
-	dfmtDir := filepath.Join(projectPath, ".dfmt")
-	configPath := filepath.Join(dfmtDir, "config.yaml")
-
-	// Check if already initialized
-	if _, err := os.Stat(configPath); err == nil {
-		return nil // Already initialized
-	}
-
-	// Create .dfmt/ directory. 0700 so journal, index, and content dir
-	// are owner-only on Unix; matches the permission used by OpenJournal.
-	if err := os.MkdirAll(dfmtDir, 0o700); err != nil {
-		return fmt.Errorf("create .dfmt dir: %w", err)
-	}
-
-	// Write default config. 0o600 matches the sibling 0700 .dfmt/ dir and
-	// every other artefact in it; see V-5 in security-report/.
-	if err := os.WriteFile(configPath, []byte(config.DefaultConfigYAML()), 0o600); err != nil {
-		return fmt.Errorf("write config: %w", err)
-	}
-
-	// Add .dfmt/ to .gitignore if exists. OpenFile errors must be guarded —
-	// a read-only or ACL-restricted .gitignore (RO mount, Windows deny-write)
-	// previously dereferenced a nil *os.File and panicked the client.
-	gitignorePath := filepath.Join(projectPath, ".gitignore")
-	if content, err := os.ReadFile(gitignorePath); err == nil {
-		if !project.IsDfmtIgnored(content) {
-			if f, oerr := os.OpenFile(gitignorePath, os.O_APPEND|os.O_WRONLY, 0644); oerr == nil {
-				_, _ = f.WriteString("\n.dfmt/\n")
-				_ = f.Close()
-			} else {
-				logging.Warnf("append .dfmt/ to %s: %v", gitignorePath, oerr)
-			}
-		}
-	}
-
-	// Write project-level Claude Code settings to enforce DFMT tools
-	// and wire session continuity hooks (PreCompact save, SessionStart load).
-	claudeDir := filepath.Join(projectPath, ".claude")
-	os.MkdirAll(claudeDir, 0755)
-	settingsPath := filepath.Join(claudeDir, "settings.json")
-	// Hooks use 'dfmt' from PATH (single global installation).
-	// Recall saves to .dfmt/last-recall.md relative to project root.
-	// PreToolUse logs all tool calls to dfmt journal for token tracking.
-	settingsData := `{
-  "hooks": {
-    "PreToolUse": [{
-      "matcher": "",
-      "hooks": [{
-        "type": "command",
-        "command": "dfmt capture tool",
-        "timeout": 5,
-        "statusMessage": "Logging tool call..."
-      }]
-    }],
-    "PreCompact": [{
-      "matcher": "",
-      "hooks": [{
-        "type": "command",
-        "command": "dfmt recall --save --format md",
-        "timeout": 30,
-        "statusMessage": "Saving session snapshot for next session..."
-      }]
-    }],
-    "SessionStart": [{
-      "matcher": "",
-      "hooks": [{
-        "type": "command",
-        "command": "if [ -f .dfmt/last-recall.md ]; then echo '--- Previous session summary ---' && cat .dfmt/last-recall.md && echo '--- End of previous session ---'; fi",
-        "timeout": 10,
-        "statusMessage": "Loading previous session summary..."
-      }]
-    }]
-  },
-  "permissions": {
-    "allow": [
-      "mcp__dfmt__dfmt_exec",
-      "mcp__dfmt__dfmt_read",
-      "mcp__dfmt__dfmt_fetch",
-      "mcp__dfmt__dfmt_remember",
-      "mcp__dfmt__dfmt_search",
-      "mcp__dfmt__dfmt_recall",
-      "mcp__dfmt__dfmt_stats",
-      "mcp__dfmt__dfmt_glob",
-      "mcp__dfmt__dfmt_grep",
-      "mcp__dfmt__dfmt_edit",
-      "mcp__dfmt__dfmt_write"
-    ]
-  }
-}
-`
-	// 0600: grants MCP tool permissions, see cli writeProjectClaudeSettings.
-	_ = os.WriteFile(settingsPath, []byte(settingsData), 0o600)
-
-	return nil
 }
 
 // isTestBinary reports whether the current process is a Go test binary.
