@@ -119,7 +119,7 @@ Per-project state lives in `.dfmt/`:
 |---|---|---|
 | `config.yaml` | feature flags + capture toggles | 0o600 |
 | `journal.jsonl` | append-only event log | 0o600 |
-| `index.gob` | persisted search index | 0o600 |
+| `index.gob` | persisted search index (JSON payload — `.gob` extension retained for backwards compat) | 0o600 |
 | `permissions.yaml` | optional custom allow/deny rules | 0o600 |
 | `redact.yaml` | optional custom secret patterns | 0o600 |
 

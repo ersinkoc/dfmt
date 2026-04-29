@@ -203,6 +203,17 @@ sandbox denial error ends with a `hint:` line pointing at this file
 and naming which network classes (loopback, RFC1918, cloud metadata)
 cannot be opened up via project config.
 
+**Allow-rule contract — `<base-cmd>` is matched literally** (V-20).
+The trailing space + `*` in `allow:exec:git *` matters: it means "the
+literal token `git` followed by any arguments." A rule of just
+`allow:exec:git` (without space and star) matches *only* the bare
+command with no arguments, which is rarely useful. A rule of
+`allow:exec:git*` (no space) would also match `git-shell`,
+`git-receive-pack`, and any other binary whose name starts with `git`
+— almost never what you want. **Always include the trailing ` *`** on
+exec allow rules so the boundary is the end-of-token, not a substring
+match.
+
 Before responses reach the policy filter, `NormalizeOutput`
 (`internal/sandbox/intent.go`) runs an 8-stage pipeline:
 
@@ -321,7 +332,7 @@ Per-project `.dfmt/` directory:
 
 - `config.yaml` — project configuration (0o600)
 - `journal.jsonl` — append-only event log (0o600)
-- `index.gob` — persisted search index (0o600)
+- `index.gob` — persisted search index (0o600). On-disk payload is JSON despite the `.gob` extension (`internal/core/index_persist.go::writeJSONAtomic`); the filename is retained for backwards compat.
 - `port` — current daemon port / socket path (0o600)
 - `lock` — advisory daemon lock (0o600)
 - `permissions.yaml` — optional custom policy (0o600)
