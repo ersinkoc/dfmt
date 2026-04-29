@@ -169,6 +169,23 @@ Adding a new component, changing component interactions, adopting a dependency, 
 
 Repo is **LF in both index and working tree**. Do not renormalize to CRLF; if drift appears, repair direction is CRLF → LF.
 
+## Pre-authorized actions (Claude Code)
+
+Claude's default behavior is to ask before taking actions that affect shared state (push, PR open/close, etc.). On this repository the following are **pre-authorized** so the agent does not have to interrupt routine work:
+
+- **`git push origin <current-branch>`** — provided the commits about to be pushed pass `go test ./...` and `go vet ./...` cleanly. Failing tests or vet errors block the push; surface the failure and ask first.
+
+This pre-authorization is intentionally narrow. It does NOT extend to:
+
+- Force-push (`--force`, `--force-with-lease`, `+ref` syntax) — always confirm.
+- Tag push (`git push --tags`, `git push origin v*`) — always confirm; tags are advertised to package managers.
+- Remote branch creation or deletion (`git push origin :branch`, new remote branches) — always confirm.
+- Pushing to repos other than this one's `origin`, or to remotes named anything other than `origin`.
+- PR / issue creation, comments, closes, merges (any GitHub API mutation).
+- `gh` CLI commands that create or modify shared state.
+
+If in doubt, ask. The pre-authorization here is a convenience for the routine "land a green commit" path; it is not a license for novel risky actions.
+
 ## Where to find the rest
 
 - **Canonical onboarding (agent-neutral)** → [AGENTS.md](AGENTS.md)
