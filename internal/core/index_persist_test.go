@@ -422,8 +422,14 @@ func TestPersistIndexFileCreationError(t *testing.T) {
 	}
 	ix.Add(e)
 
-	// Use a path where file creation will fail (directory doesn't exist)
-	err := PersistIndex(ix, "D:\\nonexistent_dir\\index.json", "01ARZ3NDEKTSV4RRFFQ69G5FAV")
+	// Use a path where file creation will fail. Same Windows-vs-Unix gotcha
+	// as TestPersistIndexOpenError — backslashes aren't separators on Unix,
+	// so `D:\nonexistent_dir\…` would just create a file named that in CWD.
+	badPath := "D:\\nonexistent_dir\\index.json"
+	if os.PathSeparator != '\\' {
+		badPath = "/proc/cannot_create/index.json"
+	}
+	err := PersistIndex(ix, badPath, "01ARZ3NDEKTSV4RRFFQ69G5FAV")
 	if err == nil {
 		t.Error("PersistIndex should fail for non-existent directory path")
 	}

@@ -351,8 +351,16 @@ func TestLoadIndexWithCursorVersionMismatch(t *testing.T) {
 
 func TestPersistIndexOpenError(t *testing.T) {
 	ix := NewIndex()
-	// Using an invalid path should fail (directory doesn't exist on Windows)
-	err := PersistIndex(ix, "D:\\nonexistent_dir\\path\\index.json", "test1")
+	// Using an invalid path should fail. The path must be invalid on every
+	// platform: on Windows `D:\nonexistent_dir\…` is a directory under a real
+	// drive that does not exist; on Unix the same string is a single filename
+	// (backslashes are not separators) and the file would be created in CWD,
+	// so we use `/proc/cannot_create/…` which the kernel refuses.
+	badPath := "D:\\nonexistent_dir\\path\\index.json"
+	if os.PathSeparator != '\\' {
+		badPath = "/proc/cannot_create/index.json"
+	}
+	err := PersistIndex(ix, badPath, "test1")
 	if err == nil {
 		t.Error("PersistIndex should fail for invalid path")
 	}
