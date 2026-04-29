@@ -61,5 +61,14 @@ jobs:
           # repository. Bump alongside ADR review when we want the new
           # rules in. The action (`@v7`) targets the golangci-lint v2.x
           # line, so this version must come from the v2 release series.
-          version: v2.4.0
+          #
+          # v2.11.4 is the first v2.x release built against go1.26;
+          # v2.4.0 was built with go1.25 and panics with "file requires
+          # newer Go version go1.26" when go/types is asked to load any
+          # file from a Go-1.26-toolchain workspace (which our Setup-Go
+          # step installs). Bumping forward fixes that loader panic and
+          # also picks up QF1012 (`Use fmt.Fprintf instead of
+          # WriteString(fmt.Sprintf(…))`) — the corresponding
+          # cmd/dfmt-bench/tokensaving.go edits land in the same commit.
+          version: v2.11.4
           args: --timeout=5m

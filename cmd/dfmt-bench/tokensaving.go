@@ -66,8 +66,8 @@ func runTokenSavingReport() {
 func buildScenarios() []tokenSavingScenario {
 	var npmInstall strings.Builder
 	for i := 0; i <= 100; i += 5 {
-		npmInstall.WriteString(fmt.Sprintf("\rnpm install \x1b[34m[%-20s]\x1b[0m %d%%",
-			strings.Repeat("#", i/5), i))
+		fmt.Fprintf(&npmInstall, "\rnpm install \x1b[34m[%-20s]\x1b[0m %d%%",
+			strings.Repeat("#", i/5), i)
 	}
 	npmInstall.WriteString("\nadded 1247 packages in 18s\n")
 
@@ -79,7 +79,7 @@ func buildScenarios() []tokenSavingScenario {
 
 	var goTest strings.Builder
 	for i := 0; i < 200; i++ {
-		goTest.WriteString(fmt.Sprintf("=== RUN   TestSomething%d\n--- PASS: TestSomething%d (0.00s)\n", i, i))
+		fmt.Fprintf(&goTest, "=== RUN   TestSomething%d\n--- PASS: TestSomething%d (0.00s)\n", i, i)
 	}
 	goTest.WriteString("--- FAIL: TestRegression (0.02s)\n    regression_test.go:88: nil pointer dereference\n")
 	goTest.WriteString("panic: runtime error: invalid memory address\n")
@@ -87,7 +87,7 @@ func buildScenarios() []tokenSavingScenario {
 
 	var pytest strings.Builder
 	for i := 0; i < 200; i++ {
-		pytest.WriteString(fmt.Sprintf("tests/test_module.py::test_case_%d PASSED\n", i))
+		fmt.Fprintf(&pytest, "tests/test_module.py::test_case_%d PASSED\n", i)
 	}
 	pytest.WriteString("tests/test_module.py::test_failure FAILED\n")
 	pytest.WriteString("Traceback (most recent call last):\n")
@@ -96,7 +96,7 @@ func buildScenarios() []tokenSavingScenario {
 
 	var cargo strings.Builder
 	for i := 0; i < 250; i++ {
-		cargo.WriteString(fmt.Sprintf("   Compiling some_crate v0.%d.0\n", i))
+		fmt.Fprintf(&cargo, "   Compiling some_crate v0.%d.0\n", i)
 	}
 	cargo.WriteString("error[E0277]: the trait bound `String: Copy` is not satisfied\n")
 	cargo.WriteString("error: could not compile `some_crate` due to previous error\n")
@@ -113,7 +113,7 @@ func buildScenarios() []tokenSavingScenario {
 		if i > 1 {
 			ghIssues.WriteString(",")
 		}
-		ghIssues.WriteString(fmt.Sprintf(`{`+
+		fmt.Fprintf(&ghIssues, `{`+
 			`"id":%d,`+
 			`"node_id":"MDU6SXNzdWUx%d",`+
 			`"url":"https://api.github.com/repos/foo/bar/issues/%d",`+
@@ -131,7 +131,7 @@ func buildScenarios() []tokenSavingScenario {
 			`"etag":"W/\"abc%d\"",`+
 			`"_links":{"self":{"href":"..."}}`+
 			`}`,
-			i, i, i, i, i, i, i, i, i, i, i))
+			i, i, i, i, i, i, i, i, i, i, i)
 	}
 	ghIssues.WriteString("]")
 
@@ -147,7 +147,7 @@ func buildScenarios() []tokenSavingScenario {
 		if i > 1 {
 			kubectl.WriteString(",")
 		}
-		kubectl.WriteString(fmt.Sprintf(`{`+
+		fmt.Fprintf(&kubectl, `{`+
 			`"apiVersion":"v1",`+
 			`"kind":"Pod",`+
 			`"metadata":{`+
@@ -161,7 +161,7 @@ func buildScenarios() []tokenSavingScenario {
 			`"spec":{"containers":[{"name":"app","image":"acme/worker:v1.2.%d"}]},`+
 			`"status":{"phase":"Running","podIP":"10.0.0.%d"}`+
 			`}`,
-			i, i, i, i, i, i))
+			i, i, i, i, i, i)
 	}
 	kubectl.WriteString(`]}`)
 
@@ -176,7 +176,7 @@ func buildScenarios() []tokenSavingScenario {
 		if i > 1 {
 			awsEC2.WriteString(",")
 		}
-		awsEC2.WriteString(fmt.Sprintf(`{`+
+		fmt.Fprintf(&awsEC2, `{`+
 			`"ReservationId":"r-abc%d",`+
 			`"OwnerId":"123456789012",`+
 			`"Instances":[{`+
@@ -193,7 +193,7 @@ func buildScenarios() []tokenSavingScenario {
 			`"console_url":"https://console.aws.amazon.com/ec2/v2/home?instanceId=i-%d",`+
 			`"metadata_url":"http://169.254.169.254/latest/meta-data/i-%d"`+
 			`}]}`,
-			i, i, i, i, i, i))
+			i, i, i, i, i, i)
 	}
 	awsEC2.WriteString(`]}`)
 
@@ -203,7 +203,7 @@ func buildScenarios() []tokenSavingScenario {
 	// JSON) and ships uncompacted.
 	var ndjson strings.Builder
 	for i := 1; i <= 30; i++ {
-		ndjson.WriteString(fmt.Sprintf(`{`+
+		fmt.Fprintf(&ndjson, `{`+
 			`"apiVersion":"v1","kind":"Pod",`+
 			`"metadata":{`+
 			`"name":"worker-%d","namespace":"prod",`+
@@ -213,7 +213,7 @@ func buildScenarios() []tokenSavingScenario {
 			`},`+
 			`"status":{"phase":"Running","podIP":"10.0.0.%d"}`+
 			`}`+"\n",
-			i, i, i, i, i))
+			i, i, i, i, i)
 	}
 
 	return []tokenSavingScenario{
@@ -242,7 +242,7 @@ func buildScenarios() []tokenSavingScenario {
 func gitDiff20Files() string {
 	var b strings.Builder
 	for i := 1; i <= 20; i++ {
-		b.WriteString(fmt.Sprintf(`diff --git a/pkg/file_%d.go b/pkg/file_%d.go
+		fmt.Fprintf(&b, `diff --git a/pkg/file_%d.go b/pkg/file_%d.go
 index a1b2c3d4..e5f6789a 100644
 --- a/pkg/file_%d.go
 +++ b/pkg/file_%d.go
@@ -253,7 +253,7 @@ index a1b2c3d4..e5f6789a 100644
 -	return process%d(req)
 +	return process%dV2(req)
  }
-`, i, i, i, i, i, i, i))
+`, i, i, i, i, i, i, i)
 	}
 	return b.String()
 }
@@ -266,8 +266,8 @@ func deepPyTraceback() string {
 	b.WriteString("Traceback (most recent call last):\n")
 	const path = "/home/user/repo/src/very/deeply/nested/package/recurse.py"
 	for i := 30; i >= 1; i-- {
-		b.WriteString(fmt.Sprintf("  File %q, line %d, in step_%d\n", path, 1000+i, i))
-		b.WriteString(fmt.Sprintf("    return step_%d()\n", i-1))
+		fmt.Fprintf(&b, "  File %q, line %d, in step_%d\n", path, 1000+i, i)
+		fmt.Fprintf(&b, "    return step_%d()\n", i-1)
 	}
 	b.WriteString("RecursionError: maximum recursion depth exceeded\n")
 	return b.String()
@@ -300,7 +300,7 @@ func kubectlYAML() string {
 		if i > 1 {
 			b.WriteString("---\n")
 		}
-		b.WriteString(fmt.Sprintf(`apiVersion: v1
+		fmt.Fprintf(&b, `apiVersion: v1
 kind: Pod
 metadata:
   name: worker-%d
@@ -327,7 +327,7 @@ spec:
 status:
   phase: Running
   podIP: 10.0.0.%d
-`, i, i, i, i, i, i))
+`, i, i, i, i, i, i)
 	}
 	return b.String()
 }
