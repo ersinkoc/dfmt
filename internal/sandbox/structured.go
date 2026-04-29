@@ -75,6 +75,15 @@ const structuredDropIDEnv = "DFMT_STRUCTURED_DROP_ID"
 // the family.
 const structuredNoiseSuffix = "_url"
 
+// maxStructuredDocBytes bounds a single YAML document handed to the
+// compactor (V-12). yaml.v3 v3.0.1 has internal alias-bomb limits but does
+// not expose a tunable; we cap here as belt-and-braces. 1 MiB is generous
+// for any legitimate Kubernetes manifest, Helm values file, or markdown
+// frontmatter — the multi-doc splitter operates on individual documents,
+// not the full input, and the upstream fetch / read primitives already
+// cap raw bytes (8 MiB / 4 MiB respectively).
+const maxStructuredDocBytes = 1 << 20
+
 // yamlDetectPrefix matches the most reliable shape-markers for YAML:
 // either a `---` document separator on its own line, or an `apiVersion:`
 // / `kind:` field at the document root (the canonical Kubernetes/Helm
@@ -118,6 +127,16 @@ func CompactYAML(s string) string {
 		if trimmed == "" {
 			compacted = append(compacted, "")
 			continue
+		}
+		// V-12: per-document size cap as a defense-in-depth alongside
+		// yaml.v3 v3.0.1's internal alias-bomb fix (GO-2022-0956).
+		// yaml.v3 does not expose SetMaxAliasCount, so we cap upstream
+		// instead — anything larger than this in a single YAML document
+		// is overwhelmingly likely to be either an attack or already a
+		// bug in whatever produced it. The fetch / read primitives cap
+		// raw input above; this is the per-doc bound after splitting.
+		if len(doc) > maxStructuredDocBytes {
+			return s
 		}
 		var v any
 		if err := yaml.Unmarshal([]byte(doc), &v); err != nil {
