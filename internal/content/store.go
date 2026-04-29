@@ -4,6 +4,7 @@ import (
 	"compress/gzip"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -13,6 +14,14 @@ import (
 
 	"github.com/ersinkoc/dfmt/internal/core"
 )
+
+// maxDecompressedChunkSetBytes caps how much the gzip reader is allowed to
+// emit when LoadChunkSet decodes a persisted ChunkSet (V-10). The on-disk
+// file is daemon-write-only (0o600) so this is defense-in-depth against
+// a future write path or operator-side mistake; legitimate ChunkSets sit
+// well under this ceiling because the store's own MaxSize bound caps
+// per-chunk and total-store sizes much lower.
+const maxDecompressedChunkSetBytes = 64 << 20 // 64 MiB
 
 // chunkIDPattern restricts chunk/chunk-set IDs to an ASCII-safe shape so a
 // caller cannot smuggle '..', '/', '\\', or drive letters into a filesystem
@@ -438,8 +447,14 @@ func (s *Store) LoadChunkSet(id string) (*ChunkSet, error) {
 	}
 	defer gz.Close()
 
+	// V-10: cap decompressed bytes as defense-in-depth against zip-bomb
+	// behaviour. The store is daemon-write-only on a 0o600 file so a
+	// malicious payload requires the daemon process to be already
+	// compromised, but the cost of a 64-MiB ceiling is zero for any
+	// legitimate ChunkSet (chunks are bounded by the store's own
+	// MaxSize and never approach this floor in practice).
 	var set ChunkSet
-	if err := json.NewDecoder(gz).Decode(&set); err != nil {
+	if err := json.NewDecoder(io.LimitReader(gz, maxDecompressedChunkSetBytes)).Decode(&set); err != nil {
 		return nil, err
 	}
 
