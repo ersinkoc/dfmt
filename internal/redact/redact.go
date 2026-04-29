@@ -119,6 +119,20 @@ var commonPatterns = []*redactPattern{
 	// === Generic auth headers / inline assignments (broadest, run last) ===
 
 	{name: "generic_secret", regex: regexp.MustCompile(`(?i)(api[_-]?key|secret[_-]?key|access[_-]?token|auth[_-]?token)\s*[:=]\s*['"]?([A-Za-z0-9_/+=.-]{20,})['"]?`), repl: "$1: [REDACTED]"},
+	// V-02: password-field redaction for JSON / YAML / log shapes. The
+	// generic_secret pattern above only catches *_key / *_token names;
+	// IsSensitiveKey covers password/passwd/pwd/passphrase but is only
+	// invoked from the env-export path. JSON `"password": "hunter2"`,
+	// YAML `password: hunter2`, and free-form `Database PASSWORD: secret`
+	// log lines all leaked into the journal pre-fix.
+	//
+	// The key-word group accepts an optional closing quote so JSON-style
+	// `"password":` still matches. The value char class excludes
+	// whitespace, quotes, JSON/YAML structural characters (`,;}]`), and
+	// angle brackets (so `<placeholder>` markers stay visible). The
+	// 4-char floor lets short production passwords still get caught
+	// while skipping empty `""` placeholders.
+	{name: "password_field", regex: regexp.MustCompile(`(?i)(password|passwd|passphrase|pwd)['"]?\s*[:=]\s*['"]?([^\s'"\[\],;{}<>]{4,})['"]?`), repl: "$1: [REDACTED]"},
 	// F-12: char classes widened to cover the full base64 alphabet.
 	// Prior `[A-Za-z0-9_.-]` matched only the URL-safe subset; RFC 6750
 	// `b64token` allows `_.~+/` plus trailing `=` padding, and Basic auth
@@ -178,9 +192,14 @@ func NewRedactorWithCustom(patterns []*redactPattern) *Redactor {
 //     write. Treat it as defense-in-depth on top of not logging
 //     secrets in the first place, not as a substitute.
 func (r *Redactor) Redact(s string) string {
+	// V-02: run env_export FIRST so that NAME=value shapes (env vars,
+	// shell exports) keep their `NAME=[REDACTED]` form rather than being
+	// rewritten as `NAME: [REDACTED]` by the broader password_field
+	// pattern. The placeholder entry in r.patterns is skipped below so
+	// we don't run env_export twice.
+	s = redactEnvExport(s)
 	for _, p := range r.patterns {
 		if p.name == "env_export" {
-			s = redactEnvExport(s)
 			continue
 		}
 		s = p.regex.ReplaceAllString(s, p.repl)
@@ -419,13 +438,14 @@ func (r *Redactor) RedactWithStats(s string) (string, Stats) {
 	}
 
 	result := s
+	// V-02: env_export runs first to preserve NAME=value shape (see Redact).
+	if n := countEnvExportRedactions(result); n > 0 {
+		stats.RedactedCount += n
+		stats.RedactedTypes["env_export"] = n
+	}
+	result = redactEnvExport(result)
 	for _, p := range r.patterns {
 		if p.name == "env_export" {
-			if n := countEnvExportRedactions(result); n > 0 {
-				stats.RedactedCount += n
-				stats.RedactedTypes[p.name] = n
-			}
-			result = redactEnvExport(result)
 			continue
 		}
 		matches := p.regex.FindAllStringIndex(result, -1)

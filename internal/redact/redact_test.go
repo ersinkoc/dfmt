@@ -681,6 +681,64 @@ func TestRedactExpandedNoFalsePositives(t *testing.T) {
 	}
 }
 
+// TestRedactPasswordField covers V-02. Pre-fix, the generic_secret pattern
+// only matched *_key / *_token names and IsSensitiveKey was wired only into
+// the env-export path, so JSON `"password": "hunter2"`, YAML `password: …`,
+// and free-form `Database PASSWORD: secret` log lines all dripped into the
+// journal verbatim. The new password_field pattern catches all three shapes.
+func TestRedactPasswordField(t *testing.T) {
+	r := NewRedactor()
+
+	const secret = "hunter2"
+	cases := []struct {
+		name  string
+		input string
+	}{
+		{"json double-quoted", `{"password": "hunter2"}`},
+		{"json single-quoted value", `{"password": 'hunter2'}`},
+		{"json caps", `{"PASSWORD": "hunter2"}`},
+		{"yaml block", `password: hunter2`},
+		{"yaml caps", `PASSWORD: hunter2`},
+		{"yaml passwd alias", `passwd: hunter2`},
+		{"yaml pwd alias", `pwd: hunter2`},
+		{"yaml passphrase alias", `passphrase: hunter2`},
+		{"log line", `connecting to db with password=hunter2`},
+		{"log line with colon", `Database PASSWORD: hunter2 used`},
+		{"camelcase suffix", `userPassword: hunter2`},
+		{"snake_case prefix", `db_password: hunter2`},
+	}
+
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			got := r.Redact(tt.input)
+			if strings.Contains(got, secret) {
+				t.Errorf("password value leaked: Redact(%q) = %q", tt.input, got)
+			}
+			if !strings.Contains(got, "[REDACTED]") {
+				t.Errorf("redaction marker missing: Redact(%q) = %q", tt.input, got)
+			}
+		})
+	}
+}
+
+// TestRedactPasswordField_NoFalsePositives makes sure the password pattern
+// does not blast through prose or short placeholder values.
+func TestRedactPasswordField_NoFalsePositives(t *testing.T) {
+	r := NewRedactor()
+	safe := []string{
+		"please reset your password by visiting the link",
+		`password: ""`,            // empty placeholder; below the 4-char floor
+		`password: <placeholder>`, // angle-bracket marker; we want this redacted? — no, length<4 trips OK either way; document
+		`# password is the kw, value follows on next line`,
+	}
+	for _, s := range safe {
+		got := r.Redact(s)
+		if strings.Contains(got, "[REDACTED]") {
+			t.Errorf("false positive: Redact(%q) = %q", s, got)
+		}
+	}
+}
+
 // TestRedactAnthropicBeforeOpenAI confirms ordering: an Anthropic key is
 // labelled [ANTHROPIC_KEY], not [OPENAI_KEY], even though both prefixes
 // start with "sk-".
