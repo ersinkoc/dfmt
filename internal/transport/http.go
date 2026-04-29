@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"sync"
 	"time"
 
@@ -246,8 +248,15 @@ func (s *HTTPServer) wrapSecurity(next http.Handler) http.Handler {
 
 func (s *HTTPServer) isAllowedOrigin(origin string) bool {
 	// Only accept same-origin dashboard requests. Compare host:port against
-	// the listener. If the listener is a Unix socket (no Host), reject all
-	// non-empty origins.
+	// the listener.
+	//
+	// V-17: the Unix-socket / non-TCP branch returns false intentionally
+	// (fail-closed). A Unix-socket listener has no `host:port` we could
+	// reconstruct an Origin string from; a browser tab navigated to
+	// `http://something/dashboard` could only be reaching a Unix socket
+	// through an external proxy, which is not part of the supported
+	// surface. Any future contributor "fixing" this to return true would
+	// reopen a cross-origin gap — keep the explicit reject.
 	if s.listener == nil {
 		return false
 	}
@@ -690,6 +699,13 @@ func (s *HTTPServer) handleAPIDaemons(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "internal error", http.StatusInternalServerError)
 		}
 	}()
+	// V-16: /api/daemons is a read-only listing endpoint; reject any
+	// non-GET / non-HEAD method so the API surface stays predictable
+	// (matches handleAPIStats's POST-only contract).
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 
 	// Read registry file directly (avoid circular import)
@@ -728,7 +744,7 @@ func (s *HTTPServer) handleAPIDaemons(w http.ResponseWriter, r *http.Request) {
 	}
 	filtered := make([]map[string]any, 0, 1)
 	for _, d := range daemons {
-		if path, ok := d["project_path"].(string); ok && path == s.projectPath {
+		if path, ok := d["project_path"].(string); ok && pathsEqualForRuntime(path, s.projectPath) {
 			filtered = append(filtered, d)
 			break
 		}
@@ -755,6 +771,22 @@ func (s *HTTPServer) handleExec(ctx context.Context, req Request) Response {
 		}
 	}
 	return Response{JSONRPC: jsonRPCVersion, ID: req.ID, Result: resp}
+}
+
+// pathsEqualForRuntime compares two filesystem paths using the host OS's
+// case-sensitivity rules. NTFS / ReFS treat paths case-insensitively
+// (V-19); ext4 / APFS-default / etc. are case-sensitive. The /api/daemons
+// filter uses this so a registry entry written by the daemon at
+// `C:\Users\Foo\Proj` still matches a request whose s.projectPath was
+// resolved as `c:\users\foo\proj`.
+func pathsEqualForRuntime(a, b string) bool {
+	if a == b {
+		return true
+	}
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(a, b)
+	}
+	return false
 }
 
 func (s *HTTPServer) handleRead(ctx context.Context, req Request) Response {
