@@ -1709,6 +1709,67 @@ func TestSandboxGrepPathScopesSearch(t *testing.T) {
 	}
 }
 
+// TestSandboxGlobRefusesSymlinkLeafEscape covers V-01: an agent that drops
+// a symlink leaf inside the project directory pointing at a file outside
+// must NOT be able to surface the target's contents through Glob's
+// intent-content path. Pre-fix, lexical Rel said "in-bounds" and
+// os.ReadFile followed the link.
+func TestSandboxGlobRefusesSymlinkLeafEscape(t *testing.T) {
+	tmp := t.TempDir()
+	outside := t.TempDir()
+	secretPath := filepath.Join(outside, "secret.txt")
+	const secretMarker = "BYPASS_MARKER_HUNTER2"
+	if err := os.WriteFile(secretPath, []byte("topline\n"+secretMarker+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(tmp, "innocent.txt")
+	if err := os.Symlink(secretPath, link); err != nil {
+		t.Skipf("symlinks not creatable on this platform/permission level: %v", err)
+	}
+
+	sb := NewSandbox(tmp)
+	resp, err := sb.Glob(context.Background(), GlobReq{
+		Pattern: "*.txt",
+		Intent:  "marker hunter",
+	})
+	if err != nil {
+		t.Fatalf("Glob: %v", err)
+	}
+	for _, m := range resp.Matches {
+		if strings.Contains(m.Text, secretMarker) {
+			t.Fatalf("Glob leaked symlink-target contents via intent matching: %q", m.Text)
+		}
+	}
+}
+
+// TestSandboxGrepRefusesSymlinkLeafEscape covers V-01 from the Grep angle.
+// Same scenario: symlink leaf inside the project pointing outside; Grep
+// must not surface the target's contents.
+func TestSandboxGrepRefusesSymlinkLeafEscape(t *testing.T) {
+	tmp := t.TempDir()
+	outside := t.TempDir()
+	secretPath := filepath.Join(outside, "secret.txt")
+	const secretMarker = "BYPASS_MARKER_HUNTER2"
+	if err := os.WriteFile(secretPath, []byte("topline\n"+secretMarker+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(tmp, "innocent.txt")
+	if err := os.Symlink(secretPath, link); err != nil {
+		t.Skipf("symlinks not creatable on this platform/permission level: %v", err)
+	}
+
+	sb := NewSandbox(tmp)
+	resp, err := sb.Grep(context.Background(), GrepReq{
+		Pattern: secretMarker,
+	})
+	if err != nil {
+		t.Fatalf("Grep: %v", err)
+	}
+	if len(resp.Matches) != 0 {
+		t.Fatalf("Grep leaked symlink-target contents: %+v", resp.Matches)
+	}
+}
+
 // TestSandboxGrepPathRecursesIntoNestedDirs proves the new walk reaches
 // files at depth >= 3, fixing the silent depth-2 ceiling imposed by the
 // old `filepath.Glob(absWd + "/**/*")` pattern (Go's stdlib Glob does

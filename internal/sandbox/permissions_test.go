@@ -85,6 +85,60 @@ func TestFetchPolicyCheckError(t *testing.T) {
 	}
 }
 
+// TestAssertFetchURLAllowedRejectsIPv6ZoneID covers V-13: a URL whose
+// host carries an IPv6 zone-id (`%eth0`-style) is a same-machine indicator
+// and must be refused as an SSRF policy hit, not silently fall through to
+// DNS lookup which then surfaces a generic resolution-failed error.
+func TestAssertFetchURLAllowedRejectsIPv6ZoneID(t *testing.T) {
+	cases := []string{
+		"http://[fe80::1%25eth0]/",
+		"https://[fe80::abcd%25en0]:8080/path",
+	}
+	for _, raw := range cases {
+		err := assertFetchURLAllowed(raw)
+		if err == nil {
+			t.Errorf("assertFetchURLAllowed(%q) = nil, want zone-id rejection", raw)
+			continue
+		}
+		if !strings.Contains(err.Error(), "zone-id") {
+			t.Errorf("assertFetchURLAllowed(%q) error = %v, want zone-id message", raw, err)
+		}
+	}
+}
+
+// TestFetchRejectsCRLFInHeaders covers V-13: header keys/values containing
+// CR or LF must be refused upfront with a clear error, not silently
+// surfaced as a generic write-time failure after the SSRF pre-check and
+// dialer setup have already run.
+func TestFetchRejectsCRLFInHeaders(t *testing.T) {
+	policy := Policy{
+		Version: 1,
+		Allow:   []Rule{{Op: "fetch", Text: "https://example.com/*"}},
+	}
+	sb := NewSandboxWithPolicyAndRuntimes("/tmp", policy, runtimes)
+	ctx := context.Background()
+
+	cases := []map[string]string{
+		{"X-Bad": "value\r\nInjected: yes"},
+		{"X-Bad": "value\nInjected: yes"},
+		{"X-Bad\r\nInjected": "value"},
+		{"X-Bad:Embedded": "value"},
+	}
+	for _, hdrs := range cases {
+		_, err := sb.Fetch(ctx, FetchReq{
+			URL:     "https://example.com/x",
+			Headers: hdrs,
+		})
+		if err == nil {
+			t.Errorf("Fetch(headers=%v) = nil, want CRLF rejection", hdrs)
+			continue
+		}
+		if !strings.Contains(err.Error(), "invalid header") {
+			t.Errorf("Fetch(headers=%v) error = %v, want 'invalid header' message", hdrs, err)
+		}
+	}
+}
+
 // TestBatchExecEmpty tests BatchExec with empty items.
 func TestBatchExecEmpty(t *testing.T) {
 	sb := NewSandbox("/tmp")
@@ -1448,6 +1502,85 @@ func TestExecQuotedSubstitutionDenied(t *testing.T) {
 		}
 		if !strings.Contains(err.Error(), "denied by policy") {
 			t.Errorf("Exec(%q): expected policy denial, got: %v", cmd, err)
+		}
+	}
+}
+
+// TestExecBareSubshellRecursed covers V-06: a bare (subshell) body must be
+// recursed by splitByShellOperators so the per-part deny-list still catches
+// the inner base command. Pre-fix, `(sudo whoami)` was a single opaque
+// part `(sudo whoami)`; the base extractor returned `(sudo` which never
+// matched the `sudo *` deny rule.
+func TestExecBareSubshellRecursed(t *testing.T) {
+	sb := NewSandbox(t.TempDir())
+	ctx := context.Background()
+
+	mustDeny := []string{
+		`(sudo whoami)`,
+		`git status; (sudo whoami)`,
+		`(cd /tmp && sudo whoami)`,
+		`((sudo whoami))`, // nested subshell
+	}
+	for _, cmd := range mustDeny {
+		_, err := sb.Exec(ctx, ExecReq{Code: cmd, Lang: "bash"})
+		if err == nil {
+			t.Errorf("Exec(%q): expected policy denial, got nil", cmd)
+			continue
+		}
+		if !strings.Contains(err.Error(), "denied by policy") {
+			t.Errorf("Exec(%q): expected policy denial, got: %v", cmd, err)
+		}
+	}
+}
+
+// TestExecQuotedHereStringDenied covers V-05: bash <<<"sudo whoami" fed
+// the body to bash as opaque-quoted text, and the per-part check saw
+// `"sudo whoami"` whose base extracted to `"sudo` — never matched the
+// `sudo *` deny rule. The extractBaseCommand quote-strip closes that.
+func TestExecQuotedHereStringDenied(t *testing.T) {
+	// Build a permissive policy that explicitly allows bash so the bypass
+	// is reachable in principle. Then the deny should still fire on
+	// the per-part `sudo whoami` after the quote-strip.
+	policy := Policy{
+		Version: 1,
+		Allow:   []Rule{{Op: "exec", Text: "bash *"}, {Op: "exec", Text: "sudo whoami"}},
+		Deny:    []Rule{{Op: "exec", Text: "sudo *"}},
+	}
+	sb := NewSandboxWithPolicyAndRuntimes(t.TempDir(), policy, runtimes)
+	ctx := context.Background()
+
+	mustDeny := []string{
+		`bash <<<"sudo whoami"`,
+		`bash <<< "sudo whoami"`,
+	}
+	for _, cmd := range mustDeny {
+		_, err := sb.Exec(ctx, ExecReq{Code: cmd, Lang: "bash"})
+		if err == nil {
+			t.Errorf("Exec(%q): expected policy denial, got nil", cmd)
+			continue
+		}
+		if !strings.Contains(err.Error(), "denied by policy") {
+			t.Errorf("Exec(%q): expected policy denial, got: %v", cmd, err)
+		}
+	}
+}
+
+// TestExtractBaseCommandStripsOuterQuotes pins the V-05 contract directly.
+func TestExtractBaseCommandStripsOuterQuotes(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		{`"sudo whoami"`, "sudo whoami"},
+		{`'sudo whoami'`, "sudo whoami"},
+		{`"my prog.exe" arg`, "my prog"}, // outer quotes stripped, .exe suffix stripped
+		{`sudo whoami`, "sudo"},
+		{`"only-one-quote`, `"only-one-quote`}, // unmatched
+		{`""`, ""},                             // empty after strip
+	}
+	for _, c := range cases {
+		got := extractBaseCommand(c.in)
+		if got != c.want {
+			t.Errorf("extractBaseCommand(%q) = %q, want %q", c.in, got, c.want)
 		}
 	}
 }

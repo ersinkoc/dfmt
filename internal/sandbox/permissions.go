@@ -491,6 +491,54 @@ func (s *SandboxImpl) WithPathPrepend(dirs []string) *SandboxImpl {
 	return s
 }
 
+// ValidatePathPrepend inspects each absolute directory in dirs for
+// configuration smells the operator should know about (V-11). It does NOT
+// mutate state and does not refuse the daemon — it returns one human-
+// readable warning per problem so the caller (typically Daemon.Start) can
+// surface them via logging.Warnf. Empty input returns nil. Each entry is
+// checked in turn; the failure modes flagged are:
+//
+//   - Path does not exist (likely a typo; the entry is silently a no-op
+//     until it appears, but operators usually want to know).
+//   - Path exists but is world-writable (any local user can plant a
+//     binary that the sandbox will then resolve before system tools).
+//
+// Per-uid writability is not checked: it would require platform-specific
+// uid/gid plumbing for marginal benefit on a single-user workstation.
+func ValidatePathPrepend(dirs []string) []string {
+	if len(dirs) == 0 {
+		return nil
+	}
+	var warns []string
+	for _, d := range dirs {
+		if d == "" {
+			continue
+		}
+		fi, err := os.Stat(d)
+		if err != nil {
+			if os.IsNotExist(err) {
+				warns = append(warns, fmt.Sprintf("path_prepend entry %q does not exist; will silently no-op until it appears", d))
+				continue
+			}
+			warns = append(warns, fmt.Sprintf("path_prepend entry %q stat failed: %v", d, err))
+			continue
+		}
+		if !fi.IsDir() {
+			warns = append(warns, fmt.Sprintf("path_prepend entry %q is not a directory", d))
+			continue
+		}
+		// World-writable detection. Windows ACLs don't map cleanly to the
+		// Unix mode bits, so the check is Unix-only by Mode() Perm() bits;
+		// on Windows fi.Mode().Perm() returns the synthesized bits which
+		// don't reflect ACLs, so this is a no-op there (operators on
+		// Windows must rely on file-system ACL hygiene separately).
+		if fi.Mode().Perm()&0o002 != 0 {
+			warns = append(warns, fmt.Sprintf("path_prepend entry %q is world-writable (mode=%o); a local attacker can plant binaries that the sandbox will resolve before system tools", d, fi.Mode().Perm()))
+		}
+	}
+	return warns
+}
+
 // NewSandbox creates a new sandbox instance.
 func NewSandbox(wd string) *SandboxImpl {
 	return &SandboxImpl{
@@ -625,6 +673,20 @@ func extractBaseCommand(cmd string) string {
 			break
 		}
 	}
+	// V-05: strip a matching outer quote pair so a part like
+	// `"sudo whoami"` (produced by here-string `bash <<<"sudo whoami"`
+	// or generally any quoted opaque token) gets evaluated as
+	// `sudo whoami` against the deny-list. Without this, the policy
+	// matched the literal `"sudo`, never triggering the `sudo *`
+	// deny rule and silently allowing the command. Operator-defined
+	// allow rules for programs whose path contains spaces (rare) need
+	// to register the unquoted form.
+	if len(base) >= 2 {
+		first, last := base[0], base[len(base)-1]
+		if (first == '"' || first == '\'') && first == last {
+			base = base[1 : len(base)-1]
+		}
+	}
 	if len(base) > 4 && strings.EqualFold(base[len(base)-4:], ".exe") {
 		base = base[:len(base)-4]
 	}
@@ -656,6 +718,12 @@ func hasShellChainOperators(cmd string) bool {
 	}
 	// Here-documents: <<EOF ... EOF (simplified check for <<)
 	if strings.Contains(cmd, "<<") {
+		return true
+	}
+	// V-06: bare (subshell) — e.g. `(sudo whoami)` or `git status; (rm -rf .)`
+	// must take the chain-aware split path so the splitter can recurse the
+	// subshell body.
+	if strings.Contains(cmd, "(") {
 		return true
 	}
 
@@ -731,8 +799,14 @@ func (s *SandboxImpl) Exec(ctx context.Context, req ExecReq) (ExecResp, error) {
 	cmdForPolicy := stripExeSuffixFromLeadingWord(cmd)
 
 	// For shell commands with operators, check the full command chain first
-	// against deny rules to catch dangerous patterns like "; rm -rf /" or "| sh"
-	if hasShellChainOperators(cmd) {
+	// against deny rules to catch dangerous patterns like "; rm -rf /" or "| sh".
+	//
+	// V-06 follow-up: only invoke the chain-aware splitter for actual shell
+	// languages. Non-shell langs (python, node, ruby, perl) carry their own
+	// syntactic punctuation — `print("hi")` would otherwise trigger the new
+	// `(` chain detector and bounce off the shell-style baseCmd allow check.
+	// Their code never reaches a shell, so shell-operator parsing is wrong.
+	if !isLangPrefix && hasShellChainOperators(cmd) {
 		// First check: does the base command match any allow rule?
 		baseCmd := extractBaseCommand(cmd)
 		// Skip env var assignments (e.g., "GOCACHE=xxx go test")
@@ -859,6 +933,34 @@ func splitByShellOperators(cmd string) []string {
 				if j > i+1 {
 					inner := cmd[i+1 : j]
 					// Recursively split backtick content so inner operators are also checked.
+					innerParts := splitByShellOperators(inner)
+					parts = append(parts, innerParts...)
+				}
+				i = j
+				continue
+			}
+			// V-06: bare (subshell). Mirror the $(...) handling minus the
+			// `$` prefix so `(sudo whoami)` and `(cd /tmp; sudo whoami)`
+			// don't slip past the per-part allow-list as a single opaque
+			// `(sudo` base. Depth-tracked so nested parens parse correctly.
+			if c == '(' {
+				flush()
+				depth := 1
+				j := i + 1
+				for j < len(cmd) && depth > 0 {
+					switch cmd[j] {
+					case '(':
+						depth++
+					case ')':
+						depth--
+					}
+					if depth == 0 {
+						break
+					}
+					j++
+				}
+				if j <= len(cmd) && j > i+1 {
+					inner := cmd[i+1 : j]
 					innerParts := splitByShellOperators(inner)
 					parts = append(parts, innerParts...)
 				}
@@ -1111,6 +1213,15 @@ func assertFetchURLAllowed(rawURL string) error {
 	if host == "" {
 		return fmt.Errorf("%w: empty host", ErrBlockedHost)
 	}
+	// V-13: explicit zone-id reject. `[fe80::1%25eth0]` survives url.Parse
+	// and url.Hostname() returns `fe80::1%eth0` (zone separator decoded).
+	// net.ParseIP rejects strings with `%`, so without this check the host
+	// would silently fall through to LookupIP and surface as a generic DNS
+	// failure. A zone-id is a same-machine concept; surface it as the
+	// SSRF policy rejection it actually is.
+	if strings.Contains(host, "%") {
+		return fmt.Errorf("%w: IPv6 zone-id not permitted in fetch host %q", ErrBlockedHost, host)
+	}
 	// Well-known cloud metadata hostnames. Block these before DNS so a
 	// resolver that maps them to public IPs cannot evade the IP filter.
 	lowerHost := strings.ToLower(host)
@@ -1206,7 +1317,15 @@ func (s *SandboxImpl) Fetch(ctx context.Context, req FetchReq) (FetchResp, error
 		return FetchResp{}, fmt.Errorf("create request: %w", err)
 	}
 
+	// V-13: validate header keys and values for CR/LF before Header.Set.
+	// Go's net/http only enforces this at request-write time and surfaces a
+	// generic "net/http: invalid header field …" — by that point the SSRF
+	// pre-check, dialer setup, and DNS work has already been spent. Reject
+	// upfront so the caller sees the actual reason.
 	for k, v := range req.Headers {
+		if strings.ContainsAny(k, "\r\n:") || strings.ContainsAny(v, "\r\n") {
+			return FetchResp{}, fmt.Errorf("invalid header %q: contains CR/LF or colon", k)
+		}
 		httpReq.Header.Set(k, v)
 	}
 
@@ -1381,6 +1500,15 @@ func (s *SandboxImpl) Glob(ctx context.Context, req GlobReq) (GlobResp, error) {
 				break
 			}
 			fullPath := filepath.Join(absWd, f)
+			// V-01: refuse to read through a symlink leaf whose target
+			// escapes wd. Lexical containment above only proves the link
+			// path is in-bounds; os.ReadFile would follow it to wherever
+			// the link points. Read does the equivalent EvalSymlinks
+			// check inline; safefs.EnsureResolvedUnder keeps Glob's
+			// intent-content path on the same boundary.
+			if _, sym := safefs.EnsureResolvedUnder(fullPath, absWd); sym != nil {
+				continue
+			}
 			data, err := os.ReadFile(fullPath)
 			if err != nil {
 				continue
@@ -1497,9 +1625,10 @@ func (s *SandboxImpl) Grep(ctx context.Context, req GrepReq) (GrepResp, error) {
 			return nil
 		}
 
-		// Defense in depth: every visited file must still resolve under
-		// absWd. Catches a symlink dropped into the walked subtree
-		// pointing at /etc/shadow et al.
+		// Lexical containment: refuse paths whose textual form escapes
+		// absWd (e.g. `..\..\etc\passwd` after a buggy join). This is a
+		// fast pre-filter; the symlink-target check below is what
+		// actually closes the renamed-symlink-leaf bypass.
 		rel, rerr := filepath.Rel(absWd, path)
 		if rerr != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 			return nil
@@ -1521,6 +1650,15 @@ func (s *SandboxImpl) Grep(ctx context.Context, req GrepReq) (GrepResp, error) {
 		// before reading. Without this, dfmt_grep "API_KEY" --files "*"
 		// would surface secrets that direct dfmt_read of .env refuses.
 		if perr := s.PolicyCheck("read", path); perr != nil {
+			return nil
+		}
+
+		// V-01: refuse to read through a symlink leaf whose target
+		// escapes wd. The lexical Rel check above is purely textual —
+		// a symlink `notes.txt -> /etc/passwd` looks contained but
+		// os.ReadFile follows it. Read does the equivalent inline;
+		// EnsureResolvedUnder centralizes the pattern.
+		if _, sym := safefs.EnsureResolvedUnder(path, absWd); sym != nil {
 			return nil
 		}
 
