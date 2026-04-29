@@ -81,13 +81,23 @@ func (r *Registry) load() {
 	}
 }
 
-// saveNoLock saves the registry to disk. Caller must NOT hold the lock.
-func (r *Registry) saveNoLock() {
+// snapshotEntriesLocked returns a slice copy of the daemons map.
+// Caller MUST hold r.mu. Used to capture state under the lock so the
+// disk save can run lock-free without re-iterating the map.
+func (r *Registry) snapshotEntriesLocked() []DaemonEntry {
 	entries := make([]DaemonEntry, 0, len(r.daemons))
 	for _, e := range r.daemons {
 		entries = append(entries, e)
 	}
+	return entries
+}
 
+// saveSnapshot persists the given entries slice to disk. The slice MUST be
+// a snapshot taken under r.mu so this function does not need the lock —
+// no shared map is read here. (The previous saveNoLock iterated r.daemons
+// directly; concurrent List + Register/Unregister tripped Go's "fatal
+// error: concurrent map read and map write" — V-03.)
+func (r *Registry) saveSnapshot(entries []DaemonEntry) {
 	// Ensure directory exists. 0o700 to match the registry file (0600) — the
 	// directory enumerates "~/.dfmt" usage and should not be readable by other
 	// local users on shared hosts.
@@ -114,16 +124,18 @@ func (r *Registry) Register(entry DaemonEntry) {
 	r.mu.Lock()
 	entry.LastSeen = time.Now()
 	r.daemons[entry.ProjectPath] = entry
-	r.saveNoLock()
+	snapshot := r.snapshotEntriesLocked()
 	r.mu.Unlock()
+	r.saveSnapshot(snapshot)
 }
 
 // Unregister removes a daemon from the registry.
 func (r *Registry) Unregister(projectPath string) {
 	r.mu.Lock()
 	delete(r.daemons, projectPath)
-	r.saveNoLock()
+	snapshot := r.snapshotEntriesLocked()
 	r.mu.Unlock()
+	r.saveSnapshot(snapshot)
 }
 
 // List returns all registered daemons.
@@ -147,20 +159,14 @@ func (r *Registry) List() []DaemonEntry {
 		delete(r.daemons, path)
 	}
 
-	entries := make([]DaemonEntry, 0, len(r.daemons))
-	for _, e := range r.daemons {
-		entries = append(entries, e)
-	}
-
-	// Copy for save outside lock
-	entriesForSave := make([]DaemonEntry, len(entries))
-	copy(entriesForSave, entries)
-
+	entries := r.snapshotEntriesLocked()
 	r.mu.Unlock()
 
-	// Save outside lock to avoid deadlock
+	// V-03: pass the snapshot rather than calling a function that re-reads
+	// the map after we unlock. Concurrent Register/Unregister would otherwise
+	// race the read-iterate against a write under the lock.
 	if len(deadPaths) > 0 {
-		r.saveNoLock()
+		r.saveSnapshot(entries)
 	}
 
 	return entries

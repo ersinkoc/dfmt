@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -155,6 +156,84 @@ func TestRegistryConcurrent(t *testing.T) {
 	if got := len(r.List()); got != 1 {
 		t.Errorf("concurrent Register size = %d, want 1 (same key)", got)
 	}
+}
+
+// TestRegistryListVsRegisterRace covers V-03: List used to call a save
+// function that re-iterated r.daemons after the lock was released, racing
+// concurrent Register/Unregister and tripping Go's "fatal error:
+// concurrent map read and map write" — unrecoverable. Post-fix, List
+// builds a snapshot under the lock and passes it to saveSnapshot.
+//
+// Run with `go test -race`. With the bug present this test exits with the
+// runtime fatal; with the fix it completes silently.
+func TestRegistryListVsRegisterRace(t *testing.T) {
+	r := newTestRegistry(t)
+	// Seed enough entries that List has work to do (and dead entries to
+	// trigger the saveSnapshot path).
+	for i := 0; i < 20; i++ {
+		r.Register(DaemonEntry{
+			ProjectPath: filepath.Join("/proj", "seed-"+strconv.Itoa(i)),
+			PID:         1, // PID 1 reads as "not running" → triggers dead-entry sweep in List
+			Port:        i,
+		})
+	}
+
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			n := 0
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				r.Register(DaemonEntry{
+					ProjectPath: "/proj/churn-" + strconv.Itoa(id) + "-" + strconv.Itoa(n),
+					PID:         os.Getpid(),
+				})
+				n++
+			}
+		}(i)
+	}
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			n := 0
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				r.Unregister("/proj/churn-" + strconv.Itoa(id) + "-" + strconv.Itoa(n))
+				n++
+			}
+		}(i)
+	}
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				_ = r.List()
+			}
+		}()
+	}
+
+	time.Sleep(200 * time.Millisecond)
+	close(stop)
+	wg.Wait()
 }
 
 func TestNewDaemonEntry(t *testing.T) {
