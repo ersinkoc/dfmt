@@ -12,6 +12,14 @@ import (
 // Logger is the global logger instance.
 var Logger *slog.Logger
 
+// loggerMu serializes the lazy-init path used by With and FromContext.
+// V-04: a check-then-init pattern under no mutex would race two simultaneous
+// first-callers and could publish a torn *slog.Logger value. A mutex (rather
+// than sync.Once) is the right primitive here because Init() / InitDefault()
+// can be called explicitly to reassign Logger at runtime — sync.Once would
+// pin the first init forever and bypass intentional reconfiguration.
+var loggerMu sync.Mutex
+
 // Config configures the logger.
 type Config struct {
 	Level  string // "debug", "info", "warn", "error"
@@ -78,11 +86,24 @@ func InitDefault() {
 	Init(Config{Level: "info", Format: "text", Output: "stdout"})
 }
 
-// With returns a logger with additional context.
-func With(args ...any) *slog.Logger {
+// ensureLogger guarantees Logger is initialised under concurrent first-
+// callers (V-04). Double-checked locking: the fast-path read avoids the
+// mutex when Logger is already populated; under the lock we re-check
+// because another goroutine may have raced in.
+func ensureLogger() {
+	if Logger != nil {
+		return
+	}
+	loggerMu.Lock()
+	defer loggerMu.Unlock()
 	if Logger == nil {
 		InitDefault()
 	}
+}
+
+// With returns a logger with additional context.
+func With(args ...any) *slog.Logger {
+	ensureLogger()
 	return Logger.With(args...)
 }
 
@@ -91,9 +112,7 @@ func FromContext(ctx context.Context) *slog.Logger {
 	if logger, ok := ctx.Value(keyLogger{}).(*slog.Logger); ok {
 		return logger
 	}
-	if Logger == nil {
-		InitDefault()
-	}
+	ensureLogger()
 	return Logger
 }
 
