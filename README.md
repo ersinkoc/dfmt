@@ -74,9 +74,9 @@ To confirm the wire-up actually works:
 dfmt stats            # non-zero events_total + bytes_saved means yes
 ```
 
-If anything looks off, `dfmt doctor` runs ten checks (project state,
-daemon liveness, per-agent wire-up, dfmt binary resolvable) and prints
-a one-line fix per failure.
+If anything looks off, `dfmt doctor` runs nine state checks plus two
+cross-cutting passes (per-agent wire-up + instruction-block staleness)
+and prints a one-line fix per failure.
 
 ## Why use it
 
@@ -123,10 +123,28 @@ Per-project state lives in `.dfmt/`:
 | `permissions.yaml` | optional custom allow/deny rules | 0o600 |
 | `redact.yaml` | optional custom secret patterns | 0o600 |
 
-The default policy permits common dev tools (`git`, `npm`, `pnpm`,
-`pytest`, `cargo`, `go`, `node`, `python`, plus the read-only Unix
-basics) and denies destructive commands (`sudo`, `rm -rf /`,
-`curl|sh`, etc.). Add site-specific rules with:
+The default policy permits common dev tools without per-project
+overrides:
+
+- **Version control & language toolchains:** `git`, `go`, `node`,
+  `python`, `cargo`, `pytest`, `make`.
+- **JS/TS package managers & runners:** `npm`, `pnpm`, `yarn`,
+  `bun`, `npx`, `pnpx`, `bunx`, `deno`.
+- **TypeScript toolchain:** `tsc`, `tsx`, `ts-node`.
+- **JS test runners:** `vitest`, `jest`.
+- **Linters & formatters:** `eslint`, `prettier`.
+- **Bundlers & dev servers:** `vite`, `next`, `webpack`.
+- **Read-only Unix basics:** `echo`, `ls`, `cat`, `find`, `grep`,
+  `dir`, `pwd`, `whoami`, `wc`, `tail`.
+
+Each entry ships as a pair (`<cmd>` and `<cmd> *`) — the trailing
+space + `*` is the deliberate end-of-token boundary so a rule for
+`git` does not accidentally match `git-shell`. See ARCHITECTURE.md
+§9.1.1 for the full V-20 contract.
+
+Denies destructive commands (`sudo *`, `rm -rf /*`, `curl * | sh`,
+`shutdown *`, `mkfs *`, `dd if=*`, recursive `dfmt`). Add
+site-specific overrides in:
 
 ```yaml
 # .dfmt/permissions.yaml
@@ -190,11 +208,17 @@ strips its keys from any shared user config like `~/.claude.json`).
 - `internal/safefs/` — symlink-safe write helper
 - `internal/capture/` — git hooks + filesystem watcher + shell hook
 - `internal/content/` — ephemeral content store for raw tool output
-- `internal/retrieve/` — recall-snapshot building and markdown rendering
+- `internal/retrieve/` — reserved snapshot/markdown rendering scaffolding (path interning, multi-format output); not wired to the production `dfmt_recall` path yet — see `docs/ROADMAP.md` v0.3.
 
 See `AGENTS.md` for the canonical agent-onboarding instructions and
-`CLAUDE.md` (which now points at AGENTS.md). Architecture decisions
-live under `docs/adr/`.
+`CLAUDE.md` (which now points at AGENTS.md). Other top-level docs:
+
+- `CHANGELOG.md` — release-by-release user-visible changes.
+- `SECURITY.md` — vulnerability reporting + supported versions +
+  threat model summary.
+- `docs/ROADMAP.md` — v0.2.0 / v0.3.0 / v1.0.0 milestone plan.
+- `docs/ARCHITECTURE.md` — system architecture deep dive.
+- `docs/adr/` — Architecture Decision Records (12 ADRs as of v0.2.0).
 
 ## Dependency policy
 
