@@ -149,7 +149,21 @@ func New(projectPath string, cfg *config.Config) (*Daemon, error) {
 	for _, w := range sandbox.ValidatePathPrepend(cfg.Exec.PathPrepend) {
 		logging.Warnf("path_prepend: %s", w)
 	}
-	sb := sandbox.NewSandbox(projectPath).WithPathPrepend(cfg.Exec.PathPrepend)
+	// ADR-0014: load .dfmt/permissions.yaml on top of DefaultPolicy. A
+	// missing file is normal (most projects don't override). A parse error
+	// or hard-deny override (allow:exec:rm *, …) surfaces as a warning;
+	// the daemon still starts so a typo in the override doesn't lock the
+	// operator out of the running system. `dfmt doctor` echoes the same
+	// state for verification.
+	polRes, polErr := sandbox.LoadPolicyMerged(projectPath)
+	if polErr != nil {
+		logging.Warnf("permissions: %v", polErr)
+	}
+	for _, w := range polRes.Warnings {
+		logging.Warnf("permissions: %s", w)
+	}
+	sb := sandbox.NewSandboxWithPolicy(projectPath, polRes.Policy).
+		WithPathPrepend(cfg.Exec.PathPrepend)
 
 	// Create handlers
 	handlers := transport.NewHandlers(index, journal, sb)

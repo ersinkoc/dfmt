@@ -250,6 +250,122 @@ func DefaultPolicy() Policy {
 	}
 }
 
+// hardDenyExecBaseCommands lists exec base commands that an operator
+// override (`.dfmt/permissions.yaml`) cannot re-enable via an `allow:exec:…`
+// rule. The default policy's whitelist already withholds these, but a
+// permissive override could naively re-introduce them — these are dangerous
+// enough that the merge step strips matching allow rules and surfaces a
+// warning instead.
+//
+// Path-style allow rules (`allow:read:`, `allow:write:`, `allow:fetch:`) are
+// passed through unchanged; this list is exec-only.
+//
+// See ADR-0014 for the wiring decision and merge semantics.
+var hardDenyExecBaseCommands = map[string]struct{}{
+	"rm": {}, "rmdir": {}, "del": {}, "erase": {},
+	"sudo": {}, "doas": {}, "su": {},
+	"shutdown": {}, "reboot": {}, "halt": {}, "poweroff": {},
+	"format": {}, "diskpart": {}, "mkfs": {}, "fdisk": {},
+	"mount": {}, "umount": {}, "dd": {},
+	// dfmt itself recursing through exec is also blocked at a different
+	// layer (handler-side); listing it here is belt-and-suspenders.
+	"dfmt": {},
+}
+
+// isHardDenyExec reports whether ruleText (an exec rule's `Text`) targets a
+// hard-deny base command. The base command is the first whitespace-separated
+// token; a leading directory and case are stripped.
+func isHardDenyExec(ruleText string) bool {
+	fields := strings.Fields(ruleText)
+	if len(fields) == 0 {
+		return false
+	}
+	cmd := strings.ToLower(filepath.Base(fields[0]))
+	cmd = strings.TrimSuffix(cmd, ".exe")
+	_, ok := hardDenyExecBaseCommands[cmd]
+	return ok
+}
+
+// MergePolicies composes a base policy with an operator-supplied override.
+// The result's Allow list is `base.Allow ++ override.Allow`, except that
+// override Allow rules whose exec base command is on the hard-deny list are
+// silently dropped — the dropped rule's text is appended to warnings so the
+// caller can surface it (operator typo, attempted relaxation of the default
+// security stance).
+//
+// Deny rules union without filtering: operators can always tighten.
+//
+// The hard-deny invariant exists because `DefaultPolicy()`'s exec whitelist
+// alone is not sufficient — without this guard a single permissive override
+// line (`allow:exec:rm *`) would re-enable destructive commands the default
+// policy intentionally withholds. ADR-0014 documents the decision.
+func MergePolicies(base, override Policy) (Policy, []string) {
+	out := Policy{
+		Version: base.Version,
+		Allow:   make([]Rule, 0, len(base.Allow)+len(override.Allow)),
+		Deny:    make([]Rule, 0, len(base.Deny)+len(override.Deny)),
+	}
+	out.Allow = append(out.Allow, base.Allow...)
+	out.Deny = append(out.Deny, base.Deny...)
+
+	var warnings []string
+	for _, r := range override.Allow {
+		if r.Op == "exec" && isHardDenyExec(r.Text) {
+			warnings = append(warnings,
+				fmt.Sprintf("override allow:exec:%s ignored (hard-deny base command)", r.Text))
+			continue
+		}
+		out.Allow = append(out.Allow, r)
+	}
+	out.Deny = append(out.Deny, override.Deny...)
+	return out, warnings
+}
+
+// PolicyLoadResult carries everything a caller needs to surface the override
+// state to the operator (doctor row, daemon startup log).
+type PolicyLoadResult struct {
+	Policy        Policy   // composed policy ready for NewSandboxWithPolicy
+	OverridePath  string   // absolute path checked; empty when no override file expected
+	OverrideFound bool     // override file existed and was parsed
+	OverrideRules int      // count of rules merged in from the override
+	Warnings      []string // hard-deny masked allows + parse-time hints
+}
+
+// LoadPolicyMerged returns the effective policy for a project. If
+// `<projectPath>/.dfmt/permissions.yaml` exists it is parsed and merged on
+// top of `DefaultPolicy()` via MergePolicies; otherwise DefaultPolicy is
+// returned unchanged. A missing file is not an error.
+//
+// The caller is expected to log Warnings (operator visibility) and to use
+// the OverrideFound / OverrideRules fields for the doctor "permissions.yaml"
+// row.
+func LoadPolicyMerged(projectPath string) (PolicyLoadResult, error) {
+	res := PolicyLoadResult{Policy: DefaultPolicy()}
+	if projectPath == "" {
+		return res, nil
+	}
+	overridePath := filepath.Join(projectPath, ".dfmt", "permissions.yaml")
+	res.OverridePath = overridePath
+
+	if _, err := os.Stat(overridePath); err != nil {
+		if os.IsNotExist(err) {
+			return res, nil
+		}
+		return res, fmt.Errorf("stat %s: %w", overridePath, err)
+	}
+
+	override, err := LoadPolicy(overridePath)
+	if err != nil {
+		return res, fmt.Errorf("load %s: %w", overridePath, err)
+	}
+	merged, warns := MergePolicies(res.Policy, *override)
+	res.Policy = merged
+	res.OverrideFound = true
+	res.OverrideRules = len(override.Allow) + len(override.Deny)
+	res.Warnings = warns
+	return res, nil
+}
+
 // LoadPolicy loads a policy from a file.
 func LoadPolicy(path string) (*Policy, error) {
 	data, err := os.ReadFile(path)

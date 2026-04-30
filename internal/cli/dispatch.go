@@ -1084,6 +1084,23 @@ func runDoctor(args []string) int {
 			}
 			return true, fmt.Sprintf("PID %d", pid)
 		}},
+		{"Permissions override (.dfmt/permissions.yaml)", func() (bool, string) {
+			// ADR-0014. The override file is optional; report what state
+			// the daemon will see at startup.
+			res, err := sandbox.LoadPolicyMerged(dir)
+			if err != nil {
+				return false, err.Error()
+			}
+			if !res.OverrideFound {
+				return true, "(none — using DefaultPolicy)"
+			}
+			detail := fmt.Sprintf("loaded %d rule(s)", res.OverrideRules)
+			if len(res.Warnings) > 0 {
+				detail += fmt.Sprintf("; %d hard-deny mask(s): %s",
+					len(res.Warnings), strings.Join(res.Warnings, "; "))
+			}
+			return true, detail
+		}},
 		{"Lock file consistent with daemon liveness", func() (bool, string) {
 			if _, err := os.Stat(lockPath); os.IsNotExist(err) {
 				return true, "(no lock — OK)"
@@ -2625,7 +2642,8 @@ func runExec(args []string) int {
 		if c, cerr := config.Load(proj); cerr == nil && c != nil {
 			pp = c.Exec.PathPrepend
 		}
-		resp, err := sandbox.NewSandbox(proj).WithPathPrepend(pp).Exec(ctx, sandbox.ExecReq{
+		resp, err := sandbox.NewSandboxWithPolicy(proj, loadProjectPolicy(proj)).
+			WithPathPrepend(pp).Exec(ctx, sandbox.ExecReq{
 			Code:   code,
 			Lang:   lang,
 			Intent: intent,
@@ -2772,7 +2790,12 @@ func runMCP(_ []string) int {
 			pathPrepend = cfg.Exec.PathPrepend
 		}
 	}
-	sb := sandbox.NewSandbox(sandboxWD).WithPathPrepend(pathPrepend)
+	// MCP fallback path: the policy is keyed off the project root, not the
+	// per-call sandboxWD (which can differ when the agent runs the daemon
+	// from outside the project tree). loadProjectPolicy emits warnings to
+	// stderr — they end up in the agent's MCP server log.
+	sb := sandbox.NewSandboxWithPolicy(sandboxWD, loadProjectPolicy(proj)).
+		WithPathPrepend(pathPrepend)
 	handlers := transport.NewHandlers(index, journal, sb)
 	handlers.SetProject(proj)
 	mcp := transport.NewMCPProtocol(handlers)
@@ -2956,7 +2979,7 @@ func runRead(args []string) int {
 	})
 	if err != nil {
 		// Fallback to direct sandbox
-		resp, err := sandbox.NewSandbox(proj).Read(ctx, sandbox.ReadReq{
+		resp, err := sandbox.NewSandboxWithPolicy(proj, loadProjectPolicy(proj)).Read(ctx, sandbox.ReadReq{
 			Path:   path,
 			Intent: intent,
 			Offset: offset,
@@ -3273,4 +3296,27 @@ func runWrite(args []string) int {
 func mustMarshalJSON(v any) string {
 	data, _ := json.MarshalIndent(v, "", "  ")
 	return string(data)
+}
+
+// loadProjectPolicy returns the merged sandbox policy for `proj`, composed
+// from DefaultPolicy() plus any operator override at
+// `<proj>/.dfmt/permissions.yaml`. Used by the local-fallback sandbox paths
+// in this file when the daemon isn't available — the daemon path uses the
+// same call directly in internal/daemon/daemon.go.
+//
+// Errors and hard-deny override warnings are emitted to stderr; the CLI
+// fallback never hard-fails on policy load (a typo in permissions.yaml
+// shouldn't keep the agent from running).
+func loadProjectPolicy(proj string) sandbox.Policy {
+	if proj == "" {
+		return sandbox.DefaultPolicy()
+	}
+	res, err := sandbox.LoadPolicyMerged(proj)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: permissions: %v\n", err)
+	}
+	for _, w := range res.Warnings {
+		fmt.Fprintf(os.Stderr, "warning: permissions: %s\n", w)
+	}
+	return res.Policy
 }
