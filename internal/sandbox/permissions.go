@@ -39,17 +39,69 @@ type Policy struct {
 }
 
 // Rule is a single allow or deny rule.
+//
+// `re` is an optional precompiled regex for `Text`. When non-nil, Match
+// uses it directly and skips the global LRU cache lookup; this is the
+// hot-path optimization for Policy.Evaluate (a sandbox tool call walks
+// the entire allow/deny list, so any per-rule allocation multiplies).
+//
+// Rule is exposed as a value type and a copy retains the same `re`
+// pointer, so range-iterating `policy.Allow` (which yields copies) does
+// not lose the precompile. `re` stays unexported so YAML / JSON
+// marshalers ignore it.
 type Rule struct {
 	Op   string // "exec" | "read" | "fetch"
 	Text string // Pattern to match
+	re   *regexp.Regexp
 }
 
-// Match checks if a rule matches the given operation and text.
+// Compile precompiles the rule's glob into a regex and stores it on the
+// receiver. Idempotent; safe to call multiple times. A compile failure
+// leaves `re` nil so Match falls back to the LRU-cached path. The
+// fallback is correct, just allocates more — the failure mode is
+// "slower," not "wrong."
+func (r *Rule) Compile() {
+	var pattern string
+	if r.Op == "exec" {
+		pattern = globToRegexShell(r.Text)
+	} else {
+		pattern = globToRegex(r.Text)
+	}
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		return
+	}
+	r.re = re
+}
+
+// Match checks if a rule matches the given operation and text. When the
+// rule has been Compile()'d, the precompiled regex is used directly
+// (zero-alloc on the hot path); otherwise globMatch is invoked, which
+// walks the LRU cache.
 func (r Rule) Match(op, text string) bool {
 	if r.Op != op {
 		return false
 	}
-	return globMatch(r.Text, text, op)
+	if r.re == nil {
+		return globMatch(r.Text, text, op)
+	}
+	if op != "exec" {
+		text = strings.ReplaceAll(text, `\`, "/")
+	}
+	return r.re.MatchString(text)
+}
+
+// CompileAll precompiles every rule in the policy. Called from
+// DefaultPolicy / LoadPolicy / MergePolicies so production paths never
+// hit the LRU fallback. Tests that construct Policy literals can opt in
+// by calling this; the fallback path keeps them correct without it.
+func (p *Policy) CompileAll() {
+	for i := range p.Allow {
+		p.Allow[i].Compile()
+	}
+	for i := range p.Deny {
+		p.Deny[i].Compile()
+	}
 }
 
 // Evaluate checks the policy for a given operation.
@@ -97,7 +149,7 @@ func (p Policy) Evaluate(op, text string) bool {
 // Closes F-A-LOW-1 from the security audit (operator-facing guidance
 // for non-standard secret stores).
 func DefaultPolicy() Policy {
-	return Policy{
+	p := Policy{
 		Version: 1,
 		Allow: []Rule{
 			{Op: "exec", Text: "git"},
@@ -248,6 +300,8 @@ func DefaultPolicy() Policy {
 			{Op: "fetch", Text: "file://*"},
 		},
 	}
+	p.CompileAll()
+	return p
 }
 
 // hardDenyExecBaseCommands lists exec base commands that an operator
@@ -318,6 +372,7 @@ func MergePolicies(base, override Policy) (Policy, []string) {
 		out.Allow = append(out.Allow, r)
 	}
 	out.Deny = append(out.Deny, override.Deny...)
+	out.CompileAll()
 	return out, warnings
 }
 
@@ -404,6 +459,7 @@ func LoadPolicy(path string) (*Policy, error) {
 		}
 	}
 
+	policy.CompileAll()
 	return policy, nil
 }
 
