@@ -250,6 +250,19 @@ func New(projectPath string, cfg *config.Config) (*Daemon, error) {
 		fswatcher = w
 	}
 
+	// ADR-0014: load .dfmt/redact.yaml on top of the default pattern set.
+	// One redactor instance feeds both Daemon (for direct redactions) and
+	// Handlers (for journal-write hygiene); SetRedactor below overrides
+	// the default that NewHandlers initialized.
+	redactor, redactRes, redactErr := redact.LoadProjectRedactor(projectPath)
+	if redactErr != nil {
+		logging.Warnf("redact: %v", redactErr)
+	}
+	for _, w := range redactRes.Warnings {
+		logging.Warnf("redact: %s", w)
+	}
+	handlers.SetRedactor(redactor)
+
 	d := &Daemon{
 		projectPath:  projectPath,
 		config:       cfg,
@@ -259,7 +272,7 @@ func New(projectPath string, cfg *config.Config) (*Daemon, error) {
 		journal:      journal,
 		server:       server,
 		handlers:     handlers,
-		redactor:     redact.NewRedactor(),
+		redactor:     redactor,
 		fswatcher:    fswatcher,
 		shutdownCh:   make(chan struct{}),
 	}

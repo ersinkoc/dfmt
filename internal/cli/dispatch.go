@@ -24,6 +24,7 @@ import (
 	"github.com/ersinkoc/dfmt/internal/daemon"
 	"github.com/ersinkoc/dfmt/internal/logging"
 	"github.com/ersinkoc/dfmt/internal/project"
+	"github.com/ersinkoc/dfmt/internal/redact"
 	"github.com/ersinkoc/dfmt/internal/sandbox"
 	"github.com/ersinkoc/dfmt/internal/setup"
 	"github.com/ersinkoc/dfmt/internal/transport"
@@ -1083,6 +1084,22 @@ func runDoctor(args []string) int {
 				return false, fmt.Sprintf("stale PID %d (process not running; auto-cleaned on next start)", pid)
 			}
 			return true, fmt.Sprintf("PID %d", pid)
+		}},
+		{"Redact override (.dfmt/redact.yaml)", func() (bool, string) {
+			// ADR-0014. Same shape as the permissions row below.
+			_, res, err := redact.LoadProjectRedactor(dir)
+			if err != nil {
+				return false, err.Error()
+			}
+			if !res.OverrideFound {
+				return true, "(none — using default patterns)"
+			}
+			detail := fmt.Sprintf("loaded %d pattern(s)", res.PatternsLoaded)
+			if len(res.Warnings) > 0 {
+				detail += fmt.Sprintf("; %d warning(s): %s",
+					len(res.Warnings), strings.Join(res.Warnings, "; "))
+			}
+			return true, detail
 		}},
 		{"Permissions override (.dfmt/permissions.yaml)", func() (bool, string) {
 			// ADR-0014. The override file is optional; report what state
