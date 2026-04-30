@@ -166,6 +166,12 @@ func (s *HTTPServer) Start(ctx context.Context) error {
 	mux.HandleFunc("/readyz", s.handleHealth)
 	mux.HandleFunc("/metrics", s.handleMetrics)
 
+	// Bind Handlers-instance metrics (dedup-hit counter) to the package
+	// registry exactly once per server start. Re-registration is
+	// idempotent — registerMetric replaces an entry with the same name +
+	// labels — so a Stop/Start cycle is safe.
+	WireHandlerMetrics(s.handlers)
+
 	s.server = &http.Server{
 		Handler:           s.wrapSecurity(mux),
 		ReadTimeout:       30 * time.Second,

@@ -605,7 +605,8 @@ type SearchHit struct {
 }
 
 // Search queries the index.
-func (h *Handlers) Search(ctx context.Context, params SearchParams) (*SearchResponse, error) {
+func (h *Handlers) Search(ctx context.Context, params SearchParams) (_ *SearchResponse, err error) {
+	defer recordToolCall("search", ctx, &err)
 	h.touch()
 	if params.Limit == 0 {
 		params.Limit = 10
@@ -671,7 +672,8 @@ type RecallResponse struct {
 }
 
 // Recall builds a session snapshot with tier-ordered greedy fill.
-func (h *Handlers) Recall(ctx context.Context, params RecallParams) (*RecallResponse, error) {
+func (h *Handlers) Recall(ctx context.Context, params RecallParams) (_ *RecallResponse, err error) {
+	defer recordToolCall("recall", ctx, &err)
 	h.touch()
 	if h.journal == nil {
 		return nil, errNoProject
@@ -1143,7 +1145,8 @@ type ExecResponse struct {
 }
 
 // Exec executes code via the sandbox.
-func (h *Handlers) Exec(ctx context.Context, params ExecParams) (*ExecResponse, error) {
+func (h *Handlers) Exec(ctx context.Context, params ExecParams) (_ *ExecResponse, err error) {
+	defer recordToolCall("exec", ctx, &err)
 	h.touch()
 	release, err := acquireLimiter(ctx, h.execSem)
 	if err != nil {
@@ -1274,7 +1277,8 @@ type ReadResponse struct {
 }
 
 // Read reads a file via the sandbox.
-func (h *Handlers) Read(ctx context.Context, params ReadParams) (*ReadResponse, error) {
+func (h *Handlers) Read(ctx context.Context, params ReadParams) (_ *ReadResponse, err error) {
+	defer recordToolCall("read", ctx, &err)
 	h.touch()
 	release, err := acquireLimiter(ctx, h.readSem)
 	if err != nil {
@@ -1399,7 +1403,8 @@ type GrepResponse struct {
 }
 
 // Fetch fetches a URL via the sandbox.
-func (h *Handlers) Fetch(ctx context.Context, params FetchParams) (*FetchResponse, error) {
+func (h *Handlers) Fetch(ctx context.Context, params FetchParams) (_ *FetchResponse, err error) {
+	defer recordToolCall("fetch", ctx, &err)
 	h.touch()
 	release, err := acquireLimiter(ctx, h.fetchSem)
 	if err != nil {
@@ -1484,7 +1489,8 @@ func (h *Handlers) Fetch(ctx context.Context, params FetchParams) (*FetchRespons
 }
 
 // Glob performs glob pattern matching via the sandbox.
-func (h *Handlers) Glob(ctx context.Context, params GlobParams) (*GlobResponse, error) {
+func (h *Handlers) Glob(ctx context.Context, params GlobParams) (_ *GlobResponse, err error) {
+	defer recordToolCall("glob", ctx, &err)
 	h.touch()
 	release, err := acquireLimiter(ctx, h.readSem)
 	if err != nil {
@@ -1513,7 +1519,8 @@ func (h *Handlers) Glob(ctx context.Context, params GlobParams) (*GlobResponse, 
 }
 
 // Grep performs text search via the sandbox.
-func (h *Handlers) Grep(ctx context.Context, params GrepParams) (*GrepResponse, error) {
+func (h *Handlers) Grep(ctx context.Context, params GrepParams) (_ *GrepResponse, err error) {
+	defer recordToolCall("grep", ctx, &err)
 	h.touch()
 	release, err := acquireLimiter(ctx, h.readSem)
 	if err != nil {
@@ -1582,7 +1589,8 @@ type WriteResponse struct {
 }
 
 // Edit performs an edit on a file via the sandbox.
-func (h *Handlers) Edit(ctx context.Context, params EditParams) (*EditResponse, error) {
+func (h *Handlers) Edit(ctx context.Context, params EditParams) (_ *EditResponse, err error) {
+	defer recordToolCall("edit", ctx, &err)
 	h.touch()
 	release, err := acquireLimiter(ctx, h.writeSem)
 	if err != nil {
@@ -1611,7 +1619,8 @@ func (h *Handlers) Edit(ctx context.Context, params EditParams) (*EditResponse, 
 }
 
 // Write writes content to a file via the sandbox.
-func (h *Handlers) Write(ctx context.Context, params WriteParams) (*WriteResponse, error) {
+func (h *Handlers) Write(ctx context.Context, params WriteParams) (_ *WriteResponse, err error) {
+	defer recordToolCall("write", ctx, &err)
 	h.touch()
 	release, err := acquireLimiter(ctx, h.writeSem)
 	if err != nil {

@@ -1,10 +1,10 @@
 # ADR-0016: Prometheus `/metrics` Endpoint
 
 - **Status:** Accepted
-- **Date:** 2026-05-01
+- **Date:** 2026-05-01 (amended 2026-05-02 — per-tool counters + dedup-hit counter wired)
 - **Supersedes:** —
 - **Superseded by:** —
-- **Related:** ADR-0001 (Per-Project Daemon), ADR-0004 (Stdlib-First Deps)
+- **Related:** ADR-0001 (Per-Project Daemon), ADR-0004 (Stdlib-First Deps), ADR-0009 (Cross-Call Content Dedup)
 
 ## Context
 
@@ -65,7 +65,8 @@ adding it later.
 
 ### What's published in v0.3
 
-Daemon-level gauges and one counter. All read at scrape time:
+Daemon-level gauges, scrape counter, per-tool counters, and dedup-hit
+counter. All read at scrape time:
 
 | Metric | Type | Purpose |
 |---|---|---|
@@ -76,14 +77,52 @@ Daemon-level gauges and one counter. All read at scrape time:
 | `dfmt_memstats_heap_inuse_bytes` | gauge | In-use spans |
 | `dfmt_memstats_gc_pause_total_ns` | gauge | GC pause budget |
 | `dfmt_memstats_num_gc` | gauge | GC cycle count |
+| `dfmt_tool_calls_total{tool,status}` | counter | MCP tool invocations by name (exec/read/fetch/glob/grep/edit/write/recall/search) and status (ok/error) |
+| `dfmt_dedup_hits_total` | counter | Cross-call content-store dedup cache hits (ADR-0009) |
 
-Per-tool counters (`dfmt_tool_calls_total{tool="exec",status="ok"}`),
-duration histograms, dedup-hit counters, and journal-event-byte
-counters are all **deferred to v0.4**. They require touching the
-`Handlers` hot path and a per-call instrumentation review (which
-labels carry agent-identifiable data, what cardinality bound, etc.)
-that is too large for the initial wire-up. The registry is designed
-to accept them with no changes to the format or the endpoint.
+#### Per-tool counter cardinality
+
+Closed set: 9 tools × 2 statuses = 18 children under `dfmt_tool_calls_total`.
+Operators wanting cancel-vs-failure separation should look at journal
+events (the `tool.*` events carry full error reasons) — keeping the
+counter binary stops label cardinality from drifting if a future tool
+gains a richer status taxonomy. `context.Canceled` returns from the
+handler are explicitly *not* counted as errors: the agent gave up
+before the daemon finished work, which is not a daemon-side fault and
+would noise-up alerting.
+
+#### Wiring pattern
+
+Each `Handlers` method takes a named `err` return and a one-line
+defer:
+
+```go
+func (h *Handlers) Exec(ctx context.Context, p ExecParams) (_ *ExecResponse, err error) {
+    defer recordToolCall("exec", ctx, &err)
+    // ... existing body
+}
+```
+
+The blank identifier on the response avoids colliding with `resp` as a
+local variable in the existing handler bodies. `recordToolCall` does
+one map lookup + one atomic Add on the hot path; ~5 ns per invocation
+on a M2-class CPU. The counters are registered at package init via
+`registerToolMetrics()`, so they are available the moment any
+`HTTPServer` (or any test) imports the package.
+
+#### Still deferred to v0.4
+
+- **Duration histograms** (`dfmt_tool_call_duration_seconds_bucket{tool, le}`).
+  Bucket choice is not yet defensible — the right percentile budget
+  depends on operator workload, and a premature `[0.005, 0.01, …]`
+  set is harder to migrate than adding it later.
+- **Index size, journal byte total, active-session gauges**. One-line
+  RegisterGaugeFunc wirings; deferred only because each one needs a
+  read-side method on the underlying type and that touch should be
+  bundled with a coverage push for the same package.
+- **Per-scrape rate-limit + MemStats TTL**. A rogue scraper at 100 Hz
+  measurably impacts request latency. Mitigation lives behind a config
+  knob if it ever surfaces in real operator reports.
 
 ### Scrape cost
 
@@ -144,9 +183,9 @@ on the HTTP server, `/metrics` should be re-evaluated separately.
   Mitigated: the format is stable (v0.0.4 has been current since
   2014); a v1.0 change would be cataloged with months of lead time
   and an upstream client_golang migration is then a contained ADR.
-- Per-tool counters being deferred means the v0.3 endpoint surface is
-  thin — operators will see daemon health but not tool-call rates.
-  This is documented in the v0.4 follow-up tracker.
+- Duration histograms still deferred — operators see call rates and
+  errors but cannot yet alert on p95 latency. The 2026-05-02 amendment
+  delivered counters but explicitly held back on bucket choices.
 - `runtime.ReadMemStats` per scrape is a stop-the-world. Not visible
   at 1 Hz, but a rogue scraper at 100 Hz could meaningfully impact
   request latency. Future hardening (per-scrape rate limit, cached

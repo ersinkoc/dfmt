@@ -128,6 +128,31 @@ func RegisterGaugeFunc(name, help string, fn func() int64) {
 	})
 }
 
+// RegisterCounterFunc is the closure-collected counter variant — used
+// when the counter value lives on a struct field (e.g. handlers.dedupHits
+// is an atomic.Int64 owned by Handlers, not a *Counter the registry
+// can hold a pointer to). The closure must read atomically; scrape
+// latency assumes O(1) per metric.
+func RegisterCounterFunc(name, help string, fn func() int64) {
+	registerMetric(metricEntry{
+		name: name, help: help, kind: metricCounter,
+		collect: fn,
+	})
+}
+
+// RegisterCounterWithLabels binds a Counter to a (name, label-set) pair.
+// Used for label-vector counters where the same metric name carries a
+// fixed set of dimensions — e.g. dfmt_tool_calls_total{tool, status}.
+// The label map is captured by reference; callers must not mutate it
+// after registration.
+func RegisterCounterWithLabels(name, help string, labels map[string]string, c *Counter) {
+	registerMetric(metricEntry{
+		name: name, help: help, kind: metricCounter,
+		labels:  labels,
+		collect: c.Load,
+	})
+}
+
 func registerMetric(e metricEntry) {
 	defaultRegistry.mu.Lock()
 	defer defaultRegistry.mu.Unlock()
@@ -252,6 +277,7 @@ func resetRegistryForTest() {
 		"Total number of /metrics endpoint scrapes since daemon start.",
 		&metricsScrapesTotal)
 	registerProcessMetrics()
+	registerToolMetrics()
 }
 
 // registerProcessMetrics wires the daemon-level gauges that are always
@@ -308,4 +334,5 @@ func init() {
 		"Total number of /metrics endpoint scrapes since daemon start.",
 		&metricsScrapesTotal)
 	registerProcessMetrics()
+	registerToolMetrics()
 }

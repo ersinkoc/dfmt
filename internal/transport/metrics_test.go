@@ -2,6 +2,8 @@ package transport
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -162,5 +164,209 @@ func TestHandleMetrics_ScrapeCounterIncrements(t *testing.T) {
 	s.handleMetrics(w, r)
 	if got := metricsScrapesTotal.Load(); got != before+1 {
 		t.Errorf("scrape counter: before=%d after=%d, want before+1", before, got)
+	}
+}
+
+func TestRegisterCounterFunc_DynamicCollect(t *testing.T) {
+	resetRegistryForTest()
+	var src Counter
+	src.Add(13)
+	RegisterCounterFunc("test_dyn_counter",
+		"Counter via closure-collect.",
+		func() int64 { return src.Load() * 2 })
+
+	var buf bytes.Buffer
+	_ = WriteProm(&buf)
+	out := buf.String()
+	if !strings.Contains(out, "# TYPE test_dyn_counter counter") {
+		t.Errorf("missing TYPE line for closure counter:\n%s", out)
+	}
+	if !strings.Contains(out, "test_dyn_counter 26") {
+		t.Errorf("closure counter value not 26:\n%s", out)
+	}
+}
+
+func TestRegisterCounterWithLabels_LabelEmission(t *testing.T) {
+	resetRegistryForTest()
+	var ok, fail Counter
+	ok.Add(42)
+	fail.Add(3)
+	RegisterCounterWithLabels("test_calls_total", "Test labeled counter.",
+		map[string]string{"tool": "exec", "status": "ok"}, &ok)
+	RegisterCounterWithLabels("test_calls_total", "Test labeled counter.",
+		map[string]string{"tool": "exec", "status": "error"}, &fail)
+
+	var buf bytes.Buffer
+	_ = WriteProm(&buf)
+	out := buf.String()
+	// HELP/TYPE block emitted exactly once even though two children share
+	// the metric name. Both child lines must appear with sorted labels.
+	if got := strings.Count(out, "# TYPE test_calls_total"); got != 1 {
+		t.Errorf("TYPE line for test_calls_total: got %d, want 1\n%s", got, out)
+	}
+	if !strings.Contains(out, `test_calls_total{status="ok",tool="exec"} 42`) {
+		t.Errorf("missing ok-status child:\n%s", out)
+	}
+	if !strings.Contains(out, `test_calls_total{status="error",tool="exec"} 3`) {
+		t.Errorf("missing error-status child:\n%s", out)
+	}
+}
+
+func TestRecordToolCall_OkAndError(t *testing.T) {
+	resetRegistryForTest()
+	beforeOk := toolCallCounters["exec"].ok.Load()
+	beforeErr := toolCallCounters["exec"].err.Load()
+
+	// nil err → ok bucket
+	var nilErr error
+	recordToolCall("exec", nil, &nilErr)
+	if got := toolCallCounters["exec"].ok.Load(); got != beforeOk+1 {
+		t.Errorf("nil-err recordToolCall: ok=%d want %d", got, beforeOk+1)
+	}
+	if got := toolCallCounters["exec"].err.Load(); got != beforeErr {
+		t.Errorf("nil-err recordToolCall must not bump err counter: got %d want %d", got, beforeErr)
+	}
+
+	// real err → error bucket
+	someErr := errors.New("sandbox denied")
+	recordToolCall("exec", nil, &someErr)
+	if got := toolCallCounters["exec"].err.Load(); got != beforeErr+1 {
+		t.Errorf("err recordToolCall: err=%d want %d", got, beforeErr+1)
+	}
+}
+
+func TestRecordToolCall_CancelSuppressed(t *testing.T) {
+	resetRegistryForTest()
+	beforeErr := toolCallCounters["exec"].err.Load()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	cancelErr := context.Canceled
+	recordToolCall("exec", ctx, &cancelErr)
+	if got := toolCallCounters["exec"].err.Load(); got != beforeErr {
+		t.Errorf("ctx-cancel recordToolCall must NOT bump err: got %d want %d", got, beforeErr)
+	}
+}
+
+func TestRecordToolCall_UnknownToolNoOp(t *testing.T) {
+	resetRegistryForTest()
+	// Snapshot all tool counters so an unknown tool name doesn't
+	// mysteriously bump some other bucket.
+	type pair struct{ ok, err int64 }
+	before := make(map[string]pair)
+	for tool, c := range toolCallCounters {
+		before[tool] = pair{c.ok.Load(), c.err.Load()}
+	}
+	var e error = errors.New("boom")
+	recordToolCall("not-a-real-tool", nil, &e)
+	for tool, c := range toolCallCounters {
+		if c.ok.Load() != before[tool].ok || c.err.Load() != before[tool].err {
+			t.Errorf("unknown-tool recordToolCall mutated %s: before=%v after=(%d,%d)",
+				tool, before[tool], c.ok.Load(), c.err.Load())
+		}
+	}
+}
+
+func TestToolCounters_RegisteredAtInit(t *testing.T) {
+	resetRegistryForTest()
+	// Bump every (tool, status) pair so every bucket has a non-zero
+	// value, then assert WriteProm emits all 18 children under one
+	// metric name with one HELP/TYPE block.
+	for _, tool := range trackedTools {
+		toolCallCounters[tool].ok.Inc()
+		toolCallCounters[tool].err.Inc()
+	}
+	var buf bytes.Buffer
+	_ = WriteProm(&buf)
+	out := buf.String()
+	if got := strings.Count(out, "# TYPE dfmt_tool_calls_total"); got != 1 {
+		t.Errorf("dfmt_tool_calls_total TYPE line count = %d, want 1\n%s", got, out)
+	}
+	for _, tool := range trackedTools {
+		needOk := `dfmt_tool_calls_total{status="ok",tool="` + tool + `"}`
+		needErr := `dfmt_tool_calls_total{status="error",tool="` + tool + `"}`
+		if !strings.Contains(out, needOk) {
+			t.Errorf("missing ok line for tool=%s", tool)
+		}
+		if !strings.Contains(out, needErr) {
+			t.Errorf("missing error line for tool=%s", tool)
+		}
+	}
+}
+
+func TestWireHandlerMetrics_DedupHits(t *testing.T) {
+	resetRegistryForTest()
+	h := &Handlers{}
+	h.dedupHits.Add(7)
+	WireHandlerMetrics(h)
+
+	var buf bytes.Buffer
+	_ = WriteProm(&buf)
+	out := buf.String()
+	if !strings.Contains(out, "# TYPE dfmt_dedup_hits_total counter") {
+		t.Errorf("missing TYPE line for dedup hits:\n%s", out)
+	}
+	if !strings.Contains(out, "dfmt_dedup_hits_total 7") {
+		t.Errorf("dedup hits value not 7:\n%s", out)
+	}
+
+	// Bump and re-scrape — the closure must read live, not cached.
+	h.dedupHits.Add(5)
+	buf.Reset()
+	_ = WriteProm(&buf)
+	if !strings.Contains(buf.String(), "dfmt_dedup_hits_total 12") {
+		t.Errorf("dedup hits not refreshed on second scrape:\n%s", buf.String())
+	}
+}
+
+// TestHandlers_Search_BumpsCounter is the end-to-end check: a real
+// Handlers.Search call exits and the dfmt_tool_calls_total{tool=search,
+// status=ok} counter advances by 1. Pairs with the unit tests above to
+// catch a wiring regression where the defer is removed but the package-
+// level counters still register.
+func TestHandlers_Search_BumpsCounter(t *testing.T) {
+	resetRegistryForTest()
+	h := NewHandlers(nil, nil, nil) // nil index → returns empty result, nil err
+	beforeOk := toolCallCounters["search"].ok.Load()
+	beforeErr := toolCallCounters["search"].err.Load()
+
+	if _, err := h.Search(context.Background(), SearchParams{Query: "x", Limit: 5}); err != nil {
+		t.Fatalf("Search returned err: %v", err)
+	}
+	if got := toolCallCounters["search"].ok.Load(); got != beforeOk+1 {
+		t.Errorf("search.ok counter: got %d want %d", got, beforeOk+1)
+	}
+	if got := toolCallCounters["search"].err.Load(); got != beforeErr {
+		t.Errorf("search.err counter mutated: got %d want %d", got, beforeErr)
+	}
+}
+
+// TestHandlers_Recall_BumpsErrorCounter exercises the failure path:
+// Recall on a degraded handler (no journal attached) returns errNoProject,
+// and the error bucket advances.
+func TestHandlers_Recall_BumpsErrorCounter(t *testing.T) {
+	resetRegistryForTest()
+	h := NewHandlers(nil, nil, nil) // no journal → errNoProject
+	beforeOk := toolCallCounters["recall"].ok.Load()
+	beforeErr := toolCallCounters["recall"].err.Load()
+
+	if _, err := h.Recall(context.Background(), RecallParams{}); err == nil {
+		t.Fatalf("Recall on nil journal must return errNoProject, got nil")
+	}
+	if got := toolCallCounters["recall"].err.Load(); got != beforeErr+1 {
+		t.Errorf("recall.err counter: got %d want %d", got, beforeErr+1)
+	}
+	if got := toolCallCounters["recall"].ok.Load(); got != beforeOk {
+		t.Errorf("recall.ok counter mutated: got %d want %d", got, beforeOk)
+	}
+}
+
+func TestWireHandlerMetrics_NilSafe(t *testing.T) {
+	resetRegistryForTest()
+	WireHandlerMetrics(nil) // must not panic
+	var buf bytes.Buffer
+	_ = WriteProm(&buf)
+	if strings.Contains(buf.String(), "dfmt_dedup_hits_total") {
+		t.Errorf("nil handler must NOT register dedup metric")
 	}
 }
