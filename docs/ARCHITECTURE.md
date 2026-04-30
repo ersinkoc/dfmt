@@ -1283,12 +1283,12 @@ flowchart TB
     S1 --> S2 --> S3
 ```
 
-> **Trigrams are indexed but not queried.** `Index.Add` populates a
-> trigram posting list alongside the stem postings, and the index is
-> persisted with both, but `SearchBM25` only walks `stemPL`. The
-> trigram path and `core.Levenshtein` exist for a future fuzzy-search
-> layer (see §8.5 Search layers — `trigram` and `fuzzy` cases are
-> reserved). Today both are dead weight in the hot path.
+> **Trigrams have a fallback role today.** `Index.Add` populates a
+> trigram posting list alongside the stem postings; `SearchBM25` walks
+> `stemPL` first and the handler falls back to trigrams when BM25
+> returns zero hits (`Layer: "trigram"`). See §8.5 for the layer rules.
+> The `fuzzy` layer is unimplemented — its `core.Levenshtein`
+> scaffolding was removed in ADR-0013.
 
 **What text gets indexed.** `Index.eventText(e)` concatenates
 (space-joined): `string(e.Type)` + every entry in `e.Tags` + every
@@ -1356,9 +1356,9 @@ distinguish a true miss from a fallback hit
 (`internal/transport/handlers.go::Search`). The fallback closes a
 class of misses where BM25 silently drops synthetic markers
 (`AUDIT_PROBE_XJ7Q3`), UUIDs, and other tokens that the Porter
-stemmer mangles or splits. `fuzzy` remains a reserved case that
-returns no results today (Levenshtein scaffolding lives in
-`core/levenshtein.go` but is unwired — see §18 reserved code).
+stemmer mangles or splits. `fuzzy` is accepted for forward compatibility but returns no results
+today; the earlier `core.Levenshtein` scaffolding was removed in
+ADR-0013.
 Default `limit` when omitted is 10.
 
 Hits carry `id`, `score`, `layer` (integer rank), and an opt-in
@@ -3047,8 +3047,8 @@ Two third-party Go modules total:
 - `gopkg.in/yaml.v3` — YAML config.
 
 Everything else (BM25, Porter stemmer, MCP protocol, JSON-RPC 2.0,
-HTML parser, ULID, levenshtein) is in-tree. Adding a dependency
-needs an ADR in `docs/adr/`.
+HTML parser, ULID) is in-tree. Adding a dependency needs an ADR in
+`docs/adr/`.
 
 > **In-tree ≠ in-use.** Several of these implementations exist as
 > reserved capabilities with full test coverage but no production
@@ -3109,6 +3109,7 @@ revisit. Current set:
 | 0010 | Structured Output Awareness            | NormalizeOutput strips JSON / NDJSON / YAML noise + Markdown frontmatter before tier gating. |
 | 0011 | Per-Session Wire Dedup                 | Already-emitted `content_id`s return a 27-byte sentinel instead of repeating the body on the wire. |
 | 0012 | Token-Aware Budgets                    | Tier gating uses `ApproxTokens(s) = ascii_bytes/4 + non_ascii_runes`; CJK / Turkish bodies hit the same agent-cost threshold as English. |
+| 0013 | Drop Unwired Levenshtein Scaffolding   | Remove `core.Levenshtein` + `FuzzyMatch`; the `fuzzy` Search layer stays accepted for forward compatibility but returns no results. |
 
 `docs/adr/ADR-INDEX.md` is the always-current index. Add a new ADR
 when introducing a component, changing component interactions,
@@ -3155,7 +3156,6 @@ internal/
 │   ├── porter.go            Porter stemmer
 │   ├── trigram.go           trigram fallback index
 │   ├── bm25.go              BM25 scoring math
-│   ├── levenshtein.go       edit distance + FuzzyMatch — reserved, not wired (see end of §18)
 │   └── ulid.go              ULID generator (sortable IDs)
 ├── daemon/
 │   ├── daemon.go            lifecycle, goroutines, idle monitor
@@ -3230,7 +3230,6 @@ work assuming these paths are live:
 | `content.Summarizer` (kind-aware summary)     | `content/summarize.go`          | Production `Summary` text comes from `sandbox.GenerateSummary` instead (§9.4).                  |
 | `core.EnglishStopwords` (~70 entries)         | `core/core.go`                  | All call sites pass `nil` to `TokenizeFull`; the unexported 25-entry list applies (§8.6).       |
 | `core.TurkishStopwords` (14 entries)          | `core/core.go`                  | Same as above — never reached.                                                                  |
-| `core.Levenshtein` + `core.FuzzyMatch`        | `core/levenshtein.go`           | Defined and tested; no caller outside the package's own tests.                                  |
 | `capture.{GitCapture,ShellCapture}` builders   | `capture/{git,shell}.go`        | `NewGitCapture`, `BuildCommit`, `BuildCheckout`, `BuildPush`, `GitLog`, `NewShellCapture`, `BuildCommand`, `DetectShell` — only `git_shell_test.go` references them. The live capture path is `dispatch.go::buildCaptureParams` constructing `RememberParams` inline (§10.2 / §10.3); only `capture/fswatch.go` is wired. |
 
 Treat each row as a tripwire: if a future commit makes one of these

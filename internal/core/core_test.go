@@ -129,27 +129,6 @@ func TestBM25(t *testing.T) {
 	}
 }
 
-func TestLevenshtein(t *testing.T) {
-	tests := []struct {
-		a        string
-		b        string
-		expected int
-	}{
-		{"kitten", "kitten", 0},
-		{"kitten", "sitting", 3},
-		{"Saturday", "Sunday", 3},
-		{"", "abc", 3},
-		{"abc", "", 3},
-	}
-
-	for _, tt := range tests {
-		got := Levenshtein(tt.a, tt.b)
-		if got != tt.expected {
-			t.Errorf("Levenshtein(%q, %q): got %d, want %d", tt.a, tt.b, got, tt.expected)
-		}
-	}
-}
-
 func TestULIDMonotonicity(t *testing.T) {
 	ts := time.Now()
 	ids := make([]ULID, 100)
@@ -176,15 +155,6 @@ func TestULIDTime(t *testing.T) {
 	}
 	if diff > time.Millisecond {
 		t.Errorf("ULID time differs by %v from input", diff)
-	}
-}
-
-func TestFuzzyMatch(t *testing.T) {
-	if !FuzzyMatch("hello", "helo", 1) {
-		t.Error("FuzzyMatch(hello, helo, 1) should be true")
-	}
-	if FuzzyMatch("hello", "world", 2) {
-		t.Error("FuzzyMatch(hello, world, 2) should be false")
 	}
 }
 
@@ -1316,43 +1286,6 @@ func TestBM25EdgeCases(t *testing.T) {
 	score = bm.Score(5, 1000, 10.0, 1, 10)
 	if score <= 0 {
 		t.Error("BM25 with high docLen should have positive score")
-	}
-}
-
-func TestLevenshteinEdgeCases(t *testing.T) {
-	// Same strings
-	if Levenshtein("test", "test") != 0 {
-		t.Error("Levenshtein same strings should be 0")
-	}
-
-	// Empty both
-	if Levenshtein("", "") != 0 {
-		t.Error("Levenshtein empty both should be 0")
-	}
-
-	// Very long strings
-	long1 := "abcdefghijklmnopqrstuvwxyz"
-	long2 := "zyxwvutsrqponmlkjihgfedcba"
-	d := Levenshtein(long1, long2)
-	if d <= 0 {
-		t.Error("Levenshtein very different long strings should be positive")
-	}
-}
-
-func TestFuzzyMatchEdgeCases(t *testing.T) {
-	// Exact match
-	if !FuzzyMatch("hello", "hello", 0) {
-		t.Error("FuzzyMatch exact match should be true")
-	}
-
-	// Very high tolerance
-	if FuzzyMatch("hello", "world", 100) {
-		t.Log("FuzzyMatch with tolerance 100 matched unrelated strings")
-	}
-
-	// Empty strings
-	if !FuzzyMatch("", "", 0) {
-		t.Error("FuzzyMatch empty both should be true")
 	}
 }
 

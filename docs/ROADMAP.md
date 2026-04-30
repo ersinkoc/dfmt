@@ -151,9 +151,9 @@ it (with a removal ADR):
   wire `Index.Add` to use it (with an ADR — changes BM25
   postings on existing journals), or downgrade to
   unexported.
-- [ ] `core.Levenshtein` + `core.FuzzyMatch` — back the
-  `fuzzy` Search layer that today returns nothing, or
-  remove.
+- [x] `core.Levenshtein` + `core.FuzzyMatch` — **removed**
+  in ADR-0013; the `fuzzy` Search layer remains accepted
+  for forward compatibility but returns no results.
 - [ ] `capture.GitCapture` / `capture.ShellCapture` builders
   — collapse `internal/cli/dispatch.go::buildCaptureParams`
   onto these helpers (deduplicates the inline construction)

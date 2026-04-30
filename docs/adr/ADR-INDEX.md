@@ -21,6 +21,7 @@ See [ADR-0000](0000-adr-process.md) for the process governing how ADRs are writt
 | [0010](0010-structured-output-awareness.md) | Structured-Output Awareness | Accepted | `NormalizeOutput` detects JSON bodies and drops a small noise-field set (`created_at`, `*_url`, `_links`, `etag`, `node_id`). |
 | [0011](0011-per-session-wire-dedup.md) | Per-Session Wire Dedup Scoping | Accepted | Session ID flows through `context.Context`; `Handlers.sentCache` keys per-session. Closes the deferred risk in ADR-0009. |
 | [0012](0012-token-aware-budgets.md) | Token-Aware Policy Budgets | Accepted | Inline / medium / tail policy gates compare against approximated token counts (heuristic), not raw bytes. CJK and English bodies now hit the same agent-cost threshold. |
+| [0013](0013-drop-unwired-levenshtein.md) | Drop Unwired Levenshtein Scaffolding | Accepted | Remove `core.Levenshtein` + `core.FuzzyMatch` and their tests; the `fuzzy` Search layer remains accepted for forward compatibility but returns no results. |
 
 ## Superseded Decisions
 
