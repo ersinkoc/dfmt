@@ -164,6 +164,7 @@ func (s *HTTPServer) Start(ctx context.Context) error {
 	mux.HandleFunc("/api/daemons", s.handleAPIDaemons)
 	mux.HandleFunc("/healthz", s.handleHealth)
 	mux.HandleFunc("/readyz", s.handleHealth)
+	mux.HandleFunc("/metrics", s.handleMetrics)
 
 	s.server = &http.Server{
 		Handler:           s.wrapSecurity(mux),
@@ -695,6 +696,37 @@ func (s *HTTPServer) handleHealth(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/plain")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte("ok"))
+}
+
+// handleMetrics emits Prometheus text format from the package registry
+// (ADR-0016). GET-only; same wrapSecurity middleware that gates the
+// dashboard already enforces loopback Host header + same-origin Origin
+// for cross-origin browser requests, so this endpoint inherits the
+// same threat model as /api/stats.
+//
+// Scrape cost: O(registry) atomic loads + 4 runtime.ReadMemStats calls.
+// MemStats is the dominant cost (a stop-the-world for ~100 µs on a
+// healthy heap); a 1 Hz Prometheus scrape interval is well within
+// budget. We do not cache MemStats across scrape calls — staleness is
+// worse than the small pause for the operator reading the dashboard.
+func (s *HTTPServer) handleMetrics(w http.ResponseWriter, r *http.Request) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			fmt.Fprintf(os.Stderr, "handleMetrics panic recovered: %v\n", rec)
+			http.Error(w, "internal error", http.StatusInternalServerError)
+		}
+	}()
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	metricsScrapesTotal.Inc()
+	w.Header().Set("Content-Type", "text/plain; version=0.0.4")
+	w.WriteHeader(http.StatusOK)
+	if r.Method == http.MethodHead {
+		return
+	}
+	_ = WriteProm(w)
 }
 
 func (s *HTTPServer) handleAPIDaemons(w http.ResponseWriter, r *http.Request) {
