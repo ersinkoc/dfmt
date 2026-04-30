@@ -41,7 +41,30 @@ jobs:
         run: go mod download
 
       - name: Test
-        run: go test ./...
+        # `-coverprofile` is cheap (~few percent overhead) so we always
+        # produce one. The gate below is gated to a single matrix slot so
+        # we don't redundantly check four identical profiles.
+        run: go test -coverprofile=cover.out -covermode=atomic ./...
+
+      - name: Coverage gate
+        # Only meaningful on one matrix slot — coverage data is identical
+        # across OS/Go-version pairs. Pick Linux + the newer Go.
+        # Informational mode for now: prints the per-package table and
+        # appends a Markdown summary to the run page, but exits 0 even
+        # when below target. Flip to `--strict` once the documented
+        # CLAUDE.md / AGENTS.md thresholds are met.
+        if: matrix.os == 'ubuntu-latest' && matrix.go == '1.26'
+        run: go run scripts/coverage-gate.go cover.out
+
+      - name: Race detector (non-blocking)
+        # Run with -race only on Linux + the newer Go. Race is a v1.0 hard
+        # requirement (see ROADMAP.md § CI hardening); start non-blocking
+        # so a freshly-surfaced race doesn't immediately gate merges
+        # before there's a triage queue. Bump to a required step before
+        # tagging v1.0.
+        if: matrix.os == 'ubuntu-latest' && matrix.go == '1.26'
+        continue-on-error: true
+        run: go test -race ./...
 
   lint:
     runs-on: ubuntu-latest
