@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/ersinkoc/dfmt/internal/core"
+	"github.com/ersinkoc/dfmt/internal/safefs"
 )
 
 const (
@@ -540,6 +541,9 @@ func (s *HTTPServer) handleStats(ctx context.Context, req Request) Response {
 // users cannot read the daemon's port (and the same-origin gate plus the
 // non-loopback bind refusal keep cross-origin browser pages out).
 func (s *HTTPServer) writePortFile(path string, port int) error {
+	if err := safefs.CheckNoReservedNames(path); err != nil {
+		return err
+	}
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err

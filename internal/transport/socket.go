@@ -12,6 +12,7 @@ import (
 
 	"github.com/ersinkoc/dfmt/internal/core"
 	"github.com/ersinkoc/dfmt/internal/logging"
+	"github.com/ersinkoc/dfmt/internal/safefs"
 )
 
 var socketReadIdleTimeout = 60 * time.Second
@@ -73,6 +74,10 @@ func (s *SocketServer) Start(ctx context.Context) error {
 	}
 
 	// Ensure directory exists
+	if err := safefs.CheckNoReservedNames(s.path); err != nil {
+		s.mu.Unlock()
+		return fmt.Errorf("create socket dir: %w", err)
+	}
 	dir := filepath.Dir(s.path)
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		s.mu.Unlock()

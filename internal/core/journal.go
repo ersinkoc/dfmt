@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/ersinkoc/dfmt/internal/logging"
+	"github.com/ersinkoc/dfmt/internal/safefs"
 )
 
 var (
@@ -121,6 +122,13 @@ type journalImpl struct {
 
 // OpenJournal opens or creates a journal at the given path.
 func OpenJournal(path string, opt JournalOptions) (Journal, error) {
+	// Reject Windows reserved device names (NUL, CON, …) before MkdirAll —
+	// NTFS Services-for-UNIX silently maps a `NUL:` component to a real
+	// `NUL` directory, which would leave a stray directory on disk
+	// every time a test (or a typo'd config) hands us such a path.
+	if err := safefs.CheckNoReservedNames(path); err != nil {
+		return nil, fmt.Errorf("create journal dir: %w", err)
+	}
 	// Ensure directory exists. Use 0700 so a journal containing potentially
 	// sensitive project activity isn't readable by other local users.
 	dir := filepath.Dir(path)

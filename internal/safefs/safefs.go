@@ -25,6 +25,73 @@ import (
 // target path (or the target itself) is a symbolic link.
 var ErrSymlinkInPath = errors.New("symlink in path")
 
+// ErrReservedName is returned by CheckNoReservedNames when any component of
+// the target path matches a Windows reserved device name (CON, PRN, AUX, NUL,
+// COM0-9, LPT0-9, plus their `.ext` forms). Always active regardless of host
+// OS — NTFS Services-for-UNIX silently materializes a `NUL:` component as a
+// `NUL` directory, which "succeeds" the immediate call but leaves the
+// surprise dir on disk for git to flag later.
+var ErrReservedName = errors.New("reserved name in path")
+
+// windowsReservedBase is the set of Windows reserved device-name stems
+// (uppercase, no extension). A component is reserved iff its stem (the part
+// before the first dot) is in this set after trimming surrounding whitespace
+// and any trailing colon.
+var windowsReservedBase = map[string]struct{}{
+	"CON": {}, "PRN": {}, "AUX": {}, "NUL": {},
+	"COM0": {}, "COM1": {}, "COM2": {}, "COM3": {}, "COM4": {},
+	"COM5": {}, "COM6": {}, "COM7": {}, "COM8": {}, "COM9": {},
+	"LPT0": {}, "LPT1": {}, "LPT2": {}, "LPT3": {}, "LPT4": {},
+	"LPT5": {}, "LPT6": {}, "LPT7": {}, "LPT8": {}, "LPT9": {},
+}
+
+// IsWindowsReservedComponent reports whether name (a single path component)
+// matches a Windows reserved device name. Comparison is case-insensitive and
+// ignores surrounding whitespace, a single trailing colon, and any trailing
+// extension (`NUL.txt` is reserved; so is `nul:`).
+func IsWindowsReservedComponent(name string) bool {
+	base := strings.TrimSpace(name)
+	base = strings.TrimRight(base, ":")
+	if dot := strings.IndexByte(base, '.'); dot >= 0 {
+		base = base[:dot]
+	}
+	if base == "" {
+		return false
+	}
+	_, ok := windowsReservedBase[strings.ToUpper(base)]
+	return ok
+}
+
+// CheckNoReservedNames returns ErrReservedName if any component of path is a
+// Windows reserved device name. The check runs on every host — Linux/macOS
+// hosts mount NTFS-backed volumes (CIFS, network shares, WSL drvfs) and the
+// SFM remap that produces `NUL` directories surfaces there too.
+//
+// A leading drive letter (`C:`, `D:`) is stripped before component scanning
+// so it isn't itself reported as reserved (`C` is not a device name; the
+// trailing `:` is the volume separator).
+func CheckNoReservedNames(path string) error {
+	if path == "" {
+		return nil
+	}
+	s := filepath.ToSlash(path)
+	if len(s) >= 2 && s[1] == ':' {
+		// Drive letter or UNC-style prefix; strip it and the optional
+		// following slash.
+		s = s[2:]
+		s = strings.TrimPrefix(s, "/")
+	}
+	for _, comp := range strings.Split(s, "/") {
+		if comp == "" || comp == "." || comp == ".." {
+			continue
+		}
+		if IsWindowsReservedComponent(comp) {
+			return fmt.Errorf("%w: %s", ErrReservedName, comp)
+		}
+	}
+	return nil
+}
+
 // CheckNoSymlinks walks path component-by-component starting from baseDir
 // and returns an error if any segment beneath baseDir is a symlink, or if
 // path resolves outside baseDir lexically. Both arguments must be absolute.
