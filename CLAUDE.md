@@ -164,7 +164,7 @@ Adding a new component, changing component interactions, adopting a dependency, 
 
 ### Local state (per-project `.dfmt/`)
 
-`config.yaml`, `journal.jsonl`, `index.gob` (JSON payload — `.gob` filename retained for backwards compat with old daemons that may still be running; serialized via `writeJSONAtomic` in `internal/core/index_persist.go`), `port`, `lock`, optional `permissions.yaml` and `redact.yaml`. All `0o600`. `.dfmt/` is added to `.gitignore` automatically by `dfmt init`.
+`config.yaml`, `journal.jsonl`, `index.gob` (JSON payload — `.gob` filename retained for backwards compat with old daemons that may still be running; serialized via `writeJSONAtomic` in `internal/core/index_persist.go`), `port`, `lock`, optional `permissions.yaml` (line format) and `redact.yaml` (YAML). All `0o600`. `.dfmt/` is added to `.gitignore` automatically by `dfmt init`. Both override files are **wired** at daemon + CLI startup — see ADR-0014 for the merge semantics (hard-deny invariant on exec allows, additive-only redact patterns).
 
 ### Line endings
 

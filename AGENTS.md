@@ -336,8 +336,8 @@ Per-project `.dfmt/` directory:
 - `index.gob` — persisted search index (0o600). On-disk payload is JSON despite the `.gob` extension (`internal/core/index_persist.go::writeJSONAtomic`); the filename is retained for backwards compat.
 - `port` — current daemon port / socket path (0o600)
 - `lock` — advisory daemon lock (0o600)
-- `permissions.yaml` — optional custom policy (0o600)
-- `redact.yaml` — optional custom redaction patterns (0o600)
+- `permissions.yaml` — optional custom policy, line format (0o600). Wired at daemon + CLI startup; merged on top of `DefaultPolicy` with a hard-deny invariant on exec allows (ADR-0014).
+- `redact.yaml` — optional custom redaction patterns, YAML format (0o600). Additive on top of `commonPatterns`; per-entry resilience on bad regex / missing fields (ADR-0014).
 
 `.dfmt/` is added to `.gitignore` automatically by `dfmt init`.
 

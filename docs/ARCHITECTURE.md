@@ -1542,15 +1542,23 @@ the zero-config posture. Only **direct invocation** is what the
 extra rules cover — `npm run test` and `pnpm vitest` were already
 allowed via the package-manager rules above.
 
-A `LoadPolicy(path)` function exists in `permissions.go` to parse
-the `allow:exec:base-cmd *` line format from
-`.dfmt/permissions.yaml`, but as of this writing **the daemon does
-not call it** — `sandbox.NewSandbox(projectPath)` always installs
-`DefaultPolicy()` (see §13.4). Every denial error still ends with
-a one-line hint pointing at `.dfmt/permissions.yaml`, on the
-assumption that the loader will land in v0.3 (see [`docs/ROADMAP.md`](ROADMAP.md));
-operators relying on those hints today will find their overrides
-silently ignored.
+`LoadPolicy(path)` in `permissions.go` parses the
+`allow:exec:base-cmd *` line format from `.dfmt/permissions.yaml`;
+`LoadPolicyMerged(projectPath)` composes `DefaultPolicy()` with that
+override via `MergePolicies` (ADR-0014). The daemon and the CLI
+fallback paths both call this on startup, so the hints printed by
+denial errors are now load-bearing — edits to
+`.dfmt/permissions.yaml` take effect on the next daemon start.
+
+Override allow rules whose exec base command is on the **hard-deny
+list** (`rm`/`rmdir`/`del`/`sudo`/`shutdown`/`dd`/`mkfs`/…) are
+silently dropped from the merged result and emitted as a warning
+both at daemon-startup logs and on the `dfmt doctor`
+"Permissions override" row. The hard-deny invariant exists so a
+permissive override can broaden file/network reach but cannot
+re-enable categorically destructive commands the default policy
+intentionally withholds. ADR-0014 documents the merge semantics in
+full.
 
 ### 9.1.1 Allow-rule trailing-space contract (V-20)
 
@@ -2677,8 +2685,8 @@ flowchart TB
         Cont["content/<br/>0700 — ephemeral chunk store<br/>64 MiB cap, size-evicted"]
         L[lock<br/>0600 — flock target / Win named handle]
         P[port<br/>0600 — HTTP port, only if http.enabled]
-        Ph["permissions.yaml<br/>0600 — reserved, loader not wired"]
-        R["redact.yaml<br/>0600 — reserved, loader not wired"]
+        Ph["permissions.yaml<br/>0600 — operator override, merged on top of DefaultPolicy"]
+        R["redact.yaml<br/>0600 — operator override, additive on top of commonPatterns"]
     end
 
     subgraph UserXDG["$XDG_DATA_HOME/dfmt (or ~/.local/share/dfmt)"]
@@ -2702,8 +2710,8 @@ flowchart TB
 | `daemon.pid`            | `daemon.Daemon::Start`                        | Atomic write via `safefs.WriteFile` (refuses symlinks).|
 | `lock`                  | `daemon.AcquireLock`                          | `flock(2)` on Unix; LockFileEx on Windows.             |
 | `port`                  | `transport.HTTPServer::writePortFile`         | JSON `{"port":N}`. Removed on shutdown.                |
-| `permissions.yaml`      | operator                                      | Site-specific sandbox rules. **Reserved — loader not wired** (see §13.4). |
-| `redact.yaml`           | operator                                      | Extra redaction patterns. **Reserved — loader not wired** (see §13.4). |
+| `permissions.yaml`      | operator                                      | Site-specific sandbox rules. Merged on top of `DefaultPolicy` at daemon + CLI startup; hard-deny invariant on exec allows (ADR-0014). |
+| `redact.yaml`           | operator                                      | Additional regex/field redaction patterns. Additive YAML loader installed on Daemon + Handlers redactor (ADR-0014). |
 
 All project-level files are 0600. `.dfmt/` itself is 0700. `dfmt init`
 adds `.dfmt/` to the project's `.gitignore` if it is not already
@@ -2958,9 +2966,13 @@ guarantee: a bare 40-char AWS secret with no nearby `secret_key`
 marker is *not* redacted (false-positive cost would be too high),
 and project-specific credential shapes need operator-supplied
 patterns. Site-specific patterns can be added in code via
-`Redactor.AddPattern`, but a `.dfmt/redact.yaml` overlay loader is
-not yet wired (see §13.4) — the file path appears in comments and
-error hints but the daemon does not read it.
+`Redactor.AddPattern`, or by editing `.dfmt/redact.yaml` —
+`redact.LoadProjectRedactor(projectPath)` reads that file at daemon
+startup, seeds a Redactor with the default `commonPatterns`, and
+adds each operator-defined entry via `AddPattern`. Per-entry
+resilience: a missing required field or an invalid regex on one
+entry yields a warning and skips that entry rather than failing
+the whole load. ADR-0014 covers the format and merge semantics.
 
 ---
 
@@ -3110,6 +3122,7 @@ revisit. Current set:
 | 0011 | Per-Session Wire Dedup                 | Already-emitted `content_id`s return a 27-byte sentinel instead of repeating the body on the wire. |
 | 0012 | Token-Aware Budgets                    | Tier gating uses `ApproxTokens(s) = ascii_bytes/4 + non_ascii_runes`; CJK / Turkish bodies hit the same agent-cost threshold as English. |
 | 0013 | Drop Unwired Levenshtein Scaffolding   | Remove `core.Levenshtein` + `FuzzyMatch`; the `fuzzy` Search layer stays accepted for forward compatibility but returns no results. |
+| 0014 | Operator Override Files                | `.dfmt/permissions.yaml` + `.dfmt/redact.yaml` wired at daemon + CLI startup. Permissions merge has a hard-deny invariant; redact is additive YAML with per-entry resilience. |
 
 `docs/adr/ADR-INDEX.md` is the always-current index. Add a new ADR
 when introducing a component, changing component interactions,
