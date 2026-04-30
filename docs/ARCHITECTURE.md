@@ -3123,6 +3123,7 @@ revisit. Current set:
 | 0012 | Token-Aware Budgets                    | Tier gating uses `ApproxTokens(s) = ascii_bytes/4 + non_ascii_runes`; CJK / Turkish bodies hit the same agent-cost threshold as English. |
 | 0013 | Drop Unwired Levenshtein Scaffolding   | Remove `core.Levenshtein` + `FuzzyMatch`; the `fuzzy` Search layer stays accepted for forward compatibility but returns no results. |
 | 0014 | Operator Override Files                | `.dfmt/permissions.yaml` + `.dfmt/redact.yaml` wired at daemon + CLI startup. Permissions merge has a hard-deny invariant; redact is additive YAML with per-entry resilience. |
+| 0015 | Config Knob Consolidation              | Each `Config` field classified Wired / Reserved (v0.4). No deletes in v0.3; per-field comments flag silent no-ops; v0.4 wire-or-delete punch list in the ADR table. |
 
 `docs/adr/ADR-INDEX.md` is the always-current index. Add a new ADR
 when introducing a component, changing component interactions,

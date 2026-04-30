@@ -20,27 +20,42 @@ const maxConfigBytes = 64 << 10
 const DefaultMCPProtocolVersion = "2024-11-05"
 
 // Config represents the DFMT configuration.
+//
+// Knob status is documented in ADR-0015 ("Config knob consolidation").
+// Every field here is parsed and validated, but not every field is read at
+// runtime — fields without a production caller are flagged "Reserved (v0.4)"
+// in the comment alongside their declaration. Operators editing reserved
+// fields will see them accepted by Validate() and silently ignored at
+// runtime; this is documented behavior, not a bug.
 type Config struct {
 	Version int `yaml:"version"`
 
 	Capture struct {
+		// MCP.Enabled — Reserved (v0.4). The MCP transport is always
+		// served when transport.mcp.enabled is true; this capture-side
+		// switch is currently a no-op (every MCP call is captured).
 		MCP struct {
 			Enabled bool `yaml:"enabled"`
 		} `yaml:"mcp"`
 		FS struct {
-			Enabled    bool     `yaml:"enabled"`
-			Watch      []string `yaml:"watch"`
-			Ignore     []string `yaml:"ignore"`
-			DebounceMS int      `yaml:"debounce_ms"`
+			Enabled    bool     `yaml:"enabled"`     // wired: daemon.go FSWatcher init
+			Watch      []string `yaml:"watch"`       // Reserved (v0.4): not threaded into NewFSWatcher
+			Ignore     []string `yaml:"ignore"`      // wired: daemon.go FSWatcher init
+			DebounceMS int      `yaml:"debounce_ms"` // wired: daemon.go FSWatcher init
 		} `yaml:"fs"`
+		// Git.Enabled — Reserved (v0.4). Git capture is always active when
+		// the install-hooks flow has been run; this knob is a no-op.
 		Git struct {
 			Enabled bool `yaml:"enabled"`
 		} `yaml:"git"`
+		// Shell.Enabled — Reserved (v0.4). Shell capture is opt-in via
+		// `dfmt shell-init`; this knob does not gate that path.
 		Shell struct {
 			Enabled bool `yaml:"enabled"`
 		} `yaml:"shell"`
 	} `yaml:"capture"`
 
+	// All four Storage fields are wired (daemon.go ~line 105).
 	Storage struct {
 		Durability      string `yaml:"durability"` // "durable" | "batched"
 		MaxBatchMS      int    `yaml:"max_batch_ms"`
@@ -48,6 +63,10 @@ type Config struct {
 		CompressRotated bool   `yaml:"compress_rotated"`
 	} `yaml:"storage"`
 
+	// Retrieval — Reserved (v0.4). DefaultBudget and DefaultFormat are
+	// not read by handlers.Recall today (it accepts per-call budget /
+	// format and falls back to its own internal constants). Throttle.*
+	// has no caller. ADR-0015 documents the v0.4 wire-or-delete decision.
 	Retrieval struct {
 		DefaultBudget int    `yaml:"default_budget"`
 		DefaultFormat string `yaml:"default_format"`
@@ -59,6 +78,13 @@ type Config struct {
 		} `yaml:"throttle"`
 	} `yaml:"retrieval"`
 
+	// Index — All Reserved (v0.4). core/index.go uses the package-level
+	// DefaultBM25K1 / DefaultBM25B / DefaultHeadingBoost constants;
+	// edits to bm25_k1 / bm25_b / heading_boost in YAML pass Validate
+	// but are not read by NewIndex() today (no constructor parameter).
+	// Wiring requires a constructor change touched by 50+ call sites —
+	// scoped to v0.4 (ADR-0015). RebuildInterval and StopwordsPath have
+	// no caller in any version.
 	Index struct {
 		RebuildInterval string  `yaml:"rebuild_interval"`
 		BM25K1          float64 `yaml:"bm25_k1"`
@@ -68,29 +94,47 @@ type Config struct {
 	} `yaml:"index"`
 
 	Transport struct {
+		// MCP.Enabled — Reserved (v0.4). MCP is always served on stdio
+		// when `dfmt mcp` is the entry point; daemon's MCP visibility is
+		// gated by the parent process model, not this knob.
 		MCP struct {
 			Enabled bool `yaml:"enabled"`
 		} `yaml:"mcp"`
+		// HTTP.Enabled and HTTP.Bind are wired (daemon.go:185, 201, 215).
 		HTTP struct {
 			Enabled bool   `yaml:"enabled"`
 			Bind    string `yaml:"bind"`
 		} `yaml:"http"`
+		// Socket.Enabled — Reserved (v0.4). The Unix-socket transport is
+		// constructed unconditionally on Linux/macOS; this knob does not
+		// disable it today.
 		Socket struct {
 			Enabled bool `yaml:"enabled"`
 		} `yaml:"socket"`
 	} `yaml:"transport"`
 
+	// Lifecycle.IdleTimeout — wired (daemon idle monitor).
+	// Lifecycle.ShutdownTimeout — Reserved (v0.4). Daemon shutdown uses
+	// a hard-coded 10s grace today.
 	Lifecycle struct {
 		IdleTimeout     string `yaml:"idle_timeout"`
 		ShutdownTimeout string `yaml:"shutdown_timeout"`
 	} `yaml:"lifecycle"`
 
+	// Privacy — All Reserved (v0.4). The defaults (telemetry off, no
+	// remote sync, deny non-local HTTP) match the daemon's hard-coded
+	// behavior; flipping these in YAML changes nothing yet. Telemetry
+	// and remote sync are explicit non-features for v1.0.
 	Privacy struct {
 		Telemetry         bool   `yaml:"telemetry"`
 		RemoteSync        string `yaml:"remote_sync"`
 		AllowNonlocalHTTP bool   `yaml:"allow_nonlocal_http"`
 	} `yaml:"privacy"`
 
+	// Logging — Reserved (v0.4). The DFMT_LOG environment variable is the
+	// authoritative source today; logging.level / logging.format in YAML
+	// is shadowed. ADR-0015 records the env-vs-config precedence decision
+	// (env wins, with a warning when both are set in the future wire-up).
 	Logging struct {
 		Level  string `yaml:"level"`
 		Format string `yaml:"format"`
