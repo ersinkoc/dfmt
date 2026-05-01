@@ -13,6 +13,60 @@ import (
 	"github.com/ersinkoc/dfmt/internal/project"
 )
 
+func TestShutdownGrace_NilDaemon(t *testing.T) {
+	var d *Daemon
+	if got := d.ShutdownGrace(); got != defaultShutdownGrace {
+		t.Errorf("nil daemon: got %v, want %v", got, defaultShutdownGrace)
+	}
+}
+
+func TestShutdownGrace_NilConfig(t *testing.T) {
+	d := &Daemon{}
+	if got := d.ShutdownGrace(); got != defaultShutdownGrace {
+		t.Errorf("nil config: got %v, want %v", got, defaultShutdownGrace)
+	}
+}
+
+func TestShutdownGrace_EmptyString(t *testing.T) {
+	d := &Daemon{config: &config.Config{}}
+	if got := d.ShutdownGrace(); got != defaultShutdownGrace {
+		t.Errorf("empty timeout string: got %v, want %v", got, defaultShutdownGrace)
+	}
+}
+
+func TestShutdownGrace_Parsed(t *testing.T) {
+	c := &config.Config{}
+	c.Lifecycle.ShutdownTimeout = "5s"
+	d := &Daemon{config: c}
+	if got := d.ShutdownGrace(); got != 5*time.Second {
+		t.Errorf("parsed 5s: got %v, want %v", got, 5*time.Second)
+	}
+}
+
+func TestShutdownGrace_BadInputFallsBack(t *testing.T) {
+	c := &config.Config{}
+	c.Lifecycle.ShutdownTimeout = "not a duration"
+	d := &Daemon{config: c}
+	// Reaching this path means Validate was bypassed (test-only); fallback
+	// preserves "daemon does not crash on a hand-rolled bad config."
+	if got := d.ShutdownGrace(); got != defaultShutdownGrace {
+		t.Errorf("bad input fallback: got %v, want %v", got, defaultShutdownGrace)
+	}
+}
+
+func TestShutdownGrace_NonPositiveFallsBack(t *testing.T) {
+	c := &config.Config{}
+	c.Lifecycle.ShutdownTimeout = "0s"
+	d := &Daemon{config: c}
+	if got := d.ShutdownGrace(); got != defaultShutdownGrace {
+		t.Errorf("0s fallback: got %v, want %v", got, defaultShutdownGrace)
+	}
+	c.Lifecycle.ShutdownTimeout = "-3s"
+	if got := d.ShutdownGrace(); got != defaultShutdownGrace {
+		t.Errorf("-3s fallback: got %v, want %v", got, defaultShutdownGrace)
+	}
+}
+
 func TestLockError(t *testing.T) {
 	err := &LockError{ProjectPath: "/test/path"}
 	expected := "daemon already running for /test/path (lock file exists)"

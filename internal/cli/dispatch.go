@@ -749,7 +749,9 @@ func runDaemonForeground(proj string, cfg *config.Config) int {
 	<-sigCh
 
 	fmt.Println("\nShutting down...")
-	d.Stop(ctx)
+	stopCtx, cancel := context.WithTimeout(context.Background(), d.ShutdownGrace())
+	defer cancel()
+	d.Stop(stopCtx)
 	return 0
 }
 

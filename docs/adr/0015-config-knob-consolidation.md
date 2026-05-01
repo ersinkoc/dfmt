@@ -1,7 +1,7 @@
 # ADR-0015: Config Knob Consolidation
 
 - **Status:** Accepted
-- **Date:** 2026-04-30
+- **Date:** 2026-04-30 (amended 2026-05-02 — `lifecycle.shutdown_timeout` wired)
 - **Supersedes:** —
 - **Superseded by:** —
 - **Related:** ADR-0014 (Operator Override Files)
@@ -70,7 +70,7 @@ existing config is higher than the cost of a documented no-op.
 | `capture.fs.watch` | FSWatcher reads everything under root with ignore filtering | likely **delete** |
 | `transport.mcp.enabled` | MCP is the `dfmt mcp` entry point; can't be disabled by a daemon-side flag | likely **delete** |
 | `transport.socket.enabled` | Unix socket built unconditionally on Linux/macOS | wire as a runtime gate |
-| `lifecycle.shutdown_timeout` | daemon uses hard-coded 10s grace | wire to the shutdown context |
+| ~~`lifecycle.shutdown_timeout`~~ | ~~daemon uses hard-coded 10s grace~~ | **WIRED 2026-05-02** via `Daemon.ShutdownGrace()`; idle-monitor stop + dispatch.go SIGTERM handler both bracket `d.Stop` with `context.WithTimeout` |
 | `privacy.telemetry` | no telemetry shipped | **delete** at v1.0 if telemetry stays off-by-design |
 | `privacy.remote_sync` | no remote sync feature | **delete** at v1.0 |
 | `privacy.allow_nonlocal_http` | enforced via `goosWindows`-aware bind logic, not this knob | review and either wire or delete |

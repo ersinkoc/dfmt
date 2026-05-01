@@ -114,8 +114,11 @@ type Config struct {
 	} `yaml:"transport"`
 
 	// Lifecycle.IdleTimeout — wired (daemon idle monitor).
-	// Lifecycle.ShutdownTimeout — Reserved (v0.4). Daemon shutdown uses
-	// a hard-coded 10s grace today.
+	// Lifecycle.ShutdownTimeout — wired (Daemon.ShutdownGrace; idle-monitor
+	// stop + dispatch.go SIGTERM handler both bracket d.Stop() with a
+	// context.WithTimeout sized from this knob). Default 10s; the fallback
+	// path returns the same value if the YAML field is empty or unparseable
+	// (Validate already rejects the latter at startup).
 	Lifecycle struct {
 		IdleTimeout     string `yaml:"idle_timeout"`
 		ShutdownTimeout string `yaml:"shutdown_timeout"`

@@ -73,6 +73,33 @@ func (d *Daemon) Touch() {
 	d.lastActivityNs.Store(time.Now().UnixNano())
 }
 
+// defaultShutdownGrace is the fallback if config.Lifecycle.ShutdownTimeout
+// is unset or unparseable. Matches the previous hard-coded behavior so an
+// operator who never set the YAML field sees no behavior change.
+const defaultShutdownGrace = 10 * time.Second
+
+// ShutdownGrace returns the timeout granted to the daemon's Stop sequence
+// before background goroutines and the HTTP server are forcibly torn down.
+// Reads config.Lifecycle.ShutdownTimeout (ADR-0015 v0.4 wire-up); falls
+// back to defaultShutdownGrace if the field is empty or fails to parse —
+// the parse error path is surfaced at startup via config.Validate(), so
+// reaching this fallback usually means the daemon was constructed with
+// a hand-rolled (test) Config that bypassed Validate.
+func (d *Daemon) ShutdownGrace() time.Duration {
+	if d == nil || d.config == nil {
+		return defaultShutdownGrace
+	}
+	raw := d.config.Lifecycle.ShutdownTimeout
+	if raw == "" {
+		return defaultShutdownGrace
+	}
+	g, err := time.ParseDuration(raw)
+	if err != nil || g <= 0 {
+		return defaultShutdownGrace
+	}
+	return g
+}
+
 // New creates a new daemon instance.
 func New(projectPath string, cfg *config.Config) (*Daemon, error) {
 	if cfg == nil {
@@ -649,7 +676,7 @@ func (d *Daemon) startIdleMonitor(_ context.Context) {
 					continue
 				}
 				fmt.Println("Daemon idle timeout, shutting down...")
-				stopCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				stopCtx, cancel := context.WithTimeout(context.Background(), d.ShutdownGrace())
 				// Stop() closes idleCh and sets running→false, so the next
 				// loop iteration (or a concurrent Stop caller) exits cleanly.
 				_ = d.Stop(stopCtx)
