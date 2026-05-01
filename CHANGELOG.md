@@ -29,6 +29,65 @@ Internal package shapes (`internal/...`) are NOT covered by SemVer.
 
 _None yet._
 
+## [0.2.2] — 2026-05-01
+
+Patch release. Config knob consolidation (ADR-0015 v0.4), metrics
+instrumentation (ADR-0016/0017/0018), and operator override file
+wiring (ADR-0014) land in this build. No wire-format changes.
+
+### Added
+
+- **`/metrics` Prometheus endpoint** — `GET /metrics` on the
+  transport HTTP server emits in-tree Prometheus text format with
+  gauges for index size, dedup-cache size, journal bytes, and
+  tracked tool counts (ADR-0016).
+- **Per-tool latency histograms** — `tool_call_duration_ms` per
+  tool name, bucketed. `dfmt_stats` surfaces running totals
+  (ADR-0018).
+- **Per-tool call counters + dedup-hit counter** — `tool_calls_total`
+  labelled by tool and outcome (success/allow/deny/error),
+  `dedup_hits_total` for the content-stash dedup layer
+  (ADR-0016 follow-up).
+- **Journal `Size()` interface + `dfmt_journal_bytes` gauge** —
+  `core.Journal` now exposes `Size() int64`; the daemon reports
+  rotated-journal bytes to the `/metrics` endpoint (ADR-0017).
+
+### Changed
+
+- **Config knob wiring (ADR-0015 v0.4)** — the following
+  previously-Reserved fields are now functional runtime gates:
+  `transport.socket.enabled`, `logging.level`, `logging.format`,
+  `retrieval.default_budget`, `retrieval.default_format`,
+  `lifecycle.shutdown_timeout`, `index.bm25_k1`, `index.bm25_b`.
+- **`.dfmt/redact.yaml` override wired** — operator-defined
+  redact patterns are loaded and applied at daemon start
+  (ADR-0014).
+- **`.dfmt/permissions.yaml` override wired** — operator-defined
+  exec allow rules are loaded and merged at daemon start,
+  superseding defaults (ADR-0014).
+
+### Fixed
+
+- **Linux reserved-device rejection on Windows** —
+  `safefs` now checks for Windows reserved device names
+  (`CON`, `PRN`, `AUX`, `NUL`, `COM1-9`, `LPT1-9`, case-insensitive)
+  before `os.MkdirAll`, closing a path-confusion vector on
+  cross-platform write paths.
+- **glob regex precompilation** — `Rule` now compiles its glob
+  pattern once at construction instead of on every match call,
+  eliminating repeated regex compilation in hot sandbox paths.
+
+### Internal
+
+- **Linux race detector in CI** — `scripts/coverage-gate.sh`
+  runs `go test -race` on Linux as a non-blocking report; any
+  race reports are surfaced for developer follow-up.
+- **Fuzz regression suite expanded** — BM25 search, HTML
+  conversion, and glob matching now carry fuzz test coverage
+  (Faz 4).
+- **golangci-lint v2.4.0 → v2.11.4** — toolchain bump; closes
+  130 lint findings across the tree.
+
 ## [0.2.1] — 2026-04-29
 
 Patch release. The v0.2.0 binaries shipped before a Linux-only
@@ -202,6 +261,7 @@ for v0.3.x:
   are accepted and validated but unwired to the corresponding
   consumer (see ARCHITECTURE.md §13.0 wired/unwired table).
 
-[Unreleased]: https://github.com/ersinkoc/dfmt/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/ersinkoc/dfmt/compare/v0.2.2...HEAD
+[0.2.2]: https://github.com/ersinkoc/dfmt/releases/tag/v0.2.2
 [0.2.1]: https://github.com/ersinkoc/dfmt/releases/tag/v0.2.1
 [0.2.0]: https://github.com/ersinkoc/dfmt/releases/tag/v0.2.0
