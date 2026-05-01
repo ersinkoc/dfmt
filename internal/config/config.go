@@ -135,10 +135,15 @@ type Config struct {
 		AllowNonlocalHTTP bool   `yaml:"allow_nonlocal_http"`
 	} `yaml:"privacy"`
 
-	// Logging — Reserved (v0.4). The DFMT_LOG environment variable is the
-	// authoritative source today; logging.level / logging.format in YAML
-	// is shadowed. ADR-0015 records the env-vs-config precedence decision
-	// (env wins, with a warning when both are set in the future wire-up).
+	// Logging.Level — wired (logging.ApplyConfig). Precedence per
+	// ADR-0015 forward declaration: DFMT_LOG env > yaml > package
+	// default (LevelWarn). Validate allowlists debug|info|warn|warning|
+	// error|off|none|silent.
+	// Logging.Format — Reserved (v0.4). Currently the only emitter is
+	// the byte-identical-to-pre-migration text shape; a JSON / slog
+	// alternative would need a separate ADR (text-format stability is
+	// a script-parser contract). The YAML field stays so operator
+	// configs that already set it parse cleanly.
 	Logging struct {
 		Level  string `yaml:"level"`
 		Format string `yaml:"format"`
@@ -210,7 +215,10 @@ func Default() *Config {
 	c.Privacy.AllowNonlocalHTTP = false
 
 	// Logging defaults
-	c.Logging.Level = "info"
+	// Default level matches the pre-ADR-0015-wire-up logging package
+	// default (LevelWarn). Operators wanting the chattier baseline set
+	// `logging.level: info` in YAML or DFMT_LOG=info in env.
+	c.Logging.Level = "warn"
 	c.Logging.Format = "text"
 
 	return c
@@ -364,6 +372,24 @@ func (c *Config) Validate() error {
 	case "", "md", "json", "xml":
 	default:
 		return fmt.Errorf("retrieval.default_format must be one of md|json|xml (or empty), got %q", c.Retrieval.DefaultFormat)
+	}
+
+	// logging.level allowlist matches logging.parseLevel — keeps a
+	// typo'd `logging.level: warm` from being silently ignored at
+	// daemon start. Empty is the documented "use package default" value.
+	switch c.Logging.Level {
+	case "", "debug", "info", "warn", "warning", "error", "off", "none", "silent":
+	default:
+		return fmt.Errorf("logging.level must be one of debug|info|warn|warning|error|off|none|silent (or empty), got %q", c.Logging.Level)
+	}
+	// logging.format is still Reserved (v0.4): only "text" is a real
+	// emitter today. Operators who set it to anything else are silently
+	// no-op'd by the logging package; reject at config load so the
+	// surprise doesn't ship.
+	switch c.Logging.Format {
+	case "", "text":
+	default:
+		return fmt.Errorf("logging.format must be \"text\" (or empty); JSON output is on the v0.4 roadmap, got %q", c.Logging.Format)
 	}
 
 	for i, p := range c.Exec.PathPrepend {

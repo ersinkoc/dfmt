@@ -105,6 +105,13 @@ func New(projectPath string, cfg *config.Config) (*Daemon, error) {
 	if cfg == nil {
 		cfg = &config.Config{}
 	}
+
+	// Apply YAML logging level as soon as config is in hand so subsequent
+	// logging.Warnf calls in this function honor the operator setting.
+	// The DFMT_LOG env var still wins (init() recorded that case);
+	// ApplyConfig is a no-op when env was set. ADR-0015.
+	logging.ApplyConfig(cfg.Logging.Level)
+
 	// Discover project if not found
 	if projectPath == "" {
 		cwd, err := os.Getwd()

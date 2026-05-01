@@ -58,22 +58,77 @@ var (
 	mu     sync.Mutex
 	out    io.Writer = os.Stderr
 	minLvl Level     = LevelWarn // matches pre-migration default (everything was a warning)
+	// envSet records whether DFMT_LOG was non-empty at process start.
+	// Used by ApplyConfig to enforce the env > yaml > default precedence
+	// from ADR-0015's forward declaration: an explicit env override wins
+	// over later YAML application.
+	envSet bool
 )
 
 func init() {
-	switch strings.ToLower(os.Getenv("DFMT_LOG")) {
-	case "debug":
-		minLvl = LevelDebug
-	case "info":
-		minLvl = LevelInfo
-	case "warn", "warning":
-		minLvl = LevelWarn
-	case "error":
-		minLvl = LevelError
-	case "off", "none", "silent":
-		minLvl = LevelOff
+	raw := os.Getenv("DFMT_LOG")
+	if raw == "" {
+		return
+	}
+	envSet = true
+	if l, ok := parseLevel(raw); ok {
+		minLvl = l
 	}
 }
+
+// parseLevel parses the string form of a level. Returns (LevelOff, false)
+// on unrecognized input — callers decide whether to error or silently
+// keep the existing threshold.
+func parseLevel(s string) (Level, bool) {
+	switch strings.ToLower(s) {
+	case "debug":
+		return LevelDebug, true
+	case "info":
+		return LevelInfo, true
+	case "warn", "warning":
+		return LevelWarn, true
+	case "error":
+		return LevelError, true
+	case "off", "none", "silent":
+		return LevelOff, true
+	}
+	return LevelOff, false
+}
+
+// ApplyConfig is the YAML-side fallback for the level threshold. Called
+// once after config load (typically from the daemon's New). The
+// precedence per ADR-0015 forward declaration is:
+//
+//  1. DFMT_LOG env (set in init() above) — wins; ApplyConfig is a no-op.
+//  2. YAML `logging.level` — applied here when env was unset.
+//  3. Hard-coded default LevelWarn (set on var minLvl at package init).
+//
+// Empty `level` is "use the package default" — same semantics as
+// retrieval defaults (ADR-0015 wire-up of retrieval.default_*).
+//
+// An unparseable level is silently ignored: Validate already rejects
+// it at config-load time, so reaching this path means a hand-rolled
+// test config or a future field added to YAML before Validate caught
+// up. Defense-in-depth, not a hard failure.
+func ApplyConfig(level string) {
+	if envSet {
+		return
+	}
+	if level == "" {
+		return
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if l, ok := parseLevel(level); ok {
+		minLvl = l
+	}
+}
+
+// EnvSet reports whether DFMT_LOG was non-empty at process start. Used
+// by tests and dfmt doctor to surface which precedence layer is in
+// effect. Tests that mutate envSet must call SetEnvSetForTest under
+// mu, not this read-only accessor.
+func EnvSet() bool { return envSet }
 
 // SetOutput swaps the destination writer. Used by tests to capture log
 // lines into a bytes.Buffer; callers in prod code should not touch
@@ -94,6 +149,17 @@ func SetLevel(l Level) (prev Level) {
 	defer mu.Unlock()
 	prev = minLvl
 	minLvl = l
+	return prev
+}
+
+// SetEnvSetForTest forces the envSet flag for a test. Returns the
+// previous value so cleanup can restore. Tests only — production code
+// uses init() to set this from DFMT_LOG once.
+func SetEnvSetForTest(v bool) (prev bool) {
+	mu.Lock()
+	defer mu.Unlock()
+	prev = envSet
+	envSet = v
 	return prev
 }
 

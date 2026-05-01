@@ -26,6 +26,97 @@ func TestWarnf_PreservesLegacyFormat(t *testing.T) {
 	}
 }
 
+// TestApplyConfig_EnvWinsOverYAML covers the precedence contract:
+// when DFMT_LOG was set at process start, ApplyConfig is a no-op even
+// when YAML provides a level. ADR-0015 forward declaration.
+func TestApplyConfig_EnvWinsOverYAML(t *testing.T) {
+	prevEnv := SetEnvSetForTest(true)
+	defer SetEnvSetForTest(prevEnv)
+	prevLvl := SetLevel(LevelError)
+	defer SetLevel(prevLvl)
+
+	ApplyConfig("debug") // YAML says debug
+	if got := SetLevel(LevelDebug); got != LevelError {
+		t.Errorf("env-set, ApplyConfig should not have moved level: got %v after, was %v before",
+			got, LevelError)
+	}
+	// Restore the LevelDebug we just set above (cleanup chain).
+	SetLevel(prevLvl)
+}
+
+func TestApplyConfig_YAMLAppliesWhenEnvUnset(t *testing.T) {
+	prevEnv := SetEnvSetForTest(false)
+	defer SetEnvSetForTest(prevEnv)
+	prevLvl := SetLevel(LevelWarn)
+	defer SetLevel(prevLvl)
+
+	ApplyConfig("error")
+	if got := SetLevel(LevelDebug); got != LevelError {
+		t.Errorf("ApplyConfig(\"error\") didn't take: got %v", got)
+	}
+	SetLevel(prevLvl)
+}
+
+func TestApplyConfig_AllValidLevels(t *testing.T) {
+	cases := []struct {
+		yaml string
+		want Level
+	}{
+		{"debug", LevelDebug},
+		{"info", LevelInfo},
+		{"warn", LevelWarn},
+		{"warning", LevelWarn},
+		{"error", LevelError},
+		{"off", LevelOff},
+		{"none", LevelOff},
+		{"silent", LevelOff},
+		{"DEBUG", LevelDebug}, // case-insensitive per parseLevel
+	}
+	for _, tc := range cases {
+		t.Run(tc.yaml, func(t *testing.T) {
+			prevEnv := SetEnvSetForTest(false)
+			defer SetEnvSetForTest(prevEnv)
+			prevLvl := SetLevel(LevelDebug) // start from a known non-target
+			defer SetLevel(prevLvl)
+
+			ApplyConfig(tc.yaml)
+			got := SetLevel(LevelDebug)
+			if got != tc.want {
+				t.Errorf("ApplyConfig(%q) → %v, want %v", tc.yaml, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestApplyConfig_EmptyIsNoop(t *testing.T) {
+	prevEnv := SetEnvSetForTest(false)
+	defer SetEnvSetForTest(prevEnv)
+	prevLvl := SetLevel(LevelInfo)
+	defer SetLevel(prevLvl)
+
+	ApplyConfig("")
+	if got := SetLevel(LevelDebug); got != LevelInfo {
+		t.Errorf("ApplyConfig(\"\") moved level: got %v, want %v (no-op)", got, LevelInfo)
+	}
+	SetLevel(prevLvl)
+}
+
+func TestApplyConfig_BadInputSilentlyIgnored(t *testing.T) {
+	prevEnv := SetEnvSetForTest(false)
+	defer SetEnvSetForTest(prevEnv)
+	prevLvl := SetLevel(LevelInfo)
+	defer SetLevel(prevLvl)
+
+	// Validate already rejects this at config load; reaching ApplyConfig
+	// with a bad value means a hand-rolled config bypassed validation.
+	// Defense-in-depth: keep the existing threshold.
+	ApplyConfig("not-a-level")
+	if got := SetLevel(LevelDebug); got != LevelInfo {
+		t.Errorf("bad input mutated level: got %v, want %v", got, LevelInfo)
+	}
+	SetLevel(prevLvl)
+}
+
 // TestLevelFiltering pins the threshold semantics: at LevelWarn,
 // Debugf and Infof emit nothing; Warnf and Errorf emit. Critical for
 // DFMT_LOG=error CI use case (silence warnings, surface errors only).

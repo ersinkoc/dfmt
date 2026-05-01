@@ -77,6 +77,46 @@ func TestValidate_DefaultFormatAllowlist(t *testing.T) {
 	}
 }
 
+// TestValidate_LoggingLevelAllowlist guards the level allowlist that
+// matches logging.parseLevel — catches typos like "warm" before the
+// daemon boots and silently no-ops the YAML field.
+func TestValidate_LoggingLevelAllowlist(t *testing.T) {
+	for _, ok := range []string{"", "debug", "info", "warn", "warning", "error", "off", "none", "silent"} {
+		cfg := Default()
+		cfg.Logging.Level = ok
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("Validate rejected valid level %q: %v", ok, err)
+		}
+	}
+	for _, bad := range []string{"warm", "DEBUG", "verbose", "trace"} {
+		cfg := Default()
+		cfg.Logging.Level = bad
+		if err := cfg.Validate(); err == nil {
+			t.Errorf("Validate accepted invalid level %q", bad)
+		}
+	}
+}
+
+func TestValidate_LoggingFormatAllowlist(t *testing.T) {
+	cfg := Default()
+	cfg.Logging.Format = ""
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("empty format: %v", err)
+	}
+	cfg.Logging.Format = "text"
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("text format: %v", err)
+	}
+	cfg.Logging.Format = "json"
+	if err := cfg.Validate(); err == nil {
+		t.Error("Validate accepted json format (deferred to v0.4)")
+	}
+	cfg.Logging.Format = "structured"
+	if err := cfg.Validate(); err == nil {
+		t.Error("Validate accepted structured format (typo)")
+	}
+}
+
 // TestValidateRejectsEmptyPathPrependEntry guards the YAML quirk where
 // `- ""` parses as a populated slice with an empty string element.
 func TestValidateRejectsEmptyPathPrependEntry(t *testing.T) {
@@ -456,8 +496,12 @@ func TestConfigFields(t *testing.T) {
 		t.Errorf("Transport.HTTP.Bind = %s, want '127.0.0.1:8765'", cfg.Transport.HTTP.Bind)
 	}
 
-	if cfg.Logging.Level != "info" {
-		t.Errorf("Logging.Level = %s, want 'info'", cfg.Logging.Level)
+	// ADR-0015 (2026-05-02 amendment): default level moved from "info"
+	// to "warn" so the package's pre-wire-up baseline (LevelWarn) is
+	// preserved end-to-end. Operators wanting the chattier baseline
+	// set DFMT_LOG=info or `logging.level: info` in YAML.
+	if cfg.Logging.Level != "warn" {
+		t.Errorf("Logging.Level = %s, want 'warn'", cfg.Logging.Level)
 	}
 
 	if cfg.Logging.Format != "text" {

@@ -1,7 +1,7 @@
 # ADR-0015: Config Knob Consolidation
 
 - **Status:** Accepted
-- **Date:** 2026-04-30 (amended 2026-05-02 — `lifecycle.shutdown_timeout`, `retrieval.default_budget`, `retrieval.default_format` wired)
+- **Date:** 2026-04-30 (amended 2026-05-02 — `lifecycle.shutdown_timeout`, `retrieval.default_budget`, `retrieval.default_format`, `logging.level` wired; `logging.format` allowlisted)
 - **Supersedes:** —
 - **Superseded by:** —
 - **Related:** ADR-0014 (Operator Override Files)
@@ -74,8 +74,8 @@ existing config is higher than the cost of a documented no-op.
 | `privacy.telemetry` | no telemetry shipped | **delete** at v1.0 if telemetry stays off-by-design |
 | `privacy.remote_sync` | no remote sync feature | **delete** at v1.0 |
 | `privacy.allow_nonlocal_http` | enforced via `goosWindows`-aware bind logic, not this knob | review and either wire or delete |
-| `logging.level` | `DFMT_LOG` env var is authoritative | wire as fallback when env unset |
-| `logging.format` | same | same |
+| ~~`logging.level`~~ | ~~`DFMT_LOG` env var is authoritative~~ | **WIRED 2026-05-02** via `logging.ApplyConfig`; precedence env > yaml > package default. Validate allowlists `debug\|info\|warn\|warning\|error\|off\|none\|silent`. |
+| `logging.format` | only `text` emitter exists | Reserved (v0.4) — wire pending JSON output ADR; Validate now rejects everything except `""` and `"text"` so the field can't be set to a future-format value that does nothing |
 
 ### Hardened invariant: env > yaml > default precedence (forward declaration)
 
