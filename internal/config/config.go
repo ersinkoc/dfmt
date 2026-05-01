@@ -63,10 +63,11 @@ type Config struct {
 		CompressRotated bool   `yaml:"compress_rotated"`
 	} `yaml:"storage"`
 
-	// Retrieval — Reserved (v0.4). DefaultBudget and DefaultFormat are
-	// not read by handlers.Recall today (it accepts per-call budget /
-	// format and falls back to its own internal constants). Throttle.*
-	// has no caller. ADR-0015 documents the v0.4 wire-or-delete decision.
+	// Retrieval — DefaultBudget and DefaultFormat are wired
+	// (handlers.Recall calls SetRecallDefaults; per-call values still
+	// win, the operator override fills in for omitted fields).
+	// Throttle.* — Reserved (v0.4) and likely **delete**: no throttle
+	// implementation exists. ADR-0015.
 	Retrieval struct {
 		DefaultBudget int    `yaml:"default_budget"`
 		DefaultFormat string `yaml:"default_format"`
@@ -353,6 +354,16 @@ func (c *Config) Validate() error {
 	}
 	if c.Retrieval.DefaultBudget < 0 {
 		return fmt.Errorf("retrieval.default_budget must be non-negative, got %d", c.Retrieval.DefaultBudget)
+	}
+	// retrieval.default_format is wired into handlers.Recall as the
+	// operator-override fallback. Empty means "use the package default
+	// (md)"; non-empty must be one of the formats handlers.Recall knows
+	// how to render so a typo doesn't reach the agent as a runtime
+	// error after every Recall call.
+	switch c.Retrieval.DefaultFormat {
+	case "", "md", "json", "xml":
+	default:
+		return fmt.Errorf("retrieval.default_format must be one of md|json|xml (or empty), got %q", c.Retrieval.DefaultFormat)
 	}
 
 	for i, p := range c.Exec.PathPrepend {

@@ -196,6 +196,15 @@ func New(projectPath string, cfg *config.Config) (*Daemon, error) {
 	handlers := transport.NewHandlers(index, journal, sb)
 	handlers.SetProject(projectPath)
 
+	// Wire operator-configured Recall fallbacks (ADR-0015 v0.4 punch
+	// list). Per-call Budget/Format still wins; these only fill in
+	// when the caller omits a value. Zero / empty means "use package
+	// default", same as before this commit.
+	handlers.SetRecallDefaults(
+		cfg.Retrieval.DefaultBudget,
+		cfg.Retrieval.DefaultFormat,
+	)
+
 	// Wire ephemeral content store so sandbox output can be stashed for recall.
 	// Failure here is non-fatal — handlers gracefully degrade to excerpt-only.
 	contentDir := filepath.Join(dfmtDir, "content")

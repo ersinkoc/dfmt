@@ -1,7 +1,7 @@
 # ADR-0015: Config Knob Consolidation
 
 - **Status:** Accepted
-- **Date:** 2026-04-30 (amended 2026-05-02 — `lifecycle.shutdown_timeout` wired)
+- **Date:** 2026-04-30 (amended 2026-05-02 — `lifecycle.shutdown_timeout`, `retrieval.default_budget`, `retrieval.default_format` wired)
 - **Supersedes:** —
 - **Superseded by:** —
 - **Related:** ADR-0014 (Operator Override Files)
@@ -58,8 +58,8 @@ existing config is higher than the cost of a documented no-op.
 | `index.heading_boost` | same | same |
 | `index.rebuild_interval` | no caller in any version | likely **delete** |
 | `index.stopwords_path` | no caller in any version | wire to TokenizeFull via stopword-loader helper |
-| `retrieval.default_budget` | `handlers.Recall` uses an internal const | wire as a default for unset request budget |
-| `retrieval.default_format` | not read | wire alongside default_budget |
+| ~~`retrieval.default_budget`~~ | ~~`handlers.Recall` uses an internal const~~ | **WIRED 2026-05-02** via `Handlers.SetRecallDefaults`; per-call → operator override → `recallDefaultBudgetBytes` (4096) precedence chain |
+| ~~`retrieval.default_format`~~ | ~~not read~~ | **WIRED 2026-05-02** alongside default_budget; Validate now allowlists `md|json|xml` |
 | `retrieval.throttle.first_tier_calls` | no throttle implementation | likely **delete** unless v0.4 ships throttle |
 | `retrieval.throttle.second_tier_calls` | same | same |
 | `retrieval.throttle.results_first_tier` | same | same |

@@ -8,6 +8,7 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -374,6 +375,114 @@ func TestHandlersRecallDefaultFormat(t *testing.T) {
 	if resp.Format != "" {
 		// Format defaults to "md" but our mock doesn't set it
 		t.Logf("Format = %s", resp.Format)
+	}
+}
+
+// TestRecallBudget_PerCallWins is the precedence guard: an explicit
+// per-call Budget always wins over the operator override and the
+// package default. Operator override beats package default. Zero
+// per-call falls through to the next layer.
+func TestRecallBudget_PerCallWins(t *testing.T) {
+	h := NewHandlers(nil, &mockJournal{}, nil)
+	h.SetRecallDefaults(8192, "json")
+
+	if got := h.recallBudget(2048); got != 2048 {
+		t.Errorf("per-call 2048: got %d, want 2048", got)
+	}
+}
+
+func TestRecallBudget_OperatorOverrideBeatsDefault(t *testing.T) {
+	h := NewHandlers(nil, &mockJournal{}, nil)
+	h.SetRecallDefaults(8192, "")
+
+	if got := h.recallBudget(0); got != 8192 {
+		t.Errorf("operator 8192 fallback: got %d, want 8192", got)
+	}
+}
+
+func TestRecallBudget_PackageDefaultWhenNoneSet(t *testing.T) {
+	h := NewHandlers(nil, &mockJournal{}, nil)
+	// SetRecallDefaults never called; both layers fall through to the
+	// package constant.
+	if got := h.recallBudget(0); got != recallDefaultBudgetBytes {
+		t.Errorf("package default: got %d, want %d", got, recallDefaultBudgetBytes)
+	}
+}
+
+func TestRecallBudget_NegativeOperatorIgnored(t *testing.T) {
+	h := NewHandlers(nil, &mockJournal{}, nil)
+	h.SetRecallDefaults(-1, "")
+	// Negative operator override is ignored — Validate already rejects
+	// it at startup, so reaching this path means a hand-rolled config.
+	if got := h.recallBudget(0); got != recallDefaultBudgetBytes {
+		t.Errorf("negative operator override should be ignored: got %d, want %d",
+			got, recallDefaultBudgetBytes)
+	}
+}
+
+func TestRecallFormat_PerCallWins(t *testing.T) {
+	h := NewHandlers(nil, &mockJournal{}, nil)
+	h.SetRecallDefaults(0, "json")
+	if got := h.recallFormat("xml"); got != "xml" {
+		t.Errorf("per-call xml: got %q, want xml", got)
+	}
+}
+
+func TestRecallFormat_OperatorOverrideBeatsDefault(t *testing.T) {
+	h := NewHandlers(nil, &mockJournal{}, nil)
+	h.SetRecallDefaults(0, "json")
+	if got := h.recallFormat(""); got != "json" {
+		t.Errorf("operator json fallback: got %q, want json", got)
+	}
+}
+
+func TestRecallFormat_PackageDefaultWhenNoneSet(t *testing.T) {
+	h := NewHandlers(nil, &mockJournal{}, nil)
+	if got := h.recallFormat(""); got != recallDefaultFormat {
+		t.Errorf("package default: got %q, want %q", got, recallDefaultFormat)
+	}
+}
+
+func TestRecallDefaults_SetterIsRaceSafe(t *testing.T) {
+	// The recallDefaults RWMutex must permit concurrent SetRecallDefaults
+	// during in-flight Recall calls. Spawn writers and readers; -race
+	// would catch a missing lock acquisition.
+	h := NewHandlers(nil, &mockJournal{}, nil)
+	var wg sync.WaitGroup
+	for i := 0; i < 20; i++ {
+		wg.Add(2)
+		go func(n int) {
+			defer wg.Done()
+			h.SetRecallDefaults(1024+n, "json")
+		}(i)
+		go func() {
+			defer wg.Done()
+			_ = h.recallBudget(0)
+			_ = h.recallFormat("")
+		}()
+	}
+	wg.Wait()
+}
+
+// TestHandlersRecall_OperatorBudgetWired exercises the wire end-to-end:
+// SetRecallDefaults → Recall observes the override budget when the
+// caller omits one. Pairs with the unit tests above.
+func TestHandlersRecall_OperatorBudgetWired(t *testing.T) {
+	idx := core.NewIndex()
+	journal := &mockJournal{}
+	h := NewHandlers(idx, journal, nil)
+	h.SetRecallDefaults(123, "md")
+
+	// Indirect observation: we can't easily snapshot the in-flight
+	// budget value, but a value of 0 should match the recallBudget()
+	// fallback chain.
+	if got := h.recallBudget(0); got != 123 {
+		t.Errorf("Recall budget plumbing: got %d, want 123", got)
+	}
+
+	// And a real Recall call must not error.
+	if _, err := h.Recall(context.Background(), RecallParams{}); err != nil {
+		t.Fatalf("Recall: %v", err)
 	}
 }
 

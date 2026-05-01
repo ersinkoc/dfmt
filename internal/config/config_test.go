@@ -44,6 +44,39 @@ func TestValidateRejectsNonAbsolutePathPrepend(t *testing.T) {
 	}
 }
 
+// TestValidate_DefaultFormatAllowlist guards the format allow-list:
+// only md / json / xml (or empty = use package default) are accepted.
+// Catches typos like "markdown" before they reach handlers.Recall and
+// produce a runtime error on every Recall call.
+func TestValidate_DefaultFormatAllowlist(t *testing.T) {
+	cases := []struct {
+		val    string
+		ok     bool
+		reason string
+	}{
+		{"", true, "empty = use package default"},
+		{"md", true, "markdown"},
+		{"json", true, "json"},
+		{"xml", true, "xml"},
+		{"markdown", false, "typo — should reject"},
+		{"yaml", false, "unsupported format"},
+		{"MD", false, "case-sensitive: only lowercase accepted"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.val+"/"+tc.reason, func(t *testing.T) {
+			cfg := Default()
+			cfg.Retrieval.DefaultFormat = tc.val
+			err := cfg.Validate()
+			if tc.ok && err != nil {
+				t.Errorf("Validate rejected valid format %q: %v", tc.val, err)
+			}
+			if !tc.ok && err == nil {
+				t.Errorf("Validate accepted invalid format %q (%s)", tc.val, tc.reason)
+			}
+		})
+	}
+}
+
 // TestValidateRejectsEmptyPathPrependEntry guards the YAML quirk where
 // `- ""` parses as a populated slice with an empty string element.
 func TestValidateRejectsEmptyPathPrependEntry(t *testing.T) {

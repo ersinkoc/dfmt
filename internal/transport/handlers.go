@@ -68,6 +68,17 @@ type Handlers struct {
 	sentCache map[string]time.Time // content_id -> expiresAt
 	sentOrder []string             // FIFO eviction queue, capped at sentCap
 
+	// recallDefaults holds operator-configured fallbacks for Recall
+	// requests that omit Budget / Format. Wired from
+	// config.Retrieval.{DefaultBudget,DefaultFormat} at daemon
+	// construction (ADR-0015 v0.4 punch list). Zero values mean "use
+	// the package default" (recallDefaultBudgetBytes / recallDefaultFormat).
+	recallDefaults struct {
+		mu     sync.RWMutex
+		budget int
+		format string
+	}
+
 	// statsCache memoises the result of Stats() across the dashboard's
 	// poll interval. Without it every /api/stats hit re-streams the full
 	// journal — at 10 MiB rotated max + active that's hundreds of ms per
@@ -198,6 +209,61 @@ func (h *Handlers) contentDedupSize() int {
 	h.dedupMu.Lock()
 	defer h.dedupMu.Unlock()
 	return len(h.dedupCache)
+}
+
+// recallDefaultBudgetBytes is the package fallback when no operator
+// override and no per-call value is supplied. Held as a const so a
+// future ADR moving it requires a code change (and a CI signal) rather
+// than a silent runtime drift. The 4096-byte value matches the
+// historical Recall behavior pre-ADR-0015 wire-up.
+const recallDefaultBudgetBytes = 4096
+
+// recallDefaultFormat is the package fallback for Recall response
+// shape — markdown is the dashboard- and agent-friendly default.
+const recallDefaultFormat = "md"
+
+// SetRecallDefaults overrides the per-call fallbacks Recall uses when
+// the request omits Budget or Format. Setting budget=0 leaves the
+// budget fallback at the package default; format="" leaves the format
+// fallback at the package default. Per-call values still win — the
+// override only applies when the caller did not supply one.
+//
+// Wired from config.Retrieval at daemon construction (ADR-0015 v0.4).
+func (h *Handlers) SetRecallDefaults(budget int, format string) {
+	h.recallDefaults.mu.Lock()
+	h.recallDefaults.budget = budget
+	h.recallDefaults.format = format
+	h.recallDefaults.mu.Unlock()
+}
+
+// recallBudget returns the budget for a Recall request: per-call value
+// if set, operator override if set, package default otherwise.
+func (h *Handlers) recallBudget(reqBudget int) int {
+	if reqBudget > 0 {
+		return reqBudget
+	}
+	h.recallDefaults.mu.RLock()
+	b := h.recallDefaults.budget
+	h.recallDefaults.mu.RUnlock()
+	if b > 0 {
+		return b
+	}
+	return recallDefaultBudgetBytes
+}
+
+// recallFormat returns the format for a Recall request: per-call value
+// if set, operator override if set, package default otherwise.
+func (h *Handlers) recallFormat(reqFormat string) string {
+	if reqFormat != "" {
+		return reqFormat
+	}
+	h.recallDefaults.mu.RLock()
+	f := h.recallDefaults.format
+	h.recallDefaults.mu.RUnlock()
+	if f != "" {
+		return f
+	}
+	return recallDefaultFormat
 }
 
 // SetContentStore wires the ephemeral content store so Exec/Read/Fetch can
@@ -700,14 +766,8 @@ func (h *Handlers) Recall(ctx context.Context, params RecallParams) (_ *RecallRe
 	if h.journal == nil {
 		return nil, errNoProject
 	}
-	budget := params.Budget
-	if budget == 0 {
-		budget = 4096
-	}
-	format := params.Format
-	if format == "" {
-		format = "md"
-	}
+	budget := h.recallBudget(params.Budget)
+	format := h.recallFormat(params.Format)
 
 	// Per-tier streaming with FIFO eviction (closes review finding #7).
 	//
