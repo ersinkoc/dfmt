@@ -9,11 +9,11 @@
 
 ## Verified True Positives
 
-### Critical (1)
+### Critical — FIXED (1)
 
-| ID | Title | Severity | Confidence | File:Line | CWE |
-|----|-------|----------|-------------|-----------|-----|
-| AUTHZ-01 | Command substitution in double quotes bypasses policy chain detection | Critical | 80% | `permissions.go:2127` | CWE-78, CWE-94 |
+| ID | Title | Severity | Confidence | File:Line | CWE | Status |
+|----|-------|----------|-------------|-----------|-----|--------|
+| AUTHZ-01 | Command substitution in double quotes bypasses policy chain detection | Critical | 100% | `permissions.go:1186-1210` | CWE-78, CWE-94 | **FIXED** in `b861a28` |
 
 ### High (7)
 
