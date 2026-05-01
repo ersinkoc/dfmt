@@ -107,6 +107,11 @@ func (r *Runtimes) getVersion(ctx context.Context, path string) string {
 // and WSL installed silently 127s on the agent's first toolchain
 // invocation. Git Bash uses Windows-PATH semantics and resolves the
 // .exe form transparently.
+//
+// Each call to lookPath performs a fresh exec.LookPath (no internal
+// caching). The Runtimes cache stores results of lookPath calls during
+// Probe, but if PATH may have changed (e.g., after a permitted exec
+// modified .bashrc), call Runtimes.Reload to re-probe with a fresh env.
 var lookPath = func(name string) (string, error) {
 	if runtime.GOOS == goosWindows && strings.EqualFold(name, "bash") {
 		if p, ok := findGitBashWindows(); ok {
@@ -153,4 +158,15 @@ func DetectRuntimes(ctx context.Context) (*Runtimes, error) {
 		return nil, err
 	}
 	return r, nil
+}
+
+// Reload clears the runtime cache and re-probes for available runtimes.
+// Call this when the environment (e.g., PATH) may have changed, such as
+// after an allowed exec modifies .bashrc or similar shell init files.
+// This prevents a cached binary path from staleness after env mutations.
+func (r *Runtimes) Reload(ctx context.Context) error {
+	r.mu.Lock()
+	r.cache = make(map[string]Runtime)
+	r.mu.Unlock()
+	return r.Probe(ctx)
 }

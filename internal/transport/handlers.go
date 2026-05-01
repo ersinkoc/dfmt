@@ -174,10 +174,19 @@ func acquireLimiter(ctx context.Context, sem chan struct{}) (func(), error) {
 
 // SetRedactor overrides the redactor used by this Handlers instance.
 // Pass nil to disable redaction (not recommended outside of tests).
+// Clearing the dedup and sent caches ensures no pre-redaction content is
+// returned under a reloaded or changed redaction config (N-02 fix).
 func (h *Handlers) SetRedactor(r *redact.Redactor) {
 	h.mu.Lock()
 	h.redactor = r
 	h.mu.Unlock()
+	h.dedupMu.Lock()
+	h.dedupCache = nil
+	h.dedupMu.Unlock()
+	h.sentMu.Lock()
+	h.sentCache = nil
+	h.sentOrder = nil
+	h.sentMu.Unlock()
 }
 
 // getRedactor returns the current redactor under read-lock so callers see a

@@ -7,10 +7,9 @@
 // os.MkdirAll, and friends silently follow symlinks; CheckNoSymlinks closes
 // that gap before the write happens.
 //
-// Residual: a sufficiently capable attacker can race the Lstat → write
-// window (TOCTOU). Closing that requires platform-specific file handles
-// (O_NOFOLLOW on Unix, FILE_FLAG_OPEN_REPARSE_POINT on Windows) and is out
-// of scope for the documented threat model.
+// WriteFile uses O_NOFOLLOW (Unix) / FILE_FLAG_OPEN_REPARSE_POINT (Windows)
+// so a racing symlink at the leaf position is also refused at open time,
+// closing the residual TOCTOU window.
 package safefs
 
 import (
@@ -196,21 +195,6 @@ func EnsureResolvedUnder(path, root string) (string, error) {
 		return "", fmt.Errorf("%w: %s", ErrPathOutsideRoot, path)
 	}
 	return resolved, nil
-}
-
-// WriteFile writes data to path with mode after CheckNoSymlinks(baseDir, path)
-// succeeds. Existing regular-file targets are overwritten in place; symlinks
-// or non-regular files anywhere along the path are refused.
-//
-// Note: os.WriteFile uses os.OpenFile(O_WRONLY|O_CREATE|O_TRUNC) which on
-// Unix follows symlinks, but the preceding Lstat check ensures the target
-// is not a symlink at the moment of inspection. Race-window TOCTOU is
-// documented as residual.
-func WriteFile(baseDir, path string, data []byte, mode os.FileMode) error {
-	if err := CheckNoSymlinks(baseDir, path); err != nil {
-		return err
-	}
-	return os.WriteFile(path, data, mode)
 }
 
 // WriteFileAtomic writes data to path via a temp file in the same directory

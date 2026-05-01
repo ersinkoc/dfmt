@@ -65,7 +65,7 @@ func (r *Rule) Compile() {
 	if r.Op == "exec" {
 		pattern = globToRegexShell(r.Text)
 	} else {
-		pattern = globToRegex(r.Text)
+		pattern = globToRegex(strings.ReplaceAll(r.Text, `\`, "/"))
 	}
 	re, err := regexp.Compile(pattern)
 	if err != nil {
