@@ -5,6 +5,7 @@ import (
 	"io"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -28,22 +29,27 @@ import (
 //     binding; metrics include process / index state that should not
 //     leak across origins. ADR-0016 records the threat model.
 
-// metricKind enumerates the Prometheus types we emit. Histograms and
-// summaries are deliberately omitted — we don't have one yet, and a
-// premature histogram with arbitrary bucket choices is harder to
-// migrate than adding it later.
+// metricKind enumerates the Prometheus types we emit. Summaries are
+// still omitted (non-aggregatable, ADR-0018); histograms wired in
+// 2026-05-02 with the Prometheus default bucket set per ADR-0018.
 type metricKind int
 
 const (
 	metricCounter metricKind = iota
 	metricGauge
+	metricHistogram
 )
 
 func (k metricKind) String() string {
-	if k == metricCounter {
+	switch k {
+	case metricCounter:
 		return "counter"
+	case metricGauge:
+		return "gauge"
+	case metricHistogram:
+		return "histogram"
 	}
-	return "gauge"
+	return "untyped"
 }
 
 // Counter is a monotonically increasing int64. Reads and writes are
@@ -77,6 +83,72 @@ func (g *Gauge) Set(n int64) { g.v.Store(n) }
 func (g *Gauge) Add(n int64) { g.v.Add(n) }
 func (g *Gauge) Load() int64 { return g.v.Load() }
 
+// defaultLatencyBuckets are the Prometheus client_golang default
+// histogram buckets (seconds). Locked under ADR-0018's migration
+// contract: this slice is append-only, never mutated. New finer
+// boundaries may be inserted between existing values; existing values
+// never move. Tests pin both the values and the count so a stray
+// edit is caught at CI.
+var defaultLatencyBuckets = []float64{
+	0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10,
+}
+
+// Histogram observes durations into cumulative buckets per the
+// Prometheus exposition format. counts[i] is the number of observations
+// with value <= buckets[i]; the +Inf bucket is implicit and equals the
+// total count. sum is held as int64 nanoseconds (atomic-cheap) and
+// converted to float seconds at scrape time.
+//
+// Observe takes ~15 atomic ops + 11 float comparisons (~30 ns on M2-
+// class CPU) — a flat-out hot-path concern would specialize, but for
+// our 9 tools this is dwarfed by the work the tool itself just did.
+type Histogram struct {
+	buckets  []float64
+	counts   []atomic.Int64
+	sumNanos atomic.Int64
+	count    atomic.Int64
+}
+
+// NewHistogram allocates a Histogram with the given upper-bound
+// buckets. The slice is captured by value (the implementation never
+// mutates it after construction) and assumed sorted ascending.
+// Callers should prefer the package-level defaultLatencyBuckets unless
+// they have a strong workload-specific reason.
+func NewHistogram(buckets []float64) *Histogram {
+	h := &Histogram{
+		buckets: append([]float64(nil), buckets...),
+		counts:  make([]atomic.Int64, len(buckets)),
+	}
+	return h
+}
+
+// Observe records a duration. Cancellation-time observations should be
+// skipped at the call site (see recordToolCall) — the histogram has no
+// concept of "should not count this."
+func (h *Histogram) Observe(d time.Duration) {
+	secs := d.Seconds()
+	for i, ub := range h.buckets {
+		if secs <= ub {
+			h.counts[i].Add(1)
+		}
+	}
+	h.sumNanos.Add(int64(d))
+	h.count.Add(1)
+}
+
+// snapshot returns a consistent copy of the per-bucket counts plus
+// sum and total. Reads under no lock — the tearing risk on int64 is
+// per-counter, not cross-counter, so callers may see a snapshot where
+// `_count` is one observation ahead of `sum` and the buckets. This is
+// acceptable for /metrics where eventual consistency is the contract.
+func (h *Histogram) snapshot() (counts []int64, sumNanos, total int64) {
+	counts = make([]int64, len(h.counts))
+	for i := range h.counts {
+		counts[i] = h.counts[i].Load()
+	}
+	return counts, h.sumNanos.Load(), h.count.Load()
+}
+
 // metricEntry is a registry record. The collector closure is called at
 // scrape time so callers can wire dynamic values (runtime.MemStats,
 // index.TotalDocs()) without keeping their own background goroutine in
@@ -89,12 +161,24 @@ type metricEntry struct {
 	collect func() int64
 }
 
+// histogramEntry binds a Histogram to a (name, label-set) pair. Stored
+// separately from metricEntry because histograms emit multiple lines
+// per scrape (per-bucket + _sum + _count) and slip awkwardly into the
+// counter/gauge collect-fn shape.
+type histogramEntry struct {
+	name   string
+	help   string
+	labels map[string]string
+	h      *Histogram
+}
+
 // registry is the package-private store. A registry method receiver
 // avoids a second indirection on the scrape path.
 type registry struct {
-	mu       sync.RWMutex
-	entries  []metricEntry
-	bootTime time.Time
+	mu         sync.RWMutex
+	entries    []metricEntry
+	histograms []histogramEntry
+	bootTime   time.Time
 }
 
 var defaultRegistry = &registry{bootTime: time.Now()}
@@ -137,6 +221,27 @@ func RegisterCounterFunc(name, help string, fn func() int64) {
 	registerMetric(metricEntry{
 		name: name, help: help, kind: metricCounter,
 		collect: fn,
+	})
+}
+
+// RegisterHistogram binds a Histogram to a (name, labels) pair. The
+// HELP and TYPE lines emit once per metric name across all label
+// combinations. Re-registering with the same (name, labels) replaces
+// the existing histogram; the previous Histogram pointer is dropped.
+// ADR-0018.
+func RegisterHistogram(name, help string, labels map[string]string, h *Histogram) {
+	defaultRegistry.mu.Lock()
+	defer defaultRegistry.mu.Unlock()
+	for i, existing := range defaultRegistry.histograms {
+		if existing.name == name && labelsEqual(existing.labels, labels) {
+			defaultRegistry.histograms[i] = histogramEntry{
+				name: name, help: help, labels: labels, h: h,
+			}
+			return
+		}
+	}
+	defaultRegistry.histograms = append(defaultRegistry.histograms, histogramEntry{
+		name: name, help: help, labels: labels, h: h,
 	})
 }
 
@@ -192,6 +297,8 @@ func WriteProm(w io.Writer) error {
 	defaultRegistry.mu.RLock()
 	entries := make([]metricEntry, len(defaultRegistry.entries))
 	copy(entries, defaultRegistry.entries)
+	histograms := make([]histogramEntry, len(defaultRegistry.histograms))
+	copy(histograms, defaultRegistry.histograms)
 	defaultRegistry.mu.RUnlock()
 
 	sort.Slice(entries, func(i, j int) bool {
@@ -202,8 +309,8 @@ func WriteProm(w io.Writer) error {
 	})
 
 	// Emit HELP/TYPE only once per metric name (Prometheus rejects
-	// duplicates). When we add per-tool counters in v0.4 every (name,
-	// labels) pair will share the same HELP/TYPE block.
+	// duplicates). Counter / gauge children with the same name share one
+	// HELP/TYPE block.
 	var lastName string
 	for _, e := range entries {
 		if e.name != lastName {
@@ -218,7 +325,74 @@ func WriteProm(w io.Writer) error {
 			fmt.Fprintf(w, "%s{%s} %d\n", e.name, labelString(e.labels), val)
 		}
 	}
+
+	// Histograms are emitted last and grouped by metric name. Within
+	// each metric, label sets are sorted; within each label set, bucket
+	// lines are emitted in ascending `le` order (Prometheus spec
+	// requirement), then `_sum`, then `_count`.
+	sort.Slice(histograms, func(i, j int) bool {
+		if histograms[i].name != histograms[j].name {
+			return histograms[i].name < histograms[j].name
+		}
+		return labelString(histograms[i].labels) < labelString(histograms[j].labels)
+	})
+	lastName = ""
+	for _, hentry := range histograms {
+		if hentry.name != lastName {
+			fmt.Fprintf(w, "# HELP %s %s\n", hentry.name, escapeHelp(hentry.help))
+			fmt.Fprintf(w, "# TYPE %s histogram\n", hentry.name)
+			lastName = hentry.name
+		}
+		writeHistogramChild(w, hentry)
+	}
 	return nil
+}
+
+// writeHistogramChild emits the per-(name, labels) lines for one
+// histogram: cumulative bucket counts in ascending `le` order, the
+// implicit `+Inf` bucket equal to total observations, then `_sum` (in
+// seconds, formatted from the int64-nanosecond accumulator) and
+// `_count`.
+func writeHistogramChild(w io.Writer, e histogramEntry) {
+	counts, sumNanos, total := e.h.snapshot()
+
+	baseLabels := labelString(e.labels)
+	for i, ub := range e.h.buckets {
+		le := formatBucketBound(ub)
+		writeHistBucketLine(w, e.name, baseLabels, le, counts[i])
+	}
+	// Implicit +Inf bucket: every observation lives in it.
+	writeHistBucketLine(w, e.name, baseLabels, "+Inf", total)
+
+	// _sum and _count carry the metric's labels but NOT the per-bucket
+	// le label. seconds = sumNanos / 1e9; emit with %g so 0.0 stays
+	// readable and large values don't round prematurely.
+	sumSeconds := float64(sumNanos) / 1e9
+	if baseLabels == "" {
+		fmt.Fprintf(w, "%s_sum %g\n", e.name, sumSeconds)
+		fmt.Fprintf(w, "%s_count %d\n", e.name, total)
+	} else {
+		fmt.Fprintf(w, "%s_sum{%s} %g\n", e.name, baseLabels, sumSeconds)
+		fmt.Fprintf(w, "%s_count{%s} %d\n", e.name, baseLabels, total)
+	}
+}
+
+func writeHistBucketLine(w io.Writer, name, baseLabels, le string, count int64) {
+	if baseLabels == "" {
+		fmt.Fprintf(w, "%s_bucket{le=%q} %d\n", name, le, count)
+		return
+	}
+	fmt.Fprintf(w, "%s_bucket{%s,le=%q} %d\n", name, baseLabels, le, count)
+}
+
+// formatBucketBound renders a bucket upper bound as the Prometheus
+// `le` label uses it. Prefer integer rendering for integer-valued
+// bounds (e.g. `1` not `1.0`) to match Prometheus convention.
+func formatBucketBound(ub float64) string {
+	if ub == float64(int64(ub)) {
+		return fmt.Sprintf("%d", int64(ub))
+	}
+	return strconv.FormatFloat(ub, 'g', -1, 64)
 }
 
 // labelString renders a label set as `k1="v1",k2="v2"` with sorted keys
@@ -271,6 +445,7 @@ func escapeLabelValue(s string) string {
 func resetRegistryForTest() {
 	defaultRegistry.mu.Lock()
 	defaultRegistry.entries = nil
+	defaultRegistry.histograms = nil
 	defaultRegistry.bootTime = time.Now()
 	defaultRegistry.mu.Unlock()
 	RegisterCounter("dfmt_metrics_scrapes_total",

@@ -223,7 +223,7 @@ func TestRecordToolCall_OkAndError(t *testing.T) {
 
 	// nil err → ok bucket
 	var nilErr error
-	recordToolCall("exec", nil, &nilErr)
+	recordToolCall("exec", nil, &nilErr, time.Now())
 	if got := toolCallCounters["exec"].ok.Load(); got != beforeOk+1 {
 		t.Errorf("nil-err recordToolCall: ok=%d want %d", got, beforeOk+1)
 	}
@@ -233,7 +233,7 @@ func TestRecordToolCall_OkAndError(t *testing.T) {
 
 	// real err → error bucket
 	someErr := errors.New("sandbox denied")
-	recordToolCall("exec", nil, &someErr)
+	recordToolCall("exec", nil, &someErr, time.Now())
 	if got := toolCallCounters["exec"].err.Load(); got != beforeErr+1 {
 		t.Errorf("err recordToolCall: err=%d want %d", got, beforeErr+1)
 	}
@@ -246,7 +246,7 @@ func TestRecordToolCall_CancelSuppressed(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	cancelErr := context.Canceled
-	recordToolCall("exec", ctx, &cancelErr)
+	recordToolCall("exec", ctx, &cancelErr, time.Now())
 	if got := toolCallCounters["exec"].err.Load(); got != beforeErr {
 		t.Errorf("ctx-cancel recordToolCall must NOT bump err: got %d want %d", got, beforeErr)
 	}
@@ -262,7 +262,7 @@ func TestRecordToolCall_UnknownToolNoOp(t *testing.T) {
 		before[tool] = pair{c.ok.Load(), c.err.Load()}
 	}
 	var e error = errors.New("boom")
-	recordToolCall("not-a-real-tool", nil, &e)
+	recordToolCall("not-a-real-tool", nil, &e, time.Now())
 	for tool, c := range toolCallCounters {
 		if c.ok.Load() != before[tool].ok || c.err.Load() != before[tool].err {
 			t.Errorf("unknown-tool recordToolCall mutated %s: before=%v after=(%d,%d)",
@@ -320,6 +320,227 @@ func TestWireHandlerMetrics_DedupHits(t *testing.T) {
 	_ = WriteProm(&buf)
 	if !strings.Contains(buf.String(), "dfmt_dedup_hits_total 12") {
 		t.Errorf("dedup hits not refreshed on second scrape:\n%s", buf.String())
+	}
+}
+
+// TestHistogram_ObservePlacesInBuckets verifies cumulative placement:
+// an observation at 0.012s lands in every bucket where 0.012 <= upper.
+func TestHistogram_ObservePlacesInBuckets(t *testing.T) {
+	h := NewHistogram(defaultLatencyBuckets)
+	h.Observe(12 * time.Millisecond)
+
+	counts, _, total := h.snapshot()
+	if total != 1 {
+		t.Fatalf("total observations = %d, want 1", total)
+	}
+	// 0.012s lands in: 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10. NOT in 0.005, 0.01.
+	want := map[float64]int64{
+		0.005: 0, 0.01: 0,
+		0.025: 1, 0.05: 1, 0.1: 1, 0.25: 1, 0.5: 1, 1: 1, 2.5: 1, 5: 1, 10: 1,
+	}
+	for i, ub := range h.buckets {
+		if counts[i] != want[ub] {
+			t.Errorf("bucket %v: count=%d want %d", ub, counts[i], want[ub])
+		}
+	}
+}
+
+func TestHistogram_SumAccumulates(t *testing.T) {
+	h := NewHistogram(defaultLatencyBuckets)
+	h.Observe(10 * time.Millisecond)
+	h.Observe(20 * time.Millisecond)
+	h.Observe(30 * time.Millisecond)
+	_, sumNanos, total := h.snapshot()
+	if total != 3 {
+		t.Errorf("total = %d, want 3", total)
+	}
+	wantNanos := int64((10 + 20 + 30) * time.Millisecond)
+	if sumNanos != wantNanos {
+		t.Errorf("sumNanos = %d, want %d", sumNanos, wantNanos)
+	}
+}
+
+func TestHistogram_AtomicConcurrentObserve(t *testing.T) {
+	h := NewHistogram(defaultLatencyBuckets)
+	var wg sync.WaitGroup
+	for g := 0; g < 50; g++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < 1000; i++ {
+				h.Observe(7 * time.Millisecond) // lands in 0.01 and above
+			}
+		}()
+	}
+	wg.Wait()
+	counts, _, total := h.snapshot()
+	if total != 50000 {
+		t.Errorf("total = %d, want 50000 (race in atomic counter)", total)
+	}
+	// Every bucket >= 0.01s gets every observation.
+	for i, ub := range h.buckets {
+		if ub < 0.007 {
+			if counts[i] != 0 {
+				t.Errorf("bucket %v has %d, want 0", ub, counts[i])
+			}
+		} else {
+			if counts[i] != 50000 {
+				t.Errorf("bucket %v has %d, want 50000", ub, counts[i])
+			}
+		}
+	}
+}
+
+func TestWriteProm_HistogramShape(t *testing.T) {
+	resetRegistryForTest()
+	h := NewHistogram(defaultLatencyBuckets)
+	h.Observe(7 * time.Millisecond)
+	h.Observe(150 * time.Millisecond)
+	RegisterHistogram("test_dur_seconds", "Test latency.",
+		map[string]string{"tool": "exec"}, h)
+
+	var buf bytes.Buffer
+	_ = WriteProm(&buf)
+	out := buf.String()
+
+	// One HELP and one TYPE block per metric name.
+	if got := strings.Count(out, "# HELP test_dur_seconds"); got != 1 {
+		t.Errorf("HELP line count = %d, want 1\n%s", got, out)
+	}
+	if got := strings.Count(out, "# TYPE test_dur_seconds histogram"); got != 1 {
+		t.Errorf("TYPE histogram line count = %d, want 1\n%s", got, out)
+	}
+
+	// Required lines for one observation in 0.01 (only 150ms above) and
+	// the +Inf bucket containing both observations.
+	required := []string{
+		`test_dur_seconds_bucket{tool="exec",le="0.005"} 0`,
+		`test_dur_seconds_bucket{tool="exec",le="0.01"} 1`, // only 7ms
+		`test_dur_seconds_bucket{tool="exec",le="0.25"} 2`, // both
+		`test_dur_seconds_bucket{tool="exec",le="+Inf"} 2`,
+		`test_dur_seconds_count{tool="exec"} 2`,
+	}
+	for _, line := range required {
+		if !strings.Contains(out, line) {
+			t.Errorf("histogram emission missing %q\nfull output:\n%s", line, out)
+		}
+	}
+
+	// _sum is float seconds. (7 + 150)ms = 0.157s.
+	if !strings.Contains(out, `test_dur_seconds_sum{tool="exec"} 0.157`) {
+		t.Errorf("histogram _sum line missing or wrong:\n%s", out)
+	}
+}
+
+func TestWriteProm_HistogramBucketOrdering(t *testing.T) {
+	resetRegistryForTest()
+	h := NewHistogram(defaultLatencyBuckets)
+	h.Observe(50 * time.Millisecond)
+	RegisterHistogram("test_dur", "Bucket order.", nil, h)
+
+	var buf bytes.Buffer
+	_ = WriteProm(&buf)
+	out := buf.String()
+
+	// Buckets must emit in ascending `le` order (Prometheus spec).
+	// Find positions of each bucket line; positions must be monotonic.
+	bucketPositions := []struct {
+		le  string
+		pos int
+	}{}
+	for _, le := range []string{"0.005", "0.01", "0.025", "0.05", "0.1", "0.25", "0.5", "1", "2.5", "5", "10", "+Inf"} {
+		needle := `_bucket{le="` + le + `"}`
+		pos := strings.Index(out, needle)
+		if pos < 0 {
+			t.Fatalf("bucket %q not found in output:\n%s", le, out)
+		}
+		bucketPositions = append(bucketPositions, struct {
+			le  string
+			pos int
+		}{le, pos})
+	}
+	for i := 1; i < len(bucketPositions); i++ {
+		if bucketPositions[i].pos <= bucketPositions[i-1].pos {
+			t.Errorf("bucket %q at pos %d is not after %q at pos %d (order violation)",
+				bucketPositions[i].le, bucketPositions[i].pos,
+				bucketPositions[i-1].le, bucketPositions[i-1].pos)
+		}
+	}
+}
+
+func TestDefaultLatencyBuckets_LockedSet(t *testing.T) {
+	// ADR-0018 commits to this exact set; the migration contract is
+	// "append-only, never mutate." A change to this slice without a
+	// matching superseding ADR is a contract violation. This test
+	// catches a stray edit at CI time.
+	want := []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10}
+	if len(defaultLatencyBuckets) != len(want) {
+		t.Fatalf("defaultLatencyBuckets len = %d, want %d (ADR-0018 lock)",
+			len(defaultLatencyBuckets), len(want))
+	}
+	for i := range want {
+		if defaultLatencyBuckets[i] != want[i] {
+			t.Errorf("defaultLatencyBuckets[%d] = %v, want %v (ADR-0018 lock)",
+				i, defaultLatencyBuckets[i], want[i])
+		}
+	}
+}
+
+func TestRecordToolCall_HistogramObserved(t *testing.T) {
+	resetRegistryForTest()
+
+	hist := toolCallHistograms["search"]
+	if hist == nil {
+		t.Fatal("toolCallHistograms[search] is nil")
+	}
+	_, _, beforeTotal := hist.snapshot()
+
+	var nilErr error
+	start := time.Now().Add(-15 * time.Millisecond) // pretend the handler has been running 15ms
+	recordToolCall("search", nil, &nilErr, start)
+
+	_, sumNanos, afterTotal := hist.snapshot()
+	if afterTotal != beforeTotal+1 {
+		t.Errorf("total after recordToolCall = %d, want %d", afterTotal, beforeTotal+1)
+	}
+	// Elapsed should be at least ~15ms — let's accept 10ms-100ms for CI jitter.
+	elapsed := time.Duration(sumNanos)
+	if elapsed < 10*time.Millisecond || elapsed > 100*time.Millisecond {
+		t.Errorf("histogram sum = %v, expected ~15ms band", elapsed)
+	}
+}
+
+func TestRecordToolCall_CancelSkipsHistogram(t *testing.T) {
+	resetRegistryForTest()
+	hist := toolCallHistograms["exec"]
+	_, _, before := hist.snapshot()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	cancelErr := context.Canceled
+	recordToolCall("exec", ctx, &cancelErr, time.Now().Add(-1*time.Second))
+
+	_, _, after := hist.snapshot()
+	if after != before {
+		t.Errorf("cancellation must NOT bump histogram total: before=%d after=%d", before, after)
+	}
+}
+
+// TestHandlers_Search_HistogramObserved is the end-to-end check:
+// a real Search call observes one entry into the search histogram.
+func TestHandlers_Search_HistogramObserved(t *testing.T) {
+	resetRegistryForTest()
+	h := NewHandlers(nil, nil, nil)
+
+	hist := toolCallHistograms["search"]
+	_, _, before := hist.snapshot()
+
+	if _, err := h.Search(context.Background(), SearchParams{Query: "x"}); err != nil {
+		t.Fatalf("Search returned err: %v", err)
+	}
+	_, _, after := hist.snapshot()
+	if after != before+1 {
+		t.Errorf("Search did not observe into histogram: before=%d after=%d", before, after)
 	}
 }
 

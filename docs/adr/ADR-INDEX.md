@@ -26,6 +26,7 @@ See [ADR-0000](0000-adr-process.md) for the process governing how ADRs are writt
 | [0015](0015-config-knob-consolidation.md) | Config Knob Consolidation | Accepted | Each Config field classified Wired / Reserved (v0.4). No deletes in v0.3; per-field comments in source flag silent no-ops with a v0.4 wire-or-delete commitment. |
 | [0016](0016-metrics-endpoint.md) | Prometheus `/metrics` Endpoint | Accepted | In-tree Prometheus text-format emitter on `/metrics`. v0.3 publishes daemon-level gauges (uptime, MemStats, goroutines), scrape counter, per-tool counters (`dfmt_tool_calls_total{tool,status}`), dedup-hit counter, and index / wire-dedup / content-dedup size gauges. Duration histograms deferred to v0.4. No new dependency. |
 | [0017](0017-journal-size-method.md) | Journal `Size()` Interface Extension | Accepted | Adds `Size() (int64, error)` to `core.Journal`. Surfaces `dfmt_journal_bytes` gauge for active-file size; rotated archives explicitly out of scope for this metric. Mock journals updated; non-nil error encodes as `-1` at the gauge layer. |
+| [0018](0018-tool-call-duration-histograms.md) | Tool-Call Duration Histograms | Accepted | `dfmt_tool_call_duration_seconds` histogram per tool, Prometheus default bucket set. Migration contract: append-only — finer buckets may be inserted, existing boundaries never mutated. Cancellation excluded from observations. |
 
 ## Superseded Decisions
 

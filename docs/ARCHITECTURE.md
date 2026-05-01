@@ -3126,6 +3126,7 @@ revisit. Current set:
 | 0015 | Config Knob Consolidation              | Each `Config` field classified Wired / Reserved (v0.4). No deletes in v0.3; per-field comments flag silent no-ops; v0.4 wire-or-delete punch list in the ADR table. |
 | 0016 | Prometheus `/metrics` Endpoint         | In-tree Prometheus text-format emitter on `/metrics`. v0.3 publishes daemon-level gauges (uptime, MemStats, goroutines), scrape counter, per-tool counters (`dfmt_tool_calls_total{tool,status}`), dedup-hit counter, and index / wire-dedup / content-dedup size gauges. Duration histograms deferred to v0.4. No new dependency. |
 | 0017 | Journal `Size()` Interface Extension   | `core.Journal` gains `Size() (int64, error)`. Surfaces `dfmt_journal_bytes` (active-file only); rotated archives out of scope for this metric. Non-nil error encodes as `-1` at the gauge. Two in-tree mock journals updated. |
+| 0018 | Tool-Call Duration Histograms          | `dfmt_tool_call_duration_seconds` per tool, Prometheus default bucket set, migration contract = append-only. `recordToolCall` captures elapsed via `time.Now()` at handler entry; cancellation excluded from observations. ~30 ns hot-path cost. |
 
 `docs/adr/ADR-INDEX.md` is the always-current index. Add a new ADR
 when introducing a component, changing component interactions,

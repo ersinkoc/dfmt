@@ -83,6 +83,7 @@ counter. All read at scrape time:
 | `dfmt_wire_dedup_entries` | gauge | content_ids currently in wire-dedup cache (cap 256) |
 | `dfmt_content_dedup_entries` | gauge | bytes-hash entries currently in content-store dedup cache (cap 64) |
 | `dfmt_journal_bytes` | gauge | Active journal file on-disk size in bytes (-1 on stat error). Wired via the ADR-0017 `Size()` interface extension. |
+| `dfmt_tool_call_duration_seconds_{bucket,sum,count}{tool}` | histogram | Per-tool latency. Bucket set locked under ADR-0018 (Prometheus default). |
 
 #### Per-tool counter cardinality
 
@@ -126,10 +127,6 @@ CI time rather than during operator dashboard archaeology.
 
 #### Still deferred to v0.4
 
-- **Duration histograms** (`dfmt_tool_call_duration_seconds_bucket{tool, le}`).
-  Bucket choice is not yet defensible — the right percentile budget
-  depends on operator workload, and a premature `[0.005, 0.01, …]`
-  set is harder to migrate than adding it later.
 - **Per-scrape rate-limit + MemStats TTL**. A rogue scraper at 100 Hz
   measurably impacts request latency. Mitigation lives behind a config
   knob if it ever surfaces in real operator reports.

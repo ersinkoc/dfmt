@@ -3,6 +3,7 @@ package transport
 import (
 	"context"
 	"errors"
+	"time"
 )
 
 // Per-tool call counters (ADR-0016 v0.4 follow-up). Each MCP tool entry
@@ -28,6 +29,7 @@ import (
 //           the cardinality bargain was status binary.
 
 var toolCallCounters = registerToolCounters()
+var toolCallHistograms = registerToolHistograms()
 
 type toolCallChild struct {
 	ok  Counter
@@ -51,34 +53,58 @@ func registerToolCounters() map[string]*toolCallChild {
 	return m
 }
 
-// registerToolMetrics wires the per-tool counters into the package
-// registry. Called from init() and resetRegistryForTest() so test
-// ordering is independent.
+// registerToolHistograms allocates one Histogram per tracked tool,
+// sharing the package-default bucket set per ADR-0018. The histograms
+// themselves are wired into the registry via registerToolMetrics()
+// so test reset behaves consistently with the counter wiring.
+func registerToolHistograms() map[string]*Histogram {
+	m := make(map[string]*Histogram, len(trackedTools))
+	for _, tool := range trackedTools {
+		m[tool] = NewHistogram(defaultLatencyBuckets)
+	}
+	return m
+}
+
+// registerToolMetrics wires the per-tool counters AND histograms into
+// the package registry. Called from init() and resetRegistryForTest()
+// so test ordering is independent.
 func registerToolMetrics() {
-	const help = "Total MCP tool calls by tool name and status (ok|error)."
+	const counterHelp = "Total MCP tool calls by tool name and status (ok|error)."
 	for _, tool := range trackedTools {
 		c := toolCallCounters[tool]
-		RegisterCounterWithLabels("dfmt_tool_calls_total", help,
+		RegisterCounterWithLabels("dfmt_tool_calls_total", counterHelp,
 			map[string]string{"tool": tool, "status": "ok"}, &c.ok)
-		RegisterCounterWithLabels("dfmt_tool_calls_total", help,
+		RegisterCounterWithLabels("dfmt_tool_calls_total", counterHelp,
 			map[string]string{"tool": tool, "status": "error"}, &c.err)
+	}
+
+	const histHelp = "Per-tool call latency in seconds (ADR-0018 default buckets, append-only)."
+	for _, tool := range trackedTools {
+		RegisterHistogram("dfmt_tool_call_duration_seconds", histHelp,
+			map[string]string{"tool": tool}, toolCallHistograms[tool])
 	}
 }
 
-// recordToolCall increments the right child counter at handler return.
-// Callers wire it as:
+// recordToolCall increments the right child counter and observes the
+// elapsed duration into the per-tool histogram at handler return.
+// Callers wire it via a one-line prologue:
 //
 //	func (h *Handlers) Exec(ctx context.Context, p ExecParams) (resp *ExecResponse, err error) {
-//	    defer recordToolCall("exec", ctx, &err)
+//	    defer recordToolCall("exec", ctx, &err, time.Now())
 //	    ...
 //	}
 //
 // errPtr is a pointer to the named return so the defer observes the
-// final value, not the snapshot at the prologue. ctx is consulted
-// only to suppress the increment if the parent canceled before the
-// handler started doing real work — that path is "agent gave up", not
-// a daemon-side ok or error.
-func recordToolCall(tool string, ctx context.Context, errPtr *error) {
+// final value. ctx is consulted to suppress observations on
+// caller-side cancellation: the elapsed time is the agent's patience
+// budget, not a daemon-side latency datum, and folding it into the
+// histogram dilutes the p95.
+//
+// `start` is the moment the handler began work (typically `time.Now()`
+// at the same call). Passing the start time as a parameter rather than
+// capturing it inside the helper keeps recordToolCall pure and lets
+// the call site decide whether to bracket extra setup work.
+func recordToolCall(tool string, ctx context.Context, errPtr *error, start time.Time) {
 	c, ok := toolCallCounters[tool]
 	if !ok {
 		return
@@ -87,17 +113,23 @@ func recordToolCall(tool string, ctx context.Context, errPtr *error) {
 	if errPtr != nil {
 		e = *errPtr
 	}
+	canceled := ctx != nil && errors.Is(e, context.Canceled) && ctx.Err() != nil
+
 	if e == nil {
 		c.ok.Inc()
+	} else if !canceled {
+		c.err.Inc()
+	}
+
+	// Histogram observations: skip the cancellation path so p95 stays
+	// honest. Histograms are tool-scoped (no status label) per
+	// ADR-0018; the operator-visible status is in the counter pair.
+	if canceled {
 		return
 	}
-	if ctx != nil && errors.Is(e, context.Canceled) && ctx.Err() != nil {
-		// Caller-side cancellation; don't count as a daemon failure.
-		// The signal still appears in journal events with the canceled
-		// reason — the counter is for daemon-observable health.
-		return
+	if h, ok := toolCallHistograms[tool]; ok && h != nil {
+		h.Observe(time.Since(start))
 	}
-	c.err.Inc()
 }
 
 // WireHandlerMetrics binds Handlers-instance metrics into the package
