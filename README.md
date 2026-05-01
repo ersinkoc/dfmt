@@ -200,6 +200,9 @@ strips its keys from any shared user config like `~/.claude.json`).
 
 - `cmd/dfmt/` — CLI binary
 - `cmd/dfmt-bench/` — token-savings benchmarks
+- `dev.sh` / `dev.ps1` — cross-platform dev bootstrap
+- `scripts/` — helper scripts
+- `install.sh` / `install.ps1` — one-command install
 - `internal/core/` — events, journal, BM25 index, tokenizer, classifier
 - `internal/sandbox/` — exec/read/fetch/glob/grep/edit/write policy gate
 - `internal/transport/` — MCP, JSON-RPC, HTTP dashboard
