@@ -718,6 +718,10 @@ func (m *mockJournal) Rotate(ctx context.Context) error {
 	return nil
 }
 
+func (m *mockJournal) Size() (int64, error) {
+	return 0, nil
+}
+
 func (m *mockJournal) Close() error {
 	return m.closeError
 }

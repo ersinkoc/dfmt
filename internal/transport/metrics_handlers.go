@@ -138,4 +138,19 @@ func WireHandlerMetrics(h *Handlers) {
 	RegisterGaugeFunc("dfmt_content_dedup_entries",
 		"Number of bytes-hash entries currently in the content-store dedup cache.",
 		func() int64 { return int64(h.contentDedupSize()) })
+
+	// dfmt_journal_bytes is registered only when a journal is wired —
+	// degraded-mode handlers (no project) skip it rather than reporting
+	// a permanent -1 that would noise alerting. ADR-0017.
+	if h.journal != nil {
+		RegisterGaugeFunc("dfmt_journal_bytes",
+			"On-disk byte size of the active journal file. -1 means the underlying Size() call failed (filesystem hiccup, file removed).",
+			func() int64 {
+				n, err := h.journal.Size()
+				if err != nil {
+					return -1
+				}
+				return n
+			})
+	}
 }

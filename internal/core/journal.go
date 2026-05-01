@@ -100,6 +100,11 @@ type Journal interface {
 	Stream(ctx context.Context, from string) (<-chan Event, error)
 	Checkpoint(ctx context.Context) (string, error)
 	Rotate(ctx context.Context) error
+	// Size returns the active journal's on-disk byte count. Excludes
+	// rotated archive files. Used by the Prometheus /metrics surface
+	// (dfmt_journal_bytes); a -1 reading at the gauge layer means
+	// the implementation returned a non-nil error here. ADR-0017.
+	Size() (int64, error)
 	Close() error
 }
 
@@ -416,6 +421,32 @@ func (j *journalImpl) Checkpoint(ctx context.Context) (string, error) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	return j.hiCursor, nil
+}
+
+// Size returns the active journal file's on-disk byte count. Excludes
+// any rotated archive files (those are tracked separately if/when a
+// dfmt_journal_archive_bytes gauge is added). Stat is taken under the
+// same mutex that guards Append so a concurrent write does not race
+// with the size read.
+//
+// The error path covers transient os.Stat failures (file removed by an
+// operator, filesystem hiccup); callers reporting Size into a Prometheus
+// gauge should encode err != nil as -1 to keep the "missing" signal
+// distinguishable from "empty file." See ADR-0017.
+func (j *journalImpl) Size() (int64, error) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if j.closed {
+		return 0, errors.New("journal closed")
+	}
+	if j.file == nil {
+		return 0, errors.New("journal file not open")
+	}
+	fi, err := j.file.Stat()
+	if err != nil {
+		return 0, fmt.Errorf("journal stat: %w", err)
+	}
+	return fi.Size(), nil
 }
 
 // Rotate rotates the journal file.

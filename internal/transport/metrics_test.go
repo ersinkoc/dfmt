@@ -410,6 +410,75 @@ func TestWireHandlerMetrics_IndexDocs_NilIndex(t *testing.T) {
 	}
 }
 
+// sizeReportingJournal is a mockJournal-style stub that returns a
+// caller-controlled (size, err) pair from Size(). Used to verify the
+// gauge encodes errors as -1 and reads live values on each scrape.
+type sizeReportingJournal struct {
+	size int64
+	err  error
+}
+
+func (j *sizeReportingJournal) Append(ctx context.Context, e core.Event) error { return nil }
+func (j *sizeReportingJournal) Stream(ctx context.Context, from string) (<-chan core.Event, error) {
+	ch := make(chan core.Event)
+	close(ch)
+	return ch, nil
+}
+func (j *sizeReportingJournal) Checkpoint(ctx context.Context) (string, error) { return "", nil }
+func (j *sizeReportingJournal) Rotate(ctx context.Context) error               { return nil }
+func (j *sizeReportingJournal) Size() (int64, error)                           { return j.size, j.err }
+func (j *sizeReportingJournal) Close() error                                   { return nil }
+
+func TestWireHandlerMetrics_JournalBytes_Live(t *testing.T) {
+	resetRegistryForTest()
+	j := &sizeReportingJournal{size: 1024}
+	h := NewHandlers(nil, j, nil)
+	WireHandlerMetrics(h)
+
+	var buf bytes.Buffer
+	_ = WriteProm(&buf)
+	if !strings.Contains(buf.String(), "dfmt_journal_bytes 1024") {
+		t.Errorf("expected dfmt_journal_bytes 1024, got:\n%s", buf.String())
+	}
+
+	// Mutation between scrapes must show up — the closure must read live.
+	j.size = 2048
+	buf.Reset()
+	_ = WriteProm(&buf)
+	if !strings.Contains(buf.String(), "dfmt_journal_bytes 2048") {
+		t.Errorf("expected dfmt_journal_bytes 2048 after mutation, got:\n%s", buf.String())
+	}
+}
+
+func TestWireHandlerMetrics_JournalBytes_ErrorEncoding(t *testing.T) {
+	resetRegistryForTest()
+	j := &sizeReportingJournal{size: 999, err: errors.New("disk gone")}
+	h := NewHandlers(nil, j, nil)
+	WireHandlerMetrics(h)
+
+	var buf bytes.Buffer
+	_ = WriteProm(&buf)
+	if !strings.Contains(buf.String(), "dfmt_journal_bytes -1") {
+		t.Errorf("error from Size must encode as -1, got:\n%s", buf.String())
+	}
+	// And the size value when the error is set must NOT leak through.
+	if strings.Contains(buf.String(), "dfmt_journal_bytes 999") {
+		t.Errorf("error must mask the underlying size, got:\n%s", buf.String())
+	}
+}
+
+func TestWireHandlerMetrics_JournalBytes_NilJournal(t *testing.T) {
+	resetRegistryForTest()
+	h := NewHandlers(nil, nil, nil) // degraded mode
+	WireHandlerMetrics(h)
+
+	var buf bytes.Buffer
+	_ = WriteProm(&buf)
+	if strings.Contains(buf.String(), "dfmt_journal_bytes") {
+		t.Errorf("nil journal must NOT register dfmt_journal_bytes (would emit permanent -1):\n%s", buf.String())
+	}
+}
+
 func TestWireHandlerMetrics_DedupCacheSizes(t *testing.T) {
 	resetRegistryForTest()
 	h := NewHandlers(nil, nil, nil)

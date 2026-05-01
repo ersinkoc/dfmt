@@ -82,6 +82,7 @@ counter. All read at scrape time:
 | `dfmt_index_docs` | gauge | Documents currently indexed (in-memory inverted index) |
 | `dfmt_wire_dedup_entries` | gauge | content_ids currently in wire-dedup cache (cap 256) |
 | `dfmt_content_dedup_entries` | gauge | bytes-hash entries currently in content-store dedup cache (cap 64) |
+| `dfmt_journal_bytes` | gauge | Active journal file on-disk size in bytes (-1 on stat error). Wired via the ADR-0017 `Size()` interface extension. |
 
 #### Per-tool counter cardinality
 
@@ -129,10 +130,6 @@ CI time rather than during operator dashboard archaeology.
   Bucket choice is not yet defensible — the right percentile budget
   depends on operator workload, and a premature `[0.005, 0.01, …]`
   set is harder to migrate than adding it later.
-- **Journal byte total** (`dfmt_journal_bytes`). Requires extending
-  the `core.Journal` interface with a `Size()` method (or surfacing
-  the on-disk path) — wider blast radius than a `Handlers`-internal
-  closure. Bundled with a future Journal-interface evolution ADR.
 - **Per-scrape rate-limit + MemStats TTL**. A rogue scraper at 100 Hz
   measurably impacts request latency. Mitigation lives behind a config
   knob if it ever surfaces in real operator reports.

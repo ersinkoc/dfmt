@@ -257,6 +257,10 @@ func (m *mockJournal) Rotate(ctx context.Context) error {
 	return nil
 }
 
+func (m *mockJournal) Size() (int64, error) {
+	return 0, nil
+}
+
 func (m *mockJournal) Close() error {
 	return nil
 }
@@ -2014,6 +2018,10 @@ func (m *errorReturningJournal) Checkpoint(ctx context.Context) (string, error) 
 
 func (m *errorReturningJournal) Rotate(ctx context.Context) error {
 	return m.err
+}
+
+func (m *errorReturningJournal) Size() (int64, error) {
+	return 0, m.err
 }
 
 func (m *errorReturningJournal) Close() error {

@@ -415,6 +415,66 @@ func TestRotateWithCompression(t *testing.T) {
 	}
 }
 
+func TestJournalSize_GrowsWithAppend(t *testing.T) {
+	tmpDir := t.TempDir()
+	journalPath := filepath.Join(tmpDir, "size.journal")
+
+	j, err := OpenJournal(journalPath, JournalOptions{})
+	if err != nil {
+		t.Fatalf("OpenJournal: %v", err)
+	}
+	defer j.Close()
+
+	beforeSize, err := j.Size()
+	if err != nil {
+		t.Fatalf("Size on fresh journal: %v", err)
+	}
+	if beforeSize != 0 {
+		t.Errorf("fresh journal size = %d, want 0", beforeSize)
+	}
+
+	// One append must move the size forward by at least the JSON-encoded
+	// event length (no exact comparison: serialization detail varies).
+	e := Event{
+		ID:       string(NewULID(time.Now())),
+		TS:       time.Now(),
+		Type:     "test",
+		Priority: "P3",
+		Source:   "unit",
+		Data:     map[string]any{"msg": "hello"},
+	}
+	if err := j.Append(context.Background(), e); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+
+	afterSize, err := j.Size()
+	if err != nil {
+		t.Fatalf("Size after append: %v", err)
+	}
+	if afterSize <= beforeSize {
+		t.Errorf("size did not grow after append: before=%d after=%d", beforeSize, afterSize)
+	}
+}
+
+func TestJournalSize_AfterClose(t *testing.T) {
+	tmpDir := t.TempDir()
+	journalPath := filepath.Join(tmpDir, "closed.journal")
+
+	j, err := OpenJournal(journalPath, JournalOptions{})
+	if err != nil {
+		t.Fatalf("OpenJournal: %v", err)
+	}
+	if err := j.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	// Size on a closed journal must error rather than panic — the gauge
+	// closure converts the error into -1.
+	if _, err := j.Size(); err == nil {
+		t.Errorf("Size on closed journal: err = nil, want non-nil")
+	}
+}
+
 func TestJournalCloseTwice(t *testing.T) {
 	tmpDir := t.TempDir()
 	journalPath := filepath.Join(tmpDir, "double.journal")
