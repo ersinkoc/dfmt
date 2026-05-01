@@ -521,20 +521,31 @@ func TestCaptureFSDefaults(t *testing.T) {
 	}
 }
 
-func TestRetrievalThrottleDefaults(t *testing.T) {
-	cfg := Default()
-
-	if cfg.Retrieval.Throttle.FirstTierCalls != 10 {
-		t.Errorf("FirstTierCalls = %d, want 10", cfg.Retrieval.Throttle.FirstTierCalls)
+// TestRemovedKnobs_RejectedByLoad guards the ADR-0015 deprecation
+// cut-over: setting a removed Reserved knob in YAML must produce a
+// clear error from config.Load (via the strict KnownFields(true)
+// parser), not a silent drop. This is the diagnostic improvement
+// that justifies the breaking change.
+func TestRemovedKnobs_RejectedByLoad(t *testing.T) {
+	cases := []struct {
+		field string
+		yaml  string
+	}{
+		{"index.rebuild_interval", "index:\n  rebuild_interval: 1h\n"},
+		{"index.stopwords_path", "index:\n  stopwords_path: /tmp/sw\n"},
+		{"retrieval.throttle.first_tier_calls",
+			"retrieval:\n  throttle:\n    first_tier_calls: 10\n"},
+		{"retrieval.throttle.results_first_tier",
+			"retrieval:\n  throttle:\n    results_first_tier: 20\n"},
 	}
-	if cfg.Retrieval.Throttle.SecondTierCalls != 5 {
-		t.Errorf("SecondTierCalls = %d, want 5", cfg.Retrieval.Throttle.SecondTierCalls)
-	}
-	if cfg.Retrieval.Throttle.ResultsFirstTier != 20 {
-		t.Errorf("ResultsFirstTier = %d, want 20", cfg.Retrieval.Throttle.ResultsFirstTier)
-	}
-	if cfg.Retrieval.Throttle.ResultsSecondTier != 10 {
-		t.Errorf("ResultsSecondTier = %d, want 10", cfg.Retrieval.Throttle.ResultsSecondTier)
+	for _, tc := range cases {
+		t.Run(tc.field, func(t *testing.T) {
+			cfg := Default()
+			err := decodeConfigYAML([]byte(tc.yaml), cfg)
+			if err == nil {
+				t.Errorf("KnownFields(true) accepted removed knob %q (silent drop regression)", tc.field)
+			}
+		})
 	}
 }
 

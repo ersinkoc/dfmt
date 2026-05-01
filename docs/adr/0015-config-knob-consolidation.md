@@ -1,7 +1,7 @@
 # ADR-0015: Config Knob Consolidation
 
 - **Status:** Accepted
-- **Date:** 2026-04-30 (amended 2026-05-02 — `lifecycle.shutdown_timeout`, `retrieval.default_budget`, `retrieval.default_format`, `logging.level`, `index.bm25_k1`, `index.bm25_b` wired; `logging.format` allowlisted; `index.heading_boost` plumbed but scoring path still pending)
+- **Date:** 2026-04-30 (amended 2026-05-02 — `lifecycle.shutdown_timeout`, `retrieval.default_budget`, `retrieval.default_format`, `logging.level`, `index.bm25_k1`, `index.bm25_b` wired; `logging.format` allowlisted; `index.heading_boost` plumbed but scoring path still pending; `index.rebuild_interval`, `index.stopwords_path`, `retrieval.throttle.*` removed)
 - **Supersedes:** —
 - **Superseded by:** —
 - **Related:** ADR-0014 (Operator Override Files)
@@ -56,14 +56,11 @@ existing config is higher than the cost of a documented no-op.
 | ~~`index.bm25_k1`~~ | ~~`core.NewIndex()` has no constructor parameter; 50+ call sites~~ | **WIRED 2026-05-02** via `core.NewIndexWithParams` + `Index.SetParams`. `NewIndex()` keeps its zero-arg signature so test sites don't move; daemon flow uses the new overload |
 | ~~`index.bm25_b`~~ | ~~same~~ | **WIRED 2026-05-02** alongside k1 |
 | `index.heading_boost` | stored on Index for forward compat but no scoring path consumes it today | Reserved (v0.4) — wire pending a heading-event-type ADR; the YAML field is plumbed to `Index.headingBoost` but the search path does nothing with it |
-| `index.rebuild_interval` | no caller in any version | likely **delete** |
-| `index.stopwords_path` | no caller in any version | wire to TokenizeFull via stopword-loader helper |
+| ~~`index.rebuild_interval`~~ | ~~no caller in any version~~ | **REMOVED 2026-05-02**. KnownFields(true) parser surfaces a clear error if an old config still sets it. |
+| ~~`index.stopwords_path`~~ | ~~no caller in any version~~ | **REMOVED 2026-05-02**. The stopword set lives in `internal/core/stopwords*.go` (English + Turkish, package-bundled). Operator-overridable stopwords would need a separate ADR (tokenizer-version coupling). |
 | ~~`retrieval.default_budget`~~ | ~~`handlers.Recall` uses an internal const~~ | **WIRED 2026-05-02** via `Handlers.SetRecallDefaults`; per-call → operator override → `recallDefaultBudgetBytes` (4096) precedence chain |
 | ~~`retrieval.default_format`~~ | ~~not read~~ | **WIRED 2026-05-02** alongside default_budget; Validate now allowlists `md|json|xml` |
-| `retrieval.throttle.first_tier_calls` | no throttle implementation | likely **delete** unless v0.4 ships throttle |
-| `retrieval.throttle.second_tier_calls` | same | same |
-| `retrieval.throttle.results_first_tier` | same | same |
-| `retrieval.throttle.results_second_tier` | same | same |
+| ~~`retrieval.throttle.*` (4 sub-knobs)~~ | ~~no throttle implementation~~ | **REMOVED 2026-05-02**. No throttle implementation existed; the entire `retrieval.throttle:` YAML block now triggers a "field not found" parse error. If throttle ships in a future release the YAML shape can be reintroduced (additive). |
 | `capture.mcp.enabled` | MCP capture is always-on when MCP transport is up | likely **delete** |
 | `capture.git.enabled` | git capture is gated by `dfmt install-hooks`, not this | likely **delete** |
 | `capture.shell.enabled` | shell capture gated by `dfmt shell-init`, not this | likely **delete** |

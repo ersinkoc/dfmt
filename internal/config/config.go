@@ -66,17 +66,15 @@ type Config struct {
 	// Retrieval — DefaultBudget and DefaultFormat are wired
 	// (handlers.Recall calls SetRecallDefaults; per-call values still
 	// win, the operator override fills in for omitted fields).
-	// Throttle.* — Reserved (v0.4) and likely **delete**: no throttle
-	// implementation exists. ADR-0015.
+	// `retrieval.throttle.*` (4 sub-knobs) was REMOVED 2026-05-02 per
+	// ADR-0015: no throttle implementation existed in any version, the
+	// fields were silently ignored at runtime. Strict YAML parsing
+	// (KnownFields(true)) means an old config that still sets them
+	// will fail to load with a clear "field not found" error — better
+	// diagnostic than the previous silent drop.
 	Retrieval struct {
 		DefaultBudget int    `yaml:"default_budget"`
 		DefaultFormat string `yaml:"default_format"`
-		Throttle      struct {
-			FirstTierCalls    int `yaml:"first_tier_calls"`
-			SecondTierCalls   int `yaml:"second_tier_calls"`
-			ResultsFirstTier  int `yaml:"results_first_tier"`
-			ResultsSecondTier int `yaml:"results_second_tier"`
-		} `yaml:"throttle"`
 	} `yaml:"retrieval"`
 
 	// Index.BM25K1 / Index.BM25B — wired (core.NewIndexWithParams +
@@ -86,14 +84,14 @@ type Config struct {
 	// Index.HeadingBoost — stored on the Index for forward compat but
 	// no scoring path consumes it today. Reserved (v0.4) pending a
 	// heading-event-type ADR.
-	// Index.RebuildInterval / Index.StopwordsPath — Reserved (v0.4),
-	// likely **delete** (no caller in any version).
+	// `index.rebuild_interval` and `index.stopwords_path` were REMOVED
+	// 2026-05-02 per ADR-0015: neither had a caller in any version.
+	// Strict YAML parsing surfaces a clear error if an old config sets
+	// them (vs. the previous silent ignore).
 	Index struct {
-		RebuildInterval string  `yaml:"rebuild_interval"`
-		BM25K1          float64 `yaml:"bm25_k1"`
-		BM25B           float64 `yaml:"bm25_b"`
-		HeadingBoost    float64 `yaml:"heading_boost"`
-		StopwordsPath   string  `yaml:"stopwords_path"`
+		BM25K1       float64 `yaml:"bm25_k1"`
+		BM25B        float64 `yaml:"bm25_b"`
+		HeadingBoost float64 `yaml:"heading_boost"`
 	} `yaml:"index"`
 
 	Transport struct {
@@ -190,13 +188,8 @@ func Default() *Config {
 	// Retrieval defaults
 	c.Retrieval.DefaultBudget = 4096
 	c.Retrieval.DefaultFormat = "md"
-	c.Retrieval.Throttle.FirstTierCalls = 10
-	c.Retrieval.Throttle.SecondTierCalls = 5
-	c.Retrieval.Throttle.ResultsFirstTier = 20
-	c.Retrieval.Throttle.ResultsSecondTier = 10
 
 	// Index defaults
-	c.Index.RebuildInterval = "1h"
 	c.Index.BM25K1 = 1.2
 	c.Index.BM25B = 0.75
 	c.Index.HeadingBoost = 5.0
