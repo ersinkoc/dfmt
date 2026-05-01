@@ -1,7 +1,7 @@
 # ADR-0015: Config Knob Consolidation
 
 - **Status:** Accepted
-- **Date:** 2026-04-30 (amended 2026-05-02 — `lifecycle.shutdown_timeout`, `retrieval.default_budget`, `retrieval.default_format`, `logging.level`, `index.bm25_k1`, `index.bm25_b` wired; `logging.format` allowlisted; `index.heading_boost` plumbed but scoring path still pending; `index.rebuild_interval`, `index.stopwords_path`, `retrieval.throttle.*` removed)
+- **Date:** 2026-04-30 (amended 2026-05-02 — `lifecycle.shutdown_timeout`, `retrieval.default_budget`, `retrieval.default_format`, `logging.level`, `index.bm25_k1`, `index.bm25_b` wired; `logging.format` allowlisted; `index.heading_boost` plumbed but scoring path still pending; `index.rebuild_interval`, `index.stopwords_path`, `retrieval.throttle.*` removed; `transport.socket.enabled` wired)
 - **Supersedes:** —
 - **Superseded by:** —
 - **Related:** ADR-0014 (Operator Override Files)
@@ -66,7 +66,7 @@ existing config is higher than the cost of a documented no-op.
 | `capture.shell.enabled` | shell capture gated by `dfmt shell-init`, not this | likely **delete** |
 | `capture.fs.watch` | FSWatcher reads everything under root with ignore filtering | likely **delete** |
 | `transport.mcp.enabled` | MCP is the `dfmt mcp` entry point; can't be disabled by a daemon-side flag | likely **delete** |
-| `transport.socket.enabled` | Unix socket built unconditionally on Linux/macOS | wire as a runtime gate |
+| ~~`transport.socket.enabled`~~ | ~~Unix socket built unconditionally on Linux/macOS~~ | **WIRED 2026-05-02**. On Unix without TCP opt-in, `socket.enabled=false` makes the daemon refuse to start with a hint pointing at `transport.http.enabled`. On Windows the field is a no-op (no Unix-socket support). |
 | ~~`lifecycle.shutdown_timeout`~~ | ~~daemon uses hard-coded 10s grace~~ | **WIRED 2026-05-02** via `Daemon.ShutdownGrace()`; idle-monitor stop + dispatch.go SIGTERM handler both bracket `d.Stop` with `context.WithTimeout` |
 | `privacy.telemetry` | no telemetry shipped | **delete** at v1.0 if telemetry stays off-by-design |
 | `privacy.remote_sync` | no remote sync feature | **delete** at v1.0 |

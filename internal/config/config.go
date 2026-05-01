@@ -106,9 +106,12 @@ type Config struct {
 			Enabled bool   `yaml:"enabled"`
 			Bind    string `yaml:"bind"`
 		} `yaml:"http"`
-		// Socket.Enabled — Reserved (v0.4). The Unix-socket transport is
-		// constructed unconditionally on Linux/macOS; this knob does not
-		// disable it today.
+		// Socket.Enabled — wired (daemon.go default branch). On Unix
+		// without TCP opt-in, setting this to false makes the daemon
+		// refuse to start unless transport.http.enabled is also true —
+		// the operator-chosen replacement transport. On Windows the
+		// field is a no-op (no Unix-socket support); any value parses
+		// cleanly. ADR-0015 v0.4.
 		Socket struct {
 			Enabled bool `yaml:"enabled"`
 		} `yaml:"socket"`

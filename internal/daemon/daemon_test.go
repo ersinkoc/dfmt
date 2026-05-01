@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -177,6 +179,57 @@ func TestLockFileFields(t *testing.T) {
 	if lf.path != "/test/path" {
 		t.Errorf("path = %s, want /test/path", lf.path)
 	}
+}
+
+// TestNew_RefusesWhenNoTransportEnabled covers the ADR-0015 wire-up of
+// transport.socket.enabled. On Unix, with both socket and HTTP
+// disabled, the daemon must refuse to start with a hint pointing at
+// the two viable configurations. On Windows the test is skipped: the
+// platform always uses TCP loopback so Socket.Enabled is a no-op.
+func TestNew_RefusesWhenNoTransportEnabled(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows path always uses TCP; Socket.Enabled is a no-op")
+	}
+	tmpDir := t.TempDir()
+	cfg := newTestConfig()
+	cfg.Transport.Socket.Enabled = false
+	cfg.Transport.HTTP.Enabled = false
+
+	_, err := New(tmpDir, cfg)
+	if err == nil {
+		t.Fatalf("New must refuse when both transports are disabled")
+	}
+	msg := err.Error()
+	for _, want := range []string{
+		"transport: no listener",
+		"transport.socket.enabled",
+		"transport.http.enabled",
+	} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("error missing %q hint:\n%s", want, msg)
+		}
+	}
+}
+
+// TestNew_TCPPathIgnoresSocketDisabled covers the orthogonal case:
+// when TCP is enabled and Socket.Enabled is false, the daemon must
+// still construct a TCP listener. The Socket.Enabled gate only fires
+// on the default (Unix-socket) branch.
+func TestNew_TCPPathIgnoresSocketDisabled(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows always uses TCP; this tests the Unix branch coexistence")
+	}
+	tmpDir := t.TempDir()
+	cfg := newTestConfig()
+	cfg.Transport.Socket.Enabled = false
+	cfg.Transport.HTTP.Enabled = true
+	cfg.Transport.HTTP.Bind = "127.0.0.1:0"
+
+	d, err := New(tmpDir, cfg)
+	if err != nil {
+		t.Fatalf("New with TCP-only must succeed, got: %v", err)
+	}
+	defer d.Stop(context.Background())
 }
 
 func TestNewDaemonWithEmptyPath(t *testing.T) {

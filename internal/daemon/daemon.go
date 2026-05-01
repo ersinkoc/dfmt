@@ -273,7 +273,15 @@ func New(projectPath string, cfg *config.Config) (*Daemon, error) {
 		httpServer.SetPortFile(portFile)
 		httpServer.SetProjectPath(projectPath)
 	default:
-		// On Unix, use Unix socket with HTTPServer for full HTTP support.
+		// Unix path with no TCP opt-in: use the Unix socket — unless the
+		// operator explicitly disabled it (ADR-0015 wire-up of
+		// transport.socket.enabled). Disabling the socket without
+		// enabling TCP leaves the daemon with no listener; refuse to
+		// start with a hint pointing at the two viable configurations.
+		if !cfg.Transport.Socket.Enabled {
+			return nil, fmt.Errorf("transport: no listener configured — transport.socket.enabled is false and transport.http.enabled is also false. " +
+				"Set one of them to true (HTTP requires transport.http.bind to also be non-empty)")
+		}
 		// transport.ListenUnixSocket applies a 0o077 umask for the duration
 		// of bind(2) so the socket file is never world-readable in the
 		// window before chmod (closes F-05). Surface chmod errors to the
