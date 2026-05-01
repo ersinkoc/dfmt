@@ -1459,6 +1459,9 @@ func isBlockedIP(ip net.IP) bool {
 // (loopback, private, link-local, cloud metadata, etc.) and was refused for SSRF reasons.
 var ErrBlockedHost = errors.New("host blocked by SSRF policy")
 
+// ErrBatchExecNotImplemented indicates BatchExec is not yet implemented.
+var ErrBatchExecNotImplemented = errors.New("batch exec not implemented")
+
 // Fetch implements the Sandbox interface.
 func (s *SandboxImpl) Fetch(ctx context.Context, req FetchReq) (FetchResp, error) {
 	// Policy check. URLs are normalized first so deny rules like
@@ -1603,8 +1606,7 @@ func (s *SandboxImpl) Fetch(ctx context.Context, req FetchReq) (FetchResp, error
 
 // BatchExec implements the Sandbox interface.
 func (s *SandboxImpl) BatchExec(ctx context.Context, items []any) ([]any, error) {
-	// Stub
-	return nil, nil
+	return nil, ErrBatchExecNotImplemented
 }
 
 // Glob implements the Sandbox interface.

@@ -25,10 +25,17 @@ The wire surfaces under SemVer guarantees today are:
 
 Internal package shapes (`internal/...`) are NOT covered by SemVer.
 
-## [Unreleased]
+## [0.2.3] — 2026-05-02
+
+Patch release: BatchExec stub now returns `ErrBatchExecNotImplemented`
+instead of silently succeeding, preventing silent failures when batch
+operations are called before the feature is implemented.
 
 ### Security
 
+- **BatchExec stub returns error** — `BatchExec` in
+  `internal/sandbox/permissions.go` now returns
+  `ErrBatchExecNotImplemented` instead of `nil, nil`. Tests updated.
 - **Write TOCTOU closed** — `safefs.WriteFile` now uses `O_NOFOLLOW`
   (Unix) / `FILE_FLAG_OPEN_REPARSE_POINT` (Windows) so a symlink at
   the leaf position is refused at open time, closing the residual

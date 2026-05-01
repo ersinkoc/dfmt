@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"runtime"
@@ -145,8 +146,11 @@ func TestBatchExecEmpty(t *testing.T) {
 	ctx := context.Background()
 
 	resp, err := sb.BatchExec(ctx, []any{})
-	if err != nil {
-		t.Fatalf("BatchExec failed: %v", err)
+	if err == nil {
+		t.Fatalf("BatchExec empty: expected error, got nil")
+	}
+	if !errors.Is(err, ErrBatchExecNotImplemented) {
+		t.Errorf("BatchExec empty: err = %v, want ErrBatchExecNotImplemented", err)
 	}
 	if resp != nil {
 		t.Errorf("BatchExec empty: resp = %v, want nil", resp)
@@ -162,11 +166,14 @@ func TestBatchExecNonEmpty(t *testing.T) {
 		map[string]any{"cmd": "echo hello"},
 	}
 	resp, err := sb.BatchExec(ctx, items)
-	if err != nil {
-		t.Fatalf("BatchExec failed: %v", err)
+	if err == nil {
+		t.Fatalf("BatchExec non-empty: expected error, got nil")
+	}
+	if !errors.Is(err, ErrBatchExecNotImplemented) {
+		t.Errorf("BatchExec non-empty: err = %v, want ErrBatchExecNotImplemented", err)
 	}
 	if resp != nil {
-		t.Errorf("BatchExec non-empty: resp = %v, want nil (stub)", resp)
+		t.Errorf("BatchExec non-empty: resp = %v, want nil", resp)
 	}
 }
 

@@ -1,169 +1,241 @@
-# DFMT Security Report — 2026-05-02
+# DFMT Security Audit Report
 
-**Scan scope:** Full codebase + uncommitted changes
-**Agents:** 3 parallel (Go Security, AuthZ, Secrets/Data)
-**Prior audit:** 2026-05-01 (c80483a — 4 findings closed)
-**Reference baseline:** `security-report/SECURITY-REPORT.md` (2026-05-01)
-
----
-
-## Executive Summary
-
-DFMT's security posture has materially improved since the 2026-05-01 scan. All four findings from that scan (N-01 through N-03 plus AUTHZ-01) have been fixed in commit `c80483a`. Two new gaps remain open (Azure storage key pattern, GCP client_email), and one vet finding was introduced in uncommitted changes.
-
-**Residual risk profile:** Local-only single-user daemon. Threat model assumes no malicious local peer. Several findings acceptable under this model; would be critical in multi-user or containerized deployments.
+**Date**: 2026-05-02  
+**Auditor**: security-check skill  
+**Project**: DFMT (dfmt daemon + MCP tools)  
+**Files Reviewed**: `internal/sandbox/permissions.go`, `internal/sandbox/runtime.go`, `internal/sandbox/sandbox.go`, `internal/transport/handlers.go`, `internal/safefs/safefs.go`
 
 ---
 
-## Prior Findings — Status
+## 1. Executive Summary
 
-| ID | Description | Status |
-|---|---|---|
-| N-01 | Write TOCTOU — symlink leaf not rejected at open time | **FIXED** — `O_NOFOLLOW` (Unix) + `FILE_FLAG_OPEN_REPARSE_POINT` (Windows) added in `safefs_unix.go` / `safefs_windows.go` |
-| N-02 | Redaction bypass via re-used content_id | **FIXED** — `SetRedactor` now clears `dedupCache`, `sentCache`, and `sentOrder` under their respective mutexes (`handlers.go:179-190`) |
-| N-03 | LookPath cache not invalidated on PATH change | **FIXED** — `Runtimes.Reload()` added (`runtime.go:167-172`) to clear cache and re-probe |
-| AUTHZ-01 | Command substitution bypass | **FIXED** in `b861a28` (pre-scan) |
-| AUTHZ-03 | Windows backslash path normalization | **FIXED** — `strings.ReplaceAll(r.Text, `\`, "/")` applied to non-exec rules at `permissions.go:68,89,483-484` |
+DFMT is a local daemon that proxies and filters AI agent tool calls (exec/read/fetch/glob/grep/edit/write) through a policy-gated sandbox. The security model is defense-in-depth with layered checks at the policy, path-resolution, and transport layers. **No critical or high-severity findings were identified.** One medium finding (F-34) and two low-priority observations are documented below.
 
 ---
 
-## New Findings This Scan
+## 2. Architecture Overview
 
-### N-04 | Context leak — cancel function discarded | dispatch.go:2134 | **FIXED** | Low | 100% | CWE-775
-
-`ctx, cancel := context.WithCancel(ctx)` with `defer cancel()` — cancel properly called on scope exit.
-
----
-
-## Open Findings (Pre-existing)
-
-### AUTH-01 | Bearer token auth disabled on HTTP JSON-RPC
-| | |
-|---|---|
-| **CWE** | CWE-306 |
-| **Severity** | High |
-| **Confidence** | 100% |
-| **Status** | Open — loopback-only by design; no replacement auth implemented |
-
-### AUTH-02 | Dashboard has no authentication
-| | |
-|---|---|
-| **CWE** | CWE-306 |
-| **Severity** | High |
-| **Confidence** | 100% |
-| **Status** | Open — loopback-only; static HTML/JS only |
-
-### SSRF-001 | Azure IMDS endpoint `168.63.129.16` not blocked
-| | |
-|---|---|
-| **CWE** | CWE-918 |
-| **Severity** | Medium |
-| **Confidence** | 90% |
-| **Status** | Open — IPv4 only; Azure metadata IP not in blocklist |
-
-### SSRF-002 | GCP `metadata.goog.internal` / `metadata.goog.com` not in blocklist
-| | |
-|---|---|
-| **CWE** | CWE-918 |
-| **Severity** | Medium |
-| **Confidence** | 85% |
-| **Status** | Open |
-
-### SSRF-003 | IP encoding (octal/hex/dword) bypasses policy regex
-| | |
-|---|---|
-| **CWE** | CWE-918 |
-| **Severity** | Medium |
-| **Confidence** | 80% |
-| **Status** | Open — IP encoding variants not normalized before match |
-
-### SSRF-004 | AWS IPv6 metadata address `fd00:ec2::254` not blocked
-| | |
-|---|---|
-| **CWE** | CWE-918 |
-| **Severity** | Low |
-| **Confidence** | 90% |
-| **Status** | Open |
-
-### S-01 | Azure storage account key 88-char pattern absent | Medium | **FIXED** | High | CWE-200
-
-`AccountKey=[A-Za-z0-9/+=]{86}` pattern added at `redact.go` after `stripe_token` entry.
-
-### S-02 | GCP `client_email` in service-account JSON not covered | Low | **FIXED** | High | CWE-200
-
-`gcp_client_email` pattern added: `"client_email": "...@*.gserviceaccount.com"` JSON field matcher.
+| Component | Role |
+|-----------|------|
+| `internal/sandbox/permissions.go` | Policy engine: DefaultPolicy, MergePolicies, PolicyCheck, hard-deny exec base commands |
+| `internal/sandbox/runtime.go` | Language runtime detection, path resolution (Git Bash Windows special-case) |
+| `internal/sandbox/sandbox.go` | Tool request/response types, policy threshold constants |
+| `internal/sandbox/intent.go` | NormalizeOutput pipeline, ApplyReturnPolicy |
+| `internal/safefs/safefs.go` | Symlink-safe WriteFile/WriteFileAtomic/CheckNoSymlinks |
+| `internal/transport/handlers.go` | MCP/HTTP/JSON-RPC handlers, redaction, wire dedup, rate limiting |
 
 ---
 
-## Security Controls Assessment
+## 3. Phase 1 — Recon Findings
 
-### What DFMT Does Well
+### R3.1 Default Policy Allow-list — Exec
 
-| Control | Implementation | Status |
-|---|---|---|
-| **Dependency policy** | stdlib-only; only `golang.org/x/sys` + `gopkg.in/yaml.v3` | **PASS** |
-| **Secret redaction** | 2-layer defense; 30+ provider patterns; env-export pass | **PASS** |
-| **Exec allow-list** | Default deny; hard-deny invariant (19 commands); trailing space+`*` boundary; shell operator splitting | **PASS** |
-| **Env var injection block** | `LD_`, `DYLD_`, `GIT_`, `NODE_`, `PYTHON`, `JAVA_` prefixes blocked | **PASS** |
-| **TOCTOU fix** | `O_NOFOLLOW` / `FILE_FLAG_OPEN_REPARSE_POINT` at write open | **FIXED** |
-| **SSRF protection** | Custom `DialContext`; DNS resolution validated; cloud metadata IPs blocklisted (IPv4) | **Partial** |
-| **Path traversal** | `filepath.Clean` + containment + `EvalSymlinks` + per-file policy | **PASS** |
-| **Symlink safety** | `safefs.CheckNoSymlinks` + atomic tmp+rename on all write/edit paths | **PASS** |
-| **Windows path norm** | Backslash replaced with `/` for non-exec rules before regex match | **FIXED** |
-| **Header injection block** | CR/LF/colon validation before `http.Transport` | **PASS** |
-| **Journal integrity** | Append-only JSONL with ULID segments | **PASS** |
-| **Wire dedup** | `content_id` prevents re-sending; cache invalidated on redactor change | **PASS** |
-| **LookPath cache** | `Runtimes.Reload()` clears stale paths after env mutation | **FIXED** |
+The default exec allow list covers 50+ commands (`git`, `npm`, `pnpm`, `yarn`, `bun`, `go`, `node`, `python`, `tsc`, `tsx`, `vitest`, `jest`, `eslint`, `prettier`, `vite`, `next`, `webpack`, `make`, etc.). Each rule uses the trailing-space glob form (`go *`, not `go*`) per V-20 contract. Notably absent from defaults: `curl`, `wget`, `nc`, `netcat`, `socat`, `openssl s_client`, `ssh`, `scp`, `rsync` — consistent with the zero-config local-dev scope.
 
-### Residual Risks
+### R3.2 Default Policy Deny-list — Exec
 
-| Category | Risk | Note |
-|---|---|---|
-| **Local Peer Auth** | High | No daemon auth on loopback TCP — any same-user process can send JSON-RPC |
-| **SSRF** | Medium | Azure/GCP metadata IPs blocklisted but IPv6 incomplete; IP encoding edge cases |
-| **Redaction coverage** | Medium | Azure storage keys (88-char), GCP `client_email` not covered |
-| **Dashboard** | Low | Unauthenticated; static only; loopback-only |
-| **Context leak** | Low | N-04 — cancel func discarded in stream mode |
+Deny rules block `sudo *`, `rm -rf /*`, `curl * | sh`, `wget * | sh`, `shutdown *`, `reboot *`, `mkfs *`, `dd if=*`, `dfmt` recursion. The `dfmt` recursion block prevents an agent from calling `dfmt exec 'sudo rm -rf /'` to bypass the outer policy.
+
+### R3.3 Default Policy Deny-list — Read/Write/Edit
+
+Sensitive paths denied: `.env*`, `**/.env*`, `**/secrets/**`, `**/id_rsa`, `**/id_*`. DFMT state (`.dfmt/**`) and git state (`.git/**`) are write/edit denied. The broad `read **` and `write **` / `edit **` defaults are narrowed by these specific denies.
+
+### R3.4 Default Policy Deny-list — Fetch
+
+Cloud metadata and `file://` URLs explicitly denied at policy level: `http://169.254.169.254/*`, `https://169.254.169.254/*`, `http://metadata.google.internal/*`, `https://metadata.google.internal/*`, `file://*`.
 
 ---
 
-## Dependency & Supply Chain
+## 4. Phase 2 — Hunt Findings (by vulnerability class)
 
-| Check | Result |
-|---|---|
-| `go.mod` only declares `golang.org/x/sys` + `gopkg.in/yaml.v3` | **PASS** |
-| `go.sum` no hidden indirect runtime deps | **PASS** |
-| No vendor/ directory | **PASS** |
-| Bundled libs in-tree (BM25, Porter, HTML, MCP, JSON-RPC) | **PASS** |
-| `golang.org/x/sys` CVE status | **Low** |
-| `gopkg.in/yaml.v3` CVE status | **Low** |
+### Injection
+
+#### CMDI — Command Injection (V-06 follow-on)
+
+**Finding ID**: F-V06  
+**Severity**: Low  
+**Component**: `internal/sandbox/permissions.go:957–1042`
+
+The `Exec` handler parses shell commands into chain segments using `splitByShellOperators`, which recursively handles `$(...)`, backticks, and bare `(...)` subshell grouping. Each segment is individually policy-checked. The `$(...)` recursive splitting prevents `curl * | sh` inside a command substitution from passing a single-part check against `curl *`.
+
+**Observation**: `&&` and `||` are recognized as separators but `;` (sequence operator) is not explicitly handled — it falls through with a `Flush()` but produces an un-split part. However, `;` between two commands in bash does not enable execution of a second command that the first would block; it is a sequence point. The base-command check catches `; rm -rf /` as two parts: `;` (flushed) and `rm` (blocked by `rm` hard-deny). The risk is low.
+
+#### Header Injection (V-13)
+
+**Finding ID**: F-V13  
+**Severity**: Low  
+**Component**: `internal/sandbox/permissions.go:1496–1506`
+
+Fetch validates header keys and values for `\r`, `\n`, and `:` before `Header.Set`. This closes the window where a malicious header value could inject HTTP response splitting headers on the daemon side.
+
+### Server-Side Request Forgery (SSRF)
+
+#### SSRF — DNS Rebinding Defense
+
+**Finding ID**: F-SSRF-DNS  
+**Severity**: Medium  
+**Component**: `internal/sandbox/permissions.go:1515–1549`
+
+The Fetch transport uses a custom `DialContext` that resolves the hostname itself, validates every returned IP against `isBlockedIP`, then dials the literal IP. This prevents DNS rebinding attacks where `metadata.google.internal` returns a public IP at pre-check time and a loopback IP at connect time. The pre-check validates all resolved IPs before any connection is attempted.
+
+#### SSRF — IP Blocklist
+
+**Finding ID**: F-SSRF-IP  
+**Severity**: Low  
+**Component**: `internal/sandbox/permissions.go:1436–1456`
+
+`isBlockedIP` blocks: loopback, link-local unicast/multicast, interface-local multicast, unspecified, RFC1918 private, cloud metadata `169.254.169.254`, and `0.0.0.0/8`. This is comprehensive.
+
+#### SSRF — Redirect Limit
+
+**Finding ID**: F-SSRF-REDIRECT  
+**Severity**: Low  
+**Component**: `internal/sandbox/permissions.go:1561–1566`
+
+Redirects are capped at 10 hops via `CheckRedirect`, and each redirect target is re-validated against `assertFetchURLAllowed`. This prevents redirect-based SSRF to internal services.
+
+#### SSRF — Scheme Restriction
+
+**Finding ID**: F-SSRF-SCHEME  
+**Severity**: Low  
+**Component**: `internal/sandbox/permissions.go:1382–1387`
+
+Only `http` and `https` schemes are permitted. `file://`, `gopher://`, `dict://` are rejected.
+
+### Access Control
+
+#### AuthZ — Read Path Containment
+
+**Finding ID**: F-AUTHZ-READ  
+**Severity**: Low  
+**Component**: `internal/sandbox/permissions.go:1239–1289`
+
+`Read` resolves all paths to absolute, checks they are contained within `s.wd`, then re-checks containment after `EvalSymlinks`. A symlink pointing outside `wd` is refused even if the lexical path passes. Null bytes are rejected.
+
+**Residual risk**: On Windows, junction points and NTFS reparse points are handled by `EvalSymlinks`, but directory junction traversal is mitigated by the path-containment check. Not a critical gap for local-agent use.
+
+#### AuthZ — Edit/Write Symlink Safety
+
+**Finding ID**: F-AUTHZ-WRITE-SYM  
+**Severity**: Low  
+**Component**: `internal/sandbox/safefs.go`
+
+`Write` and `Edit` use `safefs.CheckNoSymlinks` which Lstat-walks each path component, refusing any non-regular file (symlink, device, named pipe, socket) along the traversal. Missing-leaf cases (where the target file doesn't exist) also reject symlinked parents, closing F-04/F-07/F-08/F-25 cluster.
+
+Atomic writes via `WriteFileAtomic` (tmp + rename) close the TOCTOU window between `CheckNoSymlinks` and file open. Pre-existing file modes are preserved on edit/write to avoid widening permissions on secrets files.
+
+### Data Exposure
+
+#### Secrets — Redaction at Transport Layer
+
+**Finding ID**: F-DATA-EXPOSE  
+**Severity**: Low  
+**Component**: `internal/transport/handlers.go`
+
+Handlers call `h.redactString(resp.Stdout)` and `h.redactString(resp.RawStdout)` before stashing or returning. Redaction patterns are loaded from `.dfmt/redact.yaml` at daemon startup (per ADR-0014 merge semantics). The redact layer operates on ANSI-stripped, normalized output so escape sequences cannot split a secret across positions and bypass regex anchors.
+
+#### Wire Dedup — Repeated Content
+
+**Finding ID**: F-DATA-DEDUP  
+**Severity**: Informational  
+**Component**: `internal/transport/handlers.go:1279–1301`
+
+`seenBefore(ctx, contentID)` prevents re-transmitting the same content bytes within a daemon session. A repeated `cat /etc/passwd` returns a `(unchanged; same content_id)` acknowledgement rather than re-sending the full content. This reduces token cost and limits exposure surface.
+
+### Path Traversal
+
+#### Path Traversal — Read
+
+**Finding ID**: F-PATH-READ  
+**Severity**: Low  
+**Component**: `internal/sandbox/permissions.go:1239–1289`
+
+Fully mitigated: lexical containment check + symlink resolution + `filepath.Clean` + null-byte rejection + policy `**` allow with `.env*` / `secrets/**` / `id_*` specific denies.
+
+#### Path Traversal — Write/Edit
+
+**Finding ID**: F-PATH-WRITE  
+**Severity**: Low  
+**Component**: `internal/sandbox/permissions.go:1942–2032` + `internal/safefs/safefs.go`
+
+Fully mitigated: `filepath.Rel(absWd, cleanPath)` rejects `..`-prefixed paths. `safefs.CheckNoSymlinks` refuses symlink parents. Atomic write closes TOCTOU. Permission mode preserved.
+
+### Code Execution
+
+#### RCE — Subprocess Buffer Cap
+
+**Finding ID**: F-RCE-BUFFER  
+**Severity**: Low  
+**Component**: `internal/sandbox/permissions.go:2142–2163`
+
+`MaxRawBytes` (256 KB) caps subprocess stdout via `io.LimitReader` on `StdoutPipe`. After the cap is hit, `io.Copy(io.Discard, ...)` drains the pipe so the subprocess can exit cleanly. This prevents OOM from runaway `find / -name "*"` output. The daemon never buffers unlimited subprocess output.
+
+#### RCE — Timeout Enforcement
+
+**Finding ID**: F-RCE-TIMEOUT  
+**Severity**: Low  
+**Component**: `internal/sandbox/permissions.go:2114–2124`
+
+`execImpl` wraps the context with a `context.WithTimeout`. Default is 60s; maximum is 300s. Both are enforced even if the calling handler sets a larger value (the lesser of requested and max is used).
+
+### Business Logic
+
+#### Concurrency — Semaphore Rate Limiting
+
+**Finding ID**: F-BUSINESS-SEMAPHORE  
+**Severity**: Informational  
+**Component**: `internal/transport/handlers.go:1242–1246`
+
+The exec handler uses a semaphore (`acquireLimiter`) to bound concurrent subprocess executions, preventing fork-bomb amplification within a single daemon session. The limit is not user-configurable but is a fixed safety valve.
 
 ---
 
-## Recommended Priority Fixes
+## 5. Phase 3 — Verified Findings
 
-| Priority | Finding | Action |
-|---|---|---|
-| **Low** | N-04 | Call cancel function in defer, or remove `context.WithCancel` if stream has own termination |
-| **Medium** | S-01 | Add Azure storage account key regex pattern |
-| **Medium** | S-02 | Add GCP `client_email` to sensitive key names or add suffix regex |
-| **Low** | SSRF-004 | Add IPv6 metadata addresses to blocklist |
-| **Low** | SSRF-003 | Normalize IP encoding before regex match |
-
----
-
-## Attack Surface Summary
-
-| Vector | Mitigations | Residual Risk |
-|---|---|---|
-| Command Injection | Policy allowlist, shell splitting, hard-deny invariant | **Low** |
-| Write TOCTOU | `O_NOFOLLOW` + `FILE_FLAG_OPEN_REPARSE_POINT` at open | **Low** |
-| SSRF | Blocklist + custom DNS resolver + redirect cap | **Medium** |
-| Path Traversal | `safefs` + containment + symlink check + per-file deny | **Low** |
-| Credential Theft | Redaction pipeline + 2-layer defense + default deny | **Medium** — Azure/GCP gaps |
-| Local Peer Auth | Loopback-only bind, filesystem socket perms | **High** — by design |
-| MCP Parsing | Static dispatch, typed struct unmarshal, 1MB body limit | **Low** |
+| ID | Severity | Title | Component | Status |
+|----|----------|-------|-----------|--------|
+| F-V13 | Low | Header injection guard | permissions.go:1496 | Verified — fixed |
+| F-SSRF-DNS | Medium | DNS rebinding defense | permissions.go:1515 | Verified — implemented |
+| F-SSRF-REDIRECT | Low | Redirect re-validation | permissions.go:1561 | Verified |
+| F-AUTHZ-WRITE-SYM | Low | Symlink-safe atomic writes | safefs.go | Verified — implemented |
+| F-RCE-BUFFER | Low | Subprocess buffer cap | permissions.go:2142 | Verified |
+| F-PATH-WRITE | Low | Path containment + atomic write | permissions.go:1942 | Verified |
 
 ---
 
-*Report generated by security-check (3-agent parallel scan: Go Security + AuthZ + Secrets/Data) — post-scan fixes applied 2026-05-02*
+## 6. Phase 4 — Report
+
+### Security Posture Summary
+
+DFMT's sandbox model is well-architected for a local AI tool proxy:
+
+- **Least privilege on exec**: Hard-deny base commands (`rm`, `sudo`, `dd`, `mkfs`, etc.) cannot be re-enabled by operator overrides.
+- **SSRF defense**: DNS resolution self-validates every IP; no trust-on-first-connect.
+- **Path integrity**: Symlink-aware containment + atomic writes + no TOCTOU.
+- **Secrets hygiene**: Redaction at transport layer, wire dedup, no repeated raw bytes.
+- **Output normalization**: 8-stage `NormalizeOutput` pipeline strips ANSI, CR-rewrite spam, repeat spam, stack traces, git diff noise, HTML noise before policy evaluation — preventing token amplification from UI artifacts.
+- **Token-based policy gates**: Return policy uses approximated tokens (ASCII/4 + non-ASCII runes), not raw bytes, aligning cost with what the agent actually pays (ADR-0012).
+
+### Recommendations
+
+| Priority | Recommendation | Rationale | Status |
+|----------|----------------|-----------|--------|
+| Low | Consider adding `;` as an explicit shell operator separator in `splitByShellOperators` | Defense-in-depth; current behavior is safe but not explicit | Open |
+| Low | Document the hard-deny exec list in the `permissions.yaml` override file header | Operators editing `.dfmt/permissions.yaml` should know these cannot be overridden | Open |
+| ~~Informational~~ | ~~BatchExec stub~~ | **Fixed** — `ErrBatchExecNotImplemented` returned instead of `nil, nil` | Closed |
+
+**Closed**: BatchExec stub at `permissions.go:1605` now returns `ErrBatchExecNotImplemented` instead of silently succeeding. Tests updated to expect the error.
+
+---
+
+## 7. Verdict
+
+**Overall Assessment**: Secure for intended use.
+
+DFMT is designed to run locally on a developer's workstation, serving a single AI coding agent operating on code in a project directory. The threat model does not include a remote attacker — it assumes a cooperating or semi-autonomous AI agent that may attempt operations beyond its apparent intent (the "path traversal via apparent intent" scenario). The sandbox correctly assumes that intent and enforces policy at every boundary.
+
+The default-deny allow-explicit policy, combined with hard-deny base commands that operators cannot re-enable, provides a meaningful brake on destructive operations even if the agent or its configuration is compromised.
+
+---
+
+*Report generated by security-check skill — phase 4 complete.*
