@@ -178,6 +178,28 @@ func (h *Handlers) getRedactor() *redact.Redactor {
 	return r
 }
 
+// wireDedupSize returns the current entry count of the wire-dedup cache
+// under the dedicated sentMu lock. Surfaced via /metrics
+// (dfmt_wire_dedup_entries) for the operator dashboard. Cheap — just
+// len() under a short-held mutex; no map walk.
+func (h *Handlers) wireDedupSize() int {
+	h.sentMu.Lock()
+	defer h.sentMu.Unlock()
+	return len(h.sentCache)
+}
+
+// contentDedupSize returns the current entry count of the content-store
+// dedup cache under dedupMu. Surfaced via /metrics
+// (dfmt_content_dedup_entries). Capped by dedupCap (64) so the value
+// never exceeds that under healthy operation; a sustained max means the
+// daemon is rotating the cache aggressively and may benefit from a
+// larger cap.
+func (h *Handlers) contentDedupSize() int {
+	h.dedupMu.Lock()
+	defer h.dedupMu.Unlock()
+	return len(h.dedupCache)
+}
+
 // SetContentStore wires the ephemeral content store so Exec/Read/Fetch can
 // stash the full (redacted) raw output for later lookup. The store is
 // optional — when nil, Handlers return excerpts only.

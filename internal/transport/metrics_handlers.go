@@ -100,14 +100,20 @@ func recordToolCall(tool string, ctx context.Context, errPtr *error) {
 	c.err.Inc()
 }
 
-// WireHandlerMetrics binds Handlers-instance metrics (currently the
-// dedup-hit counter) into the package registry. Called once from
-// HTTPServer.Start so the registry sees the live Handlers value.
+// WireHandlerMetrics binds Handlers-instance metrics into the package
+// registry. Called once from HTTPServer.Start so the registry sees the
+// live Handlers value.
 //
 // The pattern intentionally mirrors registerProcessMetrics rather than
 // growing a per-instance registry: there is exactly one Handlers per
 // daemon, and per-tool counters above already use the shared registry
 // — keeping all metrics in one place keeps WriteProm a single walk.
+//
+// The closures take their lock at scrape time; on a 1 Hz scraper this
+// is invisible, but it does mean a slow scrape can briefly serialize
+// against a hot stash path. Acceptable trade-off for honest live
+// values; a TTL cache is available if a real workload ever surfaces
+// the contention.
 func WireHandlerMetrics(h *Handlers) {
 	if h == nil {
 		return
@@ -115,4 +121,21 @@ func WireHandlerMetrics(h *Handlers) {
 	RegisterCounterFunc("dfmt_dedup_hits_total",
 		"Total cross-call content dedup cache hits since daemon start (ADR-0009).",
 		func() int64 { return h.dedupHits.Load() })
+
+	RegisterGaugeFunc("dfmt_index_docs",
+		"Number of documents currently in the in-memory inverted index.",
+		func() int64 {
+			if h.index == nil {
+				return 0
+			}
+			return int64(h.index.TotalDocs())
+		})
+
+	RegisterGaugeFunc("dfmt_wire_dedup_entries",
+		"Number of content_ids currently in the wire-dedup cache (ADR-0011 per-session scope).",
+		func() int64 { return int64(h.wireDedupSize()) })
+
+	RegisterGaugeFunc("dfmt_content_dedup_entries",
+		"Number of bytes-hash entries currently in the content-store dedup cache.",
+		func() int64 { return int64(h.contentDedupSize()) })
 }

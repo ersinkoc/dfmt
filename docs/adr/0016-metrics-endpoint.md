@@ -1,7 +1,7 @@
 # ADR-0016: Prometheus `/metrics` Endpoint
 
 - **Status:** Accepted
-- **Date:** 2026-05-01 (amended 2026-05-02 — per-tool counters + dedup-hit counter wired)
+- **Date:** 2026-05-01 (amended 2026-05-02 — per-tool counters + dedup-hit counter wired; index/wire-dedup/content-dedup gauges + trackedTools parity guard added)
 - **Supersedes:** —
 - **Superseded by:** —
 - **Related:** ADR-0001 (Per-Project Daemon), ADR-0004 (Stdlib-First Deps), ADR-0009 (Cross-Call Content Dedup)
@@ -79,6 +79,9 @@ counter. All read at scrape time:
 | `dfmt_memstats_num_gc` | gauge | GC cycle count |
 | `dfmt_tool_calls_total{tool,status}` | counter | MCP tool invocations by name (exec/read/fetch/glob/grep/edit/write/recall/search) and status (ok/error) |
 | `dfmt_dedup_hits_total` | counter | Cross-call content-store dedup cache hits (ADR-0009) |
+| `dfmt_index_docs` | gauge | Documents currently indexed (in-memory inverted index) |
+| `dfmt_wire_dedup_entries` | gauge | content_ids currently in wire-dedup cache (cap 256) |
+| `dfmt_content_dedup_entries` | gauge | bytes-hash entries currently in content-store dedup cache (cap 64) |
 
 #### Per-tool counter cardinality
 
@@ -110,16 +113,26 @@ on a M2-class CPU. The counters are registered at package init via
 `registerToolMetrics()`, so they are available the moment any
 `HTTPServer` (or any test) imports the package.
 
+#### Parity guard
+
+`TestTrackedTools_MatchesHandlersSurface` is a reflection-driven CI
+guard that asserts every name in `trackedTools` matches an exported
+`Handlers` method with the contract `(ctx, params) -> (resp, err)`,
+and conversely that every such method appears in `trackedTools`. A
+new MCP tool added to `Handlers` without a `defer recordToolCall(...)`
+prologue would silently drop counts; this test catches the drift at
+CI time rather than during operator dashboard archaeology.
+
 #### Still deferred to v0.4
 
 - **Duration histograms** (`dfmt_tool_call_duration_seconds_bucket{tool, le}`).
   Bucket choice is not yet defensible — the right percentile budget
   depends on operator workload, and a premature `[0.005, 0.01, …]`
   set is harder to migrate than adding it later.
-- **Index size, journal byte total, active-session gauges**. One-line
-  RegisterGaugeFunc wirings; deferred only because each one needs a
-  read-side method on the underlying type and that touch should be
-  bundled with a coverage push for the same package.
+- **Journal byte total** (`dfmt_journal_bytes`). Requires extending
+  the `core.Journal` interface with a `Size()` method (or surfacing
+  the on-disk path) — wider blast radius than a `Handlers`-internal
+  closure. Bundled with a future Journal-interface evolution ADR.
 - **Per-scrape rate-limit + MemStats TTL**. A rogue scraper at 100 Hz
   measurably impacts request latency. Mitigation lives behind a config
   knob if it ever surfaces in real operator reports.

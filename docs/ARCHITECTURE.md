@@ -3124,7 +3124,7 @@ revisit. Current set:
 | 0013 | Drop Unwired Levenshtein Scaffolding   | Remove `core.Levenshtein` + `FuzzyMatch`; the `fuzzy` Search layer stays accepted for forward compatibility but returns no results. |
 | 0014 | Operator Override Files                | `.dfmt/permissions.yaml` + `.dfmt/redact.yaml` wired at daemon + CLI startup. Permissions merge has a hard-deny invariant; redact is additive YAML with per-entry resilience. |
 | 0015 | Config Knob Consolidation              | Each `Config` field classified Wired / Reserved (v0.4). No deletes in v0.3; per-field comments flag silent no-ops; v0.4 wire-or-delete punch list in the ADR table. |
-| 0016 | Prometheus `/metrics` Endpoint         | In-tree Prometheus text-format emitter on `/metrics`. v0.3 publishes daemon-level gauges (uptime, MemStats, goroutines), scrape counter, per-tool counters (`dfmt_tool_calls_total{tool,status}`), and dedup-hit counter. Duration histograms deferred to v0.4. No new dependency. |
+| 0016 | Prometheus `/metrics` Endpoint         | In-tree Prometheus text-format emitter on `/metrics`. v0.3 publishes daemon-level gauges (uptime, MemStats, goroutines), scrape counter, per-tool counters (`dfmt_tool_calls_total{tool,status}`), dedup-hit counter, and index / wire-dedup / content-dedup size gauges. Duration histograms + journal-byte total deferred to v0.4. No new dependency. |
 
 `docs/adr/ADR-INDEX.md` is the always-current index. Add a new ADR
 when introducing a component, changing component interactions,

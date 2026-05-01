@@ -50,6 +50,16 @@ func NewIndex() *Index {
 	}
 }
 
+// TotalDocs returns the number of indexed documents under read-lock.
+// Surfaced for observability (the /metrics endpoint publishes it as
+// dfmt_index_docs); kept as a method rather than exposing the field so
+// the lock contract is enforced at the call site.
+func (ix *Index) TotalDocs() int {
+	ix.mu.RLock()
+	defer ix.mu.RUnlock()
+	return ix.totalDocs
+}
+
 // indexJSON is the JSON-serializable form of Index.
 type indexJSON struct {
 	StemPL    map[string]*PostingList `json:"stem_pl"`

@@ -6,9 +6,13 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
+	"time"
+
+	"github.com/ersinkoc/dfmt/internal/core"
 )
 
 func TestCounter_AtomicAdd(t *testing.T) {
@@ -368,5 +372,124 @@ func TestWireHandlerMetrics_NilSafe(t *testing.T) {
 	_ = WriteProm(&buf)
 	if strings.Contains(buf.String(), "dfmt_dedup_hits_total") {
 		t.Errorf("nil handler must NOT register dedup metric")
+	}
+}
+
+// TestWireHandlerMetrics_IndexDocs covers the dfmt_index_docs gauge:
+// the closure must read TotalDocs live so a doc added between scrapes
+// shows up on the next /metrics hit.
+func TestWireHandlerMetrics_IndexDocs(t *testing.T) {
+	resetRegistryForTest()
+	idx := core.NewIndex()
+	h := NewHandlers(idx, nil, nil)
+	WireHandlerMetrics(h)
+
+	var buf bytes.Buffer
+	_ = WriteProm(&buf)
+	if !strings.Contains(buf.String(), "dfmt_index_docs 0") {
+		t.Errorf("expected dfmt_index_docs 0 on empty index:\n%s", buf.String())
+	}
+
+	idx.Add(core.Event{ID: "test1", Type: core.EventType("note"), Priority: core.Priority("P3")})
+	buf.Reset()
+	_ = WriteProm(&buf)
+	if !strings.Contains(buf.String(), "dfmt_index_docs 1") {
+		t.Errorf("expected dfmt_index_docs 1 after Add:\n%s", buf.String())
+	}
+}
+
+func TestWireHandlerMetrics_IndexDocs_NilIndex(t *testing.T) {
+	resetRegistryForTest()
+	h := NewHandlers(nil, nil, nil) // degraded mode, no index
+	WireHandlerMetrics(h)
+
+	var buf bytes.Buffer
+	_ = WriteProm(&buf)
+	if !strings.Contains(buf.String(), "dfmt_index_docs 0") {
+		t.Errorf("nil index must report 0 docs, not panic:\n%s", buf.String())
+	}
+}
+
+func TestWireHandlerMetrics_DedupCacheSizes(t *testing.T) {
+	resetRegistryForTest()
+	h := NewHandlers(nil, nil, nil)
+	WireHandlerMetrics(h)
+
+	// Both caches start empty. Bump sentCache and dedupCache to verify
+	// the closures observe live mutation.
+	h.sentMu.Lock()
+	h.sentCache = map[string]time.Time{
+		"a": time.Now().Add(sentTTL),
+		"b": time.Now().Add(sentTTL),
+		"c": time.Now().Add(sentTTL),
+	}
+	h.sentMu.Unlock()
+
+	h.dedupMu.Lock()
+	h.dedupCache = map[string]dedupEntry{
+		"x": {contentID: "x-id", expiresAt: time.Now().Add(dedupTTL)},
+		"y": {contentID: "y-id", expiresAt: time.Now().Add(dedupTTL)},
+	}
+	h.dedupMu.Unlock()
+
+	var buf bytes.Buffer
+	_ = WriteProm(&buf)
+	out := buf.String()
+	if !strings.Contains(out, "dfmt_wire_dedup_entries 3") {
+		t.Errorf("expected wire dedup entries = 3, got:\n%s", out)
+	}
+	if !strings.Contains(out, "dfmt_content_dedup_entries 2") {
+		t.Errorf("expected content dedup entries = 2, got:\n%s", out)
+	}
+}
+
+// TestTrackedTools_MatchesHandlersSurface is the maintenance guard:
+// every name in trackedTools must correspond to an exported Handlers
+// method, and every (ctx, params) -> (resp, error) tool method on
+// Handlers must have a tracked name. Adding a new MCP tool method
+// without adding a trackedTools entry would silently drop counts on
+// the floor; this test catches that at CI time.
+func TestTrackedTools_MatchesHandlersSurface(t *testing.T) {
+	expected := map[string]string{
+		"Exec":   "exec",
+		"Read":   "read",
+		"Fetch":  "fetch",
+		"Glob":   "glob",
+		"Grep":   "grep",
+		"Edit":   "edit",
+		"Write":  "write",
+		"Recall": "recall",
+		"Search": "search",
+	}
+
+	hType := reflect.TypeOf((*Handlers)(nil))
+	for methodName, toolName := range expected {
+		m, ok := hType.MethodByName(methodName)
+		if !ok {
+			t.Errorf("expected Handlers method %s missing — trackedTools entry %q would never fire", methodName, toolName)
+			continue
+		}
+		// Signature contract: (h, ctx, params) -> (resp, err).
+		// 4 in (receiver + ctx + params), 2 out (resp + err).
+		if m.Type.NumIn() != 3 {
+			t.Errorf("Handlers.%s NumIn = %d, want 3 (ctx, params)", methodName, m.Type.NumIn())
+		}
+		if m.Type.NumOut() != 2 {
+			t.Errorf("Handlers.%s NumOut = %d, want 2 (resp, err)", methodName, m.Type.NumOut())
+		}
+	}
+
+	tracked := make(map[string]bool, len(trackedTools))
+	for _, tool := range trackedTools {
+		tracked[tool] = true
+	}
+	for _, want := range expected {
+		if !tracked[want] {
+			t.Errorf("trackedTools missing %q (Handlers method exists but counter would never fire)", want)
+		}
+	}
+	if len(trackedTools) != len(expected) {
+		t.Errorf("trackedTools size = %d, want %d (drift between handler surface and counter set)",
+			len(trackedTools), len(expected))
 	}
 }
