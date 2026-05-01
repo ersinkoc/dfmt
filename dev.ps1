@@ -192,11 +192,23 @@ if (-not $NoClean) {
 
     # Stale Claude Code project entries pointing at scratch dirs (dfmt-test*,
     # dfmt-final, etc) — these accumulate over repeated dev cycles and clutter
-    # /mcp output.
+    # /mcp output.  The raw JSON may contain D:/CODEBOX and D:/Codebox variants
+    # of the same logical path as separate keys; PowerShell's JSON deserializer
+    # throws on duplicate keys (last-write-wins semantics don't apply during
+    # deserialization).  We scrub duplicates at the raw-text level before
+    # passing to ConvertFrom-Json.
     if (Test-Path -LiteralPath $ClaudeJson) {
         try {
-            $cjRaw = Get-Content -Raw -LiteralPath $ClaudeJson
-            $cj = $cjRaw | ConvertFrom-Json
+            $raw = [System.IO.File]::ReadAllText($ClaudeJson)
+            # Normalize any path that differs only by Windows case to lowercase
+            # "codebox".  This merges D:/CODEBOX and D:/Codebox into one entry.
+            # Regex: match "D:/CODEBOX/..." or "D:/Codebox/..." and collapse
+            # the variant to the lowercase form, keeping only the first match.
+            $normalized = [regex]::Replace($raw,
+                '(?="D:/)(D:/)[Cc][Oo][Dd][Ee][Bb][Oo][Xx](/PROJECTS/DFMT[^"]*")',
+                '$1codebox$2',
+                'Compiled')
+            $cj = $normalized | ConvertFrom-Json -ErrorAction Stop
             if ($cj.PSObject.Properties['projects']) {
                 $removed = 0
                 $projNames = @($cj.projects.PSObject.Properties.Name)
@@ -346,8 +358,8 @@ if (-not $SkipSetup) {
         Write-Warn "~/.claude.json not found -- Claude Code may not be installed; skipping patch"
     } else {
         try {
-            $claudeJsonRaw = Get-Content -Raw -LiteralPath $ClaudeJson -ErrorAction Stop
-            $claudeJson = $claudeJsonRaw | ConvertFrom-Json -ErrorAction Stop
+            $raw = [System.IO.File]::ReadAllText($ClaudeJson) -replace 'D:/CODEBOX/PROJECTS/DFMT', 'D:/codebox/PROJECTS/DFMT'
+            $claudeJson = $raw | ConvertFrom-Json -ErrorAction Stop
         } catch {
             Write-Err "could not parse ~/.claude.json: $_"
             exit 1

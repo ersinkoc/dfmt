@@ -14,14 +14,12 @@ func DefaultConfigYAML() string {
 	return `# DFMT Configuration
 version: 1
 
+# capture.fs is opt-in; flip to true to enable the filesystem watcher.
+# Watch list is not consumed — FSWatcher reads everything under root with
+# ignore filtering. Set enabled: true to activate.
 capture:
-  mcp:
-    enabled: true
   fs:
-    # fs capture is opt-in; flip to true to enable the filesystem watcher.
     enabled: false
-    watch:
-      - "**"
     ignore:
       # dfmt's own state: WITHOUT this, the watcher sees every journal
       # append it wrote and feeds another event back in — infinite loop.
