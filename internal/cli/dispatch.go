@@ -1623,19 +1623,22 @@ func pathsEqual(a, b string) bool {
 
 func runTask(args []string) int {
 	if len(args) == 0 {
-		fmt.Fprintf(os.Stderr, "error: task body required\n")
+		fmt.Fprintf(os.Stderr, "usage: dfmt task <subject> | task done <id>\n")
 		return 1
 	}
 
-	if args[0] == "done" && len(args) > 1 {
-		fmt.Printf("Task %s marked done\n", args[1])
-		return 0
+	if args[0] == "done" {
+		if len(args) < 2 {
+			fmt.Fprintf(os.Stderr, "usage: dfmt task done <id>\n")
+			return 1
+		}
+		return runRemember([]string{"-type", string(core.EvtTaskDone), "-data", fmt.Sprintf(`{"id":%q}`, args[1])})
 	}
 
 	// Flags must precede the trailing positional arg; otherwise flag.Parse
 	// stops at the first non-flag and -type is dropped, silently journaling
 	// the task as type "note".
-	return runRemember([]string{"-type", "task.create", "-data", fmt.Sprintf(`{"subject":%q}`, args[0])})
+	return runRemember([]string{"-type", string(core.EvtTaskCreate), "-data", fmt.Sprintf(`{"subject":%q}`, args[0])})
 }
 
 func runConfig(args []string) int {
@@ -2128,10 +2131,9 @@ func runTail(args []string) int {
 
 	ctx := context.Background()
 	if follow {
-		ctx, _ = context.WithCancel(ctx)
-		defer func() {
-			// On Ctrl+C the context is canceled and the stream loop exits.
-		}()
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithCancel(ctx)
+		defer cancel()
 	}
 
 	events, err := cl.StreamEvents(ctx, from)
