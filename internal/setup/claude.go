@@ -16,12 +16,30 @@ import (
 
 // dfmtMCPServerEntry returns the canonical MCP server entry that DFMT writes
 // into Claude Code's ~/.claude.json configuration. The `command` is resolved
-// to an absolute path (via ResolveDFMTCommand) so the MCP launch does not
-// depend on Claude Code inheriting an up-to-date PATH from its parent shell.
+// to an absolute path (via ResolveDFMTCommandForEnv) so the MCP launch
+// does not depend on the agent inheriting an up-to-date PATH from its parent
+// shell.
+//
+// For Windows configs (TargetOSWindows): path is converted to Windows format
+// even if running on WSL -- Windows agents cannot interpret Unix paths.
+// For Unix configs (TargetOSUnix): path remains in Unix format even if running
+// on Windows -- Unix agents cannot interpret Windows paths.
 func dfmtMCPServerEntry() map[string]any {
 	return map[string]any{
 		"type":    "stdio",
 		"command": ResolveDFMTCommand(),
+		"args":    []any{"mcp"},
+		"env":     map[string]any{},
+	}
+}
+
+// dfmtMCPServerEntryForTarget returns an MCP server entry configured for
+// the specified target OS environment. Use this when writing configs for
+// agents that may run on a different OS than the current process.
+func dfmtMCPServerEntryForTarget(target TargetOS) map[string]any {
+	return map[string]any{
+		"type":    "stdio",
+		"command": ResolveDFMTCommandForEnv(target),
 		"args":    []any{"mcp"},
 		"env":     map[string]any{},
 	}

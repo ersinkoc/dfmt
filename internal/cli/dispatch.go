@@ -2679,7 +2679,7 @@ func configureClaudeCode(_ setup.Agent) error {
 	mcpConfig := map[string]any{
 		"mcpServers": map[string]any{
 			"dfmt": map[string]any{
-				"command": setup.ResolveDFMTCommand(),
+				"command": setup.ResolveDFMTCommandForEnv(setup.TargetOSWindows),
 				"args":    []string{"mcp"},
 			},
 		},
@@ -2803,7 +2803,7 @@ func writeMCPConfig(dir, filename, agentID string) error {
 	mcpConfig := map[string]any{
 		"mcpServers": map[string]any{
 			"dfmt": map[string]any{
-				"command": setup.ResolveDFMTCommand(),
+				"command": setup.ResolveDFMTCommandForEnv(setup.TargetOSUnix),
 				"args":    []string{"mcp"},
 			},
 		},

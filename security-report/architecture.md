@@ -4,7 +4,7 @@
 **Language:** Go 1.25.0 (100%)  
 **Dependencies:** `golang.org/x/sys v0.43.0`, `gopkg.in/yaml.v3 v3.0.1`  
 **Build:** `go build -ldflags "-X ..." ./cmd/dfmt` via Makefile  
-**Generated:** 2026-05-01
+**Generated:** 2026-05-02 (updated from 2026-05-01 scan)
 
 ---
 

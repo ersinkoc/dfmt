@@ -20,6 +20,97 @@ import (
 
 const maxManifestBytes = 256 << 10
 
+// IsWSL reports true when the current process is running inside WSL.
+// Detection checks for the "microsoft" or "WSL" signature in /proc/version,
+// which is the canonical indicator used by WSL itself and tools like VS Code.
+func IsWSL() bool {
+	if runtime.GOOS == goosWindows {
+		return false
+	}
+	data, err := os.ReadFile("/proc/version")
+	if err != nil {
+		return false
+	}
+	return bytes.Contains(bytes.ToLower(data), []byte("microsoft")) ||
+		bytes.Contains(bytes.ToLower(data), []byte("wsl"))
+}
+
+// TargetOS represents the operating system environment of an agent config.
+type TargetOS int
+
+const (
+	TargetOSLocal   TargetOS = iota // current process OS
+	TargetOSWindows                 // Windows agent config
+	TargetOSUnix                    // Linux/macOS/WSL agent config
+)
+
+// ResolveDFMTCommandForEnv returns an absolute path (or command name) for
+// the dfmt binary suitable for writing into an MCP config file that will be
+// read by an agent running on the specified target OS.
+//
+// When target is TargetOSLocal, this is equivalent to ResolveDFMTCommand().
+// When target is TargetOSWindows, the returned path uses Windows format
+// (C:\...) even if the current process is running on WSL -- because the
+// Windows-side agent (e.g. Windows Claude Code) cannot interpret Unix paths.
+// When target is TargetOSUnix, the returned path uses Unix format even if the
+// current process is running on Windows -- because the Unix agent cannot
+// interpret Windows paths.
+//
+// For WSL agents writing Windows configs: if dfmt was installed via WSL's
+// install.sh, the binary lives in ~/.dfmt/ and the path must be converted
+// to the Windows equivalent (USERPROFILE/.dfmt/dfmt.exe) for Windows agents
+// to find it.
+func ResolveDFMTCommandForEnv(target TargetOS) string {
+	// Try LookPath first (same logic as ResolveDFMTCommand)
+	if path, err := exec.LookPath("dfmt"); err == nil && path != "" {
+		if target == TargetOSWindows && IsWSL() {
+			// We are on WSL but writing a Windows config.
+			// LookPath returned a WSL path like /home/user/.dfmt/dfmt.
+			// Convert to Windows path.
+			path = wslPathToWindowsPath(path)
+		}
+		if abs, aerr := filepath.Abs(path); aerr == nil {
+			return abs
+		}
+		return path
+	}
+	// Fall back to os.Executable
+	if ex, err := os.Executable(); err == nil && ex != "" {
+		if target == TargetOSWindows && IsWSL() {
+			ex = wslPathToWindowsPath(ex)
+		}
+		return ex
+	}
+	return "dfmt"
+}
+
+// wslPathToWindowsPath converts a WSL Unix path to a Windows path.
+// Converts /home/<user>/.dfmt/dfmt -> C:\Users\<user>\.dfmt\dfmt.exe
+// Converts /mnt/c/... -> C:\...
+func wslPathToWindowsPath(p string) string {
+	// /home/<user> -> C:\Users\<user>
+	if strings.HasPrefix(p, "/home/") {
+		rest := strings.TrimPrefix(p, "/home/")
+		parts := strings.SplitN(rest, "/", 2)
+		if len(parts) >= 1 {
+			user := parts[0]
+			remainder := ""
+			if len(parts) > 1 {
+				remainder = "/" + parts[1]
+			}
+			// Convert remaining Unix path segments to Windows
+			winRemainder := strings.ReplaceAll(remainder, "/", "\\")
+			return "C:\\Users\\" + user + winRemainder
+		}
+	}
+	// /mnt/c/... -> C:\...
+	if strings.HasPrefix(p, "/mnt/c") {
+		return "C:" + strings.ReplaceAll(p[5:], "/", "\\")
+	}
+	// already a Windows path or can't convert
+	return p
+}
+
 // ResolveDFMTCommand returns the command string to embed in MCP `command`
 // fields written into agent configs. Resolution order:
 //
@@ -32,20 +123,14 @@ const maxManifestBytes = 256 << 10
 //  3. Literal "dfmt" -- last-resort relative fallback. The agent will need
 //     dfmt on its PATH at launch time for this to work.
 //
-// Writing absolute paths makes MCP launches PATH-independent: the agent
-// (Claude Code, Cursor, etc.) spawns the exact binary we resolved at setup
-// time even if its login shell ends up with a different PATH.
+// On WSL, exec.LookPath and os.Executable both return Linux-style paths
+// (/home/... or /proc/...). These are correct for WSL-native agents but
+// must NOT be written into configs that Windows-side agents (e.g. Windows
+// Claude Code) will read -- Windows cannot interpret Unix paths.
+// The callers in detect.go decide which config file to write and apply
+// the appropriate path format for the target environment.
 func ResolveDFMTCommand() string {
-	if path, err := exec.LookPath("dfmt"); err == nil && path != "" {
-		if abs, aerr := filepath.Abs(path); aerr == nil {
-			return abs
-		}
-		return path
-	}
-	if ex, err := os.Executable(); err == nil && ex != "" {
-		return ex
-	}
-	return "dfmt"
+	return ResolveDFMTCommandForEnv(TargetOSLocal)
 }
 
 // HomeDir returns the user's home directory, respecting HOME env var for testability.
