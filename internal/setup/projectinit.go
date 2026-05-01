@@ -119,6 +119,7 @@ func writeProjectClaudeSettings(dir string) error {
 	}
 	mergeClaudeHook(cfg, "PreCompact", preCompact, 30, "Saving session snapshot for next session...")
 	mergeClaudeHook(cfg, "SessionStart", sessionStart, 10, "Loading previous session summary...")
+	mergeClaudeHookWithMatcher(cfg, "PreToolUse", `dfmt hook claude-code pretooluse`, "Bash|Read|WebFetch|Grep|Task|Edit|Write|Glob", 5, "Routing through dfmt for token savings...")
 
 	// MCP tool names changed from dotted (dfmt.exec) to underscored
 	// (dfmt_exec) so Claude Code's MCP client (regex
@@ -216,6 +217,47 @@ func mergeClaudeHook(cfg map[string]any, eventName, command string, timeoutSecs 
 	}
 	newGroup := map[string]any{
 		"matcher": "",
+		"hooks": []any{
+			map[string]any{
+				"type":          "command",
+				"command":       command,
+				"timeout":       timeoutSecs,
+				"statusMessage": statusMsg,
+			},
+		},
+	}
+	hooks[eventName] = append(groups, newGroup)
+	cfg["hooks"] = hooks
+}
+
+// mergeClaudeHookWithMatcher is like mergeClaudeHook but allows a custom matcher
+// regex to be specified. Used for PreToolUse where we want to match only
+// specific tool names rather than all tools.
+func mergeClaudeHookWithMatcher(cfg map[string]any, eventName, command, matcher string, timeoutSecs int, statusMsg string) {
+	hooks, _ := cfg["hooks"].(map[string]any)
+	if hooks == nil {
+		hooks = map[string]any{}
+	}
+	groups, _ := hooks[eventName].([]any)
+	// Idempotent: skip if this exact command is already registered.
+	for _, g := range groups {
+		grp, _ := g.(map[string]any)
+		if grp == nil {
+			continue
+		}
+		inner, _ := grp["hooks"].([]any)
+		for _, h := range inner {
+			hc, _ := h.(map[string]any)
+			if hc == nil {
+				continue
+			}
+			if cmd, _ := hc["command"].(string); cmd == command {
+				return
+			}
+		}
+	}
+	newGroup := map[string]any{
+		"matcher": matcher,
 		"hooks": []any{
 			map[string]any{
 				"type":          "command",

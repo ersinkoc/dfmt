@@ -77,6 +77,8 @@ func Dispatch(args []string) int {
 		return runInstallHooks(remaining)
 	case "capture":
 		return runCapture(remaining)
+	case "hook":
+		return runHook(remaining)
 	case "setup":
 		return runSetup(remaining)
 	case "exec":
@@ -2438,6 +2440,130 @@ func readHookStdin() (HookStdinInput, error) {
 		return input, err
 	}
 	return input, nil
+}
+
+// runHook handles PreToolUse hooks from Claude Code.
+// Usage: dfmt hook claude-code pretooluse
+// Reads JSON from stdin: {"tool_name": "...", "tool_input": {...}}
+// Writes JSON to stdout for Claude Code to consume.
+func runHook(args []string) int {
+	if len(args) < 2 || args[1] != "pretooluse" {
+		fmt.Fprintln(os.Stdout, `{"block":false}`)
+		return 0
+	}
+
+	input, err := readHookStdin()
+	if err != nil || input.ToolName == "" {
+		fmt.Fprintln(os.Stdout, `{"block":false}`)
+		return 0
+	}
+
+	if shouldRedirect(input.ToolName) {
+		redirect := buildRedirectResponse(input.ToolName, input.ToolInput)
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetEscapeHTML(false)
+		_ = enc.Encode(redirect)
+	} else {
+		fmt.Fprintln(os.Stdout, `{"block":false}`)
+	}
+
+	go logHookEventToDaemon(input)
+	return 0
+}
+
+// shouldRedirect returns true for mapped tools when the daemon is running.
+func shouldRedirect(toolName string) bool {
+	switch toolName {
+	case "Bash", "Read", "WebFetch", "Glob", "Grep", "Edit", "Write":
+		if proj, err := getProject(); err == nil && client.DaemonRunning(proj) {
+			return true
+		}
+	}
+	return false
+}
+
+// buildRedirectResponse creates a redirect spec for the given tool call.
+func buildRedirectResponse(toolName string, toolInput map[string]any) map[string]any {
+	sub := toolSubcommand(toolName)
+	mcpTool := "mcp__dfmt__dfmt_" + sub
+
+	var dfmtParams map[string]any
+	switch toolName {
+	case "Bash":
+		dfmtParams = map[string]any{"code": toolInput["command"], "lang": "bash"}
+	case "Read":
+		dfmtParams = map[string]any{"path": toolInput["path"]}
+	case "WebFetch":
+		dfmtParams = map[string]any{"url": toolInput["url"]}
+	case "Glob":
+		dfmtParams = map[string]any{"pattern": toolInput["pattern"]}
+	case "Grep":
+		dfmtParams = map[string]any{"pattern": toolInput["pattern"], "files": toolInput["files"]}
+	case "Edit":
+		dfmtParams = map[string]any{
+			"path":       toolInput["path"],
+			"old_string": toolInput["old_string"],
+			"new_string": toolInput["new_string"],
+		}
+	case "Write":
+		dfmtParams = map[string]any{"path": toolInput["path"], "content": toolInput["content"]}
+	default:
+		dfmtParams = toolInput
+	}
+
+	return map[string]any{
+		"redirect": map[string]any{
+			"tool":       mcpTool,
+			"tool_input": dfmtParams,
+		},
+	}
+}
+
+// toolSubcommand maps native tool name to dfmt subcommand.
+func toolSubcommand(toolName string) string {
+	switch toolName {
+	case "Bash":
+		return "exec"
+	case "Read":
+		return "read"
+	case "WebFetch":
+		return "fetch"
+	case "Glob":
+		return "glob"
+	case "Grep":
+		return "grep"
+	case "Edit":
+		return "edit"
+	case "Write":
+		return "write"
+	default:
+		return toolName
+	}
+}
+
+// logHookEventToDaemon sends a note event for stats tracking (non-blocking).
+func logHookEventToDaemon(input HookStdinInput) {
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	defer cancel()
+
+	proj, err := getProject()
+	if err != nil {
+		return
+	}
+	cl, err := client.NewClient(proj)
+	if err != nil {
+		return
+	}
+
+	toolJSON, _ := json.Marshal(input.ToolInput)
+	params := transport.RememberParams{
+		Type:     string(core.EvtNote),
+		Priority: string(core.PriP3),
+		Source:   string(core.SrcMCP),
+		Data:     map[string]any{"tool": input.ToolName, "input": string(toolJSON)},
+		Tags:     []string{input.ToolName},
+	}
+	_, _ = cl.Remember(ctx, params)
 }
 
 func runSetup(args []string) int {
