@@ -162,6 +162,7 @@ func (s *HTTPServer) Start(ctx context.Context) error {
 	mux.HandleFunc("/dashboard.js", s.handleDashboardJS)
 	mux.HandleFunc("/api/stats", s.handleAPIStats)
 	mux.HandleFunc("/api/daemons", s.handleAPIDaemons)
+	mux.HandleFunc("/api/stream", s.handleAPIStream)
 	mux.HandleFunc("/healthz", s.handleHealth)
 	mux.HandleFunc("/readyz", s.handleHealth)
 	mux.HandleFunc("/metrics", s.handleMetrics)
@@ -796,6 +797,81 @@ func (s *HTTPServer) handleAPIDaemons(w http.ResponseWriter, r *http.Request) {
 
 	if err := json.NewEncoder(w).Encode(daemons); err != nil {
 		fmt.Fprintf(os.Stderr, "encode daemons: %v\n", err)
+	}
+}
+
+// handleAPIStream streams journal events via SSE (Server-Sent Events).
+// GET /api/stream?from=<cursor>
+// Each event is sent as: data: <json>\n\n
+func (s *HTTPServer) handleAPIStream(w http.ResponseWriter, r *http.Request) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			fmt.Fprintf(os.Stderr, "handleAPIStream panic recovered: %v\n", rec)
+			http.Error(w, "internal error", http.StatusInternalServerError)
+		}
+	}()
+
+	// V-16 style: read-only endpoint, require GET/HEAD
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if s.handlers == nil {
+		http.Error(w, "handlers not configured", http.StatusServiceUnavailable)
+		return
+	}
+
+	from := r.URL.Query().Get("from")
+
+	// SSE requires flushing after each event. Use a FlushCapture wrapper.
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming not supported", http.StatusInternalServerError)
+		return
+	}
+
+	// Set SSE headers.
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no") // Disable nginx buffering if reverse-proxied
+	w.WriteHeader(http.StatusOK)
+	flusher.Flush()
+
+	ctx := r.Context()
+	stream, err := s.handlers.Stream(ctx, StreamParams{From: from})
+	if err != nil {
+		// Channel not established yet — send error as SSE comment and close.
+		fmt.Fprintf(w, ": stream error: %v\n\n", err)
+		flusher.Flush()
+		return
+	}
+
+	_ = json.NewEncoder(w)
+	for {
+		select {
+		case e, ok := <-stream:
+			if !ok {
+				// Channel closed cleanly.
+				return
+			}
+			data, merr := json.Marshal(e)
+			if merr != nil {
+				fmt.Fprintf(w, ": marshal error: %v\n\n", merr)
+				flusher.Flush()
+				continue
+			}
+			_, werr := fmt.Fprintf(w, "data: %s\n\n", data)
+			if werr != nil {
+				// Client disconnected.
+				return
+			}
+			flusher.Flush()
+		case <-ctx.Done():
+			// Client disconnected or context canceled.
+			return
+		}
 	}
 }
 

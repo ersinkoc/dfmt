@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/ersinkoc/dfmt/internal/safefs"
 	"gopkg.in/yaml.v3"
 )
 
@@ -388,4 +389,18 @@ func (c *Config) Validate() error {
 	}
 
 	return nil
+}
+
+// Save writes cfg to the project config file using safefs for atomic,
+// symlink-safe writes. It validates before saving.
+func (c *Config) Save(projectPath string) error {
+	if err := c.Validate(); err != nil {
+		return fmt.Errorf("config invalid: %w", err)
+	}
+	data, err := yaml.Marshal(c)
+	if err != nil {
+		return fmt.Errorf("marshal: %w", err)
+	}
+	cfgPath := filepath.Join(projectPath, ".dfmt", "config.yaml")
+	return safefs.WriteFileAtomic(filepath.Join(projectPath, ".dfmt"), cfgPath, data, 0600)
 }

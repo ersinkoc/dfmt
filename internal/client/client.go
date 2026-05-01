@@ -2,6 +2,7 @@ package client
 
 import (
 	"bytes"
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -351,6 +352,72 @@ func (c *Client) Recall(ctx context.Context, params transport.RecallParams) (*tr
 	}
 
 	return &result, nil
+}
+
+// StreamEvents streams journal events from the daemon via SSE.
+// The returned channel is closed when the stream ends or on error.
+// Callers must range over the channel or drain it completely.
+func (c *Client) StreamEvents(ctx context.Context, from string) (<-chan core.Event, error) {
+	var url string
+	client := &http.Client{Timeout: 0} // No timeout for streaming.
+	if c.network == netUnix {
+		url = "http://unix/api/stream?from=" + from
+		client.Transport = &http.Transport{
+			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				d := net.Dialer{Timeout: c.timeout}
+				return d.DialContext(ctx, netUnix, c.address)
+			},
+		}
+	} else {
+		url = fmt.Sprintf("http://%s/api/stream?from=%s", c.address, from)
+	}
+
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("create request: %w", err)
+	}
+	req = req.WithContext(ctx)
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("stream request: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		resp.Body.Close()
+		return nil, fmt.Errorf("stream status: %d", resp.StatusCode)
+	}
+
+	ch := make(chan core.Event, 64)
+	go func() {
+		defer resp.Body.Close()
+		defer close(ch)
+		rd := bufio.NewReader(resp.Body)
+		for {
+			line, err := rd.ReadString('\n')
+			if err != nil {
+				if err == io.EOF {
+					return
+				}
+				return
+			}
+			line = strings.TrimSuffix(line, "\r\n")
+			line = strings.TrimSuffix(line, "\n")
+			if !strings.HasPrefix(line, "data: ") {
+				continue
+			}
+			jsonStr := strings.TrimPrefix(line, "data: ")
+			var e core.Event
+			if err := json.Unmarshal([]byte(jsonStr), &e); err != nil {
+				continue
+			}
+			select {
+			case ch <- e:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	return ch, nil
 }
 
 // DaemonRunning checks if a daemon is running for the project.

@@ -79,6 +79,10 @@ var commonPatterns = []*redactPattern{
 	// Google API key (Maps, Cloud, etc.): AIza[35 chars].
 	{name: "google_api_key", regex: regexp.MustCompile(`AIza[0-9A-Za-z_-]{35}`), repl: "[GOOGLE_API_KEY]"},
 
+	// GCP service-account client_email field value — appears in JSON keys
+	// as `"client_email": "firebase-adminsdk-xxxx@<project>.iam.gserviceaccount.com"`.
+	{name: "gcp_client_email", regex: regexp.MustCompile(`(?i)"client_email"\s*:\s*"[a-z0-9.+_-]+@[^"]+\.gserviceaccount\.com"`), repl: "\"client_email\": \"[GCP_SERVICE_ACCOUNT]\""},
+
 	// Slack: bot/user/admin/refresh tokens (xoxb-, xoxp-, xoxa-, xoxr-, xoxs-)
 	// and app-level tokens (xapp-).
 	{name: "slack_token", regex: regexp.MustCompile(`(xox[abprs]|xapp)-[A-Za-z0-9-]{10,}`), repl: "[SLACK_TOKEN]"},
@@ -88,6 +92,11 @@ var commonPatterns = []*redactPattern{
 	{name: "stripe_key", regex: regexp.MustCompile(`sk_(live|test)_[A-Za-z0-9]{24,}`), repl: "[STRIPE_KEY]"},
 	{name: "stripe_restricted", regex: regexp.MustCompile(`rk_(live|test)_[A-Za-z0-9]{24,}`), repl: "[STRIPE_RK]"},
 	{name: "stripe_token", regex: regexp.MustCompile(`tok_[A-Za-z0-9]{24,}`), repl: "[STRIPE_TOKEN]"},
+
+	// Azure storage account key: 86-char base64 primary/secondary keys in
+	// connection strings. Appears as AccountKey=<86-char-base64> in
+	// DefaultEndpointsProtocol URLs, or standalone in Azure portal exports.
+	{name: "azure_storage_key", regex: regexp.MustCompile(`(?i)AccountKey=[A-Za-z0-9/+=]{86}`), repl: "AccountKey=[AZURE_STORAGE_KEY]"},
 
 	// Discord bot tokens: <user-id-base64>.<timestamp>.<hmac>. Each segment
 	// is base64url so [A-Za-z0-9_-] only.

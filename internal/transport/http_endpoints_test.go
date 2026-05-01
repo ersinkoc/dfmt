@@ -390,3 +390,52 @@ func TestNewHTTPServerWithListener(t *testing.T) {
 		t.Error("listener not set")
 	}
 }
+
+func TestHTTPHandleAPIStream_OK(t *testing.T) {
+	mj := &mockJournal{
+		events: []core.Event{
+			{ID: "1", TS: core.Now(), Type: "tool.exec", Priority: "p1", Data: map[string]any{"code": "echo hi"}},
+			{ID: "2", TS: core.Now(), Type: "tool.read", Priority: "p2", Data: map[string]any{"path": "/tmp/foo"}},
+		},
+	}
+	idx := core.NewIndex()
+	handlers := NewHandlers(idx, mj, nil)
+	hs := NewHTTPServer("127.0.0.1:0", handlers)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/stream", nil)
+	rec := httptest.NewRecorder()
+
+	hs.handleAPIStream(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", rec.Code)
+	}
+	ct := rec.Header().Get("Content-Type")
+	if ct != "text/event-stream" {
+		t.Errorf("expected text/event-stream, got %q", ct)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "data: ") {
+		t.Error("expected SSE data: lines")
+	}
+}
+
+func TestHTTPHandleAPIStream_MethodNotAllowed(t *testing.T) {
+	hs := newTestHTTPServerWithSandbox(nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/stream", nil)
+	rec := httptest.NewRecorder()
+	hs.handleAPIStream(rec, req)
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Errorf("expected 405, got %d", rec.Code)
+	}
+}
+
+func TestHTTPHandleAPIStream_HandlersNil(t *testing.T) {
+	hs := NewHTTPServer("127.0.0.1:0", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/stream", nil)
+	rec := httptest.NewRecorder()
+	hs.handleAPIStream(rec, req)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("expected 503, got %d", rec.Code)
+	}
+}
