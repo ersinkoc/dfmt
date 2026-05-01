@@ -2840,6 +2840,12 @@ func configureClaudeCode(_ setup.Agent) error {
 	if err := setup.PatchClaudeCodeUserJSON("", true); err != nil {
 		logging.Warnf("patch ~/.claude.json: %v", err)
 	}
+	// Also write the PreToolUse hook to ~/.claude/settings.json so Claude Code
+	// intercepts native tool calls and redirects them through dfmt. The hook
+	// uses a matcher regex so it only fires for the tools we handle.
+	if err := setup.WriteClaudeCodeSettingsHook(claudeDir); err != nil {
+		logging.Warnf("write PreToolUse hook to %s: %v", claudeDir, err)
+	}
 	m.RecordAgent("claude-code", claudeDir)
 	if err := setup.SaveManifest(m); err != nil {
 		return fmt.Errorf("save manifest: %w", err)

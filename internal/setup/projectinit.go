@@ -271,6 +271,56 @@ func mergeClaudeHookWithMatcher(cfg map[string]any, eventName, command, matcher 
 	cfg["hooks"] = hooks
 }
 
+// WriteClaudeCodeSettingsHook adds the PreToolUse hook to
+// ~/.claude/settings.json so Claude Code intercepts native tool calls
+// and redirects them through dfmt. Idempotent: skips if already present.
+func WriteClaudeCodeSettingsHook(claudeDir string) error {
+	settingsPath := filepath.Join(claudeDir, "settings.json")
+
+	cfg := map[string]any{}
+	if data, err := os.ReadFile(settingsPath); err == nil && strings.TrimSpace(string(data)) != "" {
+		if uerr := json.Unmarshal(data, &cfg); uerr != nil {
+			return fmt.Errorf("parse %s: %w", settingsPath, uerr)
+		}
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("read %s: %w", settingsPath, err)
+	}
+
+	// Add PreToolUse hook with matcher for tools we handle
+	mergeClaudeHookWithMatcher(cfg, "PreToolUse",
+		`dfmt hook claude-code pretooluse`,
+		"Bash|Read|WebFetch|Grep|Task|Edit|Write|Glob",
+		5, "Routing through dfmt for token savings...")
+
+	out, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return err
+	}
+	out = append(out, '\n')
+
+	tmp, err := os.CreateTemp(claudeDir, ".settings.json.dfmt-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	cleanup := func() { _ = os.Remove(tmpPath) }
+	if _, werr := tmp.Write(out); werr != nil {
+		_ = tmp.Close()
+		cleanup()
+		return werr
+	}
+	if werr := tmp.Close(); werr != nil {
+		cleanup()
+		return werr
+	}
+	_ = os.Chmod(tmpPath, 0o600)
+	if werr := os.Rename(tmpPath, settingsPath); werr != nil {
+		cleanup()
+		return werr
+	}
+	return nil
+}
+
 // mergeClaudePermission adds dfmt entries to cfg["permissions"][key] without
 // duplicating anything already present and without removing entries the user
 // added themselves.
