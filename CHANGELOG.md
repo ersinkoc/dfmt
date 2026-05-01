@@ -27,7 +27,25 @@ Internal package shapes (`internal/...`) are NOT covered by SemVer.
 
 ## [Unreleased]
 
-_None yet._
+### Security
+
+- **Write TOCTOU closed** — `safefs.WriteFile` now uses `O_NOFOLLOW`
+  (Unix) / `FILE_FLAG_OPEN_REPARSE_POINT` (Windows) so a symlink at
+  the leaf position is refused at open time, closing the residual
+  TOCTOU window.
+- **Redaction dedup bypass closed** — `SetRedactor` now clears
+  `dedupCache` / `sentCache` / `sentOrder` so a cached `content_id`
+  never returns pre-redaction content under a changed redaction config.
+- **LookPath cache staleness closed** — `Runtimes.Reload()` clears the
+  binary-path cache and re-probes after a permitted exec may have
+  mutated `PATH`.
+- **Windows backslash normalization fixed** — `permissions.go` now
+  replaces `\` with `/` for non-exec rules before regex matching.
+- **Context leak in `tail --follow` closed** — cancel function properly
+  captured and deferred in stream follow mode.
+- **Redaction coverage expanded** — Azure storage account key pattern
+  (`AccountKey=<86-char-base64>`) and GCP `client_email` JSON field
+  matcher added to redaction patterns.
 
 ## [0.2.2] — 2026-05-01
 
