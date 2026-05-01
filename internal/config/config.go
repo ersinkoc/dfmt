@@ -79,13 +79,15 @@ type Config struct {
 		} `yaml:"throttle"`
 	} `yaml:"retrieval"`
 
-	// Index — All Reserved (v0.4). core/index.go uses the package-level
-	// DefaultBM25K1 / DefaultBM25B / DefaultHeadingBoost constants;
-	// edits to bm25_k1 / bm25_b / heading_boost in YAML pass Validate
-	// but are not read by NewIndex() today (no constructor parameter).
-	// Wiring requires a constructor change touched by 50+ call sites —
-	// scoped to v0.4 (ADR-0015). RebuildInterval and StopwordsPath have
-	// no caller in any version.
+	// Index.BM25K1 / Index.BM25B — wired (core.NewIndexWithParams +
+	// Index.SetParams). Daemon plumbs config values at startup; the
+	// search path reads them via NewBM25OkapiWithParams which falls
+	// back to package defaults on zero/out-of-range input.
+	// Index.HeadingBoost — stored on the Index for forward compat but
+	// no scoring path consumes it today. Reserved (v0.4) pending a
+	// heading-event-type ADR.
+	// Index.RebuildInterval / Index.StopwordsPath — Reserved (v0.4),
+	// likely **delete** (no caller in any version).
 	Index struct {
 		RebuildInterval string  `yaml:"rebuild_interval"`
 		BM25K1          float64 `yaml:"bm25_k1"`

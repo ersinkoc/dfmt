@@ -32,6 +32,34 @@ type Index struct {
 	// format stability beats one-time rebuild on daemon start
 	// (Index.Add is called during journal load anyway).
 	excerpts map[string]string
+
+	// BM25 / scoring parameters (ADR-0015 v0.4 wire-up).
+	//
+	// k1 controls term-frequency saturation; b controls length
+	// normalization. Stored on the Index so search reads them without
+	// a global config lookup. NOT persisted — load paths leave them
+	// zero and SearchBM25 falls back to package defaults via
+	// NewBM25OkapiWithParams. Daemon-side load flow calls SetParams
+	// after LoadIndexWithCursor so the configured values win.
+	//
+	// headingBoost is reserved: there's no "heading" event-type
+	// classification in the search path today, so the value is
+	// stored for forward compat but does nothing. Wiring requires a
+	// heading-detection ADR.
+	k1           float64
+	b            float64
+	headingBoost float64
+}
+
+// IndexParams are the tunable BM25 and scoring parameters. Zero values
+// in any field mean "use package defaults" — both the constructor
+// (NewIndexWithParams) and the search path (NewBM25OkapiWithParams)
+// implement that fallback so a freshly-deserialized Index stays
+// scorable until SetParams is called.
+type IndexParams struct {
+	K1           float64
+	B            float64
+	HeadingBoost float64
 }
 
 // excerptMaxBytes caps each per-event excerpt to keep search responses
@@ -40,14 +68,56 @@ type Index struct {
 // rune-aligned value because truncate() handles the alignment.
 const excerptMaxBytes = 80
 
-// NewIndex creates a new Index.
+// NewIndex creates a new Index with package-default BM25 parameters
+// (k1=DefaultBM25K1, b=DefaultBM25B, headingBoost=DefaultHeadingBoost).
+// This is the zero-config constructor used by tests and the dfmt-bench
+// harness; the daemon production path uses NewIndexWithParams so the
+// operator's config.Index.* values flow through.
 func NewIndex() *Index {
+	return NewIndexWithParams(IndexParams{
+		K1:           DefaultBM25K1,
+		B:            DefaultBM25B,
+		HeadingBoost: DefaultHeadingBoost,
+	})
+}
+
+// NewIndexWithParams creates an Index with operator-configured BM25
+// parameters. Zero fields are treated as "use package defaults" by the
+// search path (defense-in-depth), but production callers should pass
+// fully-resolved values; Validate already gates input ranges at
+// config-load time. ADR-0015 v0.4.
+func NewIndexWithParams(p IndexParams) *Index {
 	return &Index{
-		stemPL:    make(map[string]*PostingList),
-		trigramPL: make(map[string]*PostingList),
-		docLen:    make(map[string]int),
-		excerpts:  make(map[string]string),
+		stemPL:       make(map[string]*PostingList),
+		trigramPL:    make(map[string]*PostingList),
+		docLen:       make(map[string]int),
+		excerpts:     make(map[string]string),
+		k1:           p.K1,
+		b:            p.B,
+		headingBoost: p.HeadingBoost,
 	}
+}
+
+// SetParams overrides the BM25 / scoring parameters in place. Used by
+// the daemon load flow: LoadIndexWithCursor returns an Index whose
+// k1/b/headingBoost are zero (not persisted on disk), and the daemon
+// follows up with SetParams to apply config-derived values. Tests
+// can also use this to exercise a mid-life parameter swap.
+func (ix *Index) SetParams(p IndexParams) {
+	ix.mu.Lock()
+	defer ix.mu.Unlock()
+	ix.k1 = p.K1
+	ix.b = p.B
+	ix.headingBoost = p.HeadingBoost
+}
+
+// Params returns the currently configured BM25 / scoring parameters
+// under read-lock. Used by tests and a future dfmt doctor row that
+// surfaces the effective values to operators.
+func (ix *Index) Params() IndexParams {
+	ix.mu.RLock()
+	defer ix.mu.RUnlock()
+	return IndexParams{K1: ix.k1, B: ix.b, HeadingBoost: ix.headingBoost}
 }
 
 // TotalDocs returns the number of indexed documents under read-lock.
@@ -283,7 +353,10 @@ func (ix *Index) SearchBM25(query string, limit int) []ScoredHit {
 	// would otherwise double-count.
 	seenStem := make(map[string]struct{}, len(tokens))
 	scores := make(map[string]float64)
-	bm := NewBM25Okapi()
+	// Use the operator-configured params; NewBM25OkapiWithParams falls
+	// back to package defaults if ix.k1/ix.b are zero (deserialized index
+	// before SetParams was called). ADR-0015 v0.4.
+	bm := NewBM25OkapiWithParams(ix.k1, ix.b)
 	for _, tok := range tokens {
 		stem := Stem(tok)
 		if _, dup := seenStem[stem]; dup {

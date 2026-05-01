@@ -166,10 +166,23 @@ func New(projectPath string, cfg *config.Config) (*Daemon, error) {
 		logging.Warnf("load index: %v", err)
 		needsRebuild = true
 	}
+	// BM25 / heading params from operator config (ADR-0015 v0.4 wire-up).
+	// Validate has already gated ranges; fields default to zero if the
+	// operator never touched them, in which case NewBM25OkapiWithParams's
+	// fallback restores the package defaults.
+	indexParams := core.IndexParams{
+		K1:           cfg.Index.BM25K1,
+		B:            cfg.Index.BM25B,
+		HeadingBoost: cfg.Index.HeadingBoost,
+	}
 	if index == nil || needsRebuild {
 		// Tokenizer-version bump or corrupt index: start fresh so we don't
 		// mix differently-tokenized postings, and let Start() fill it.
-		index = core.NewIndex()
+		index = core.NewIndexWithParams(indexParams)
+	} else {
+		// Loaded an existing index — apply operator params so a config
+		// change since the last persist takes effect immediately.
+		index.SetParams(indexParams)
 	}
 
 	// Create sandbox; cfg.Exec.PathPrepend is the project's escape hatch

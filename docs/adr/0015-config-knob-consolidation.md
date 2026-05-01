@@ -1,7 +1,7 @@
 # ADR-0015: Config Knob Consolidation
 
 - **Status:** Accepted
-- **Date:** 2026-04-30 (amended 2026-05-02 — `lifecycle.shutdown_timeout`, `retrieval.default_budget`, `retrieval.default_format`, `logging.level` wired; `logging.format` allowlisted)
+- **Date:** 2026-04-30 (amended 2026-05-02 — `lifecycle.shutdown_timeout`, `retrieval.default_budget`, `retrieval.default_format`, `logging.level`, `index.bm25_k1`, `index.bm25_b` wired; `logging.format` allowlisted; `index.heading_boost` plumbed but scoring path still pending)
 - **Supersedes:** —
 - **Superseded by:** —
 - **Related:** ADR-0014 (Operator Override Files)
@@ -53,9 +53,9 @@ existing config is higher than the cost of a documented no-op.
 
 | Field | Why reserved | v0.4 plan |
 |---|---|---|
-| `index.bm25_k1` | `core.NewIndex()` has no constructor parameter; 50+ call sites | wire via `NewIndexWithParams` overload |
-| `index.bm25_b` | same | same |
-| `index.heading_boost` | same | same |
+| ~~`index.bm25_k1`~~ | ~~`core.NewIndex()` has no constructor parameter; 50+ call sites~~ | **WIRED 2026-05-02** via `core.NewIndexWithParams` + `Index.SetParams`. `NewIndex()` keeps its zero-arg signature so test sites don't move; daemon flow uses the new overload |
+| ~~`index.bm25_b`~~ | ~~same~~ | **WIRED 2026-05-02** alongside k1 |
+| `index.heading_boost` | stored on Index for forward compat but no scoring path consumes it today | Reserved (v0.4) — wire pending a heading-event-type ADR; the YAML field is plumbed to `Index.headingBoost` but the search path does nothing with it |
 | `index.rebuild_interval` | no caller in any version | likely **delete** |
 | `index.stopwords_path` | no caller in any version | wire to TokenizeFull via stopword-loader helper |
 | ~~`retrieval.default_budget`~~ | ~~`handlers.Recall` uses an internal const~~ | **WIRED 2026-05-02** via `Handlers.SetRecallDefaults`; per-call → operator override → `recallDefaultBudgetBytes` (4096) precedence chain |

@@ -25,6 +25,131 @@ func TestNewIndex(t *testing.T) {
 	}
 }
 
+func TestNewIndex_DefaultParams(t *testing.T) {
+	ix := NewIndex()
+	p := ix.Params()
+	if p.K1 != DefaultBM25K1 {
+		t.Errorf("K1 = %v, want %v", p.K1, DefaultBM25K1)
+	}
+	if p.B != DefaultBM25B {
+		t.Errorf("B = %v, want %v", p.B, DefaultBM25B)
+	}
+	if p.HeadingBoost != DefaultHeadingBoost {
+		t.Errorf("HeadingBoost = %v, want %v", p.HeadingBoost, DefaultHeadingBoost)
+	}
+}
+
+func TestNewIndexWithParams_HonorsCustomValues(t *testing.T) {
+	ix := NewIndexWithParams(IndexParams{K1: 1.7, B: 0.4, HeadingBoost: 2.5})
+	p := ix.Params()
+	if p.K1 != 1.7 || p.B != 0.4 || p.HeadingBoost != 2.5 {
+		t.Errorf("Params = %+v, want {K1:1.7, B:0.4, HeadingBoost:2.5}", p)
+	}
+}
+
+func TestIndex_SetParams_OverridesAfterLoad(t *testing.T) {
+	// Simulates the daemon flow: Index loaded from disk has zero
+	// params, daemon calls SetParams with config-derived values.
+	ix := NewIndexWithParams(IndexParams{}) // all zeros
+	if got := ix.Params(); got.K1 != 0 || got.B != 0 || got.HeadingBoost != 0 {
+		t.Fatalf("freshly-constructed (zeros) Params = %+v", got)
+	}
+	ix.SetParams(IndexParams{K1: 2.0, B: 0.5, HeadingBoost: 7.0})
+	if got := ix.Params(); got.K1 != 2.0 || got.B != 0.5 || got.HeadingBoost != 7.0 {
+		t.Errorf("after SetParams: %+v", got)
+	}
+}
+
+// TestSearchBM25_HonorsConfiguredK1 is the end-to-end check: building
+// two indexes with different k1 yields different BM25 scores for the
+// same query+doc set. k1 controls term-frequency saturation: a higher
+// k1 widens the score gap between docs with high tf and docs with low
+// tf.
+//
+// IDF caveat: with df == N (every doc contains the query term),
+// IDF goes negative and ranking inverts. Include noise docs without
+// the term so df < N and IDF is positive — what real corpora look like.
+func TestSearchBM25_HonorsConfiguredK1(t *testing.T) {
+	makeIdx := func(k1 float64) *Index {
+		ix := NewIndexWithParams(IndexParams{K1: k1, B: DefaultBM25B})
+		// Three docs containing "alpha" at different tf, plus two
+		// noise docs so df=3 / N=5 yields positive IDF.
+		ix.Add(Event{
+			ID: "01HZZZZZZZZZZZZZZZZZZZZZZ1", Type: "note",
+			Data: map[string]any{"msg": "alpha alpha alpha alpha alpha"},
+		})
+		ix.Add(Event{
+			ID: "01HZZZZZZZZZZZZZZZZZZZZZZ2", Type: "note",
+			Data: map[string]any{"msg": "alpha alpha"},
+		})
+		ix.Add(Event{
+			ID: "01HZZZZZZZZZZZZZZZZZZZZZZ3", Type: "note",
+			Data: map[string]any{"msg": "alpha"},
+		})
+		ix.Add(Event{
+			ID: "01HZZZZZZZZZZZZZZZZZZZZZZ4", Type: "note",
+			Data: map[string]any{"msg": "beta gamma delta"},
+		})
+		ix.Add(Event{
+			ID: "01HZZZZZZZZZZZZZZZZZZZZZZ5", Type: "note",
+			Data: map[string]any{"msg": "epsilon zeta eta"},
+		})
+		return ix
+	}
+
+	lowK1 := makeIdx(0.5)
+	highK1 := makeIdx(3.0)
+
+	lowHits := lowK1.SearchBM25("alpha", 5)
+	highHits := highK1.SearchBM25("alpha", 5)
+
+	if len(lowHits) < 3 || len(highHits) < 3 {
+		t.Fatalf("expected at least 3 hits each, got low=%d high=%d", len(lowHits), len(highHits))
+	}
+
+	// Top hit should be the tf=5 doc in both cases — verify that first
+	// (sanity check; if this fails the test premise is broken).
+	if lowHits[0].ID != "01HZZZZZZZZZZZZZZZZZZZZZZ1" || highHits[0].ID != "01HZZZZZZZZZZZZZZZZZZZZZZ1" {
+		t.Fatalf("top hit not the tf=5 doc: low=%s high=%s", lowHits[0].ID, highHits[0].ID)
+	}
+
+	// Ratio of top score (tf=5) to bottom alpha-doc score (tf=1)
+	// should be larger under high k1 than low k1: high k1 doesn't
+	// saturate, so tf=5 scores meaningfully higher; low k1 saturates
+	// fast, narrowing the gap.
+	lowRatio := lowHits[0].Score / lowHits[2].Score
+	highRatio := highHits[0].Score / highHits[2].Score
+	if highRatio <= lowRatio {
+		t.Errorf("high-k1 ratio (%f) should exceed low-k1 ratio (%f) — k1 not affecting score",
+			highRatio, lowRatio)
+	}
+}
+
+func TestNewBM25OkapiWithParams_FallbacksOnZeroOrBad(t *testing.T) {
+	cases := []struct {
+		k1, b      float64
+		wantK1, wantB float64
+		reason     string
+	}{
+		{0, 0, DefaultBM25K1, DefaultBM25B, "both zero -> defaults"},
+		{-0.5, 0.6, DefaultBM25K1, 0.6, "negative k1 -> default"},
+		{1.5, -0.1, 1.5, DefaultBM25B, "negative b -> default"},
+		{1.5, 1.5, 1.5, DefaultBM25B, "b > 1 -> default"},
+		{2.0, 0.8, 2.0, 0.8, "valid pair preserved"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.reason, func(t *testing.T) {
+			bm := NewBM25OkapiWithParams(tc.k1, tc.b)
+			if bm.k1 != tc.wantK1 {
+				t.Errorf("k1: got %v, want %v", bm.k1, tc.wantK1)
+			}
+			if bm.b != tc.wantB {
+				t.Errorf("b: got %v, want %v", bm.b, tc.wantB)
+			}
+		})
+	}
+}
+
 func TestIndexAdd(t *testing.T) {
 	ix := NewIndex()
 
