@@ -30,29 +30,22 @@ const DefaultMCPProtocolVersion = "2024-11-05"
 type Config struct {
 	Version int `yaml:"version"`
 
+	// Capture: only FS is wired today.
+	//
+	// `capture.mcp`, `capture.git`, `capture.shell`, `capture.fs.watch`
+	// were REMOVED 2026-05-02 per ADR-0015 — each is gated elsewhere
+	// (MCP capture follows the transport up/down; git capture by
+	// `dfmt install-hooks`; shell capture by `dfmt shell-init` env
+	// integration; FSWatcher reads everything under root with ignore
+	// filtering, the watch list was never consumed). KnownFields(true)
+	// surfaces a clear "field not found" error if an old config still
+	// sets them.
 	Capture struct {
-		// MCP.Enabled — Reserved (v0.4). The MCP transport is always
-		// served when transport.mcp.enabled is true; this capture-side
-		// switch is currently a no-op (every MCP call is captured).
-		MCP struct {
-			Enabled bool `yaml:"enabled"`
-		} `yaml:"mcp"`
 		FS struct {
 			Enabled    bool     `yaml:"enabled"`     // wired: daemon.go FSWatcher init
-			Watch      []string `yaml:"watch"`       // Reserved (v0.4): not threaded into NewFSWatcher
 			Ignore     []string `yaml:"ignore"`      // wired: daemon.go FSWatcher init
 			DebounceMS int      `yaml:"debounce_ms"` // wired: daemon.go FSWatcher init
 		} `yaml:"fs"`
-		// Git.Enabled — Reserved (v0.4). Git capture is always active when
-		// the install-hooks flow has been run; this knob is a no-op.
-		Git struct {
-			Enabled bool `yaml:"enabled"`
-		} `yaml:"git"`
-		// Shell.Enabled — Reserved (v0.4). Shell capture is opt-in via
-		// `dfmt shell-init`; this knob does not gate that path.
-		Shell struct {
-			Enabled bool `yaml:"enabled"`
-		} `yaml:"shell"`
 	} `yaml:"capture"`
 
 	// All four Storage fields are wired (daemon.go ~line 105).
@@ -95,12 +88,12 @@ type Config struct {
 	} `yaml:"index"`
 
 	Transport struct {
-		// MCP.Enabled — Reserved (v0.4). MCP is always served on stdio
-		// when `dfmt mcp` is the entry point; daemon's MCP visibility is
-		// gated by the parent process model, not this knob.
-		MCP struct {
-			Enabled bool `yaml:"enabled"`
-		} `yaml:"mcp"`
+		// `transport.mcp.enabled` was REMOVED 2026-05-02 per ADR-0015:
+		// MCP is served on stdio when `dfmt mcp` is the CLI entry point.
+		// The daemon does not own the MCP transport's life-cycle — the
+		// parent process model does — so a daemon-side toggle is
+		// fictional. KnownFields(true) surfaces a clear error for old
+		// configs that still set it.
 		// HTTP.Enabled and HTTP.Bind are wired (daemon.go:185, 201, 215).
 		HTTP struct {
 			Enabled bool   `yaml:"enabled"`
@@ -171,16 +164,12 @@ func Default() *Config {
 		Version: 1,
 	}
 
-	// Capture defaults
-	c.Capture.MCP.Enabled = true
+	// Capture defaults (only FS is wired; see struct comment).
 	// FSWatcher wire-up is opt-in: set capture.fs.enabled=true in the
 	// project config to start indexing file-system activity.
 	c.Capture.FS.Enabled = false
-	c.Capture.FS.Watch = []string{"**"}
 	c.Capture.FS.Ignore = []string{".git/**", "node_modules/**", "__pycache__/**"}
 	c.Capture.FS.DebounceMS = 500
-	c.Capture.Git.Enabled = true
-	c.Capture.Shell.Enabled = true
 
 	// Storage defaults
 	c.Storage.Durability = durabilityBatched
@@ -198,7 +187,6 @@ func Default() *Config {
 	c.Index.HeadingBoost = 5.0
 
 	// Transport defaults
-	c.Transport.MCP.Enabled = true
 	c.Transport.HTTP.Enabled = false
 	c.Transport.HTTP.Bind = "127.0.0.1:8765"
 	c.Transport.Socket.Enabled = true

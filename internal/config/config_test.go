@@ -143,10 +143,8 @@ func TestDefault(t *testing.T) {
 		t.Errorf("Version = %d, want 1", cfg.Version)
 	}
 
-	// Capture defaults
-	if !cfg.Capture.MCP.Enabled {
-		t.Error("Capture.MCP.Enabled should be true")
-	}
+	// Capture defaults (capture.{mcp,git,shell} and capture.fs.watch
+	// removed in ADR-0015 v0.4 cleanup; only FS remains).
 	if cfg.Capture.FS.Enabled {
 		t.Error("Capture.FS.Enabled should be false (opt-in)")
 	}
@@ -173,10 +171,9 @@ func TestDefault(t *testing.T) {
 		t.Errorf("Index.BM25B = %f, want 0.75", cfg.Index.BM25B)
 	}
 
-	// Transport defaults
-	if cfg.Transport.MCP.Enabled != true {
-		t.Error("Transport.MCP.Enabled should be true")
-	}
+	// Transport defaults (transport.mcp.enabled removed in ADR-0015
+	// v0.4 cleanup; MCP is a CLI entry point, not a daemon-side
+	// toggle).
 	if cfg.Transport.Socket.Enabled != true {
 		t.Error("Transport.Socket.Enabled should be true")
 	}
@@ -234,8 +231,8 @@ func TestLoadGlobalConfig(t *testing.T) {
 	configContent := `
 version: 1
 capture:
-  mcp:
-    enabled: false
+  fs:
+    enabled: true
 storage:
   durability: durable
 `
@@ -252,9 +249,9 @@ storage:
 		t.Fatalf("Load failed: %v", err)
 	}
 
-	// MCP should be disabled by config
-	if cfg.Capture.MCP.Enabled {
-		t.Error("MCP.Enabled should be false from config")
+	// FS-capture should be enabled by config (default is false).
+	if !cfg.Capture.FS.Enabled {
+		t.Error("Capture.FS.Enabled should be true from config")
 	}
 }
 
@@ -267,8 +264,8 @@ func TestMerge(t *testing.T) {
 	// Write a partial config
 	configContent := `
 capture:
-  mcp:
-    enabled: false
+  fs:
+    enabled: true
 `
 	if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
 		t.Fatalf("WriteFile failed: %v", err)
@@ -279,9 +276,9 @@ capture:
 		t.Fatalf("merge failed: %v", err)
 	}
 
-	// MCP disabled by config (yaml.Unmarshal replaces entire struct)
-	if cfg.Capture.MCP.Enabled {
-		t.Error("MCP.Enabled should be false")
+	// FS capture enabled by config (default is false).
+	if !cfg.Capture.FS.Enabled {
+		t.Error("Capture.FS.Enabled should be true")
 	}
 }
 
@@ -413,8 +410,8 @@ version: 1
 capture:
   fs:
     enabled: true
-  shell:
-    enabled: false
+storage:
+  durability: durable
 `
 	projectContent := `
 version: 1
@@ -434,14 +431,14 @@ capture:
 		t.Fatalf("Load failed: %v", err)
 	}
 
-	// Project config should override global
+	// Project config should override global on the same field.
 	if cfg.Capture.FS.Enabled {
 		t.Error("Capture.FS.Enabled should be false from project config")
 	}
 
-	// Global config values not overridden should remain
-	if cfg.Capture.Shell.Enabled {
-		t.Error("Capture.Shell.Enabled should be false from global config")
+	// Global config values not overridden by project should remain.
+	if cfg.Storage.Durability != "durable" {
+		t.Errorf("Storage.Durability = %q, want 'durable' from global config", cfg.Storage.Durability)
 	}
 }
 
@@ -511,11 +508,8 @@ func TestConfigFields(t *testing.T) {
 
 func TestCaptureFSDefaults(t *testing.T) {
 	cfg := Default()
-
-	if len(cfg.Capture.FS.Watch) != 1 || cfg.Capture.FS.Watch[0] != "**" {
-		t.Errorf("Capture.FS.Watch = %v, want ['**']", cfg.Capture.FS.Watch)
-	}
-
+	// capture.fs.watch was removed in ADR-0015 v0.4 cleanup; only the
+	// ignore filter is honored by the FSWatcher today.
 	if len(cfg.Capture.FS.Ignore) != 3 {
 		t.Errorf("Capture.FS.Ignore = %v, want 3 items", cfg.Capture.FS.Ignore)
 	}
@@ -537,6 +531,17 @@ func TestRemovedKnobs_RejectedByLoad(t *testing.T) {
 			"retrieval:\n  throttle:\n    first_tier_calls: 10\n"},
 		{"retrieval.throttle.results_first_tier",
 			"retrieval:\n  throttle:\n    results_first_tier: 20\n"},
+		// Removed in the capture / transport.mcp cleanup pass.
+		{"capture.mcp.enabled",
+			"capture:\n  mcp:\n    enabled: false\n"},
+		{"capture.git.enabled",
+			"capture:\n  git:\n    enabled: false\n"},
+		{"capture.shell.enabled",
+			"capture:\n  shell:\n    enabled: false\n"},
+		{"capture.fs.watch",
+			"capture:\n  fs:\n    watch: [\"**\"]\n"},
+		{"transport.mcp.enabled",
+			"transport:\n  mcp:\n    enabled: false\n"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.field, func(t *testing.T) {
@@ -559,8 +564,8 @@ func TestLoadWithEmptyProjectPath(t *testing.T) {
 	configContent := `
 version: 1
 capture:
-  mcp:
-    enabled: false
+  fs:
+    enabled: true
 `
 	os.WriteFile(globalConfigPath, []byte(configContent), 0644)
 
@@ -572,9 +577,9 @@ capture:
 	if err != nil {
 		t.Fatalf("Load(\"\") failed: %v", err)
 	}
-	// MCP should be disabled from global config
-	if cfg.Capture.MCP.Enabled {
-		t.Error("MCP.Enabled should be false from global config")
+	// FS-capture should be enabled from global config (default is false).
+	if !cfg.Capture.FS.Enabled {
+		t.Error("Capture.FS.Enabled should be true from global config")
 	}
 }
 

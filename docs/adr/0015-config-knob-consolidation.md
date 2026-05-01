@@ -1,7 +1,7 @@
 # ADR-0015: Config Knob Consolidation
 
 - **Status:** Accepted
-- **Date:** 2026-04-30 (amended 2026-05-02 — `lifecycle.shutdown_timeout`, `retrieval.default_budget`, `retrieval.default_format`, `logging.level`, `index.bm25_k1`, `index.bm25_b` wired; `logging.format` allowlisted; `index.heading_boost` plumbed but scoring path still pending; `index.rebuild_interval`, `index.stopwords_path`, `retrieval.throttle.*` removed; `transport.socket.enabled` wired)
+- **Date:** 2026-04-30 (amended 2026-05-02 — `lifecycle.shutdown_timeout`, `retrieval.default_budget`, `retrieval.default_format`, `logging.level`, `index.bm25_k1`, `index.bm25_b` wired; `logging.format` allowlisted; `index.heading_boost` plumbed but scoring path still pending; `index.rebuild_interval`, `index.stopwords_path`, `retrieval.throttle.*` removed; `transport.socket.enabled` wired; `capture.{mcp,git,shell}.enabled`, `capture.fs.watch`, `transport.mcp.enabled` removed)
 - **Supersedes:** —
 - **Superseded by:** —
 - **Related:** ADR-0014 (Operator Override Files)
@@ -61,11 +61,11 @@ existing config is higher than the cost of a documented no-op.
 | ~~`retrieval.default_budget`~~ | ~~`handlers.Recall` uses an internal const~~ | **WIRED 2026-05-02** via `Handlers.SetRecallDefaults`; per-call → operator override → `recallDefaultBudgetBytes` (4096) precedence chain |
 | ~~`retrieval.default_format`~~ | ~~not read~~ | **WIRED 2026-05-02** alongside default_budget; Validate now allowlists `md|json|xml` |
 | ~~`retrieval.throttle.*` (4 sub-knobs)~~ | ~~no throttle implementation~~ | **REMOVED 2026-05-02**. No throttle implementation existed; the entire `retrieval.throttle:` YAML block now triggers a "field not found" parse error. If throttle ships in a future release the YAML shape can be reintroduced (additive). |
-| `capture.mcp.enabled` | MCP capture is always-on when MCP transport is up | likely **delete** |
-| `capture.git.enabled` | git capture is gated by `dfmt install-hooks`, not this | likely **delete** |
-| `capture.shell.enabled` | shell capture gated by `dfmt shell-init`, not this | likely **delete** |
-| `capture.fs.watch` | FSWatcher reads everything under root with ignore filtering | likely **delete** |
-| `transport.mcp.enabled` | MCP is the `dfmt mcp` entry point; can't be disabled by a daemon-side flag | likely **delete** |
+| ~~`capture.mcp.enabled`~~ | ~~MCP capture is always-on when MCP transport is up~~ | **REMOVED 2026-05-02**. The capture follows the transport up/down; a separate gate was fictional. |
+| ~~`capture.git.enabled`~~ | ~~git capture is gated by `dfmt install-hooks`~~ | **REMOVED 2026-05-02**. Capture is gated by file presence in `.git/hooks/` (the install-hooks command is the operator's "enable" verb). |
+| ~~`capture.shell.enabled`~~ | ~~shell capture gated by `dfmt shell-init`~~ | **REMOVED 2026-05-02**. Capture is gated by env-var integration written by `dfmt shell-init`. |
+| ~~`capture.fs.watch`~~ | ~~FSWatcher reads everything under root with ignore filtering~~ | **REMOVED 2026-05-02**. The watch list was never threaded into NewFSWatcher; only `capture.fs.ignore` is honored. |
+| ~~`transport.mcp.enabled`~~ | ~~MCP is the `dfmt mcp` entry point~~ | **REMOVED 2026-05-02**. MCP transport is owned by the parent process model (CLI subcommand), not a daemon-side switch. |
 | ~~`transport.socket.enabled`~~ | ~~Unix socket built unconditionally on Linux/macOS~~ | **WIRED 2026-05-02**. On Unix without TCP opt-in, `socket.enabled=false` makes the daemon refuse to start with a hint pointing at `transport.http.enabled`. On Windows the field is a no-op (no Unix-socket support). |
 | ~~`lifecycle.shutdown_timeout`~~ | ~~daemon uses hard-coded 10s grace~~ | **WIRED 2026-05-02** via `Daemon.ShutdownGrace()`; idle-monitor stop + dispatch.go SIGTERM handler both bracket `d.Stop` with `context.WithTimeout` |
 | `privacy.telemetry` | no telemetry shipped | **delete** at v1.0 if telemetry stays off-by-design |

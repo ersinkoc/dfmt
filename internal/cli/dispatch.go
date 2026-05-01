@@ -1649,7 +1649,6 @@ func runConfig(args []string) int {
 		fmt.Println(mustMarshalJSON(cfg))
 	} else {
 		fmt.Printf("Config for %s:\n", proj)
-		fmt.Printf("  Capture MCP: %v\n", cfg.Capture.MCP.Enabled)
 		fmt.Printf("  Capture FS: %v\n", cfg.Capture.FS.Enabled)
 		fmt.Printf("  Storage durability: %s\n", cfg.Storage.Durability)
 	}
