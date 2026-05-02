@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/ersinkoc/dfmt/internal/core"
+	"github.com/ersinkoc/dfmt/internal/logging"
 )
 
 // FSWatcher watches the filesystem for changes.
@@ -143,6 +144,12 @@ func (w *FSWatcher) TrackGoroutine() {
 // UntrackGoroutine signals completion of a tracked goroutine.
 func (w *FSWatcher) UntrackGoroutine() {
 	w.watchWG.Done()
+}
+
+// handleGoroutinePanic recovers from a panic in a watched goroutine and logs it.
+// This prevents a single panicking goroutine from crashing the entire watcher.
+func (w *FSWatcher) handleGoroutinePanic(r any) {
+	logging.Errorf("fswatch goroutine panic recovered: %v", r)
 }
 
 // runDebounceCleanup periodically removes stale entries from the debounce map.

@@ -36,7 +36,12 @@ func linuxWatchDir(w *FSWatcher, path string) {
 
 	w.TrackGoroutine()
 	go func() {
-		defer w.UntrackGoroutine()
+		defer func() {
+			if r := recover(); r != nil {
+				w.handleGoroutinePanic(r)
+			}
+			w.UntrackGoroutine()
+		}()
 		linuxWatchLoop(w, fd, path)
 	}()
 }

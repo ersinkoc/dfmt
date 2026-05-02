@@ -697,7 +697,12 @@ func (d *Daemon) startIdleMonitor(_ context.Context) {
 	// Stop closes idleCh instead, which the goroutine observes on its next tick.
 	go func() {
 		t := time.NewTicker(tick)
-		defer t.Stop()
+		defer func() {
+			t.Stop()
+			if r := recover(); r != nil {
+				logging.Errorf("daemon idle monitor panic recovered: %v", r)
+			}
+		}()
 		for {
 			select {
 			case <-d.idleCh:

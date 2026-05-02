@@ -288,6 +288,11 @@ func (j *journalImpl) Stream(ctx context.Context, from string) (<-chan Event, er
 	ch := make(chan Event, 100)
 	go func() {
 		defer close(ch)
+		defer func() {
+			if r := recover(); r != nil {
+				logging.Errorf("journal stream goroutine panic recovered: %v", r)
+			}
+		}()
 		foundFrom := from == ""
 		for _, seg := range segments {
 			done, err := streamFile(ctx, seg, ch, &foundFrom, from)
@@ -397,6 +402,11 @@ func (j *journalImpl) StreamN(ctx context.Context, from string, n int) (<-chan E
 	out := make(chan Event, 32)
 	go func() {
 		defer close(out)
+		defer func() {
+			if r := recover(); r != nil {
+				logging.Errorf("journal drain goroutine panic recovered: %v", r)
+			}
+		}()
 		sent := 0
 		for e := range src {
 			if sent >= n {
