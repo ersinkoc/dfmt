@@ -280,22 +280,11 @@ These are documented stubs and unwired knobs that did not block
 the v0.2.0 cut; they are tracked in `docs/ROADMAP.md` and slated
 for v0.3.x:
 
-- `dfmt tail --follow` prints `"(tail --follow not yet
-  implemented)"`; use `dfmt search` / `dfmt recall` for journal
-  inspection.
-- `dfmt config` is read-only — operators edit
-  `.dfmt/config.yaml` directly to change values.
-- `dfmt task done <id>` prints `"Task <id> marked done"` but does
-  not journal a `task.done` event.
-- `.dfmt/permissions.yaml` and `.dfmt/redact.yaml` overlay
-  loaders exist (`sandbox.LoadPolicy`, `redact.AddPattern`) but
-  are not yet called at daemon start.
 - `storage.compress_rotated` config flag is wired through the
   option struct but the journal rotation path never invokes
   gzip; rotated `.jsonl.<ULID>.jsonl` segments stay plain JSONL.
 - `index.heading_boost` config field is accepted and validated
   but not wired to any scoring path.
-- `retrieval.throttle.*` (4 fields) not wired.
 - `privacy.telemetry`, `privacy.remote_sync`,
   `privacy.allow_nonlocal_http` not wired — DFMT never
   phones home regardless.
