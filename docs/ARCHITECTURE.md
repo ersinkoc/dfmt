@@ -3256,7 +3256,7 @@ work assuming these paths are live:
 
 | Symbol / package                              | Location                        | Status                                                                                          |
 |-----------------------------------------------|---------------------------------|-------------------------------------------------------------------------------------------------|
-| `internal/retrieve/` (whole package)          | `retrieve/{snapshot,render_md}` | `handlers.Recall` does the recall work directly; `SnapshotBuilder` is unimported (§11.1).       |
+| `internal/retrieve/` (whole package)          | `retrieve/{snapshot,render_md}` | `SnapshotBuilder` + `JSONRenderer`/`XMLRenderer` are wired into `handlers.Recall` for `format=json/xml`; `MarkdownRenderer` unused (recall builds lines inline for md). |
 | `content.Summarizer` (kind-aware summary)     | `content/summarize.go`          | Production `Summary` text comes from `sandbox.GenerateSummary` instead (§9.4).                  |
 | `core.EnglishStopwords` (~70 entries)         | `core/core.go`                  | All call sites pass `nil` to `TokenizeFull`; the unexported 25-entry list applies (§8.6).       |
 | `core.TurkishStopwords` (14 entries)          | `core/core.go`                  | Same as above — never reached.                                                                  |
