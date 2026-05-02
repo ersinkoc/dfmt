@@ -10,10 +10,25 @@ the next one with a one-line explanation. If you want the full
 
 The release identities:
 
-- **v0.2.0** — *Hardening release* (current cut).
+- **v0.2.3** — *Patch + hardening* (current shipped cut).
 - **v0.3.0** — *Operator UX*.
 - **v1.0.0** — *Stability commitment* (SemVer guarantees on
   the wire surfaces enumerated in `CHANGELOG.md`).
+
+## v0.2.3 — Patch + hardening (shipped 2026-05-02)
+
+- [x] Post-v0.2.3 security fixes: panic recovery in
+  `consumeFSWatch`/`journal.Append`/`idleMonitor`, doctor
+  log-close error surfacing, stdlib CVEs (GO-2026-4866/
+  4870/4946/4947), RWMutex write-skew in stats cache,
+  `safefs.WriteFile` TOCTOU closure.
+- [x] `ARCHITECTURE.md` §13 wired/unwired table corrected:
+  `lifecycle.shutdown_timeout`, `index.bm25_k1/bm25_b`,
+  `retrieval.default_budget/default_format`,
+  `logging.level` (env-override precedence) all now match
+  implementation.
+- [x] Redactor pattern count corrected: 24 → 27
+  (`gcp_client_email`, `azure_storage_key`, `password_field`).
 
 ## v0.2.0 — Hardening release (shipped 2026-04-29)
 
@@ -89,35 +104,32 @@ Users should be able to act on the hints DFMT prints today.
 
 ### Config-schema hygiene
 
+- [x] **Decision on `index.bm25_k1` / `index.bm25_b`**:
+  wired via `IndexParams` — operator can override in YAML.
+- [x] **Decision on `retrieval.default_budget` /
+  `retrieval.default_format`**: wired via
+  `SetRecallDefaults()` — `Recall` uses config when caller
+  passes zero/empty.
+- [x] **Decision on `lifecycle.shutdown_timeout`**: wired
+  via `ShutdownGrace()` — reads YAML, falls back to 10 s.
+- [x] **Decision on `logging.level`**: wired with precedence
+  `DFMT_LOG` env > YAML > default `warn`.
+
+### Config-schema hygiene (remaining)
+
 - [ ] **Decision on `storage.compress_rotated`**: either wire
   gzip into `journal.Rotate()` (real space saving on
   long-running projects) or drop the flag with an ADR.
   Today the value is accepted but the rotation path never
   invokes gzip.
-- [ ] **Decision on `index.bm25_k1` / `index.bm25_b` /
-  `index.heading_boost`**: wire into the BM25 scorer or drop
-  with an ADR. Today `NewBM25Okapi` hardcodes 1.2 / 0.75
-  regardless of config.
-- [ ] **Decision on `retrieval.default_budget` /
-  `retrieval.default_format`**: wire into `Recall`'s default
-  path or drop. Today `Recall` hardcodes 4096 / `"md"`.
-- [ ] **Decision on `lifecycle.shutdown_timeout`**: wire into
-  `daemon.Stop()` or drop. Today `Stop()` uses a hardcoded
-  10 s.
+- [ ] **Decision on `index.heading_boost`**: accepted and
+  validated but no scoring path reads it yet.
 - [ ] **Decision on `index.rebuild_interval`,
   `index.stopwords_path`, `retrieval.throttle.*`,
   `privacy.telemetry`, `privacy.remote_sync`,
-  `privacy.allow_nonlocal_http`, `logging.level`,
-  `logging.format`** — each is in the schema but no consumer
-  reads it. Pick one of: wire, drop, or document with a
-  pending-ADR pointer.
-
-### Logging
-
-- [ ] **Drive logger threshold from `logging.level`** in
-  `.dfmt/config.yaml` instead of (only) `DFMT_LOG`. Both
-  fields stay supported; config wins, env overrides at the
-  process level.
+  `privacy.allow_nonlocal_http`, `logging.format`** —
+  each is in the schema but no consumer reads it. Pick one
+  of: wire, drop, or document with a pending-ADR pointer.
 
 ### Stretch (only if v0.3 has runway)
 
