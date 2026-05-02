@@ -106,19 +106,19 @@ Users should be able to act on the hints DFMT prints today.
 
 ### Config-schema hygiene (remaining)
 
-- [ ] **Decision on `storage.compress_rotated`**: either wire
-  gzip into `journal.Rotate()` (real space saving on
-  long-running projects) or drop the flag with an ADR.
-  Today the value is accepted but the rotation path never
-  invokes gzip.
-- [ ] **Decision on `index.heading_boost`**: accepted and
-  validated but no scoring path reads it yet.
-- [ ] **Decision on `index.rebuild_interval`,
-  `index.stopwords_path`, `retrieval.throttle.*`,
-  `privacy.telemetry`, `privacy.remote_sync`,
-  `privacy.allow_nonlocal_http`, `logging.format`** —
-  each is in the schema but no consumer reads it. Pick one
-  of: wire, drop, or document with a pending-ADR pointer.
+- [ ] **Decision on `storage.compress_rotated`**: accepted in
+  schema; `journal.Rotate()` renames files but never invokes
+  gzip. Either wire it or drop with an ADR.
+- [ ] **Decision on `index.heading_boost`**: stored on the
+  `Index` struct; no scoring path reads it today. Reserved
+  (v0.4) pending a heading-event-type ADR.
+- [ ] **Decision on `privacy.telemetry`,
+  `privacy.remote_sync`, `privacy.allow_nonlocal_http`**:
+  all Reserved (v0.4). Defaults are safe (telemetry off, no
+  remote sync, nonlocal HTTP denied); no consumer reads them.
+- [ ] **`logging.format`**: validated to only "text" (JSON
+  output on v0.4 roadmap). The check is wired; the actual
+  JSON output path is not.
 
 ### Stretch (only if v0.3 has runway)
 

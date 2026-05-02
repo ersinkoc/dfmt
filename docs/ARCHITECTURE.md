@@ -2500,8 +2500,7 @@ of these values in `.dfmt/config.yaml` is silently a no-op.
 | `transport.mcp.enabled / http.enabled / socket.enabled` | wired                                                |
 | `transport.http.bind`                            | wired                                                       |
 | `index.bm25_k1 / bm25_b`                      | wired — `IndexParams` flows config values to BM25 scorer via `SetParams`; defaults 1.2 / 0.75 apply when YAML fields are zero |
-| `index.heading_boost`                         | **unwired** — stored in `IndexParams` but no scoring path reads it yet |
-| `index.rebuild_interval / stopwords_path`        | **unwired**                                                 |
+| `index.heading_boost`                         | Reserved (v0.4) — stored in `IndexParams`; no scoring path reads it yet |
 | `retrieval.default_budget / default_format`      | wired — `SetRecallDefaults()` seeds handler defaults; Recall respects both when caller passes zero/empty |
 | `retrieval.throttle.*` (4 fields)                | **unwired**                                                 |
 | `privacy.telemetry`                              | **unwired** — `privacy.telemetry` config field not read; DFMT never phones home regardless of this flag |
@@ -2514,8 +2513,8 @@ config fields ahead of the consuming code, with `Validate()`
 already enforcing sensible ranges, and the wiring lands later
 without re-reviewing the schema. The flip side is that several
 fields look configurable but have no downstream consumer yet
-(`heading_boost` in scoring; `stopwords_path` in tokenization;
-`rebuild_interval` for background re-indexing).
+(`heading_boost` in scoring; `compress_rotated` in rotation). Several Reserved
+(v0.4) privacy flags are in the schema but have no consumer — the defaults are safe.
 
 ### 13.1 Schema (Go struct → YAML key)
 
@@ -2524,8 +2523,6 @@ fields look configurable but have no downstream consumer yet
 | `version`     | `version`                        | int      | `1`                | Schema version.                                    |
 | **capture**   | `capture.mcp.enabled`            | bool     | `true`             | Always recommended.                                |
 |               | `capture.fs.enabled`             | bool     | `false`            | Opt-in. Watches the project tree.                  |
-|               | `capture.fs.watch`               | []string | `["**"]`           | Globs to include.                                  |
-|               | `capture.fs.ignore`              | []string | `[".git/**", "node_modules/**", "__pycache__/**"]` | **Must** include `.dfmt/**` (else self-loop). |
 |               | `capture.fs.debounce_ms`         | int      | `500`              | Per-path cooldown.                                 |
 |               | `capture.git.enabled`            | bool     | `true`             | Honored by `dfmt install-hooks`.                   |
 |               | `capture.shell.enabled`          | bool     | `true`             | Honored by `dfmt shell-init`.                      |
@@ -2535,15 +2532,11 @@ fields look configurable but have no downstream consumer yet
 |               | `storage.compress_rotated`       | bool     | `true`             | **Unwired** — `Rotate()` never invokes gzip.        |
 | **retrieval** | `retrieval.default_budget`       | int      | `4096`             | Wired — `SetRecallDefaults()` seeds handler; zero = use default.     |
 |               | `retrieval.default_format`       | string   | `"md"`             | Wired — `SetRecallDefaults()` seeds handler; empty = use default.   |
-|               | `retrieval.throttle.first_tier_calls`   | int | `10`            | **Unwired**.                                       |
-|               | `retrieval.throttle.second_tier_calls`  | int | `5`             | **Unwired**.                                       |
-|               | `retrieval.throttle.results_first_tier` | int | `20`            | **Unwired**.                                       |
-|               | `retrieval.throttle.results_second_tier`| int | `10`            | **Unwired**.                                       |
-| **index**     | `index.rebuild_interval`         | string   | `"1h"`             | **Unwired** — no scheduled rebuild path.           |
-|               | `index.bm25_k1`                  | float64  | `1.2`              | Wired — flows to BM25 scorer via `IndexParams`; zero triggers default. |
+|               | `retrieval.default_budget`       | int      | `4096`             | Wired — `SetRecallDefaults()` seeds handler; zero = use default.     |
+|               | `retrieval.default_format`       | string   | `"md"`             | Wired — `SetRecallDefaults()` seeds handler; empty = use default.   |
+| **index**     | `index.bm25_k1`                  | float64  | `1.2`              | Wired — flows to BM25 scorer via `IndexParams`; zero triggers default. |
 |               | `index.bm25_b`                   | float64  | `0.75`             | Wired — flows to BM25 scorer via `IndexParams`; zero triggers default. |
-|               | `index.heading_boost`            | float64  | `5.0`              | **Unwired** — no scoring path consumes it.                             |
-|               | `index.stopwords_path`           | string   | `""`               | **Unwired** — stopwords are baked-in constants.    |
+|               | `index.heading_boost`            | float64  | `5.0`              | Reserved (v0.4) — stored in `IndexParams`; no scoring path reads it yet. |
 | **transport** | `transport.mcp.enabled`          | bool     | `true`             | stdio MCP server.                                  |
 |               | `transport.http.enabled`         | bool     | `false`            | Opt-in HTTP loopback.                              |
 |               | `transport.http.bind`            | string   | `"127.0.0.1:8765"` | Bind address.                                      |
