@@ -446,24 +446,18 @@ git-hook / shell-integration `dfmt capture <kind>` invocations into
 > are partially implemented and worth knowing about before relying
 > on them in operator scripts:
 >
-> - **`dfmt tail`** — `runTail` (`dispatch.go:1920`) prints
->   `"Streaming events..."` and returns; `--follow` prints
->   `"(tail --follow not yet implemented)"`. It does not actually
->   tail the journal yet. Use `dfmt search` or `dfmt recall` for
->   journal inspection in the meantime.
-> - **`dfmt config`** — read-only display of three fields
->   (`capture.mcp.enabled`, `capture.fs.enabled`,
->   `storage.durability`). The trailing `args` parameter is reserved
->   for a future `get`/`set` UX; today the only way to change a
->   config value is to edit `.dfmt/config.yaml` directly. Use
->   `--json` to dump the full parsed config for inspection.
-> - **`dfmt task done <id>`** — `runTask` (`dispatch.go:1630`)
->   simply prints `"Task <id> marked done"` and returns. It does
->   **not** journal a `task.done` event, does not look up the
->   referenced task, and does not validate the ID. The
->   `dfmt task <subject>` path is fully wired and creates a
->   `task.create` event via `runRemember` — only the `done`
->   sub-path is the stub.
+> - **`dfmt tail`** — `runTail` (`dispatch.go:2116`) streams
+>   events from the journal via `StreamEvents` RPC. Supports
+>   `--follow` (cancel with Ctrl+C), `--from <cursor>`,
+>   and `--limit N`.
+> - **`dfmt config get <key>`** — prints the full config as YAML
+>   (no key = all fields). `dfmt config set <key> <value>` validates
+>   against `Config.Validate()` then writes `.dfmt/config.yaml`.
+>   `capture.fs.ignore` accepts a JSON array string.
+> - **`dfmt task done <id>`** — `runTask` (`dispatch.go:1636`)
+>   calls `runRemember` with `EvtTaskDone` and `{"id":<id>}`, which
+>   journals a real `task.done` event. `dfmt task <subject>` creates
+>   a `task.create` event the same way.
 >
 > All other subcommands in the mind-map are fully wired.
 
