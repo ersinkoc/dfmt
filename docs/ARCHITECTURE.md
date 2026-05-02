@@ -657,7 +657,7 @@ Continue). Supports:
     `Name` is hardcoded `"dfmt"`; `Version` reads
     `internal/version.Current`, which is the same build-time
     string `dfmt --version` prints. Set the version via
-    `-ldflags "-X github.com/ersinkoc/dfmt/internal/version.Current=v0.2.0"`
+    `-ldflags "-X github.com/ersinkoc/dfmt/internal/version.Current=v0.2.3"`
     at release time. Inspectors that scrape `serverInfo` for a
     release identifier and the `--version` output now agree on
     every cut (closes the v0.1 drift).
@@ -2500,23 +2500,26 @@ of these values in `.dfmt/config.yaml` is silently a no-op.
 | `storage.durability / max_batch_ms / journal_max_bytes` | wired (threaded into `OpenJournal`)                  |
 | `storage.compress_rotated`                       | **unwired** — `Rotate()` never gzips (see §8.3)             |
 | `lifecycle.idle_timeout`                         | wired                                                       |
-| `lifecycle.shutdown_timeout`                     | **unwired** — `Stop()` uses a hardcoded `10*time.Second`    |
+| `lifecycle.shutdown_timeout`                     | wired — `ShutdownGrace()` reads config, falls back to `10*time.Second` on parse error |
 | `transport.mcp.enabled / http.enabled / socket.enabled` | wired                                                |
 | `transport.http.bind`                            | wired                                                       |
-| `index.bm25_k1 / bm25_b / heading_boost`         | **unwired** — `NewBM25Okapi()` hardcodes `1.2 / 0.75`       |
+| `index.bm25_k1 / bm25_b`                      | wired — `IndexParams` flows config values to BM25 scorer via `SetParams`; defaults 1.2 / 0.75 apply when YAML fields are zero |
+| `index.heading_boost`                         | **unwired** — stored in `IndexParams` but no scoring path reads it yet |
 | `index.rebuild_interval / stopwords_path`        | **unwired**                                                 |
-| `retrieval.default_budget / default_format`      | **unwired** — `Recall` uses hardcoded `4096` and `"md"`     |
+| `retrieval.default_budget / default_format`      | wired — `SetRecallDefaults()` seeds handler defaults; Recall respects both when caller passes zero/empty |
 | `retrieval.throttle.*` (4 fields)                | **unwired**                                                 |
-| `privacy.telemetry / remote_sync / allow_nonlocal_http` | **unwired**                                          |
-| `logging.level / logging.format`                 | **unwired** — `internal/logging` ignores them               |
+| `privacy.telemetry`                              | **unwired** — `privacy.telemetry` config field not read; DFMT never phones home regardless of this flag |
+| `privacy.remote_sync / allow_nonlocal_http`      | **unwired**                                                  |
+| `logging.level / logging.format`                 | wired — `logging.level` follows precedence: `DFMT_LOG` env wins if set, else YAML field, else default `warn` |
 
 The pattern is consistent: the config layer is more complete than
 the daemon's plumbing, by design. New features can land their
 config fields ahead of the consuming code, with `Validate()`
 already enforcing sensible ranges, and the wiring lands later
 without re-reviewing the schema. The flip side is that several
-"obvious" knobs (BM25 tuning, default recall budget, log level)
-look configurable but aren't yet.
+fields look configurable but have no downstream consumer yet
+(`heading_boost` in scoring; `stopwords_path` in tokenization;
+`rebuild_interval` for background re-indexing).
 
 ### 13.1 Schema (Go struct → YAML key)
 
@@ -2534,48 +2537,48 @@ look configurable but aren't yet.
 |               | `storage.max_batch_ms`           | int      | `100`              | Max delay between fsyncs in batched mode.          |
 |               | `storage.journal_max_bytes`      | int64    | `10485760` (10 MiB)| Trigger for rotation.                              |
 |               | `storage.compress_rotated`       | bool     | `true`             | **Unwired** — `Rotate()` never invokes gzip.        |
-| **retrieval** | `retrieval.default_budget`       | int      | `4096`             | **Unwired** — `Recall` uses hardcoded 4096.        |
-|               | `retrieval.default_format`       | string   | `"md"`             | **Unwired** — `Recall` uses hardcoded `"md"`.      |
+| **retrieval** | `retrieval.default_budget`       | int      | `4096`             | Wired — `SetRecallDefaults()` seeds handler; zero = use default.     |
+|               | `retrieval.default_format`       | string   | `"md"`             | Wired — `SetRecallDefaults()` seeds handler; empty = use default.   |
 |               | `retrieval.throttle.first_tier_calls`   | int | `10`            | **Unwired**.                                       |
 |               | `retrieval.throttle.second_tier_calls`  | int | `5`             | **Unwired**.                                       |
 |               | `retrieval.throttle.results_first_tier` | int | `20`            | **Unwired**.                                       |
 |               | `retrieval.throttle.results_second_tier`| int | `10`            | **Unwired**.                                       |
 | **index**     | `index.rebuild_interval`         | string   | `"1h"`             | **Unwired** — no scheduled rebuild path.           |
-|               | `index.bm25_k1`                  | float64  | `1.2`              | **Unwired** — `NewBM25Okapi` hardcodes 1.2.        |
-|               | `index.bm25_b`                   | float64  | `0.75`             | **Unwired** — `NewBM25Okapi` hardcodes 0.75.       |
-|               | `index.heading_boost`            | float64  | `5.0`              | **Unwired** — no scoring path consumes it.         |
+|               | `index.bm25_k1`                  | float64  | `1.2`              | Wired — flows to BM25 scorer via `IndexParams`; zero triggers default. |
+|               | `index.bm25_b`                   | float64  | `0.75`             | Wired — flows to BM25 scorer via `IndexParams`; zero triggers default. |
+|               | `index.heading_boost`            | float64  | `5.0`              | **Unwired** — no scoring path consumes it.                             |
 |               | `index.stopwords_path`           | string   | `""`               | **Unwired** — stopwords are baked-in constants.    |
 | **transport** | `transport.mcp.enabled`          | bool     | `true`             | stdio MCP server.                                  |
 |               | `transport.http.enabled`         | bool     | `false`            | Opt-in HTTP loopback.                              |
 |               | `transport.http.bind`            | string   | `"127.0.0.1:8765"` | Bind address.                                      |
 |               | `transport.socket.enabled`       | bool     | `true`             | Unix socket (Unix only).                           |
 | **lifecycle** | `lifecycle.idle_timeout`         | duration | `"30m"`            | Validated parseable by `time.ParseDuration`.       |
-|               | `lifecycle.shutdown_timeout`     | duration | `"10s"`            | **Unwired** — `Stop()` uses hardcoded `10*time.Second`. |
-| **privacy**   | `privacy.telemetry`              | bool     | `false`            | **Unwired**. DFMT never phones home regardless.    |
+|               | `lifecycle.shutdown_timeout`     | duration | `"10s"`            | Wired — `ShutdownGrace()` reads and applies this value; fallback is hardcoded `10s`. |
+| **privacy**   | `privacy.telemetry`              | bool     | `false`            | **Unwired** — flag is not read; DFMT never phones home regardless. `/metrics` endpoint (ADR-0016) IS wired independently. |
 |               | `privacy.remote_sync`            | string   | `"none"`           | **Unwired**.                                       |
 |               | `privacy.allow_nonlocal_http`    | bool     | `false`            | **Unwired**. Loopback enforcement happens in transport, not via this flag. |
-| **logging**   | `logging.level`                  | string   | `"info"`           | **Unwired** — but see callout below: log level is set via `DFMT_LOG` env var, not this field. |
-|               | `logging.format`                 | string   | `"text"`           | **Unwired** — output format is hard-coded `<level>: <message>\n` for legacy compatibility. |
+| **logging**   | `logging.level`                  | string   | `"warn"`           | Wired with env override — `DFMT_LOG` env wins if set, else this field, else default `warn`. |
+|               | `logging.format`                 | string   | `"text"`           | **Unwired** — output format is hard-coded `<level>: <message>\n`. |
 
-### 13.1.1 Logging is configured via env, not config
+### 13.1.1 Logging level — env wins, YAML is the fallback
 
-The `internal/logging` package itself works fine — it has
-`Debugf` / `Infof` / `Warnf` / `Errorf`, all writing
-`<level>: <message>\n` to stderr. The threshold is read once at
-process startup from the **`DFMT_LOG`** environment variable:
+The `internal/logging` package has `Debugf` / `Infof` / `Warnf` / `Errorf`,
+all writing `<level>: <message>\n` to stderr. The threshold precedence at
+process startup:
 
 | `DFMT_LOG` value             | Threshold                                    |
 |------------------------------|----------------------------------------------|
 | `debug`                      | `LevelDebug` — verbose                       |
 | `info`                       | `LevelInfo`                                  |
-| `warn` / `warning`           | `LevelWarn` (default)                        |
+| `warn` / `warning`           | `LevelWarn`                                  |
 | `error`                      | `LevelError`                                 |
 | `off` / `none` / `silent`    | `LevelOff` — completely silent               |
 
-The `logging.level` and `logging.format` config fields would be a
-nicer place to put this, but the wiring isn't there yet (see §13.0).
-Operators silencing daemon stderr in CI dashboards should export
-`DFMT_LOG=error` or `DFMT_LOG=off`.
+The **`DFMT_LOG`** env var is checked first; if set, it wins and the
+`logging.level` YAML field is ignored. When `DFMT_LOG` is not set, the
+`logging.level` config value is applied via `logging.ApplyConfig()` at
+daemon startup. The default is `warn`. Operators silencing daemon stderr
+in CI dashboards should export `DFMT_LOG=error` or `DFMT_LOG=off`.
 
 ### 13.2 Default `.dfmt/config.yaml` (as written by `dfmt init`)
 
@@ -2879,7 +2882,7 @@ table in `redact.go::commonPatterns` is matched in the order shown —
 provider-specific prefixes run before broader generic matchers so
 the labels stay accurate (`sk-ant-…` is consumed before the `sk-…`
 OpenAI matcher; AWS prefix list runs before `generic_secret`). The
-24 patterns:
+27 patterns:
 
 | Group        | Pattern             | Catches                                                                        |
 |--------------|---------------------|--------------------------------------------------------------------------------|
@@ -2890,7 +2893,9 @@ OpenAI matcher; AWS prefix list runs before `generic_secret`). The
 | Provider key | `aws_key`           | all 10 AWS access-key prefixes (`AKIA`/`ASIA`/`AGPA`/`AROA`/`AIDA`/`ANPA`/`AIPA`/`ANVA`/`ABIA`/`ACCA`) + 16 chars |
 | Provider key | `aws_secret`        | 40-char base64 within ≤ 80 chars of an `aws_secret_*` marker (covers YAML / JSON / tabular AWS-CLI wrapping) |
 | Provider key | `google_api_key`    | `AIza` + 35 chars                                                              |
-| Provider key | `slack_token`       | `xoxb-` / `xoxp-` / `xoxa-` / `xoxr-` / `xoxs-` / `xapp-` + 10+ chars          |
+| Provider key | `gcp_client_email` | `iam.gserviceaccount.com` in service-account JSON (`client_email` field)        |
+| Provider key | `azure_storage_key`| Azure storage account key (`DefaultEndpointsProtocol=https;AccountName=…;AccountKey=…`) |
+| Provider key | `slack_token`      | `xoxb-` / `xoxp-` / `xoxa-` / `xoxr-` / `xoxs-` / `xapp-` + 10+ chars          |
 | Provider key | `stripe_key`        | `sk_live_` / `sk_test_` + 24+ chars                                            |
 | Provider key | `stripe_restricted` | `rk_live_` / `rk_test_` + 24+ chars                                            |
 | Provider key | `stripe_token`      | `tok_` + 24+ chars                                                             |
@@ -2902,6 +2907,7 @@ OpenAI matcher; AWS prefix list runs before `generic_secret`). The
 | Webhook URL  | `discord_webhook`   | `https://discord(app)?.com/api/webhooks/<id>/<token>`                          |
 | DB URL       | `db_url_creds`      | `user:password@` in `postgres(ql)://`, `mysql://`, `mongodb(+srv)://`, `redis(s)://`, `amqp(s)://` |
 | Generic      | `generic_secret`    | inline `api_key` / `secret_key` / `access_token` / `auth_token` `=` value (20+ chars) |
+| Generic      | `password_field`    | `<input type="password">` HTML form fields (value attribute, name attr)               |
 | Generic      | `bearer_token`      | `Bearer <20+ chars>` (case-insensitive, full base64 alphabet incl. `+/=~`)     |
 | Generic      | `basic_auth`        | `Basic <10+ chars>` HTTP basic-auth header                                     |
 | Env line     | `env_export`        | `export NAME=value` / `NAME=value` lines whose NAME is classified sensitive by `IsSensitiveKey` (special-cased — runs `ReplaceAllStringFunc`, not the generic loop) |
@@ -3020,7 +3026,18 @@ tool. Third-party actions in both workflows are pinned by full
 40-char SHA so a tag rewrite cannot retroactively change CI or
 release behavior.
 
-### 17.2 Test coverage targets
+### 17.2.1 Post-v0.2.3 fixes
+
+Three commits on `main` land after the `v0.2.3` tag and are not yet
+in a release:
+
+| Commit | Area | Change |
+|--------|------|--------|
+| `735c03c` | Transport + daemon | stdlib CVEs (GO-2026-4866/4870/4946/4947): HTTP body lifecycle fix in fetch/exec, `errors.Unwrap` chains on JSON-RPC errors, `RWMutex` write-skew fix in handler stats cache, logging wrapper alignment |
+| `aef45cc` | Capture + core + daemon | Panic recovery added to `consumeFSWatch` (all platforms), `journal.Append` scanner, and `daemon.idleMonitor` — long-running goroutines are now wrapped with `defer recover()` |
+| `194d15c` | CLI / doctor | `runDoctor` log-close errors are now reported instead of silently suppressed — fixes diagnosis gap on stale daemon paths |
+
+### 17.3 Dependency policy
 
 | Package              | Target    |
 |----------------------|-----------|
@@ -3387,7 +3404,7 @@ most agents consume after a context compaction.
 
 ---
 
-*Document version: DFMT v0.2.0 release line. Update this file
+*Document version: DFMT v0.2.3 release line. Update this file
 whenever a package gains, loses, or moves a public surface, or
 whenever a flow diagram in §6, §7, §9, §10 or §11 stops matching
 reality. Mirror notable schema/wire changes in `CHANGELOG.md` and
