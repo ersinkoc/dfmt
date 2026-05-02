@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/ersinkoc/dfmt/internal/core"
+	"github.com/ersinkoc/dfmt/internal/logging"
 	"github.com/ersinkoc/dfmt/internal/safefs"
 )
 
@@ -361,13 +362,13 @@ func (s *HTTPServer) handle(w http.ResponseWriter, r *http.Request) {
 	// connection will be dropped anyway, so we don't retry.
 	defer func() {
 		if r := recover(); r != nil {
-			fmt.Fprintf(os.Stderr, "handler panic recovered: %v\n", r)
+			logging.Errorf("handler panic recovered: %v", r)
 			w.Header().Set("Content-Type", "application/json")
 			if err := json.NewEncoder(w).Encode(Response{
 				JSONRPC: jsonRPCVersion,
 				Error:   &RPCError{Code: -32603, Message: "Internal error"},
 			}); err != nil {
-				fmt.Fprintf(os.Stderr, "encode panic response: %v\n", err)
+				logging.Errorf("encode panic response: %v", err)
 			}
 		}
 	}()
@@ -386,11 +387,11 @@ func (s *HTTPServer) handle(w http.ResponseWriter, r *http.Request) {
 
 	// Limit request body to 1MB to prevent OOM
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
+	defer r.Body.Close()
 	if err != nil {
 		http.Error(w, "Request too large", http.StatusRequestEntityTooLarge)
 		return
 	}
-	defer r.Body.Close()
 
 	// Per-request session ID (ADR-0011). HTTP is stateless — there's no
 	// "connection" the way socket has — so callers that want wire-dedup
@@ -633,7 +634,7 @@ func (s *HTTPServer) handleDashboardJS(w http.ResponseWriter, r *http.Request) {
 func (s *HTTPServer) handleAPIStats(w http.ResponseWriter, r *http.Request) {
 	defer func() {
 		if rec := recover(); rec != nil {
-			fmt.Fprintf(os.Stderr, "handleAPIStats panic recovered: %v\n", rec)
+			logging.Errorf("handleAPIStats panic recovered: %v", rec)
 			http.Error(w, "internal error", http.StatusInternalServerError)
 		}
 	}()
@@ -650,11 +651,11 @@ func (s *HTTPServer) handleAPIStats(w http.ResponseWriter, r *http.Request) {
 	}
 
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
+	defer r.Body.Close()
 	if err != nil {
 		http.Error(w, "Bad request", http.StatusBadRequest)
 		return
 	}
-	defer r.Body.Close()
 
 	var req Request
 	if err := json.Unmarshal(body, &req); err != nil {
@@ -719,7 +720,7 @@ func (s *HTTPServer) handleHealth(w http.ResponseWriter, r *http.Request) {
 func (s *HTTPServer) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	defer func() {
 		if rec := recover(); rec != nil {
-			fmt.Fprintf(os.Stderr, "handleMetrics panic recovered: %v\n", rec)
+			logging.Errorf("handleMetrics panic recovered: %v", rec)
 			http.Error(w, "internal error", http.StatusInternalServerError)
 		}
 	}()
@@ -739,7 +740,7 @@ func (s *HTTPServer) handleMetrics(w http.ResponseWriter, r *http.Request) {
 func (s *HTTPServer) handleAPIDaemons(w http.ResponseWriter, r *http.Request) {
 	defer func() {
 		if rec := recover(); rec != nil {
-			fmt.Fprintf(os.Stderr, "handleAPIDaemons panic recovered: %v\n", rec)
+			logging.Errorf("handleAPIDaemons panic recovered: %v", rec)
 			http.Error(w, "internal error", http.StatusInternalServerError)
 		}
 	}()
@@ -806,7 +807,7 @@ func (s *HTTPServer) handleAPIDaemons(w http.ResponseWriter, r *http.Request) {
 func (s *HTTPServer) handleAPIStream(w http.ResponseWriter, r *http.Request) {
 	defer func() {
 		if rec := recover(); rec != nil {
-			fmt.Fprintf(os.Stderr, "handleAPIStream panic recovered: %v\n", rec)
+			logging.Errorf("handleAPIStream panic recovered: %v", rec)
 			http.Error(w, "internal error", http.StatusInternalServerError)
 		}
 	}()

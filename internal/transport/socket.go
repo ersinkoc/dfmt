@@ -128,7 +128,7 @@ func (s *SocketServer) serve(ctx context.Context) {
 	// the daemon's serve goroutine with no diagnostic.
 	defer func() {
 		if r := recover(); r != nil {
-			fmt.Fprintf(os.Stderr, "socket serve panic recovered: %v\n", r)
+			logging.Errorf("socket serve panic recovered: %v", r)
 		}
 	}()
 	for {
@@ -168,7 +168,7 @@ func (s *SocketServer) serve(ctx context.Context) {
 func (s *SocketServer) handleConn(serverCtx context.Context, conn net.Conn) {
 	defer func() {
 		if r := recover(); r != nil {
-			fmt.Fprintf(os.Stderr, "socket handleConn panic recovered: %v\n", r)
+			logging.Errorf("socket handleConn panic recovered: %v", r)
 		}
 		_ = conn.Close()
 	}()

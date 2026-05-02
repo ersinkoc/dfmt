@@ -32,6 +32,8 @@ type RPCError struct {
 	Data    any    `json:"data,omitempty"`
 }
 
+func (e *RPCError) Unwrap() error { return nil }
+
 // MaxJSONRPCLineBytes caps a single framed JSON-RPC message. A misbehaving
 // peer that never sends a newline could otherwise grow the read buffer
 // without bound and OOM the daemon.

@@ -58,6 +58,8 @@ func (e *NoProjectError) Error() string {
 	return "no DFMT project found (no .dfmt or .git directory in parent tree)"
 }
 
+func (e *NoProjectError) Unwrap() error { return nil }
+
 // ID computes the project ID (8 hex chars of SHA-256 of the path).
 func ID(projectPath string) string {
 	h := sha256.Sum256([]byte(projectPath))

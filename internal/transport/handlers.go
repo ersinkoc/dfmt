@@ -84,7 +84,7 @@ type Handlers struct {
 	// journal — at 10 MiB rotated max + active that's hundreds of ms per
 	// poll. Mirrors the TTL pattern used by MCPProtocol.compressionStats
 	// for its own per-tool aggregation.
-	statsCacheMu  sync.Mutex
+	statsCacheMu  sync.RWMutex
 	statsCache    *StatsResponse
 	statsCachedAt time.Time
 }
@@ -983,13 +983,13 @@ func (h *Handlers) Stats(ctx context.Context, params StatsParams) (*StatsRespons
 	// "the number didn't change" as "DFMT is broken", and the 5-second
 	// staleness window makes that interpretation easy to fall into.
 	if !params.NoCache {
-		h.statsCacheMu.Lock()
+		h.statsCacheMu.RLock()
 		if h.statsCache != nil && time.Since(h.statsCachedAt) < statsTTL {
 			cached := h.statsCache
-			h.statsCacheMu.Unlock()
+			h.statsCacheMu.RUnlock()
 			return cloneStatsResponse(cached), nil
 		}
-		h.statsCacheMu.Unlock()
+		h.statsCacheMu.RUnlock()
 	}
 
 	stream, err := h.journal.Stream(ctx, "")
