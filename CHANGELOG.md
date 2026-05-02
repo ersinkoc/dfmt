@@ -40,6 +40,17 @@ operations are called before the feature is implemented.
   (Unix) / `FILE_FLAG_OPEN_REPARSE_POINT` (Windows) so a symlink at
   the leaf position is refused at open time, closing the residual
   TOCTOU window.
+- **Panic recovery in long-running goroutines** — `consumeFSWatch`
+  (all platforms), `journal.Append` scanner, and `daemon.idleMonitor`
+  are now wrapped with `defer recover()` to prevent a single panic
+  from terminating the daemon.
+- **Doctor log-close errors now reported** — `runDoctor` surfaces
+  file-close errors instead of silently suppressing them, fixing
+  diagnosis on stale daemon paths.
+- **stdlib CVEs patched** (GO-2026-4866/4870/4946/4947) — HTTP
+  body lifecycle corrected in `Fetch`/`Exec`, `errors.Unwrap`
+  chains added to JSON-RPC error responses, `RWMutex` write-skew
+  fixed in handler stats cache, logging wrapper re-aligned.
 - **Redaction dedup bypass closed** — `SetRedactor` now clears
   `dedupCache` / `sentCache` / `sentOrder` so a cached `content_id`
   never returns pre-redaction content under a changed redaction config.
@@ -282,9 +293,12 @@ for v0.3.x:
 - `storage.compress_rotated` config flag is wired through the
   option struct but the journal rotation path never invokes
   gzip; rotated `.jsonl.<ULID>.jsonl` segments stay plain JSONL.
-- Several BM25 / index / retrieval / lifecycle config fields
-  are accepted and validated but unwired to the corresponding
-  consumer (see ARCHITECTURE.md §13.0 wired/unwired table).
+- `index.heading_boost` config field is accepted and validated
+  but not wired to any scoring path.
+- `retrieval.throttle.*` (4 fields) not wired.
+- `privacy.telemetry`, `privacy.remote_sync`,
+  `privacy.allow_nonlocal_http` not wired — DFMT never
+  phones home regardless.
 
 [Unreleased]: https://github.com/ersinkoc/dfmt/compare/v0.2.2...HEAD
 [0.2.2]: https://github.com/ersinkoc/dfmt/releases/tag/v0.2.2
