@@ -2157,15 +2157,11 @@ That handler:
    @actor #tag {data}`) into a single `RecallResponse.Snapshot`
    string, breaking when the byte budget would be exceeded.
 
-The `format` request parameter is accepted but currently informational
-only — `handlers.Recall` always emits markdown, regardless of whether
-the caller asked for `md`, `json`, or `xml`. The parallel
-`internal/retrieve/` package (with `SnapshotBuilder`, `MarkdownRenderer`,
-`JSONRenderer`, `XMLRenderer`) is **not imported anywhere outside its
-own `_test.go`** — the production wiring went straight through the
-transport handler. Treat the `retrieve` package as a reserved, parallel
-implementation; its renderers do not participate in either the MCP
-`dfmt_recall` path or the CLI `dfmt recall` command.
+The `format` request parameter is accepted and honored — `md` emits
+compact markdown lines (default), `json` and `xml` re-run the
+`SnapshotBuilder` pipeline and use `JSONRenderer` /
+`XMLRenderer` so path interning (Refs table + `[rN]` token
+references) is active on those formats too.
 
 ### 11.2 Session-continuity loop (Claude Code)
 
