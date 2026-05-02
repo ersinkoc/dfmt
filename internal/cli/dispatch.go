@@ -1038,7 +1038,9 @@ func runDoctor(args []string) int {
 			if err != nil {
 				return false, err.Error()
 			}
-			_ = f.Close()
+			if err := f.Close(); err != nil {
+				return false, fmt.Sprintf("journal exists but could not close: %v", err)
+			}
 			return true, ""
 		}},
 		{"Index file readable", func() (bool, string) {
@@ -1053,7 +1055,9 @@ func runDoctor(args []string) int {
 			if err != nil {
 				return false, err.Error()
 			}
-			_ = f.Close()
+			if err := f.Close(); err != nil {
+				return false, fmt.Sprintf("index exists but could not close: %v", err)
+			}
 			return true, fmt.Sprintf("%d bytes", fi.Size())
 		}},
 		{"Port file consistent with daemon liveness", func() (bool, string) {
