@@ -60,18 +60,14 @@ Users should be able to act on the hints DFMT prints today.
 
 ### Sandbox & permissions
 
-- [ ] **Wire `.dfmt/permissions.yaml`** into
-  `sandbox.NewSandbox(projectPath)`. The parser
-  (`sandbox.LoadPolicy`) exists and is tested; the daemon
-  currently always installs `DefaultPolicy()`. Goal: the
-  hint message DFMT prints on every denial ("add
-  `allow:exec:<cmd> *` to .dfmt/permissions.yaml") becomes
-  a true escape hatch instead of a forward-looking promise.
-- [ ] **Wire `.dfmt/redact.yaml`** into the redactor at
-  daemon start. `Redactor.AddPattern` exists; the loader is
-  the missing half. Operators with site-specific credential
-  shapes (custom vault keys, tenant-scoped tokens, internal
-  OAuth flows) currently have to fork the binary.
+- [x] **Wire `.dfmt/permissions.yaml`** into daemon start.
+  `sandbox.LoadPolicyMerged` (ADR-0014) adds custom allow/deny
+  rules on top of `DefaultPolicy()`; the hint on denial now
+  works as a true escape hatch.
+- [x] **Wire `.dfmt/redact.yaml`** into the redactor at
+  daemon start. `LoadRedactMerged` (ADR-0014) adds custom
+  patterns on top of the built-in set; operators no longer
+  need to fork the binary.
 
 ### CLI command stubs → real implementations
 
@@ -82,10 +78,8 @@ Users should be able to act on the hints DFMT prints today.
   through the CLI. `set` validates against
   `Config.Validate()` before writing; `capture.fs.ignore`
   accepts JSON arrays. `get` prints full config as YAML.
-- [ ] **`dfmt task done <id>`** — actually journal a
-  `task.done` event keyed on the referenced task. Today:
-  prints "Task `<id>` marked done" and returns without
-  writing anything.
+- [x] **`dfmt task done <id>`** — journals a `task.done`
+  event via `runRemember` using `EvtTaskDone`.
 
 ### Recall / retrieval
 
