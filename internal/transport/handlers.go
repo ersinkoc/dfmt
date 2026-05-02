@@ -15,6 +15,7 @@ import (
 	"github.com/ersinkoc/dfmt/internal/content"
 	"github.com/ersinkoc/dfmt/internal/core"
 	"github.com/ersinkoc/dfmt/internal/redact"
+	"github.com/ersinkoc/dfmt/internal/retrieve"
 	"github.com/ersinkoc/dfmt/internal/sandbox"
 )
 
@@ -897,8 +898,38 @@ func (h *Handlers) Recall(ctx context.Context, params RecallParams) (_ *RecallRe
 		lines = append(lines, "_No events in session_")
 	}
 
+	snapshot := strings.Join(lines, "\n")
+
+	// format == "md" / default: use the markdown lines already built.
+	// For json/xml: re-run greedy fill using retrieve.SnapshotBuilder so
+	// path interning (Refs + [rN] tokens) is active on those formats too.
+	if format == "json" || format == "xml" {
+		// Count how many events from sorted actually made it into lines
+		// (the loop above stops when budget is exhausted; we need the same set).
+		// Since lines[0] is the "# Session Snapshot" header, selectedCount
+		// = len(lines)-1 events from sorted.
+		selectedCount := len(lines) - 1
+		selected := sorted
+		if selectedCount < len(sorted) {
+			selected = sorted[:selectedCount]
+		}
+		if len(selected) == 0 {
+			return &RecallResponse{
+				Snapshot: "{}",
+				Format:   format,
+			}, nil
+		}
+		sb := retrieve.NewSnapshotBuilder(budget)
+		snap, _ := sb.Build(selected)
+		if format == "json" {
+			snapshot = retrieve.NewJSONRenderer().Render(snap)
+		} else {
+			snapshot = retrieve.NewXMLRenderer().Render(snap)
+		}
+	}
+
 	return &RecallResponse{
-		Snapshot: strings.Join(lines, "\n"),
+		Snapshot: snapshot,
 		Format:   format,
 	}, nil
 }
