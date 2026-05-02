@@ -219,9 +219,9 @@ See `AGENTS.md` for the canonical agent-onboarding instructions and
 - `CHANGELOG.md` — release-by-release user-visible changes.
 - `SECURITY.md` — vulnerability reporting + supported versions +
   threat model summary.
-- `docs/ROADMAP.md` — v0.2.0 / v0.3.0 / v1.0.0 milestone plan.
+- `docs/ROADMAP.md` — v0.2.3 / v0.3.0 / v1.0.0 milestone plan.
 - `docs/ARCHITECTURE.md` — system architecture deep dive.
-- `docs/adr/` — Architecture Decision Records (12 ADRs as of v0.2.0).
+- `docs/adr/` — Architecture Decision Records (19 ADRs as of v0.2.3).
 
 ## Dependency policy
 

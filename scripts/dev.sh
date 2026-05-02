@@ -168,7 +168,7 @@ mkdir -p "$TARGET_DIR"
 
 git_rev="dev"
 git_rev=$(git rev-parse --short HEAD 2>/dev/null || echo "dev")
-ldflags="-X github.com/ersinkoc/dfmt/internal/version.Current=v0.2.0-dev+${git_rev}"
+ldflags="-X github.com/ersinkoc/dfmt/internal/version.Current=v0.2.3-dev+${git_rev}"
 go build -ldflags "$ldflags" -o "$TARGET_PATH" ./cmd/dfmt
 [[ -f "$TARGET_PATH" ]] || err "build failed"
 ok "built ${TARGET_PATH}"
