@@ -1706,7 +1706,8 @@ func getConfigField(cfg *config.Config, key string) (string, bool) {
 	case "capture.fs.enabled":
 		return fmt.Sprintf("%v", cfg.Capture.FS.Enabled), true
 	case "capture.fs.ignore":
-		return fmt.Sprintf("%v", cfg.Capture.FS.Ignore), true
+		b, _ := json.Marshal(cfg.Capture.FS.Ignore)
+		return string(b), true
 	case "capture.fs.debounce_ms":
 		return fmt.Sprintf("%d", cfg.Capture.FS.DebounceMS), true
 	case "storage.durability":
@@ -1767,6 +1768,10 @@ func setConfigField(cfg *config.Config, key, value string) error {
 			return fmt.Errorf("invalid int %q: %w", value, err)
 		}
 		cfg.Capture.FS.DebounceMS = v
+	case "capture.fs.ignore":
+		if err := json.Unmarshal([]byte(value), &cfg.Capture.FS.Ignore); err != nil {
+			return fmt.Errorf("invalid JSON array %q: %w", value, err)
+		}
 	case "storage.durability":
 		cfg.Storage.Durability = value
 	case "storage.max_batch_ms":
