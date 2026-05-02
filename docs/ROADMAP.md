@@ -75,14 +75,13 @@ Users should be able to act on the hints DFMT prints today.
 
 ### CLI command stubs → real implementations
 
-- [ ] **`dfmt tail`** — real journal tail with `--follow`.
-  Today: `runTail` (`internal/cli/dispatch.go`) prints a
-  not-implemented stub.
-- [ ] **`dfmt config get/set`** — mutate `.dfmt/config.yaml`
-  through the CLI rather than requiring a hand-edit. Today:
-  `runConfig` is read-only and only prints three fields.
-  Schema-aware `set` should validate against
-  `Config.Validate()` before writing.
+- [x] **`dfmt tail`** — real journal tail with `--follow`.
+  Implemented via `StreamEvents` RPC; supports `--follow`,
+  `--from`, and `--limit`.
+- [x] **`dfmt config get/set`** — mutate `.dfmt/config.yaml`
+  through the CLI. `set` validates against
+  `Config.Validate()` before writing; `capture.fs.ignore`
+  accepts JSON arrays. `get` prints full config as YAML.
 - [ ] **`dfmt task done <id>`** — actually journal a
   `task.done` event keyed on the referenced task. Today:
   prints "Task `<id>` marked done" and returns without
@@ -90,17 +89,13 @@ Users should be able to act on the hints DFMT prints today.
 
 ### Recall / retrieval
 
-- [ ] **Wire `internal/retrieve/SnapshotBuilder` into
+- [x] **Wire `internal/retrieve/SnapshotBuilder` into
   `handlers.Recall`**, replacing the inline tier-bucket fill.
-  This is what lets path interning (Refs table at the top of
-  the snapshot + `[rN]` references in event lines) actually
-  surface to agents — the renderer is implemented in
-  `internal/retrieve/render_md.go` but unwired today.
-- [ ] **Honor `RecallParams.Format`** — the `format` field
-  is accepted (`md` / `json` / `xml`) but the production
-  handler ignores it and always emits markdown. JSON is
-  occasionally useful for tooling; XML is a leftover and
-  should either be implemented or dropped.
+  Path interning (Refs table + `[rN]` references) is now
+  active on all three formats.
+- [x] **Honor `RecallParams.Format`** — `json` and `xml`
+  formats now use `JSONRenderer` / `XMLRenderer` with the
+  `SnapshotBuilder` pipeline; `md` remains the default.
 
 ### Config-schema hygiene
 
