@@ -25,6 +25,28 @@ The wire surfaces under SemVer guarantees today are:
 
 Internal package shapes (`internal/...`) are NOT covered by SemVer.
 
+## [0.2.5] — 2026-05-03
+
+Feature release: dashboard multi-project switching.
+
+### Features
+
+- **Dashboard multi-project dropdown** — the dashboard now shows all
+  running daemon projects in a dropdown and lets you switch between them
+  to view per-project stats. Two new HTTP endpoints support this:
+  `/api/all-daemons` (returns unfiltered daemon registry) and
+  `/api/proxy` (forwards requests to other daemons via HTTP, enabling
+  the browser to talk to any daemon through the local relay without
+  hitting same-origin restrictions).
+
+### Internal
+
+- `internal/transport/http.go` — added `handleAPIAllDaemons` and
+  `handleAPIProxy` handlers
+- `internal/transport/dashboard.go` — `loadStatsForProject()` and
+  `projectSelect` change listener wired; `loadDaemons` now fetches
+  `/api/all-daemons`
+
 ## [0.2.3] — 2026-05-02
 
 Patch release: BatchExec stub now returns `ErrBatchExecNotImplemented`
