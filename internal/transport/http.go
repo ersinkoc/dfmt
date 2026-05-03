@@ -1,6 +1,7 @@
 package transport
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -163,6 +164,8 @@ func (s *HTTPServer) Start(ctx context.Context) error {
 	mux.HandleFunc("/dashboard.js", s.handleDashboardJS)
 	mux.HandleFunc("/api/stats", s.handleAPIStats)
 	mux.HandleFunc("/api/daemons", s.handleAPIDaemons)
+	mux.HandleFunc("/api/all-daemons", s.handleAPIAllDaemons)
+	mux.HandleFunc("/api/proxy", s.handleAPIProxy)
 	mux.HandleFunc("/api/stream", s.handleAPIStream)
 	mux.HandleFunc("/healthz", s.handleHealth)
 	mux.HandleFunc("/readyz", s.handleHealth)
@@ -799,6 +802,271 @@ func (s *HTTPServer) handleAPIDaemons(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewEncoder(w).Encode(daemons); err != nil {
 		fmt.Fprintf(os.Stderr, "encode daemons: %v\n", err)
 	}
+}
+
+// handleAPIAllDaemons returns the full daemon registry without project filtering.
+// This is used by the dashboard to populate the project switcher dropdown.
+// Unlike handleAPIDaemons (which filters to only the current project), this returns
+// all registered daemons so users can switch between projects.
+func (s *HTTPServer) handleAPIAllDaemons(w http.ResponseWriter, r *http.Request) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			logging.Errorf("handleAPIAllDaemons panic recovered: %v", rec)
+			http.Error(w, "internal error", http.StatusInternalServerError)
+		}
+	}()
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+
+	// Read registry file directly (same as handleAPIDaemons)
+	home, _ := os.UserHomeDir()
+	if home == "" {
+		home = os.TempDir()
+	}
+	registryPath := filepath.Join(home, ".dfmt", "daemons.json")
+
+	data, err := os.ReadFile(registryPath)
+	if err != nil {
+		_ = json.NewEncoder(w).Encode([]any{})
+		return
+	}
+
+	var daemons []map[string]any
+	if err := json.Unmarshal(data, &daemons); err != nil {
+		_ = json.NewEncoder(w).Encode([]any{})
+		return
+	}
+
+	if err := json.NewEncoder(w).Encode(daemons); err != nil {
+		fmt.Fprintf(os.Stderr, "encode all daemons: %v\n", err)
+	}
+}
+
+// handleAPIProxy forwards JSON-RPC requests to other daemons by project path.
+// Browser sends {target_project_path, method, params} and we forward to the
+// target daemon via HTTP, enabling cross-daemon stats from the dashboard
+// without hitting same-origin restrictions.
+func (s *HTTPServer) handleAPIProxy(w http.ResponseWriter, r *http.Request) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			logging.Errorf("handleAPIProxy panic recovered: %v", rec)
+			http.Error(w, "internal error", http.StatusInternalServerError)
+		}
+	}()
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+
+	var req struct {
+		TargetProjectPath string          `json:"target_project_path"`
+		Method            string          `json:"method"`
+		Params            json.RawMessage `json:"params"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		_ = json.NewEncoder(w).Encode(Response{
+			JSONRPC: jsonRPCVersion,
+			Error:   &RPCError{Code: -32600, Message: "invalid request: " + err.Error()},
+			ID:      nil,
+		})
+		return
+	}
+
+	if req.TargetProjectPath == "" {
+		_ = json.NewEncoder(w).Encode(Response{
+			JSONRPC: jsonRPCVersion,
+			Error:   &RPCError{Code: -32602, Message: "target_project_path is required"},
+			ID:      nil,
+		})
+		return
+	}
+
+	// Read registry to find target daemon's address
+	home, _ := os.UserHomeDir()
+	if home == "" {
+		home = os.TempDir()
+	}
+	registryPath := filepath.Join(home, ".dfmt", "daemons.json")
+
+	data, err := os.ReadFile(registryPath)
+	if err != nil {
+		_ = json.NewEncoder(w).Encode(Response{
+			JSONRPC: jsonRPCVersion,
+			Error:   &RPCError{Code: -32603, Message: "could not read registry: " + err.Error()},
+			ID:      nil,
+		})
+		return
+	}
+
+	var daemonList []map[string]any
+	if err := json.Unmarshal(data, &daemonList); err != nil {
+		_ = json.NewEncoder(w).Encode(Response{
+			JSONRPC: jsonRPCVersion,
+			Error:   &RPCError{Code: -32603, Message: "could not parse registry: " + err.Error()},
+			ID:      nil,
+		})
+		return
+	}
+
+	var targetDaemon map[string]any
+	for _, d := range daemonList {
+		if p, ok := d["project_path"].(string); ok && pathsEqualForRuntime(p, req.TargetProjectPath) {
+			targetDaemon = d
+			break
+		}
+	}
+
+	if targetDaemon == nil {
+		_ = json.NewEncoder(w).Encode(Response{
+			JSONRPC: jsonRPCVersion,
+			Error:   &RPCError{Code: -32603, Message: "daemon not running for project: " + req.TargetProjectPath},
+			ID:      nil,
+		})
+		return
+	}
+
+	// Determine target URL
+	var targetURL string
+	if runtime.GOOS == goosWindows {
+		if port, ok := targetDaemon["port"].(float64); ok && port > 0 {
+			targetURL = fmt.Sprintf("http://127.0.0.1:%d/api/stats", int(port))
+		} else {
+			_ = json.NewEncoder(w).Encode(Response{
+				JSONRPC: jsonRPCVersion,
+				Error:   &RPCError{Code: -32603, Message: "daemon has no port for project: " + req.TargetProjectPath},
+				ID:      nil,
+			})
+			return
+		}
+	} else {
+		if sock, ok := targetDaemon["socket_path"].(string); ok && sock != "" {
+			targetURL = "http://unix/api/stats"
+		} else {
+			_ = json.NewEncoder(w).Encode(Response{
+				JSONRPC: jsonRPCVersion,
+				Error:   &RPCError{Code: -32603, Message: "daemon has no socket for project: " + req.TargetProjectPath},
+				ID:      nil,
+			})
+			return
+		}
+	}
+
+	// Make HTTP request to target daemon
+	proxyReq := struct {
+		JSONRPC string          `json:"jsonrpc"`
+		Method  string          `json:"method"`
+		Params  json.RawMessage `json:"params"`
+		ID     any             `json:"id"`
+	}{
+		JSONRPC: "2.0",
+		Method:  req.Method,
+		Params:  req.Params,
+		ID:      1,
+	}
+
+	body, err := json.Marshal(proxyReq)
+	if err != nil {
+		_ = json.NewEncoder(w).Encode(Response{
+			JSONRPC: jsonRPCVersion,
+			Error:   &RPCError{Code: -32603, Message: "could not marshal request: " + err.Error()},
+			ID:      nil,
+		})
+		return
+	}
+
+	httpClient := &http.Client{Timeout: 5 * time.Second}
+	var httpReq *http.Request
+
+	if runtime.GOOS == goosWindows {
+		httpReq, err = http.NewRequest("POST", targetURL, bytes.NewReader(body))
+	} else {
+		// Unix socket - use DialContext
+		socketPath := targetDaemon["socket_path"].(string)
+		dialer := net.Dialer{Timeout: 5 * time.Second}
+		conn, err := dialer.DialContext(r.Context(), "unix", socketPath)
+		if err != nil {
+			_ = json.NewEncoder(w).Encode(Response{
+				JSONRPC: jsonRPCVersion,
+				Error:   &RPCError{Code: -32603, Message: "could not connect to daemon: " + err.Error()},
+				ID:      nil,
+			})
+			return
+		}
+		defer conn.Close()
+
+		// Write request directly to socket
+		_, err = conn.Write(body)
+		if err != nil {
+			_ = json.NewEncoder(w).Encode(Response{
+				JSONRPC: jsonRPCVersion,
+				Error:   &RPCError{Code: -32603, Message: "could not send request: " + err.Error()},
+				ID:      nil,
+			})
+			return
+		}
+
+		// Read response
+		respBuf := make([]byte, 16<<20) // 16 MB like maxRPCResponseBytes
+		n, err := conn.Read(respBuf)
+		if err != nil && err != io.EOF {
+			_ = json.NewEncoder(w).Encode(Response{
+				JSONRPC: jsonRPCVersion,
+				Error:   &RPCError{Code: -32603, Message: "could not read response: " + err.Error()},
+				ID:      nil,
+			})
+			return
+		}
+		_, err = w.Write(respBuf[:n])
+		return
+	}
+
+	if err != nil {
+		_ = json.NewEncoder(w).Encode(Response{
+			JSONRPC: jsonRPCVersion,
+			Error:   &RPCError{Code: -32603, Message: "could not create request: " + err.Error()},
+			ID:      nil,
+		})
+		return
+	}
+
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq = httpReq.WithContext(r.Context())
+
+	resp, err := httpClient.Do(httpReq)
+	if err != nil {
+		_ = json.NewEncoder(w).Encode(Response{
+			JSONRPC: jsonRPCVersion,
+			Error:   &RPCError{Code: -32603, Message: "request to daemon failed: " + err.Error()},
+			ID:      nil,
+		})
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		_ = json.NewEncoder(w).Encode(Response{
+			JSONRPC: jsonRPCVersion,
+			Error:   &RPCError{Code: -32603, Message: fmt.Sprintf("daemon returned status %d", resp.StatusCode)},
+			ID:      nil,
+		})
+		return
+	}
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		_ = json.NewEncoder(w).Encode(Response{
+			JSONRPC: jsonRPCVersion,
+			Error:   &RPCError{Code: -32603, Message: "could not read daemon response: " + err.Error()},
+			ID:      nil,
+		})
+		return
+	}
+
+	_, _ = w.Write(respBody)
 }
 
 // handleAPIStream streams journal events via SSE (Server-Sent Events).

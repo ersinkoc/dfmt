@@ -179,7 +179,7 @@ function renderChart(containerId, data) {
 
 async function loadDaemons() {
   try {
-    var resp = await fetch('/api/daemons');
+    var resp = await fetch('/api/all-daemons');
     var daemons = await resp.json();
     projectSelect.innerHTML = '';
     if (!daemons || daemons.length === 0) {
@@ -197,6 +197,46 @@ async function loadDaemons() {
     });
   } catch (err) {
     console.error('Failed to load daemons:', err);
+  }
+}
+
+async function loadStatsForProject(projectPath) {
+  showLoading();
+  try {
+    var resp = await fetch('/api/proxy', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        target_project_path: projectPath,
+        method: 'dfmt.stats',
+        params: {no_cache: true}
+      })
+    });
+    var data = await resp.json();
+    if (data.error) throw new Error(data.error.message || 'Unknown error');
+    var stats = data.result;
+    document.getElementById('total-events').textContent = stats.events_total;
+    document.getElementById('total-input').textContent = formatNumber(stats.total_input_tokens || 0);
+    document.getElementById('total-output').textContent = formatNumber(stats.total_output_tokens || 0);
+    document.getElementById('token-savings').textContent = formatNumber(stats.token_savings || 0);
+    document.getElementById('cache-hit-rate').textContent = (stats.cache_hit_rate || 0).toFixed(1) + '%';
+    document.getElementById('raw-bytes').textContent = formatNumber(stats.total_raw_bytes || 0);
+    document.getElementById('returned-bytes').textContent = formatNumber(stats.total_returned_bytes || 0);
+    document.getElementById('bytes-saved').textContent = formatNumber(stats.bytes_saved || 0);
+    document.getElementById('compression-ratio').textContent = ((stats.compression_ratio || 0) * 100).toFixed(1) + '%';
+    document.getElementById('dedup-hits').textContent = formatNumber(stats.dedup_hits || 0);
+    if (stats.session_start && stats.session_end) {
+      var start = new Date(stats.session_start);
+      var end = new Date(stats.session_end);
+      document.getElementById('session-duration').textContent = formatDuration(end - start);
+      document.getElementById('session-start').textContent = start.toLocaleString();
+      document.getElementById('session-end').textContent = end.toLocaleString();
+    }
+    renderChart('type-chart', stats.events_by_type);
+    renderChart('priority-chart', stats.events_by_priority);
+    showStats();
+  } catch (err) {
+    showError('Error loading stats for ' + projectPath + ': ' + err.message);
   }
 }
 
@@ -245,6 +285,12 @@ function init() {
   daemonBadge = document.getElementById('daemonBadge');
 
   refreshBtn.addEventListener('click', loadStats);
+  projectSelect.addEventListener('change', function() {
+    var selected = projectSelect.value;
+    if (selected) {
+      loadStatsForProject(selected);
+    }
+  });
   loadDaemons();
   loadStats();
 }
