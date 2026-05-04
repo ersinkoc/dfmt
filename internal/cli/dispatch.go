@@ -2097,6 +2097,11 @@ func goToolchainAtLeast(version string, wantMajor, wantMinor, wantPatch int) boo
 // caller passing user input here would need to validate the scheme
 // first.
 func openInBrowser(url string) error {
+	// Skip browser launches during tests — launching a browser in a test
+	// environment causes unwanted pop-ups and test isolation violations.
+	if flag.Lookup("test.v") != nil {
+		return nil
+	}
 	var cmd *exec.Cmd
 	switch runtime.GOOS {
 	case "windows":
