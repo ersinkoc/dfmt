@@ -129,6 +129,26 @@ func TestBM25(t *testing.T) {
 	}
 }
 
+func TestBM25Score_AvgDocLenZero(t *testing.T) {
+	bm := NewBM25Okapi()
+	// avgDocLen <= 0 falls back to IDF-only scoring
+	score := bm.Score(5, 100, 0.0, 2, 10)
+	// Should equal IDF(df, N) since avgDocLen is 0
+	expected := IDF(2, 10)
+	if score != expected {
+		t.Errorf("Score with avgDocLen=0: got %f, want %f (IDF-only)", score, expected)
+	}
+}
+
+func TestBM25Score_DfZero(t *testing.T) {
+	bm := NewBM25Okapi()
+	// df=0 should return 0 (via first condition)
+	score := bm.Score(5, 100, 50.0, 0, 10)
+	if score != 0 {
+		t.Errorf("Score with df=0: got %f, want 0", score)
+	}
+}
+
 func TestULIDMonotonicity(t *testing.T) {
 	ts := time.Now()
 	ids := make([]ULID, 100)
@@ -366,6 +386,25 @@ func TestClassifierMatchRuleMessageRegex(t *testing.T) {
 	}
 }
 
+func TestClassifierMatchRuleInvalidRegex(t *testing.T) {
+	c := NewClassifier()
+
+	// Invalid regex should not crash and rule should not match
+	c.AddRule(Rule{
+		Match:    RuleMatch{MessageRegex: "[invalid"},
+		Priority: PriP1,
+	})
+
+	e := Event{Type: EvtError, Data: map[string]any{"message": "ERROR: test"}}
+	// With invalid regex, reInvalid=true, so matchRule returns false.
+	// Event has no matching rules, so default priority is used.
+	got := c.Classify(e)
+	// Default for EvtError is PriP2
+	if got != PriP2 {
+		t.Errorf("Invalid regex rule should not match, got %s, want %s", got, PriP2)
+	}
+}
+
 func TestClassifierMatchRuleNoData(t *testing.T) {
 	c := NewClassifier()
 
@@ -378,6 +417,108 @@ func TestClassifierMatchRuleNoData(t *testing.T) {
 	e := Event{Type: EvtFileEdit}
 	if c.Classify(e) != PriP3 {
 		t.Errorf("Should use default P3 when no data, got %s", c.Classify(e))
+	}
+}
+
+func TestClassifierMatchRulePathGlobNilData(t *testing.T) {
+	c := NewClassifier()
+	c.AddRule(Rule{
+		Match:    RuleMatch{PathGlob: "*.go"},
+		Priority: PriP1,
+	})
+	// Event with nil Data should not match
+	e := Event{Type: EvtFileEdit, Data: nil}
+	if c.Classify(e) != PriP3 {
+		t.Errorf("PathGlob with nil Data: got %s, want %s", c.Classify(e), PriP3)
+	}
+}
+
+func TestClassifierMatchRulePathGlobNonString(t *testing.T) {
+	c := NewClassifier()
+	c.AddRule(Rule{
+		Match:    RuleMatch{PathGlob: "*.go"},
+		Priority: PriP1,
+	})
+	// Event with non-string path should not match
+	e := Event{Type: EvtFileEdit, Data: map[string]any{"path": 123}}
+	if c.Classify(e) != PriP3 {
+		t.Errorf("PathGlob with non-string path: got %s, want %s", c.Classify(e), PriP3)
+	}
+}
+
+func TestClassifierMatchRuleMessageRegexNilData(t *testing.T) {
+	c := NewClassifier()
+	c.AddRule(Rule{
+		Match:    RuleMatch{MessageRegex: "ERROR"},
+		Priority: PriP1,
+	})
+	// Event with nil Data should not match message regex
+	e := Event{Type: EvtError, Data: nil}
+	if c.Classify(e) != PriP2 {
+		t.Errorf("MessageRegex with nil Data: got %s, want %s", c.Classify(e), PriP2)
+	}
+}
+
+func TestClassifierMatchRuleMessageRegexNonString(t *testing.T) {
+	c := NewClassifier()
+	c.AddRule(Rule{
+		Match:    RuleMatch{MessageRegex: "ERROR"},
+		Priority: PriP1,
+	})
+	// Event with non-string message should not match
+	e := Event{Type: EvtError, Data: map[string]any{"message": 123}}
+	if c.Classify(e) != PriP2 {
+		t.Errorf("MessageRegex with non-string message: got %s, want %s", c.Classify(e), PriP2)
+	}
+}
+
+func TestClassifierMatchRuleTagAnyMatch(t *testing.T) {
+	c := NewClassifier()
+	c.AddRule(Rule{
+		Match:    RuleMatch{TagAny: []string{"urgent", "error"}},
+		Priority: PriP1,
+	})
+	// Event with matching tag
+	e := Event{Type: EvtError, Tags: []string{"urgent"}}
+	if c.Classify(e) != PriP1 {
+		t.Errorf("TagAny match: got %s, want %s", c.Classify(e), PriP1)
+	}
+}
+
+func TestClassifierMatchRuleTagAnyNoMatch(t *testing.T) {
+	c := NewClassifier()
+	c.AddRule(Rule{
+		Match:    RuleMatch{TagAny: []string{"urgent", "error"}},
+		Priority: PriP1,
+	})
+	// Event with non-matching tag
+	e := Event{Type: EvtError, Tags: []string{"info"}}
+	if c.Classify(e) != PriP2 {
+		t.Errorf("TagAny no match: got %s, want %s", c.Classify(e), PriP2)
+	}
+}
+
+func TestClassifierMatchRuleTypeOnly(t *testing.T) {
+	c := NewClassifier()
+	c.AddRule(Rule{
+		Match:    RuleMatch{Type: EvtError},
+		Priority: PriP1,
+	})
+	e := Event{Type: EvtError}
+	if c.Classify(e) != PriP1 {
+		t.Errorf("Type match: got %s, want %s", c.Classify(e), PriP1)
+	}
+}
+
+func TestClassifierMatchRuleTypeNoMatch(t *testing.T) {
+	c := NewClassifier()
+	c.AddRule(Rule{
+		Match:    RuleMatch{Type: EvtError},
+		Priority: PriP1,
+	})
+	e := Event{Type: EvtFileEdit}
+	if c.Classify(e) != PriP3 {
+		t.Errorf("Type no match: got %s, want %s", c.Classify(e), PriP3)
 	}
 }
 

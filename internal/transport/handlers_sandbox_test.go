@@ -847,3 +847,57 @@ func TestHandlers_Write_DoesNotJournalRawContent(t *testing.T) {
 		t.Errorf("event Data bytes = %v; want %d", got, len(secret))
 	}
 }
+
+func TestHandlers_SetRedactor_NilClearsCaches(t *testing.T) {
+	idx := core.NewIndex()
+	h := NewHandlers(idx, &mockJournal{}, &stubSandbox{})
+
+	// Calling SetRedactor(nil) should clear dedup and sent caches without panicking.
+	h.SetRedactor(nil)
+	// Calling again should also be safe (idempotent lock/unlock).
+	h.SetRedactor(nil)
+}
+
+func TestAcquireLimiter_Success(t *testing.T) {
+	sem := make(chan struct{}, 1)
+	ctx := context.Background()
+
+	release, err := acquireLimiter(ctx, sem)
+	if err != nil {
+		t.Fatalf("acquireLimiter failed: %v", err)
+	}
+	if release == nil {
+		t.Fatal("release func is nil")
+	}
+	// Release should not panic.
+	release()
+}
+
+func TestAcquireLimiter_NilSemaphore(t *testing.T) {
+	ctx := context.Background()
+	release, err := acquireLimiter(ctx, nil)
+	if err != nil {
+		t.Fatalf("acquireLimiter(nil sem) failed: %v", err)
+	}
+	if release == nil {
+		t.Fatal("release func is nil for nil sem")
+	}
+	release()
+}
+
+func TestAcquireLimiter_ContextCancelled(t *testing.T) {
+	sem := make(chan struct{}) // unbuffered — send will block
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(5 * time.Millisecond)
+		cancel()
+	}()
+
+	_, err := acquireLimiter(ctx, sem)
+	if err == nil {
+		t.Error("expected context error")
+	}
+	if err != context.Canceled {
+		t.Errorf("expected Canceled, got %v", err)
+	}
+}

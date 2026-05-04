@@ -2,8 +2,10 @@ package transport
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -437,5 +439,315 @@ func TestHTTPHandleAPIStream_HandlersNil(t *testing.T) {
 	hs.handleAPIStream(rec, req)
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Errorf("expected 503, got %d", rec.Code)
+	}
+}
+
+func TestHTTPServerIsAllowedOrigin_TCPListener(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Skipf("skipping: could not create TCP listener: %v", err)
+	}
+	defer ln.Close()
+
+	hs := newTestHTTPServerWithSandbox(nil)
+	hs.listener = ln
+	defer hs.Stop(context.Background())
+
+	addr := ln.Addr().(*net.TCPAddr)
+	want := fmt.Sprintf("http://%s", addr.String())
+
+	if !hs.isAllowedOrigin(want) {
+		t.Errorf("isAllowedOrigin(%q) = false, want true", want)
+	}
+	// Wrong origin should be rejected
+	if hs.isAllowedOrigin("http://evil.com") {
+		t.Error("isAllowedOrigin(evil.com) = true, want false")
+	}
+	// Different port should be rejected
+	wrongPort := fmt.Sprintf("http://127.0.0.1:%d", addr.Port+1)
+	if hs.isAllowedOrigin(wrongPort) {
+		t.Errorf("isAllowedOrigin(%q) = true, want false (wrong port)", wrongPort)
+	}
+}
+
+func TestHTTPServerIsAllowedOrigin_NonTCPListener(t *testing.T) {
+	hs := newTestHTTPServerWithSandbox(nil)
+	hs.listener = nil
+
+	if hs.isAllowedOrigin("http://127.0.0.1:12345") {
+		t.Error("isAllowedOrigin with nil listener = true, want false")
+	}
+}
+
+func TestHTTPServerIsAllowedHost_TCPListener(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Skipf("skipping: could not create TCP listener: %v", err)
+	}
+	defer ln.Close()
+
+	hs := newTestHTTPServerWithSandbox(nil)
+	hs.listener = ln
+	defer hs.Stop(context.Background())
+
+	addr := ln.Addr().(*net.TCPAddr)
+	if !hs.isAllowedHost(addr.String()) {
+		t.Errorf("isAllowedHost(%q) = false, want true", addr.String())
+	}
+	if hs.isAllowedHost("evil.com") {
+		t.Error("isAllowedHost(evil.com) = true, want false")
+	}
+	// localhost form
+	if !hs.isAllowedHost(fmt.Sprintf("localhost:%d", addr.Port)) {
+		t.Errorf("isAllowedHost(localhost:%d) = false, want true", addr.Port)
+	}
+	// IPv6 localhost form
+	if !hs.isAllowedHost(fmt.Sprintf("[::1]:%d", addr.Port)) {
+		t.Errorf("isAllowedHost([::1]:%d) = false, want true", addr.Port)
+	}
+	// unknown host
+	if hs.isAllowedHost("unknown:9999") {
+		t.Error("isAllowedHost(unknown:9999) = true, want false")
+	}
+}
+
+func TestHTTPServerIsAllowedHost_NonTCPListener(t *testing.T) {
+	hs := newTestHTTPServerWithSandbox(nil)
+	hs.listener = nil
+	// nil listener = fail-closed (no listener to validate against).
+	if hs.isAllowedHost("anything") {
+		t.Error("isAllowedHost with nil listener = true, want false")
+	}
+}
+
+func TestHTTPHandle_Glob(t *testing.T) {
+	sb := &stubSandbox{
+		globResp: sandbox.GlobResp{
+			Files:   []string{"/a/b.go", "/a/c.go"},
+			Matches: []sandbox.ContentMatch{{Text: "match", Score: 1}},
+		},
+	}
+	hs := newTestHTTPServerWithSandbox(sb)
+	resp := doRPC(t, hs, "dfmt.glob", GlobParams{Pattern: "*.go", Intent: "files"})
+	if resp.Error != nil {
+		t.Fatalf("unexpected error: %+v", resp.Error)
+	}
+}
+
+func TestHTTPHandle_Glob_Error(t *testing.T) {
+	sb := &stubSandbox{globErr: errors.New("glob failed")}
+	hs := newTestHTTPServerWithSandbox(sb)
+	resp := doRPC(t, hs, "dfmt.glob", GlobParams{Pattern: "*.go"})
+	if resp.Error == nil {
+		t.Fatal("expected error")
+	}
+	if resp.Error.Code != -32603 {
+		t.Errorf("expected -32603, got %d", resp.Error.Code)
+	}
+}
+
+func TestHTTPHandle_Grep(t *testing.T) {
+	sb := &stubSandbox{
+		grepResp: sandbox.GrepResp{
+			Matches: []sandbox.GrepMatch{{File: "/a/b.go", Line: 10, Content: "func foo()"}},
+			Summary: "1 match",
+		},
+	}
+	hs := newTestHTTPServerWithSandbox(sb)
+	resp := doRPC(t, hs, "dfmt.grep", GrepParams{Pattern: "func foo", Path: "/a"})
+	if resp.Error != nil {
+		t.Fatalf("unexpected error: %+v", resp.Error)
+	}
+}
+
+func TestHTTPHandle_Grep_Error(t *testing.T) {
+	sb := &stubSandbox{grepErr: errors.New("grep failed")}
+	hs := newTestHTTPServerWithSandbox(sb)
+	resp := doRPC(t, hs, "dfmt.grep", GrepParams{Pattern: "foo"})
+	if resp.Error == nil {
+		t.Fatal("expected error")
+	}
+	if resp.Error.Code != -32603 {
+		t.Errorf("expected -32603, got %d", resp.Error.Code)
+	}
+}
+
+func TestHTTPHandle_Edit(t *testing.T) {
+	sb := &stubSandbox{
+		editResp: sandbox.EditResp{Success: true, Summary: "1 replacement"},
+	}
+	hs := newTestHTTPServerWithSandbox(sb)
+	resp := doRPC(t, hs, "dfmt.edit", EditParams{Path: "/a/b.go", OldString: "foo", NewString: "bar"})
+	if resp.Error != nil {
+		t.Fatalf("unexpected error: %+v", resp.Error)
+	}
+}
+
+func TestHTTPHandle_Edit_Error(t *testing.T) {
+	sb := &stubSandbox{editErr: errors.New("edit failed")}
+	hs := newTestHTTPServerWithSandbox(sb)
+	resp := doRPC(t, hs, "dfmt.edit", EditParams{Path: "/a/b.go", OldString: "foo", NewString: "bar"})
+	if resp.Error == nil {
+		t.Fatal("expected error")
+	}
+	if resp.Error.Code != -32603 {
+		t.Errorf("expected -32603, got %d", resp.Error.Code)
+	}
+}
+
+func TestHTTPHandle_Write(t *testing.T) {
+	sb := &stubSandbox{
+		writeResp: sandbox.WriteResp{Success: true, Summary: "wrote 10 bytes"},
+	}
+	hs := newTestHTTPServerWithSandbox(sb)
+	resp := doRPC(t, hs, "dfmt.write", WriteParams{Path: "/a/b.go", Content: "hello"})
+	if resp.Error != nil {
+		t.Fatalf("unexpected error: %+v", resp.Error)
+	}
+}
+
+func TestHTTPHandle_Write_Error(t *testing.T) {
+	sb := &stubSandbox{writeErr: errors.New("write failed")}
+	hs := newTestHTTPServerWithSandbox(sb)
+	resp := doRPC(t, hs, "dfmt.write", WriteParams{Path: "/a/b.go", Content: "hello"})
+	if resp.Error == nil {
+		t.Fatal("expected error")
+	}
+	if resp.Error.Code != -32603 {
+		t.Errorf("expected -32603, got %d", resp.Error.Code)
+	}
+}
+
+func TestHTTPHandleDashboardJS(t *testing.T) {
+	hs := newTestHTTPServerWithSandbox(nil)
+	req := httptest.NewRequest(http.MethodGet, "/dashboard.js", nil)
+	rec := httptest.NewRecorder()
+	hs.handleDashboardJS(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", rec.Code)
+	}
+	ct := rec.Header().Get("Content-Type")
+	if !strings.Contains(ct, "application/javascript") {
+		t.Errorf("expected application/javascript, got %q", ct)
+	}
+	if rec.Header().Get("X-Content-Type-Options") != "nosniff" {
+		t.Error("missing nosniff header")
+	}
+	if rec.Body.Len() == 0 {
+		t.Error("expected non-empty body")
+	}
+}
+
+func TestHTTPHandleAPIAllDaemons_Empty(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	t.Setenv("USERPROFILE", tmp)
+	hs := newTestHTTPServerWithSandbox(nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/all-daemons", nil)
+	rec := httptest.NewRecorder()
+	hs.handleAPIAllDaemons(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", rec.Code)
+	}
+	if strings.TrimSpace(rec.Body.String()) != "[]" {
+		t.Errorf("expected [], got %q", rec.Body.String())
+	}
+}
+
+func TestHTTPHandleAPIAllDaemons_WithEntries(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	t.Setenv("USERPROFILE", tmp)
+	dir := filepath.Join(tmp, ".dfmt")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	entries := []map[string]any{
+		{"project_path": "/proj/a", "port": 9001},
+		{"project_path": "/proj/b", "port": 9002},
+	}
+	data, _ := json.Marshal(entries)
+	if err := os.WriteFile(filepath.Join(dir, "daemons.json"), data, 0644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	hs := newTestHTTPServerWithSandbox(nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/all-daemons", nil)
+	rec := httptest.NewRecorder()
+	hs.handleAPIAllDaemons(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", rec.Code)
+	}
+	var got []map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(got) != 2 {
+		t.Errorf("expected 2 daemons, got %d", len(got))
+	}
+}
+
+func TestHTTPHandleAPIAllDaemons_BadJSON(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	t.Setenv("USERPROFILE", tmp)
+	dir := filepath.Join(tmp, ".dfmt")
+	_ = os.MkdirAll(dir, 0755)
+	_ = os.WriteFile(filepath.Join(dir, "daemons.json"), []byte("not json"), 0644)
+	hs := newTestHTTPServerWithSandbox(nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/all-daemons", nil)
+	rec := httptest.NewRecorder()
+	hs.handleAPIAllDaemons(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", rec.Code)
+	}
+	if strings.TrimSpace(rec.Body.String()) != "[]" {
+		t.Errorf("expected [], got %q", rec.Body.String())
+	}
+}
+
+func TestHTTPHandleAPIProxy_MethodNotAllowed(t *testing.T) {
+	hs := newTestHTTPServerWithSandbox(nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/proxy", nil)
+	rec := httptest.NewRecorder()
+	hs.handleAPIProxy(rec, req)
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Errorf("expected 405, got %d", rec.Code)
+	}
+}
+
+func TestHTTPHandleAPIProxy_InvalidBody(t *testing.T) {
+	hs := newTestHTTPServerWithSandbox(nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/proxy", strings.NewReader("not json"))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	hs.handleAPIProxy(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Errorf("expected 200 (error in body), got %d", rec.Code)
+	}
+	var resp Response
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if resp.Error == nil {
+		t.Error("expected error in response")
+	}
+}
+
+func TestHTTPHandleAPIProxy_MissingTargetPath(t *testing.T) {
+	hs := newTestHTTPServerWithSandbox(nil)
+	body := `{"method":"stats","params":{}}`
+	req := httptest.NewRequest(http.MethodPost, "/api/proxy", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	hs.handleAPIProxy(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Errorf("expected 200 (error in body), got %d", rec.Code)
+	}
+	var resp Response
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if resp.Error == nil {
+		t.Error("expected error in response for missing target_project_path")
 	}
 }

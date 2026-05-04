@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -603,4 +604,138 @@ func TestLoadIndexCorruptGob(t *testing.T) {
 	if err == nil {
 		t.Error("LoadIndex should fail for corrupt gob data")
 	}
+}
+
+func TestRebuildIndexFromJournalIntoNilJournal(t *testing.T) {
+	idx := NewIndex()
+	_, err := RebuildIndexFromJournalInto(context.Background(), nil, idx)
+	if err != nil {
+		t.Errorf("expected nil error for nil journal, got: %v", err)
+	}
+}
+
+func TestRebuildIndexFromJournalIntoNilIndex(t *testing.T) {
+	mj := &mockJournalForRebuild{}
+	_, err := RebuildIndexFromJournalInto(context.Background(), mj, nil)
+	if err != nil {
+		t.Errorf("expected nil error for nil index, got: %v", err)
+	}
+}
+
+func TestRebuildIndexFromJournalIntoStreamError(t *testing.T) {
+	mj := &mockJournalForRebuild{streamErr: fmt.Errorf("stream error")}
+	idx := NewIndex()
+	_, err := RebuildIndexFromJournalInto(context.Background(), mj, idx)
+	if err == nil {
+		t.Error("expected error for stream error")
+	}
+}
+
+func TestRebuildIndexFromJournalWithEvents(t *testing.T) {
+	mj := &mockJournalForRebuild{}
+	idx, hiID, err := RebuildIndexFromJournal(context.Background(), mj)
+	if err != nil {
+		t.Fatalf("RebuildIndexFromJournal failed: %v", err)
+	}
+	if idx == nil {
+		t.Fatal("expected non-nil index")
+	}
+	// hiID should be empty for a journal with no events
+	if hiID != "" {
+		t.Errorf("expected empty hiID for empty journal, got: %s", hiID)
+	}
+}
+
+func TestRebuildIndexFromJournalError(t *testing.T) {
+	mj := &mockJournalForRebuild{streamErr: fmt.Errorf("journal stream failed")}
+	idx, _, err := RebuildIndexFromJournal(context.Background(), mj)
+	if err == nil {
+		t.Fatal("expected error for stream failure")
+	}
+	if idx != nil {
+		t.Error("expected nil index on error")
+	}
+}
+
+// mockJournalForRebuild implements Journal for rebuild tests.
+type mockJournalForRebuild struct {
+	streamErr error
+}
+
+func (m *mockJournalForRebuild) Stream(ctx context.Context, from string) (<-chan Event, error) {
+	if m.streamErr != nil {
+		return nil, m.streamErr
+	}
+	ch := make(chan Event)
+	close(ch)
+	return ch, nil
+}
+
+func (m *mockJournalForRebuild) Append(ctx context.Context, e Event) error { return nil }
+func (m *mockJournalForRebuild) Checkpoint(ctx context.Context) (string, error) { return "", nil }
+func (m *mockJournalForRebuild) Rotate(ctx context.Context) error { return nil }
+func (m *mockJournalForRebuild) Size() (int64, error) { return 0, nil }
+func (m *mockJournalForRebuild) Close() error { return nil }
+
+// TestIndexExcerpt tests the Excerpt method of Index.
+func TestIndexExcerpt(t *testing.T) {
+	idx := NewIndex()
+
+	// Empty index - no excerpts map
+	if got := idx.Excerpt("nonexistent"); got != "" {
+		t.Errorf("Excerpt on empty index: got %q, want empty", got)
+	}
+
+	// Add an event with message
+	e := Event{
+		ID:   "event1",
+		Type: "note",
+		Data: map[string]any{"message": "This is a test message"},
+	}
+	idx.Add(e)
+
+	// Now excerpts map exists but docID not in it
+	if got := idx.Excerpt("event1"); got == "" {
+		t.Error("Excerpt for existing event1 returned empty")
+	}
+	// Nonexistent ID still returns empty
+	if got := idx.Excerpt("nonexistent"); got != "" {
+		t.Errorf("Excerpt for nonexistent: got %q, want empty", got)
+	}
+
+	// Add event with path but no message
+	e2 := Event{
+		ID:   "event2",
+		Type: "tool.exec",
+		Data: map[string]any{"path": "/tmp/test.go"},
+	}
+	idx.Add(e2)
+	if got := idx.Excerpt("event2"); got == "" {
+		t.Error("Excerpt for event2 with path returned empty")
+	}
+
+	// Add event with neither message nor path
+	e3 := Event{
+		ID:    "event3",
+		Type:  "tool.exec",
+		Actor: "agent-1",
+	}
+	idx.Add(e3)
+	if got := idx.Excerpt("event3"); got == "" {
+		t.Error("Excerpt for event3 with no message/path returned empty")
+	}
+}
+
+// TestIndexSetParams tests the BM25 parameter setter.
+func TestIndexSetParams(t *testing.T) {
+	idx := NewIndex()
+	idx.SetParams(IndexParams{K1: 1.8, B: 0.7})
+	// Smoke test - params are set without panicking
+}
+
+// TestIndexSetParamsEmpty tests SetParams on zero values.
+func TestIndexSetParamsEmpty(t *testing.T) {
+	idx := NewIndex()
+	// k1=0 or b=0 are valid (will use BM25 defaults)
+	idx.SetParams(IndexParams{})
 }

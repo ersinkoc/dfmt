@@ -130,10 +130,30 @@ func TestSocketPath(t *testing.T) {
 	}
 }
 
-func TestNoProjectError(t *testing.T) {
-	err := ErrNoProjectFound
+func TestNoProjectErrorInterface(t *testing.T) {
+	err := &NoProjectError{}
 	if err.Error() == "" {
-		t.Error("ErrNoProjectFound should have an error message")
+		t.Error("NoProjectError.Error() returned empty string")
+	}
+	if err.Unwrap() != nil {
+		t.Error("NoProjectError.Unwrap() should return nil")
+	}
+}
+
+func TestUserRuntimeDir(t *testing.T) {
+	dir := userRuntimeDir()
+	if dir == "" {
+		t.Error("userRuntimeDir returned empty string")
+	}
+}
+
+func TestUserTag(t *testing.T) {
+	tag := userTag()
+	if tag == "" {
+		t.Error("userTag returned empty string")
+	}
+	if len(tag) != 8 {
+		t.Errorf("userTag length = %d, want 8", len(tag))
 	}
 }
 

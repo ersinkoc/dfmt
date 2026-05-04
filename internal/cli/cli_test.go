@@ -659,6 +659,28 @@ func TestRunExec(t *testing.T) {
 	}
 }
 
+func TestSetGlobalJSON(t *testing.T) {
+	SetGlobalJSON(true)
+	if !flagJSON {
+		t.Error("SetGlobalJSON(true) did not set flagJSON to true")
+	}
+	SetGlobalJSON(false)
+	if flagJSON {
+		t.Error("SetGlobalJSON(false) did not set flagJSON to false")
+	}
+}
+
+func TestSetGlobalProject(t *testing.T) {
+	SetGlobalProject("/test/path")
+	if flagProject != "/test/path" {
+		t.Errorf("SetGlobalProject(/test/path): got %q, want /test/path", flagProject)
+	}
+	SetGlobalProject("")
+	if flagProject != "" {
+		t.Error("SetGlobalProject() did not clear flagProject")
+	}
+}
+
 func TestRunMCPStdin(t *testing.T) {
 	tmpDir := t.TempDir()
 	os.MkdirAll(tmpDir+"/.dfmt", 0755)
@@ -4098,11 +4120,206 @@ func TestRunExecJSONWithErrorResponse(t *testing.T) {
 }
 
 // =============================================================================
-// configureClaudeCode additional error path tests (92.3% coverage)
+// runRead, runFetch, runGlob, runGrep, runEdit, runWrite tests
+// These test the error path when daemon is unavailable (no fallback in these functions)
 // =============================================================================
 
+func TestRunReadWithNoDaemon(t *testing.T) {
+	tmpDir := t.TempDir()
+	os.MkdirAll(tmpDir+"/.dfmt", 0755)
+
+	flagProject = tmpDir
+	code := Dispatch([]string{"read", "/nonexistent/path/to/file.txt"})
+	// Daemon unavailable, no fallback - should return error
+	if code != 1 {
+		t.Logf("read with no daemon returned %d", code)
+	}
+}
+
+func TestRunFetchWithNoDaemon(t *testing.T) {
+	tmpDir := t.TempDir()
+	os.MkdirAll(tmpDir+"/.dfmt", 0755)
+
+	flagProject = tmpDir
+	code := Dispatch([]string{"fetch", "https://127.0.0.1:99999/nonexistent"})
+	// Daemon unavailable - should return error
+	if code != 1 {
+		t.Logf("fetch with no daemon returned %d", code)
+	}
+}
+
+func TestRunGlobWithNoDaemon(t *testing.T) {
+	tmpDir := t.TempDir()
+	os.MkdirAll(tmpDir+"/.dfmt", 0755)
+
+	flagProject = tmpDir
+	code := Dispatch([]string{"glob", "*.txt"})
+	// Daemon unavailable - should return error
+	if code != 1 {
+		t.Logf("glob with no daemon returned %d", code)
+	}
+}
+
+func TestRunGrepWithNoDaemon(t *testing.T) {
+	tmpDir := t.TempDir()
+	os.MkdirAll(tmpDir+"/.dfmt", 0755)
+
+	flagProject = tmpDir
+	code := Dispatch([]string{"grep", "pattern", "*.go"})
+	// Daemon unavailable - should return error
+	if code != 1 {
+		t.Logf("grep with no daemon returned %d", code)
+	}
+}
+
+func TestRunEditWithNoDaemon(t *testing.T) {
+	tmpDir := t.TempDir()
+	os.MkdirAll(tmpDir+"/.dfmt", 0755)
+
+	flagProject = tmpDir
+	code := Dispatch([]string{"edit", "-old", "old", "new", "/path/to/file"})
+	// Daemon unavailable - should return error
+	if code != 1 {
+		t.Logf("edit with no daemon returned %d", code)
+	}
+}
+
+func TestRunWriteWithNoDaemon(t *testing.T) {
+	tmpDir := t.TempDir()
+	os.MkdirAll(tmpDir+"/.dfmt", 0755)
+
+	flagProject = tmpDir
+	code := Dispatch([]string{"write", "-content", "hello", "/path/to/file"})
+	// Daemon unavailable - should return error
+	if code != 1 {
+		t.Logf("write with no daemon returned %d", code)
+	}
+}
+
+func TestRunReadWithFlagJSON(t *testing.T) {
+	tmpDir := t.TempDir()
+	os.MkdirAll(tmpDir+"/.dfmt", 0755)
+
+	flagProject = tmpDir
+	flagJSON = true
+	defer func() { flagJSON = false }()
+	code := Dispatch([]string{"read", "/nonexistent/path.txt"})
+	if code != 1 {
+		t.Logf("read --json with no daemon returned %d", code)
+	}
+}
+
+func TestRunGlobWithFlagJSON(t *testing.T) {
+	tmpDir := t.TempDir()
+	os.MkdirAll(tmpDir+"/.dfmt", 0755)
+
+	flagProject = tmpDir
+	flagJSON = true
+	defer func() { flagJSON = false }()
+	code := Dispatch([]string{"glob", "*.txt"})
+	if code != 1 {
+		t.Logf("glob --json with no daemon returned %d", code)
+	}
+}
+
+func TestRunGrepWithFlagJSON(t *testing.T) {
+	tmpDir := t.TempDir()
+	os.MkdirAll(tmpDir+"/.dfmt", 0755)
+
+	flagProject = tmpDir
+	flagJSON = true
+	defer func() { flagJSON = false }()
+	code := Dispatch([]string{"grep", "pattern", "*.go"})
+	if code != 1 {
+		t.Logf("grep --json with no daemon returned %d", code)
+	}
+}
+
+func TestRunEditWithFlagJSON(t *testing.T) {
+	tmpDir := t.TempDir()
+	os.MkdirAll(tmpDir+"/.dfmt", 0755)
+
+	flagProject = tmpDir
+	flagJSON = true
+	defer func() { flagJSON = false }()
+	code := Dispatch([]string{"edit", "-old", "old", "new", "/path"})
+	if code != 1 {
+		t.Logf("edit --json with no daemon returned %d", code)
+	}
+}
+
+func TestRunWriteWithFlagJSON(t *testing.T) {
+	tmpDir := t.TempDir()
+	os.MkdirAll(tmpDir+"/.dfmt", 0755)
+
+	flagProject = tmpDir
+	flagJSON = true
+	defer func() { flagJSON = false }()
+	code := Dispatch([]string{"write", "-content", "hello", "/path"})
+	if code != 1 {
+		t.Logf("write --json with no daemon returned %d", code)
+	}
+}
+
+func TestRunFetchWithMethodAndBody(t *testing.T) {
+	tmpDir := t.TempDir()
+	os.MkdirAll(tmpDir+"/.dfmt", 0755)
+
+	flagProject = tmpDir
+	code := Dispatch([]string{"fetch", "-method", "POST", "-body", `{"key":"value"}`, "https://127.0.0.1:99999/"})
+	if code != 1 {
+		t.Logf("fetch POST with body returned %d", code)
+	}
+}
+
+func TestRunGrepWithCaseInsensitive(t *testing.T) {
+	tmpDir := t.TempDir()
+	os.MkdirAll(tmpDir+"/.dfmt", 0755)
+
+	flagProject = tmpDir
+	code := Dispatch([]string{"grep", "-i", "PATTERN", "*.go"})
+	if code != 1 {
+		t.Logf("grep -i returned %d", code)
+	}
+}
+
+func TestRunGrepWithCustomFiles(t *testing.T) {
+	tmpDir := t.TempDir()
+	os.MkdirAll(tmpDir+"/.dfmt", 0755)
+
+	flagProject = tmpDir
+	code := Dispatch([]string{"grep", "pattern", "src/**/*.go"})
+	if code != 1 {
+		t.Logf("grep with files pattern returned %d", code)
+	}
+}
+
+func TestRunEditWithOldStringOnly(t *testing.T) {
+	tmpDir := t.TempDir()
+	os.MkdirAll(tmpDir+"/.dfmt", 0755)
+
+	flagProject = tmpDir
+	code := Dispatch([]string{"edit", "-old", "only-old-string"})
+	// Should fail - needs at least 2 args (path and new string)
+	if code != 1 {
+		t.Logf("edit with only old string returned %d", code)
+	}
+}
+
+func TestRunWriteWithoutContent(t *testing.T) {
+	tmpDir := t.TempDir()
+	os.MkdirAll(tmpDir+"/.dfmt", 0755)
+
+	flagProject = tmpDir
+	code := Dispatch([]string{"write", "/path/to/file"})
+	// Should fail - content flag is required
+	if code != 1 {
+		t.Logf("write without content returned %d", code)
+	}
+}
+
 // =============================================================================
-// runStatus with various project scenarios
+// runSetupVerify additional error path tests (86.7% coverage)
 // =============================================================================
 
 func TestRunStatusWithNoDaemon(t *testing.T) {

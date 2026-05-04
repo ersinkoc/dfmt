@@ -3,6 +3,7 @@ package core
 import (
 	"container/heap"
 	"encoding/gob"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -712,4 +713,193 @@ func TestIndexPersistLockError(t *testing.T) {
 	}
 
 	os.Chmod(indexPath, 0644)
+}
+
+// TestIndexTotalDocs tests the TotalDocs method.
+func TestIndexTotalDocs(t *testing.T) {
+	ix := NewIndex()
+	if ix.TotalDocs() != 0 {
+		t.Errorf("TotalDocs on empty index = %d, want 0", ix.TotalDocs())
+	}
+
+	e := Event{ID: "doc1", TS: time.Now(), Type: EvtNote}
+	e.Sig = e.ComputeSig()
+	ix.Add(e)
+
+	if ix.TotalDocs() != 1 {
+		t.Errorf("TotalDocs after 1 Add = %d, want 1", ix.TotalDocs())
+	}
+
+	e2 := Event{ID: "doc2", TS: time.Now(), Type: EvtNote}
+	e2.Sig = e2.ComputeSig()
+	ix.Add(e2)
+
+	if ix.TotalDocs() != 2 {
+		t.Errorf("TotalDocs after 2 Add = %d, want 2", ix.TotalDocs())
+	}
+
+	ix.Remove("doc1")
+	if ix.TotalDocs() != 1 {
+		t.Errorf("TotalDocs after Remove(doc1) = %d, want 1", ix.TotalDocs())
+	}
+}
+
+// TestIndexRemoveUnknownID tests Remove with an unknown ID (no-op branch).
+func TestIndexRemoveUnknownID(t *testing.T) {
+	ix := NewIndex()
+	// Remove on empty index should not panic.
+	ix.Remove("nonexistent")
+	if ix.TotalDocs() != 0 {
+		t.Errorf("TotalDocs after Remove(nonexistent) = %d, want 0", ix.TotalDocs())
+	}
+}
+
+// TestIndexRemoveUpdatesStemPL tests that Remove updates stem posting lists.
+func TestIndexRemoveUpdatesStemPL(t *testing.T) {
+	ix := NewIndex()
+	e := Event{
+		ID:   "doc1",
+		TS:   time.Now(),
+		Type: EvtNote,
+		Data: map[string]any{"message": "testing remove stem"},
+	}
+	e.Sig = e.ComputeSig()
+	ix.Add(e)
+
+	ix.Remove("doc1")
+	if ix.TotalDocs() != 0 {
+		t.Errorf("TotalDocs = %d, want 0 after remove", ix.TotalDocs())
+	}
+}
+
+// TestIndexSearchTrigramWithEmptyIndex tests SearchTrigram on empty index.
+func TestIndexSearchTrigramEmpty(t *testing.T) {
+	ix := NewIndex()
+	hits := ix.SearchTrigram("anything", 10)
+	if len(hits) != 0 {
+		t.Errorf("SearchTrigram on empty index = %d hits, want 0", len(hits))
+	}
+}
+
+// TestIndexMarshalUnmarshalRoundTrip tests full marshal/unmarshal cycle.
+func TestIndexMarshalUnmarshalRoundTrip(t *testing.T) {
+	ix := NewIndex()
+	e := Event{
+		ID:   "doc1",
+		TS:   time.Now(),
+		Type: EvtDecision,
+		Data: map[string]any{"message": "test decision"},
+		Tags: []string{"test"},
+	}
+	e.Sig = e.ComputeSig()
+	ix.Add(e)
+
+	data, err := ix.MarshalJSON()
+	if err != nil {
+		t.Fatalf("MarshalJSON failed: %v", err)
+	}
+
+	ix2 := &Index{}
+	if err := ix2.UnmarshalJSON(data); err != nil {
+		t.Fatalf("UnmarshalJSON failed: %v", err)
+	}
+
+	if ix2.TotalDocs() != 1 {
+		t.Errorf("Unmarshaled index TotalDocs = %d, want 1", ix2.TotalDocs())
+	}
+}
+
+// TestIndexRemoveWithMultipleDocs tests Remove with multiple docs and ensures avgDocLen recomputes.
+func TestIndexRemoveWithMultipleDocs(t *testing.T) {
+	ix := NewIndex()
+	for i := 0; i < 3; i++ {
+		e := Event{
+			ID:   string(rune('a' + i)),
+			TS:   time.Now(),
+			Type: EvtNote,
+			Data: map[string]any{"message": fmt.Sprintf("doc content %d", i)},
+		}
+		e.Sig = e.ComputeSig()
+		ix.Add(e)
+	}
+
+	if ix.TotalDocs() != 3 {
+		t.Errorf("TotalDocs = %d, want 3", ix.TotalDocs())
+	}
+
+	ix.Remove("a")
+	if ix.TotalDocs() != 2 {
+		t.Errorf("TotalDocs after Remove(a) = %d, want 2", ix.TotalDocs())
+	}
+
+	// avgDocLen recomputation checked by not panicking.
+}
+
+// TestIndexAddDuplicate tests that adding a doc with duplicate ID is a no-op.
+func TestIndexAddDuplicate(t *testing.T) {
+	ix := NewIndex()
+	e := Event{
+		ID:   "doc1",
+		TS:   time.Now(),
+		Type: EvtNote,
+		Data: map[string]any{"message": "first"},
+	}
+	e.Sig = e.ComputeSig()
+	ix.Add(e)
+	if ix.TotalDocs() != 1 {
+		t.Errorf("TotalDocs = %d, want 1", ix.TotalDocs())
+	}
+	// Add same ID again
+	e.Data = map[string]any{"message": "second"}
+	e.Sig = e.ComputeSig()
+	ix.Add(e)
+	// Should still be 1 (no-op)
+	if ix.TotalDocs() != 1 {
+		t.Errorf("TotalDocs after duplicate Add = %d, want 1", ix.TotalDocs())
+	}
+}
+
+// TestIndexSearchNoMatch tests SearchBM25 when no docs match.
+func TestIndexSearchNoMatch(t *testing.T) {
+	ix := NewIndex()
+	ix.Add(Event{
+		ID: "01HZZZZZZZZZZZZZZZZZZZZZZ1", Type: "note",
+		Data: map[string]any{"msg": "apple banana"},
+	})
+	// Search for something that doesn't match any indexed terms
+	hits := ix.SearchBM25("xyz completely unrelated query", 10)
+	if len(hits) != 0 {
+		t.Errorf("SearchBM25 for unrelated query returned %d hits, want 0", len(hits))
+	}
+}
+
+// TestIndexSearchTrigramAllEmpty tests SearchTrigram when tokens produce no trigram matches.
+func TestIndexSearchTrigramAllEmpty(t *testing.T) {
+	ix := NewIndex()
+	ix.Add(Event{
+		ID: "01HZZZZZZZZZZZZZZZZZZZZZZ1", Type: "note",
+		Data: map[string]any{"msg": "hello world"},
+	})
+	// Trigrams from short tokens that don't produce matching trigrams
+	hits := ix.SearchTrigram("ab", 10) // "ab" is only 2 chars, too short for trigram
+	if len(hits) != 0 {
+		t.Errorf("SearchTrigram short token returned %d hits, want 0", len(hits))
+	}
+}
+
+// TestIndexEventTextEmpty tests eventText when event has no searchable content.
+func TestIndexEventTextEmpty(t *testing.T) {
+	ix := NewIndex()
+	ix.Add(Event{
+		ID:   "01HZZZZZZZZZZZZZZZZZZZZZZ1",
+		Type: EvtDecision,
+		Tags: []string{},
+		// No Data, no message, no path
+	})
+	// Should not panic; eventText returns "" for events with empty content
+	// Search should return empty
+	hits := ix.SearchBM25("anything", 10)
+	if len(hits) != 0 {
+		t.Errorf("SearchBM25 on empty event returned %d hits, want 0", len(hits))
+	}
 }
