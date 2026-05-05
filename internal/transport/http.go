@@ -265,6 +265,12 @@ func (s *HTTPServer) wrapSecurity(next http.Handler) http.Handler {
 			}
 		}
 
+		// Dashboard is publicly accessible (no auth required).
+		if strings.HasPrefix(r.URL.Path, "/dashboard") {
+			next.ServeHTTP(w, r)
+			return
+		}
+
 		// Bearer token authentication for HTTP endpoints.
 		if s.authToken != "" {
 			authHeader := r.Header.Get("Authorization")

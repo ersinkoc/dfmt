@@ -67,8 +67,14 @@ func TestPolicyCheck_HintIsAppended(t *testing.T) {
 // (base-cmd allow-miss, full-cmd deny-hit, individual-part allow-miss).
 // The hint suffix must be reachable from each.
 func TestExec_ChainDenialIncludesHint(t *testing.T) {
-	sb := NewSandbox("/tmp")
+	sb := NewSandbox(t.TempDir())
 	ctx := context.Background()
+
+	// Check if sh runtime is available; skip if not (e.g., Windows without Git Bash)
+	rt, ok := sb.runtimes.Get("sh")
+	if !ok || !rt.Available {
+		t.Skip("sh not available on this system")
+	}
 
 	cases := []struct {
 		name string

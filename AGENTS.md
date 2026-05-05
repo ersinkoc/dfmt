@@ -368,6 +368,10 @@ one, update the other in the same commit. The format is:
 If the divergence between the two files grows, prefer collapsing to a
 pointer-style CLAUDE.md and keeping all content here.
 
+
+
+
+
 <!-- dfmt:v1 begin -->
 # Context Discipline — REQUIRED
 
@@ -417,5 +421,3 @@ Some agents do not provide hooks to enforce these rules automatically.
 output above 8 KB can push earlier context out of the window, erasing
 the conversation's history. Following the rules above preserves it.
 <!-- dfmt:v1 end -->
-
-

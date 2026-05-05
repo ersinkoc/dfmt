@@ -27,6 +27,8 @@ Internal package shapes (`internal/...`) are NOT covered by SemVer.
 
 ## [Unreleased]
 
+## [0.2.8] — 2026-05-05
+
 ### Changed
 
 - **Default-permissive exec policy** — sandbox exec is now fully allowed by
@@ -46,7 +48,7 @@ Internal package shapes (`internal/...`) are NOT covered by SemVer.
 - **Fallback mapping documented** — AGENTS.md and CLAUDE.md now explicitly
   list the fallback tool for each dfmt_* MCP tool.
 
-## [0.2.6] — 2026-05-05
+## [0.2.7] — 2026-05-05
 
 Security release: fixes and verifies 8 security findings.
 

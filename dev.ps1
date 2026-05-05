@@ -95,8 +95,20 @@ if ($goVersionLine -match 'go(\d+)\.(\d+)(?:\.(\d+))?') {
 $claudeWasKilled = $false
 if (-not $KeepClaude) {
     Write-Step "Stopping running Claude Code processes..."
-    $claudeProcs = Get-Process -Name "Claude","claude","Claude Code" -ErrorAction SilentlyContinue
+    $claudeProcs = @(Get-Process -Name "Claude","claude","Claude Code" -ErrorAction SilentlyContinue)
     if ($claudeProcs) {
+        $interactive = [Environment]::GetEnvironmentVariable("CI") -ne "true" -and
+                       [Console]::IsInputRedirected -eq $false
+        if ($interactive) {
+            Write-Host "    WARNING: $($claudeProcs.Count) Claude Code process(es) will be terminated." -ForegroundColor Yellow
+            $confirm = Read-Host "    Kill Claude Code processes? [y/N]"
+            if ($confirm -ne 'y' -and $confirm -ne 'Y') {
+                Write-Info "aborted -- relaunch dev.ps1 with -KeepClaude to skip this step"
+                exit 0
+            }
+        } else {
+            Write-Warn "interactive input not available; sending termination signal to $($claudeProcs.Count) Claude Code process(es)"
+        }
         Write-Info "stopping $($claudeProcs.Count) Claude process(es)"
         $claudeProcs | Stop-Process -Force -ErrorAction SilentlyContinue
         $claudeWasKilled = $true
@@ -109,7 +121,7 @@ if (-not $KeepClaude) {
 }
 
 Write-Step "Stopping running dfmt processes..."
-$procs = Get-Process dfmt -ErrorAction SilentlyContinue
+$procs = @(Get-Process dfmt -ErrorAction SilentlyContinue)
 if ($procs) {
     Write-Info "stopping $($procs.Count) process(es)"
     $procs | Stop-Process -Force
@@ -272,7 +284,7 @@ try {
     $gitRev = (& git rev-parse --short HEAD 2>$null).Trim()
     if (-not $gitRev) { $gitRev = "dev" }
 } catch { $gitRev = "dev" }
-$ldflags = "-X github.com/ersinkoc/dfmt/internal/version.Current=v0.2.7-dev"
+$ldflags = "-X github.com/ersinkoc/dfmt/internal/version.Current=v0.2.8"
 & go build -ldflags $ldflags -o $TargetPath ./cmd/dfmt
 if ($LASTEXITCODE -ne 0 -or -not (Test-Path $TargetPath)) {
     Write-Err "build failed"

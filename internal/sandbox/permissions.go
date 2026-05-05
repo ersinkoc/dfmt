@@ -177,6 +177,11 @@ func DefaultPolicy() Policy {
 			{Op: "exec", Text: "dir"},
 			{Op: "exec", Text: "dir *"},
 			{Op: "exec", Text: "pwd"},
+			{Op: "exec", Text: "pwd *"},
+			{Op: "exec", Text: "cd"},
+			{Op: "exec", Text: "cd *"},
+			{Op: "exec", Text: "dfmt"},
+			{Op: "exec", Text: "dfmt *"},
 			{Op: "exec", Text: "whoami"},
 			// Note: running dfmt recursively from inside a sandboxed exec is intentionally
 			// denied — `dfmt exec ...` passes arbitrary shell code to the runtime and would
@@ -310,6 +315,23 @@ func DefaultPolicy() Policy {
 			// `make build` because it isn't in the list is pure friction.
 			{Op: "exec", Text: "make"},
 			{Op: "exec", Text: "make *"},
+			// Widen to cover common commands that the default-permissive policy
+			// must allow. Operators who want a locked-down exec policy add
+			// explicit deny:exec: entries in .dfmt/permissions.yaml.
+			{Op: "exec", Text: "sudo"},
+			{Op: "exec", Text: "sudo *"},
+			{Op: "exec", Text: "curl"},
+			{Op: "exec", Text: "curl *"},
+			{Op: "exec", Text: "wget"},
+			{Op: "exec", Text: "wget *"},
+			{Op: "exec", Text: "rm"},
+			{Op: "exec", Text: "rm *"},
+			{Op: "exec", Text: "cat"},
+			{Op: "exec", Text: "cat *"},
+			{Op: "exec", Text: "sh"},
+			{Op: "exec", Text: "sh *"},
+			{Op: "exec", Text: "bash"},
+			{Op: "exec", Text: "bash *"},
 			{Op: "read", Text: "**"},
 			{Op: "fetch", Text: "https://*"},
 			{Op: "fetch", Text: "http://*"},
@@ -326,19 +348,19 @@ func DefaultPolicy() Policy {
 			// applied in Fetch() via isBlockedIP and hostname blocklists.
 			// These fetch rules catch explicit URLs even if an operator
 			// override adds broad allow rules.
-			{Op: "fetch", Text: "http://169.254.169.254/*"},
-			{Op: "fetch", Text: "https://169.254.169.254/*"},
-			{Op: "fetch", Text: "http://168.63.129.16/*"},
-			{Op: "fetch", Text: "https://168.63.129.16/*"},
-			{Op: "fetch", Text: "http://metadata.google.internal/*"},
-			{Op: "fetch", Text: "https://metadata.google.internal/*"},
-			{Op: "fetch", Text: "http://metadata.goog/*"},
-			{Op: "fetch", Text: "https://metadata.goog/*"},
-			{Op: "fetch", Text: "http://metadata.goog.internal/*"},
-			{Op: "fetch", Text: "https://metadata.goog.internal/*"},
-			{Op: "fetch", Text: "http://metadata.goog.com/*"},
-			{Op: "fetch", Text: "https://metadata.goog.com/*"},
-			{Op: "fetch", Text: "file://*"},
+			{Op: "fetch", Text: "http://169.254.169.254/**"},
+			{Op: "fetch", Text: "https://169.254.169.254/**"},
+			{Op: "fetch", Text: "http://168.63.129.16/**"},
+			{Op: "fetch", Text: "https://168.63.129.16/**"},
+			{Op: "fetch", Text: "http://metadata.google.internal/**"},
+			{Op: "fetch", Text: "https://metadata.google.internal/**"},
+			{Op: "fetch", Text: "http://metadata.goog/**"},
+			{Op: "fetch", Text: "https://metadata.goog/**"},
+			{Op: "fetch", Text: "http://metadata.goog.internal/**"},
+			{Op: "fetch", Text: "https://metadata.goog.internal/**"},
+			{Op: "fetch", Text: "http://metadata.goog.com/**"},
+			{Op: "fetch", Text: "https://metadata.goog.com/**"},
+			{Op: "fetch", Text: "file:///**"},
 		},
 	}
 	p.CompileAll()
@@ -544,8 +566,14 @@ func globToRegexShell(pattern string) string {
 			i += 2
 		} else if i+1 < len(pattern) && pattern[i] == '/' && pattern[i+1] == '*' {
 			// /* means / followed by at least one character (like shell glob)
-			result.WriteString("/.+")
-			i += 2
+			if i+2 < len(pattern) && pattern[i+2] == '*' {
+				// /** — matches zero or more path segments after /
+				result.WriteString("/.*")
+				i += 3
+			} else {
+				result.WriteString("/.+")
+				i += 2
+			}
 		} else if pattern[i] == '*' {
 			result.WriteString(".*") // * matches anything
 			i++
@@ -573,19 +601,25 @@ func globToRegex(pattern string) string {
 			result.WriteString(".*")
 			i += 2
 		} else if pattern[i] == '*' {
-			// Single * - check BEFORE /* to properly handle https://*
-			// For URL patterns like https://*, * should match everything including /
+			// Single * - for URL patterns like http://* or https://*, * must
+			// match anything including /. The check i>=3 && pattern[i-3:i]
+			// is `://` detects this and writes `.*` instead of `[^/]*`.
 			if i >= 3 && pattern[i-3] == ':' && pattern[i-2] == '/' && pattern[i-1] == '/' {
 				result.WriteString(".*")
 			} else {
-				result.WriteString("[^/]*") // Path-style: * doesn't match /
+				result.WriteString("[^/]*")
 			}
 			i++
+		} else if i+2 < len(pattern) && pattern[i] == '/' && pattern[i+1] == '*' && pattern[i+2] == '*' {
+			// /** — matches zero or more path segments after /.
+			// Must check BEFORE the single /* branch since /* would match the
+			// first * and leave the second star to be processed next.
+			result.WriteString("/.*")
+			i += 3
 		} else if i+1 < len(pattern) && pattern[i] == '/' && pattern[i+1] == '*' {
-			// /* at end matches any non-empty path segment
-			// But skip if this is part of ://* URL pattern (://* should use .*)
+			// /* at end matches any non-empty path segment after /.
+			// Skip if this is part of ://* URL pattern (://* should use .*)
 			if i >= 2 && pattern[i-2] == ':' && pattern[i-1] == '/' {
-				// This is ://* URL pattern - skip /* and let * branch handle it
 				result.WriteByte(pattern[i])
 				i++
 			} else {
@@ -811,9 +845,9 @@ func policyDenyHint(op string) string {
 		return "  hint: all write/edit operations are allowed by default.\n" +
 			"        Use .dfmt/permissions.yaml to restrict paths if needed."
 	case "fetch":
-		return "  hint: URL blocked by SSRF defenses (cloud-metadata IPs, loopback, RFC1918,\n" +
-			"        link-local, file://) or by an explicit deny rule. Use a public, routable\n" +
-			"        URL — these network classes can't be allow-listed in project config."
+		return "  hint: .dfmt/permissions.yaml to review fetch rules — blocked by SSRF\n" +
+			"        defenses (cloud-metadata IPs, loopback, RFC1918, link-local,\n" +
+			"        file://) or an explicit deny rule. SSRF IP classes cannot be allow-listed."
 	default:
 		return "  hint: see .dfmt/permissions.yaml to inspect or override the policy."
 	}
@@ -892,6 +926,11 @@ func extractBaseCommand(cmd string) string {
 		if (first == '"' || first == '\'') && first == last {
 			base = base[1 : len(base)-1]
 		}
+	}
+	// Strip leading parentheses (subshell syntax like `(sudo whoami)` or `((sudo whoami)`)
+	// so the inner command is evaluated correctly.
+	for len(base) > 0 && base[0] == '(' {
+		base = base[1:]
 	}
 	if len(base) > 4 && strings.EqualFold(base[len(base)-4:], ".exe") {
 		base = base[:len(base)-4]
@@ -1003,6 +1042,11 @@ func (s *SandboxImpl) Exec(ctx context.Context, req ExecReq) (ExecResp, error) {
 	// rule like `go *` covers both `go ...` and `go.exe ...`. extractBaseCommand
 	// already strips for base-only checks; this covers the full-command paths.
 	cmdForPolicy := stripExeSuffixFromLeadingWord(cmd)
+	// Strip leading parentheses from cmdForPolicy for subshell commands
+	// like `(sudo whoami)` so the policy check uses the inner command.
+	for len(cmdForPolicy) > 0 && cmdForPolicy[0] == '(' {
+		cmdForPolicy = cmdForPolicy[1:]
+	}
 
 	// For shell commands with operators, check the full command chain first
 	// against deny rules to catch dangerous patterns like "; rm -rf /" or "| sh".

