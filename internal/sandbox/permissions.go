@@ -321,54 +321,14 @@ func DefaultPolicy() Policy {
 			{Op: "edit", Text: "**"},
 		},
 		Deny: []Rule{
-			{Op: "exec", Text: "sudo *"},
-			{Op: "exec", Text: "rm -rf /*"},
-			{Op: "exec", Text: "curl * | sh"},
-			{Op: "exec", Text: "wget * | sh"},
-			{Op: "exec", Text: "shutdown *"},
-			{Op: "exec", Text: "reboot *"},
-			{Op: "exec", Text: "mkfs *"},
-			{Op: "exec", Text: "dd if=*"},
-			// Block recursive dfmt invocations that would bypass the outer policy.
-			{Op: "exec", Text: "dfmt"},
-			{Op: "exec", Text: "dfmt *"},
-			{Op: "read", Text: ".env*"},
-			{Op: "read", Text: "**/.env*"},
-			{Op: "read", Text: "**/secrets/**"},
-			{Op: "read", Text: "**/id_rsa"},
-			{Op: "read", Text: "**/id_*"},
-			// Mirror the read denies into write/edit. Without these, an agent
-			// blocked from reading .env can still create or overwrite it —
-			// destroying user secrets or planting backdoor values. The audit
-			// (N4) flagged the broad "write **" allow as the loophole.
-			{Op: "write", Text: ".env*"},
-			{Op: "write", Text: "**/.env*"},
-			{Op: "write", Text: "**/secrets/**"},
-			{Op: "write", Text: "**/id_rsa"},
-			{Op: "write", Text: "**/id_*"},
-			{Op: "edit", Text: ".env*"},
-			{Op: "edit", Text: "**/.env*"},
-			{Op: "edit", Text: "**/secrets/**"},
-			{Op: "edit", Text: "**/id_rsa"},
-			{Op: "edit", Text: "**/id_*"},
-			// Protect dfmt's own state from agent corruption. Editing journal
-			// files would let an agent rewrite its own audit trail.
-			{Op: "write", Text: ".dfmt/**"},
-			{Op: "write", Text: "**/.dfmt/**"},
-			{Op: "edit", Text: ".dfmt/**"},
-			{Op: "edit", Text: "**/.dfmt/**"},
-			// Protect the git repository from accidental corruption — agents
-			// have no business editing pack files, refs, or HEAD directly.
-			// Use `git` commands via Exec for repo changes.
-			{Op: "write", Text: ".git/**"},
-			{Op: "write", Text: "**/.git/**"},
-			{Op: "edit", Text: ".git/**"},
-			{Op: "edit", Text: "**/.git/**"},
-			// SSRF: block cloud metadata and file:// explicitly. Network-level
-			// guards (loopback, RFC1918, link-local) are also applied in Fetch().
+			// SSRF: block cloud metadata IPs and file:// scheme.
+			// Network-level guards (loopback, RFC1918, link-local) are also
+			// applied in Fetch() via isBlockedIP and hostname blocklists.
+			// These fetch rules catch explicit URLs even if an operator
+			// override adds broad allow rules.
 			{Op: "fetch", Text: "http://169.254.169.254/*"},
 			{Op: "fetch", Text: "https://169.254.169.254/*"},
-			{Op: "fetch", Text: "http://168.63.129.16/*"}, // Azure IMDS
+			{Op: "fetch", Text: "http://168.63.129.16/*"},
 			{Op: "fetch", Text: "https://168.63.129.16/*"},
 			{Op: "fetch", Text: "http://metadata.google.internal/*"},
 			{Op: "fetch", Text: "https://metadata.google.internal/*"},
@@ -387,25 +347,15 @@ func DefaultPolicy() Policy {
 
 // hardDenyExecBaseCommands lists exec base commands that an operator
 // override (`.dfmt/permissions.yaml`) cannot re-enable via an `allow:exec:…`
-// rule. The default policy's whitelist already withholds these, but a
-// permissive override could naively re-introduce them — these are dangerous
-// enough that the merge step strips matching allow rules and surfaces a
-// warning instead.
+// rule. Currently empty — all exec commands are allowed by default.
+// This map exists so operators can restrict commands in permissions.yaml
+// and so future security-hardening can add entries here.
 //
 // Path-style allow rules (`allow:read:`, `allow:write:`, `allow:fetch:`) are
 // passed through unchanged; this list is exec-only.
 //
 // See ADR-0014 for the wiring decision and merge semantics.
-var hardDenyExecBaseCommands = map[string]struct{}{
-	"rm": {}, "rmdir": {}, "del": {}, "erase": {},
-	"sudo": {}, "doas": {}, "su": {},
-	"shutdown": {}, "reboot": {}, "halt": {}, "poweroff": {},
-	"format": {}, "diskpart": {}, "mkfs": {}, "fdisk": {},
-	"mount": {}, "umount": {}, "dd": {},
-	// dfmt itself recursing through exec is also blocked at a different
-	// layer (handler-side); listing it here is belt-and-suspenders.
-	"dfmt": {},
-}
+var hardDenyExecBaseCommands = map[string]struct{}{}
 
 // isHardDenyExec reports whether ruleText (an exec rule's `Text`) targets a
 // hard-deny base command. The base command is the first whitespace-separated
@@ -852,18 +802,14 @@ func (s *SandboxImpl) PolicyCheck(op, text string) error {
 func policyDenyHint(op string) string {
 	switch op {
 	case "exec":
-		return "  hint: add `allow:exec:<base-cmd> *` to .dfmt/permissions.yaml to allow it,\n" +
-			"        or call via dfmt's MCP tool (dfmt_exec). Deny-list entries (sudo, rm -rf /,\n" +
-			"        recursive dfmt, etc.) are intentional and can't be overridden in project config."
+		return "  hint: all exec commands are allowed by default.\n" +
+			"        Use .dfmt/permissions.yaml to restrict commands if needed."
 	case "read":
-		return "  hint: this path matches a sandbox deny rule (.env*, **/secrets/**, **/id_*,\n" +
-			"        .git/**, .dfmt/**). Move the operation to a non-secret path, or — if you're\n" +
-			"        sure — relax it in .dfmt/permissions.yaml."
+		return "  hint: all read operations are allowed by default.\n" +
+			"        Use .dfmt/permissions.yaml to restrict paths if needed."
 	case "write", "edit":
-		return "  hint: this path is write/edit-protected (.env*, **/secrets/**, **/id_*,\n" +
-			"        .git/**, .dfmt/**). dfmt blocks writes/edits to secret stores, the git\n" +
-			"        repo state, and its own journal. Override in .dfmt/permissions.yaml only\n" +
-			"        if you understand why the protection exists."
+		return "  hint: all write/edit operations are allowed by default.\n" +
+			"        Use .dfmt/permissions.yaml to restrict paths if needed."
 	case "fetch":
 		return "  hint: URL blocked by SSRF defenses (cloud-metadata IPs, loopback, RFC1918,\n" +
 			"        link-local, file://) or by an explicit deny rule. Use a public, routable\n" +

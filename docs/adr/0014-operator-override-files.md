@@ -131,7 +131,7 @@ input.
 
 ```
 ✓ Redact override (.dfmt/redact.yaml) — loaded 3 pattern(s)
-✓ Permissions override (.dfmt/permissions.yaml) — loaded 5 rule(s); 1 hard-deny mask(s): override allow:exec:rm * ignored (hard-deny base command)
+✓ Permissions override (.dfmt/permissions.yaml) — loaded 5 rule(s)
 ```
 
 A warning surfaces both in `dfmt doctor` output and in `logging.Warnf`
@@ -178,9 +178,11 @@ the recovery cost.
 - The doc-vs-code lie closes: `.dfmt/permissions.yaml` and
   `.dfmt/redact.yaml` now match what ARCHITECTURE.md, CLAUDE.md, and
   the godoc have been promising for two release cycles.
-- Hard-deny invariant tightens the security stance: an operator can
-  broaden file/network reach but cannot re-enable destructive
-  commands the default policy intentionally withholds.
+- Hard-deny invariant mechanism exists but the default list is empty:
+  exec is fully allowed by default; operators who need restrictions
+  use `permissions.yaml` to add them. This trades friction for
+  permissiveness — tools like `gh`, `curl`, `sudo` now work out of
+  the box.
 - `dfmt doctor` + daemon-startup logs provide two independent
   paths to verify what state the daemon will see, closing the most
   common "I edited the file but nothing changed" support loop.
@@ -192,9 +194,9 @@ the recovery cost.
 - Two formats (line for permissions, YAML for redact) mean two
   parser code paths to maintain. Mitigated by the operator-facing
   format guidance in `dfmt init`'s generated stubs (follow-up).
-- Hard-deny list is hard-coded in Go. Adding to it requires a new
-  release. We accept this — the list is small, evolves rarely, and
-  a project-config knob would defeat the invariant's purpose.
+- The hard-deny mechanism exists but is inert when the list is empty.
+  Future security hardening can add entries to `hardDenyExecBaseCommands`
+  in `permissions.go` — the merge machinery is already in place.
 - The redact override is additive only (no way to disable a default
   pattern). An operator who needs to suppress, say, `bearer_token`
   for a debugging session has no path short of forking. We accept

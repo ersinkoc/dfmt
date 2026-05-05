@@ -79,6 +79,35 @@ func EnsureProjectInitialized(dir string) error {
 	return nil
 }
 
+// RemoveProject undoes EnsureProjectInitialized and the instruction-file
+// injection from `dfmt init`. It is the counterpart to EnsureProjectInitialized:
+// - removes .dfmt/ directory and all contents
+// - strips the DFMT block from .claude/settings.json
+// - strips the DFMT block from CLAUDE.md and AGENTS.md
+// Idempotent: re-running produces no additional changes.
+func RemoveProject(dir string) error {
+	// Remove .dfmt/ directory tree
+	dfmtDir := filepath.Join(dir, ".dfmt")
+	if err := os.RemoveAll(dfmtDir); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove .dfmt/: %w", err)
+	}
+
+	// Strip DFMT block from .claude/settings.json
+	settingsPath := filepath.Join(dir, ".claude", "settings.json")
+	if err := StripDFMTBlock(settingsPath); err != nil {
+		return fmt.Errorf("strip settings.json: %w", err)
+	}
+
+	// Strip DFMT block from agent instruction files
+	for _, name := range []string{"CLAUDE.md", "AGENTS.md"} {
+		path := filepath.Join(dir, name)
+		if err := StripDFMTBlock(path); err != nil {
+			return fmt.Errorf("strip %s: %w", name, err)
+		}
+	}
+	return nil
+}
+
 // writeProjectClaudeSettings merges DFMT's tool-enforcement entries into a
 // project-local .claude/settings.json. It NEVER overwrites the file: existing
 // hooks, permissions, and unknown keys are preserved. dfmt-owned entries are

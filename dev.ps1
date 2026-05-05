@@ -272,7 +272,7 @@ try {
     $gitRev = (& git rev-parse --short HEAD 2>$null).Trim()
     if (-not $gitRev) { $gitRev = "dev" }
 } catch { $gitRev = "dev" }
-$ldflags = "-X github.com/ersinkoc/dfmt/internal/version.Current=v0.2.3-dev+$gitRev"
+$ldflags = "-X github.com/ersinkoc/dfmt/internal/version.Current=v0.2.7-dev"
 & go build -ldflags $ldflags -o $TargetPath ./cmd/dfmt
 if ($LASTEXITCODE -ne 0 -or -not (Test-Path $TargetPath)) {
     Write-Err "build failed"

@@ -43,6 +43,8 @@ func Dispatch(args []string) int {
 	switch cmd {
 	case "init":
 		return runInit(remaining)
+	case "remove", "teardown":
+		return runRemove(remaining)
 	case "quickstart":
 		return runQuickstart(remaining)
 	case "remember", "note":
@@ -230,6 +232,29 @@ func runInit(args []string) int {
 	fmt.Println()
 	fmt.Println("Next: run `dfmt setup` to wire DFMT into your AI agent(s),")
 	fmt.Println("then `dfmt doctor` to verify.")
+	return 0
+}
+
+// runRemove undoes dfmt init for a project: removes .dfmt/, .claude/settings.json
+// dfmt block, and AGENTS.md/CLAUDE.md dfmt block. Does NOT touch agent MCP configs
+// (use `dfmt setup --uninstall` for that). Safe to re-run — idempotent.
+func runRemove(args []string) int {
+	dir, _ := os.Getwd()
+	fs := flag.NewFlagSet("remove", flag.ContinueOnError)
+	fs.StringVar(&dir, "dir", "", "Project directory")
+	if err := fs.Parse(args); err != nil {
+		if err == flag.ErrHelp {
+			return 0
+		}
+		return 2
+	}
+
+	if err := setup.RemoveProject(dir); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		return 1
+	}
+	fmt.Printf("Removed DFMT from %s\n", dir)
+	fmt.Println("Note: run `dfmt setup --uninstall` to also remove agent MCP configs.")
 	return 0
 }
 

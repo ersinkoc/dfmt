@@ -25,6 +25,27 @@ The wire surfaces under SemVer guarantees today are:
 
 Internal package shapes (`internal/...`) are NOT covered by SemVer.
 
+## [Unreleased]
+
+### Changed
+
+- **Default-permissive exec policy** — sandbox exec is now fully allowed by
+  default. All commands (`gh`, `curl`, `sudo`, `rm`, etc.) pass without
+  configuration. Operators can restrict specific commands via
+  `.dfmt/permissions.yaml` if needed.
+- **Default-permissive read/write/edit** — all read, write, and edit
+  operations are allowed by default. Operators can restrict paths via
+  `.dfmt/permissions.yaml`.
+- **Hard-deny list cleared** — `hardDenyExecBaseCommands` is now empty.
+  SSRF protections (cloud metadata IPs, file:// scheme) remain enforced via
+  fetch deny rules.
+- **`dfmt remove` command** — new `dfmt remove` (alias: `dfmt teardown`)
+  undoes `dfmt init`: removes `.dfmt/`, strips DFMT block from
+  `.claude/settings.json`, CLAUDE.md, and AGENTS.md. Does NOT touch
+  agent MCP configs — use `dfmt setup --uninstall` for that.
+- **Fallback mapping documented** — AGENTS.md and CLAUDE.md now explicitly
+  list the fallback tool for each dfmt_* MCP tool.
+
 ## [0.2.6] — 2026-05-05
 
 Security release: fixes and verifies 8 security findings.

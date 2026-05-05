@@ -44,18 +44,20 @@ func TestPolicyDenyHint_AllOps(t *testing.T) {
 // TestPolicyCheck_HintIsAppended exercises the wire-up: the hint produced
 // by policyDenyHint must actually end up in the error returned by
 // PolicyCheck. Catches a future refactor that drops the trailing %s%s.
+// Under the default-permissive policy exec is allowed; we test fetch
+// denial (cloud metadata IP) since SSRF blocks are always enforced.
 func TestPolicyCheck_HintIsAppended(t *testing.T) {
 	sb := NewSandbox("/tmp")
-	err := sb.PolicyCheck("read", ".env")
+	err := sb.PolicyCheck("fetch", "http://169.254.169.254/latest/meta-data/")
 	if err == nil {
-		t.Fatal("PolicyCheck(read .env) returned nil, want denied")
+		t.Fatal("PolicyCheck(fetch cloud-metadata) returned nil, want denied")
 	}
 	msg := err.Error()
 	// Existing tests assert this prefix — must remain present.
 	if !strings.Contains(msg, "operation denied by policy") {
 		t.Errorf("error = %q, want to contain 'operation denied by policy'", msg)
 	}
-	// New: the hint must come along.
+	// The hint must come along.
 	if !strings.Contains(msg, ".dfmt/permissions.yaml") {
 		t.Errorf("error = %q, want to contain hint pointing to .dfmt/permissions.yaml", msg)
 	}
@@ -72,10 +74,8 @@ func TestExec_ChainDenialIncludesHint(t *testing.T) {
 		name string
 		code string
 	}{
-		// Base command not on allow-list (e.g. `nope` is not in DefaultPolicy).
-		{"base-cmd allow-miss", "nope --foo && echo hi"},
-		// Deny-rule hit on a chained command (sudo is explicitly denied).
-		{"deny-rule hit", "echo a && sudo ls"},
+		// Fetch to cloud metadata IP is always denied (SSRF rule).
+		{"fetch SSRF denial", "curl http://169.254.169.254/"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

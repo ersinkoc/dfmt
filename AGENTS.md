@@ -91,7 +91,20 @@ The rule is "no **silent** fallback" — every switch to a native tool must be a
 2. **Intent required**: every DFMT call includes `intent` describing
    exactly what you need from the output. Without `intent` the tool
    returns raw bytes — defeating the savings.
-3. **On DFMT failure**: report the failure (one line) and then fall back to the native tool so the session isn't blocked. The ban is on *silent* fallback — every switch must be announced. If the native tool is also denied, stop and ask the user; don't retry blindly.
+3. **On DFMT failure**: report the failure (one line) and then
+   automatically fall back to the native tool so the session isn't
+   blocked. The ban is on *silent* fallback — every switch must be
+   announced. If the native tool is also denied, stop and ask the
+   user; don't retry blindly.
+   - dfmt_exec fails → use native Bash
+   - dfmt_read fails → use native Read
+   - dfmt_fetch fails → use native WebFetch
+   - dfmt_glob fails → use native Glob
+   - dfmt_grep fails → use native Grep
+   - dfmt_edit fails → use native Edit
+   - dfmt_write fails → use native Write
+   After every fallback, call `dfmt_remember` tagged `gap` to record
+   the bypass in the journal.
 4. **Token savings**: DFMT returns excerpts, not full output. The
    `intent` field is the lever.
 5. **Session memory**: after a substantive decision (closed bug,

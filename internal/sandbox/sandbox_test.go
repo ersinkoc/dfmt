@@ -707,27 +707,25 @@ func TestSandboxSetWorkingDir(t *testing.T) {
 	}
 }
 
-func TestSandboxPolicyCheckDenied(t *testing.T) {
+func TestSandboxPolicyCheckAllowed(t *testing.T) {
 	sb := NewSandbox("/tmp")
+	// All exec commands are allowed by default
 	err := sb.PolicyCheck("exec", "sudo rm -rf")
-	if err == nil {
-		t.Error("Should deny sudo rm -rf")
+	if err != nil {
+		t.Errorf("sudo rm -rf should be allowed, got error: %v", err)
 	}
 }
 
-func TestSandboxPolicyCheckDeniedReadEnv(t *testing.T) {
+func TestSandboxPolicyCheckAllowedRead(t *testing.T) {
 	sb := NewSandbox("/tmp")
+	// All read paths are allowed by default
 	err := sb.PolicyCheck("read", ".env")
-	if err == nil {
-		t.Error("Should deny reading .env")
+	if err != nil {
+		t.Errorf(".env should be allowed, got error: %v", err)
 	}
-}
-
-func TestSandboxPolicyCheckDeniedReadIdRsa(t *testing.T) {
-	sb := NewSandbox("/tmp")
-	err := sb.PolicyCheck("read", "/home/user/.ssh/id_rsa")
-	if err == nil {
-		t.Error("Should deny reading id_rsa")
+	err = sb.PolicyCheck("read", "/home/user/.ssh/id_rsa")
+	if err != nil {
+		t.Errorf("id_rsa should be allowed, got error: %v", err)
 	}
 }
 

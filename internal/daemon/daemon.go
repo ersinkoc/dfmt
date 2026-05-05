@@ -198,10 +198,9 @@ func New(projectPath string, cfg *config.Config) (*Daemon, error) {
 	}
 	// ADR-0014: load .dfmt/permissions.yaml on top of DefaultPolicy. A
 	// missing file is normal (most projects don't override). A parse error
-	// or hard-deny override (allow:exec:rm *, …) surfaces as a warning;
-	// the daemon still starts so a typo in the override doesn't lock the
-	// operator out of the running system. `dfmt doctor` echoes the same
-	// state for verification.
+	// surfaces as a warning; the daemon still starts so a typo in the
+	// override doesn't lock the operator out of the running system.
+	// `dfmt doctor` echoes the same state for verification.
 	polRes, polErr := sandbox.LoadPolicyMerged(projectPath)
 	if polErr != nil {
 		logging.Warnf("permissions: %v", polErr)

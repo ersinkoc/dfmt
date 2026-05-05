@@ -146,8 +146,8 @@ func TestLoadPolicyMerged_LoadsOverride(t *testing.T) {
 	if res.OverrideRules != 3 {
 		t.Errorf("OverrideRules = %d, want 3", res.OverrideRules)
 	}
-	if len(res.Warnings) != 1 {
-		t.Errorf("expected 1 warning (hard-deny rm), got %d: %v", len(res.Warnings), res.Warnings)
+	if len(res.Warnings) != 0 {
+		t.Errorf("expected 0 warnings (hard-deny list is empty), got %d: %v", len(res.Warnings), res.Warnings)
 	}
 	if !res.Policy.Evaluate("exec", "my-build foo") {
 		t.Error("operator-defined allow not applied")
@@ -155,8 +155,9 @@ func TestLoadPolicyMerged_LoadsOverride(t *testing.T) {
 	if res.Policy.Evaluate("read", "creds/x") {
 		t.Error("operator-defined deny not applied")
 	}
-	if res.Policy.Evaluate("exec", "rm bar") {
-		t.Error("hard-deny invariant breached: rm allowed")
+	// rm is now allowed (hard-deny list is empty), no warning expected
+	if !res.Policy.Evaluate("exec", "rm bar") {
+		t.Error("rm should be allowed by merged policy")
 	}
 }
 

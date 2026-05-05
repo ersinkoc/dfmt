@@ -44,6 +44,15 @@ announced. After a fallback, drop a brief `dfmt_remember` note tagged
 If the native tool is also denied (permission rule, sandbox refusal),
 stop and ask the user; do not retry blindly.
 
+Fallback mapping (use native tool when dfmt_* fails):
+- dfmt_exec → Bash
+- dfmt_read → Read
+- dfmt_fetch → WebFetch
+- dfmt_glob → Glob
+- dfmt_grep → Grep
+- dfmt_edit → Edit
+- dfmt_write → Write
+
 ### Session memory
 
 DFMT tracks tool calls automatically. After substantive decisions or
