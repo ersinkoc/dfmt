@@ -390,14 +390,17 @@ if (-not $SkipSetup) {
             $needsPatch = $true
             Write-Info "no mcpServers.dfmt entry -- will create"
         } else {
-            $currentCmd = [string]$existingDfmt.command
+            $currentCmd = ''
+            if ($existingDfmt.PSObject.Properties['command']) { $currentCmd = [string]$existingDfmt.command }
             if (-not [string]::Equals($currentCmd, $TargetPath, [StringComparison]::OrdinalIgnoreCase)) {
                 $needsPatch = $true
                 Write-Info "command was '$currentCmd' -- repointing to '$TargetPath'"
             }
-            if (($existingDfmt.args -join ',') -ne 'mcp') {
+            $currentArgs = @()
+            if ($existingDfmt.PSObject.Properties['args']) { $currentArgs = @($existingDfmt.args) }
+            if (($currentArgs -join ',') -ne 'mcp') {
                 $needsPatch = $true
-                Write-Info "args were '$($existingDfmt.args -join ',')' -- resetting to 'mcp'"
+                Write-Info "args were '$($currentArgs -join ',')' -- resetting to 'mcp'"
             }
             if (-not $existingDfmt.PSObject.Properties['type'] -or $existingDfmt.type -ne 'stdio') {
                 $needsPatch = $true
@@ -484,6 +487,9 @@ if (-not $SkipSetup) {
             try {
                 $parsed = $line | ConvertFrom-Json -ErrorAction Stop
             } catch { continue }
+            # JSON-RPC notifications carry no `id`; skip them to stay
+            # StrictMode-safe and avoid PropertyNotFoundStrict.
+            if (-not $parsed.PSObject.Properties['id']) { continue }
             if ($parsed.id -eq 1) { $initResp = $parsed }
             elseif ($parsed.id -eq 2) { $callResp = $parsed }
         }
@@ -493,8 +499,15 @@ if (-not $SkipSetup) {
             Write-Err "MCP smoke: no response with id=1 (initialize). Lines: $jsonLines"
             exit 1
         }
-        if ($initResp.error) {
+        # StrictMode-safe property check: Set-StrictMode -Version 2+ throws on
+        # access to non-existent properties. A successful JSON-RPC reply has no
+        # `.error` field, so probe via PSObject.Properties first.
+        if ($initResp.PSObject.Properties['error'] -and $initResp.error) {
             Write-Err "MCP initialize error: $($initResp.error | ConvertTo-Json -Compress)"
+            exit 1
+        }
+        if (-not $initResp.PSObject.Properties['result']) {
+            Write-Err "MCP initialize response missing 'result'. Raw: $($initResp | ConvertTo-Json -Compress -Depth 5)"
             exit 1
         }
         $serverName = $initResp.result.serverInfo.name
@@ -504,8 +517,11 @@ if (-not $SkipSetup) {
             exit 1
         }
         $hasToolsCap = $false
-        if ($initResp.result.capabilities -and $initResp.result.capabilities.PSObject.Properties['tools']) {
-            $hasToolsCap = $true
+        if ($initResp.result.PSObject.Properties['capabilities']) {
+            $caps = $initResp.result.capabilities
+            if ($caps -and $caps.PSObject.Properties['tools']) {
+                $hasToolsCap = $true
+            }
         }
         if (-not $hasToolsCap) {
             Write-Err "MCP initialize response is MISSING capabilities.tools -- Claude Code will not load any dfmt tools."
@@ -519,17 +535,25 @@ if (-not $SkipSetup) {
             $smokeOut | ForEach-Object { Write-Host "      $_" -ForegroundColor DarkRed }
             exit 1
         }
-        if ($callResp.error) {
+        if ($callResp.PSObject.Properties['error'] -and $callResp.error) {
             Write-Err "MCP tools/call returned error: $($callResp.error | ConvertTo-Json -Compress)"
+            exit 1
+        }
+        if (-not $callResp.PSObject.Properties['result']) {
+            Write-Err "MCP tools/call response missing 'result'. Raw: $($callResp | ConvertTo-Json -Compress -Depth 5)"
             exit 1
         }
         # result.content MUST be an array of content blocks. If the wrapper
         # regressed, Claude Code would reject this with the "expected array,
         # received string" schema error -- we mirror that check here so the
         # build fails before the user ever sees it.
+        if (-not $callResp.result.PSObject.Properties['content']) {
+            Write-Err "MCP tools/call result is MISSING the 'content' array. Got: $($callResp.result | ConvertTo-Json -Compress -Depth 5)"
+            exit 1
+        }
         $callContent = $callResp.result.content
         if ($null -eq $callContent) {
-            Write-Err "MCP tools/call result is MISSING the 'content' array. Got: $($callResp.result | ConvertTo-Json -Compress -Depth 5)"
+            Write-Err "MCP tools/call result.content is null"
             exit 1
         }
         # PowerShell unwraps single-element arrays from ConvertFrom-Json into
@@ -541,8 +565,12 @@ if (-not $SkipSetup) {
             exit 1
         }
         $firstBlock = $callContent[0]
-        if (-not $firstBlock.type -or $firstBlock.type -ne 'text') {
-            Write-Err "MCP tools/call result.content[0].type='$($firstBlock.type)' -- expected 'text'"
+        $blockType = $null
+        if ($firstBlock -and $firstBlock.PSObject.Properties['type']) {
+            $blockType = $firstBlock.type
+        }
+        if (-not $blockType -or $blockType -ne 'text') {
+            Write-Err "MCP tools/call result.content[0].type='$blockType' -- expected 'text'"
             exit 1
         }
         Write-Ok "MCP tools/call envelope OK -- result.content[0].type='text', $($callContent.Count) block(s)"
