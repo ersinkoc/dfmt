@@ -193,8 +193,8 @@ func New(projectPath string, cfg *config.Config) (*Daemon, error) {
 	// entries) so the operator notices a planted-binary risk at start
 	// instead of after compromise. We do not refuse the daemon — the
 	// PathPrepend semantics are operator-trusted by design.
-	for _, w := range sandbox.ValidatePathPrepend(cfg.Exec.PathPrepend) {
-		logging.Warnf("path_prepend: %s", w)
+	if err := sandbox.ValidatePathPrepend(cfg.Exec.PathPrepend); err != nil {
+		return nil, fmt.Errorf("invalid path_prepend: %w", err)
 	}
 	// ADR-0014: load .dfmt/permissions.yaml on top of DefaultPolicy. A
 	// missing file is normal (most projects don't override). A parse error

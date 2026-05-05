@@ -368,9 +368,16 @@ func DefaultPolicy() Policy {
 			// guards (loopback, RFC1918, link-local) are also applied in Fetch().
 			{Op: "fetch", Text: "http://169.254.169.254/*"},
 			{Op: "fetch", Text: "https://169.254.169.254/*"},
+			{Op: "fetch", Text: "http://168.63.129.16/*"}, // Azure IMDS
+			{Op: "fetch", Text: "https://168.63.129.16/*"},
 			{Op: "fetch", Text: "http://metadata.google.internal/*"},
 			{Op: "fetch", Text: "https://metadata.google.internal/*"},
 			{Op: "fetch", Text: "http://metadata.goog/*"},
+			{Op: "fetch", Text: "https://metadata.goog/*"},
+			{Op: "fetch", Text: "http://metadata.goog.internal/*"},
+			{Op: "fetch", Text: "https://metadata.goog.internal/*"},
+			{Op: "fetch", Text: "http://metadata.goog.com/*"},
+			{Op: "fetch", Text: "https://metadata.goog.com/*"},
 			{Op: "fetch", Text: "file://*"},
 		},
 	}
@@ -755,11 +762,11 @@ func (s *SandboxImpl) WithPathPrepend(dirs []string) *SandboxImpl {
 //
 // Per-uid writability is not checked: it would require platform-specific
 // uid/gid plumbing for marginal benefit on a single-user workstation.
-func ValidatePathPrepend(dirs []string) []string {
+func ValidatePathPrepend(dirs []string) error {
 	if len(dirs) == 0 {
 		return nil
 	}
-	var warns []string
+	var errs []error
 	for _, d := range dirs {
 		if d == "" {
 			continue
@@ -767,14 +774,14 @@ func ValidatePathPrepend(dirs []string) []string {
 		fi, err := os.Stat(d)
 		if err != nil {
 			if os.IsNotExist(err) {
-				warns = append(warns, fmt.Sprintf("path_prepend entry %q does not exist; will silently no-op until it appears", d))
+				errs = append(errs, fmt.Errorf("path_prepend entry %q does not exist", d))
 				continue
 			}
-			warns = append(warns, fmt.Sprintf("path_prepend entry %q stat failed: %v", d, err))
+			errs = append(errs, fmt.Errorf("path_prepend entry %q stat failed: %v", d, err))
 			continue
 		}
 		if !fi.IsDir() {
-			warns = append(warns, fmt.Sprintf("path_prepend entry %q is not a directory", d))
+			errs = append(errs, fmt.Errorf("path_prepend entry %q is not a directory", d))
 			continue
 		}
 		// World-writable detection. Windows ACLs don't map cleanly to the
@@ -783,10 +790,13 @@ func ValidatePathPrepend(dirs []string) []string {
 		// don't reflect ACLs, so this is a no-op there (operators on
 		// Windows must rely on file-system ACL hygiene separately).
 		if fi.Mode().Perm()&0o002 != 0 {
-			warns = append(warns, fmt.Sprintf("path_prepend entry %q is world-writable (mode=%o); a local attacker can plant binaries that the sandbox will resolve before system tools", d, fi.Mode().Perm()))
+			errs = append(errs, fmt.Errorf("path_prepend entry %q is world-writable (mode=%o); a local attacker can plant binaries that the sandbox will resolve before system tools", d, fi.Mode().Perm()))
 		}
 	}
-	return warns
+	if len(errs) > 0 {
+		return errors.Join(errs...)
+	}
+	return nil
 }
 
 // NewSandbox creates a new sandbox instance.
@@ -1475,7 +1485,8 @@ func assertFetchURLAllowed(rawURL string) error {
 	// Well-known cloud metadata hostnames. Block these before DNS so a
 	// resolver that maps them to public IPs cannot evade the IP filter.
 	lowerHost := strings.ToLower(host)
-	if lowerHost == "metadata.google.internal" || lowerHost == "metadata.goog" {
+	if lowerHost == "metadata.google.internal" || lowerHost == "metadata.goog" ||
+		lowerHost == "metadata.goog.internal" || lowerHost == "metadata.goog.com" {
 		return fmt.Errorf("%w: cloud metadata host %q", ErrBlockedHost, host)
 	}
 	// Host is allowed to be a bare IP literal; parse first so we don't need DNS.
@@ -1518,9 +1529,15 @@ func isBlockedIP(ip net.IP) bool {
 	if ip.IsPrivate() {
 		return true
 	}
-	// Cloud metadata literal.
+	// Cloud metadata literals.
 	if ip.Equal(net.IPv4(169, 254, 169, 254)) {
-		return true
+		return true // AWS IMDS (IPv4)
+	}
+	if ip.Equal(net.IPv4(168, 63, 129, 16)) {
+		return true // Azure IMDS
+	}
+	if ip.Equal(net.ParseIP("fd00:ec2::254")) {
+		return true // AWS IMDS (IPv6)
 	}
 	// 0.0.0.0/8 - explicitly block any lingering non-routable addresses.
 	if v4 := ip.To4(); v4 != nil && v4[0] == 0 {

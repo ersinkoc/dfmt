@@ -3,6 +3,8 @@ package transport
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -86,13 +88,15 @@ type HTTPServer struct {
 	doneCh chan struct{}
 
 	projectPath string // Used to filter /api/daemons to only this daemon
+	authToken   string // Bearer token for HTTP endpoint authentication
 }
 
 // PortFile is the JSON format written to the port file. Older daemons wrote a
 // bare integer and the read path still falls back to that format for
 // compatibility.
 type PortFile struct {
-	Port int `json:"port"`
+	Port  int    `json:"port"`
+	Token string `json:"token,omitempty"` // Bearer token for HTTP auth
 }
 
 // NewHTTPServer creates a new HTTP server with TCP listener.
@@ -143,11 +147,10 @@ func (s *HTTPServer) Start(ctx context.Context) error {
 	// F-09: Refuse non-loopback TCP binds. The same-origin gate plus port-file
 	// 0600 perms only protect against same-host attackers; a non-loopback bind
 	// exposes unauthenticated JSON-RPC (dfmt.exec, dfmt.write, dfmt.fetch, …)
-	// to the LAN. Bearer-token auth is not implemented (the dead authToken
-	// plumbing was ripped out under F-22). Until auth is wired, refuse the
-	// bind rather than silently shipping unauthenticated RPC. Unix sockets
-	// and other non-TCP listeners are gated by filesystem permissions, not
-	// this check.
+	// to the LAN. Bearer-token auth (stored in the port file) gates all HTTP
+	// endpoints — refuse the bind rather than silently shipping unauthenticated
+	// RPC. Unix sockets and other non-TCP listeners are gated by filesystem
+	// permissions, not this check.
 	if addr, ok := ln.Addr().(*net.TCPAddr); ok {
 		if !addr.IP.IsLoopback() {
 			if ownListener {
@@ -187,7 +190,13 @@ func (s *HTTPServer) Start(ctx context.Context) error {
 	}
 
 	if s.portFile != "" && actualPort > 0 {
-		if err := s.writePortFile(s.portFile, actualPort); err != nil {
+		token, err := generateToken()
+		if err != nil {
+			_ = ln.Close()
+			return fmt.Errorf("generate auth token: %w", err)
+		}
+		s.authToken = token
+		if err := s.writePortFile(s.portFile, actualPort, token); err != nil {
 			_ = ln.Close()
 			return fmt.Errorf("write port file: %w", err)
 		}
@@ -252,6 +261,20 @@ func (s *HTTPServer) wrapSecurity(next http.Handler) http.Handler {
 		if origin := r.Header.Get("Origin"); origin != "" {
 			if !s.isAllowedOrigin(origin) {
 				http.Error(w, "cross-origin request rejected", http.StatusForbidden)
+				return
+			}
+		}
+
+		// Bearer token authentication for HTTP endpoints.
+		if s.authToken != "" {
+			authHeader := r.Header.Get("Authorization")
+			if authHeader == "" || !strings.HasPrefix(authHeader, "Bearer ") {
+				http.Error(w, "Unauthorized", http.StatusUnauthorized)
+				return
+			}
+			token := strings.TrimPrefix(authHeader, "Bearer ")
+			if token != s.authToken {
+				http.Error(w, "Unauthorized", http.StatusUnauthorized)
 				return
 			}
 		}
@@ -549,10 +572,10 @@ func (s *HTTPServer) handleStats(ctx context.Context, req Request) Response {
 	return Response{JSONRPC: jsonRPCVersion, ID: req.ID, Result: resp}
 }
 
-// writePortFile writes {"port":...} to path with mode 0600 so other local
+// writePortFile writes {"port":...,"token":...} to path with mode 0600 so other local
 // users cannot read the daemon's port (and the same-origin gate plus the
 // non-loopback bind refusal keep cross-origin browser pages out).
-func (s *HTTPServer) writePortFile(path string, port int) error {
+func (s *HTTPServer) writePortFile(path string, port int, token string) error {
 	if err := safefs.CheckNoReservedNames(path); err != nil {
 		return err
 	}
@@ -560,7 +583,7 @@ func (s *HTTPServer) writePortFile(path string, port int) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
-	data, err := json.Marshal(PortFile{Port: port})
+	data, err := json.Marshal(PortFile{Port: port, Token: token})
 	if err != nil {
 		return err
 	}
@@ -594,6 +617,15 @@ func (s *HTTPServer) writePortFile(path string, port int) error {
 		return err
 	}
 	return nil
+}
+
+// generateToken generates a cryptographically secure random token for HTTP bearer auth.
+func generateToken() (string, error) {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("read random bytes: %w", err)
+	}
+	return base64.RawURLEncoding.EncodeToString(b), nil
 }
 
 // SetPortFile sets the path to write the chosen port.

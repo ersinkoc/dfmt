@@ -207,7 +207,7 @@ func NewDaemonEntry(projectPath string, pid int) DaemonEntry {
 		// with port 0 in the global registry. Reuse the dual-path reader so
 		// both JSON and legacy integer forms work.
 		portFile := filepath.Join(projectPath, ".dfmt", "port")
-		if port, err := readPortFile(portFile); err == nil {
+		if port, _, err := readPortFile(portFile); err == nil {
 			entry.Port = port
 		}
 	} else {

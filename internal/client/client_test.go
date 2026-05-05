@@ -1818,7 +1818,7 @@ func TestReadPortFileJSON(t *testing.T) {
 		t.Fatalf("WriteFile failed: %v", err)
 	}
 
-	port, err := readPortFile(portFile)
+	port, _, err := readPortFile(portFile)
 	if err != nil {
 		t.Fatalf("readPortFile failed: %v", err)
 	}
@@ -1836,7 +1836,7 @@ func TestReadPortFileLegacy(t *testing.T) {
 		t.Fatalf("WriteFile failed: %v", err)
 	}
 
-	port, err := readPortFile(portFile)
+	port, _, err := readPortFile(portFile)
 	if err != nil {
 		t.Fatalf("readPortFile failed: %v", err)
 	}
@@ -1853,14 +1853,14 @@ func TestReadPortFileEmpty(t *testing.T) {
 		t.Fatalf("WriteFile failed: %v", err)
 	}
 
-	_, err := readPortFile(portFile)
+	_, _, err := readPortFile(portFile)
 	if err == nil {
 		t.Error("readPortFile should error on empty file")
 	}
 }
 
 func TestReadPortFileMissing(t *testing.T) {
-	_, err := readPortFile("/nonexistent/path/port")
+	_, _, err := readPortFile("/nonexistent/path/port")
 	if err == nil {
 		t.Error("readPortFile should error when file missing")
 	}
@@ -1874,7 +1874,7 @@ func TestReadPortFileInvalidJSON(t *testing.T) {
 		t.Fatalf("WriteFile failed: %v", err)
 	}
 
-	_, err := readPortFile(portFile)
+	_, _, err := readPortFile(portFile)
 	if err == nil {
 		t.Error("readPortFile should error on invalid JSON")
 	}
@@ -1888,7 +1888,7 @@ func TestReadPortFileInvalidLegacy(t *testing.T) {
 		t.Fatalf("WriteFile failed: %v", err)
 	}
 
-	_, err := readPortFile(portFile)
+	_, _, err := readPortFile(portFile)
 	if err == nil {
 		t.Error("readPortFile should error on invalid legacy format")
 	}
@@ -2780,7 +2780,7 @@ func TestReadPortFileWhitespace(t *testing.T) {
 		t.Fatalf("WriteFile failed: %v", err)
 	}
 
-	port, err := readPortFile(portFile)
+	port, _, err := readPortFile(portFile)
 	if err != nil {
 		t.Fatalf("readPortFile failed: %v", err)
 	}
