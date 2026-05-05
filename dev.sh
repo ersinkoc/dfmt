@@ -162,7 +162,7 @@ cd "$REPO_ROOT"
 mkdir -p "$TARGET_DIR"
 
 GIT_REV="$(git rev-parse --short HEAD 2>/dev/null || echo "dev")"
-LDFLAGS="-X github.com/ersinkoc/dfmt/internal/version.Current=v0.2.7-dev"
+LDFLAGS="-X github.com/ersinkoc/dfmt/internal/version.Current=v0.3.1"
 
 CGO_ENABLED=0 go build -ldflags "$LDFLAGS" -o "$TARGET_PATH" ./cmd/dfmt
 

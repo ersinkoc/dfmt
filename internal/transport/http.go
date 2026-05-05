@@ -196,7 +196,7 @@ func (s *HTTPServer) Start(ctx context.Context) error {
 			return fmt.Errorf("generate auth token: %w", err)
 		}
 		s.authToken = token
-		if err := s.writePortFile(s.portFile, actualPort, token); err != nil {
+		if err := s.writePortFile(s.portFile, actualPort, ""); err != nil {
 			_ = ln.Close()
 			return fmt.Errorf("write port file: %w", err)
 		}
@@ -271,19 +271,7 @@ func (s *HTTPServer) wrapSecurity(next http.Handler) http.Handler {
 			return
 		}
 
-		// Bearer token authentication for HTTP endpoints.
-		if s.authToken != "" {
-			authHeader := r.Header.Get("Authorization")
-			if authHeader == "" || !strings.HasPrefix(authHeader, "Bearer ") {
-				http.Error(w, "Unauthorized", http.StatusUnauthorized)
-				return
-			}
-			token := strings.TrimPrefix(authHeader, "Bearer ")
-			if token != s.authToken {
-				http.Error(w, "Unauthorized", http.StatusUnauthorized)
-				return
-			}
-		}
+		// Auth disabled — all HTTP endpoints are publicly accessible.
 
 		next.ServeHTTP(w, r)
 	})
@@ -1000,7 +988,7 @@ func (s *HTTPServer) handleAPIProxy(w http.ResponseWriter, r *http.Request) {
 		JSONRPC string          `json:"jsonrpc"`
 		Method  string          `json:"method"`
 		Params  json.RawMessage `json:"params"`
-		ID     any             `json:"id"`
+		ID      any             `json:"id"`
 	}{
 		JSONRPC: "2.0",
 		Method:  req.Method,

@@ -27,6 +27,33 @@ Internal package shapes (`internal/...`) are NOT covered by SemVer.
 
 ## [Unreleased]
 
+## [0.3.1] — 2026-05-05
+
+### Changed
+
+- **DFMT no longer injects `deny` entries into Claude Code's
+  `.claude/settings.json`** — pre-v0.3.1 init/setup added
+  `permissions.deny: ["Bash", "WebFetch", "WebSearch"]` so the host
+  agent could not call those tools natively. That call belongs to the
+  user, not DFMT. Init/setup now register the MCP server and the
+  PreToolUse routing hook only; the deny list is left untouched.
+- **Stale legacy deny entries are pruned** — on the first post-upgrade
+  init/setup, if `permissions.deny` contains the exact triple
+  `{Bash, WebFetch, WebSearch}` that older DFMT versions injected,
+  those three are removed. Any user-added entries (anything else, or
+  any partial subset) are left in place. The heuristic deliberately
+  errs on the side of preserving the user's policy.
+- **HTTP transport: bearer-token auth removed** — the auth gate added
+  in v0.2.7 is dropped. All HTTP endpoints (dashboard + JSON-RPC) are
+  publicly accessible on the bound loopback port. Re-enable per-deployment
+  with a reverse proxy if needed; the daemon binds 127.0.0.1 by default.
+
+### Fixed
+
+- **dev.sh / dev.ps1 build the right version string** — both scripts
+  now stamp `v0.3.1` into `internal/version.Current`. dev.sh was
+  previously frozen at `v0.2.7-dev`.
+
 ## [0.3.0] — 2026-05-05
 
 ### Changed

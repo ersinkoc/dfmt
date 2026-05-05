@@ -168,7 +168,12 @@ func writeProjectClaudeSettings(dir string) error {
 		"mcp__dfmt__dfmt_edit",
 		"mcp__dfmt__dfmt_write",
 	})
-	mergeClaudePermission(cfg, "deny", []string{"Bash", "WebFetch", "WebSearch"})
+	// Deliberately do NOT inject any "deny" entries. DFMT's job is to
+	// register itself as a tool provider and offer hooks/MCP routing —
+	// it must never restrict which tools the host agent (Claude Code,
+	// etc.) is allowed to call. The user owns the deny list; if they
+	// want to forbid native Bash/WebFetch they'll add it themselves.
+	pruneStaleDfmtDeny(cfg)
 
 	out, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
@@ -348,6 +353,65 @@ func WriteClaudeCodeSettingsHook(claudeDir string) error {
 		return werr
 	}
 	return nil
+}
+
+// pruneStaleDfmtDeny removes the legacy {"Bash","WebFetch","WebSearch"} deny
+// entries that pre-v0.3.1 dfmt versions injected into permissions.deny. We
+// only strip the exact three names DFMT itself ever wrote — anything else
+// in the deny list belongs to the user and must be left alone. If the user
+// happens to have added one of those three on their own, it stays: we cannot
+// tell ours from theirs once written, so we err on the side of keeping the
+// stricter posture, since the alternative would silently widen the user's
+// security policy.
+//
+// Behavior is one-shot: after the prune, mergeClaudePermission is NOT called
+// for the deny key, so we never re-add them. If the user ran older dfmt
+// versions and the entries were "ours," they'll be removed on first
+// post-upgrade init/setup; subsequent runs are no-ops.
+//
+// We use a simple heuristic — if all three legacy names are present together
+// (the exact set DFMT injected), we treat them as ours and prune. If the
+// user only has one or two of them, we assume those are theirs and leave
+// them alone.
+func pruneStaleDfmtDeny(cfg map[string]any) {
+	perms, _ := cfg["permissions"].(map[string]any)
+	if perms == nil {
+		return
+	}
+	existing, _ := perms["deny"].([]any)
+	if len(existing) == 0 {
+		return
+	}
+	legacy := map[string]bool{"Bash": false, "WebFetch": false, "WebSearch": false}
+	for _, v := range existing {
+		s, ok := v.(string)
+		if !ok {
+			continue
+		}
+		if _, isLegacy := legacy[s]; isLegacy {
+			legacy[s] = true
+		}
+	}
+	allPresent := legacy["Bash"] && legacy["WebFetch"] && legacy["WebSearch"]
+	if !allPresent {
+		return
+	}
+	pruned := make([]any, 0, len(existing))
+	for _, v := range existing {
+		s, ok := v.(string)
+		if ok {
+			if _, isLegacy := legacy[s]; isLegacy {
+				continue
+			}
+		}
+		pruned = append(pruned, v)
+	}
+	if len(pruned) == 0 {
+		delete(perms, "deny")
+	} else {
+		perms["deny"] = pruned
+	}
+	cfg["permissions"] = perms
 }
 
 // mergeClaudePermission adds dfmt entries to cfg["permissions"][key] without

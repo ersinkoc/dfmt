@@ -178,8 +178,95 @@ func TestWriteProjectClaudeSettingsPreservesUserContent(t *testing.T) {
 	if !containsString(deny, "SomeBadTool") {
 		t.Error("user deny entry lost")
 	}
+	// v0.3.1: dfmt no longer injects deny entries — that's the host
+	// agent / user's call. The user's own SomeBadTool stays; nothing
+	// of ours appears.
+	for _, banned := range []string{"Bash", "WebFetch", "WebSearch"} {
+		if containsString(deny, banned) {
+			t.Errorf("dfmt unexpectedly injected deny entry %q (user-owned territory)", banned)
+		}
+	}
+}
+
+// TestWriteProjectClaudeSettingsPrunesLegacyDfmtDeny verifies that pre-v0.3.1
+// dfmt installs that wrote {Bash,WebFetch,WebSearch} into permissions.deny
+// have those exact entries pruned on the next init/setup. User-added deny
+// entries (anything else, or any subset that doesn't include all three) are
+// left intact.
+func TestWriteProjectClaudeSettingsPrunesLegacyDfmtDeny(t *testing.T) {
+	tmpDir := t.TempDir()
+	claudeDir := filepath.Join(tmpDir, ".claude")
+	if err := os.MkdirAll(claudeDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	settingsPath := filepath.Join(claudeDir, "settings.json")
+	original := map[string]any{
+		"permissions": map[string]any{
+			"deny": []any{"Bash", "WebFetch", "WebSearch", "MyOwnDeny"},
+		},
+	}
+	originalBytes, err := json.MarshalIndent(original, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if err := os.WriteFile(settingsPath, originalBytes, 0o600); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	if err := writeProjectClaudeSettings(tmpDir); err != nil {
+		t.Fatalf("writeProjectClaudeSettings: %v", err)
+	}
+
+	data, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatalf("read after: %v", err)
+	}
+	var merged map[string]any
+	if err := json.Unmarshal(data, &merged); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	perms, _ := merged["permissions"].(map[string]any)
+	deny, _ := perms["deny"].([]any)
+	for _, banned := range []string{"Bash", "WebFetch", "WebSearch"} {
+		if containsString(deny, banned) {
+			t.Errorf("legacy deny entry %q not pruned", banned)
+		}
+	}
+	if !containsString(deny, "MyOwnDeny") {
+		t.Error("user-added deny entry MyOwnDeny was wrongly pruned")
+	}
+}
+
+// TestWriteProjectClaudeSettingsKeepsPartialUserDeny confirms the prune
+// heuristic: if the user only has ONE of the legacy three (e.g. just "Bash"),
+// we treat it as theirs and leave it alone — only the exact full triple is
+// considered "ours."
+func TestWriteProjectClaudeSettingsKeepsPartialUserDeny(t *testing.T) {
+	tmpDir := t.TempDir()
+	claudeDir := filepath.Join(tmpDir, ".claude")
+	if err := os.MkdirAll(claudeDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	settingsPath := filepath.Join(claudeDir, "settings.json")
+	original := map[string]any{
+		"permissions": map[string]any{
+			"deny": []any{"Bash"},
+		},
+	}
+	originalBytes, _ := json.MarshalIndent(original, "", "  ")
+	if err := os.WriteFile(settingsPath, originalBytes, 0o600); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if err := writeProjectClaudeSettings(tmpDir); err != nil {
+		t.Fatalf("writeProjectClaudeSettings: %v", err)
+	}
+	data, _ := os.ReadFile(settingsPath)
+	var merged map[string]any
+	_ = json.Unmarshal(data, &merged)
+	perms, _ := merged["permissions"].(map[string]any)
+	deny, _ := perms["deny"].([]any)
 	if !containsString(deny, "Bash") {
-		t.Error("dfmt deny entry not added")
+		t.Error("user-only Bash deny was incorrectly pruned (heuristic: prune only the full triple)")
 	}
 }
 
