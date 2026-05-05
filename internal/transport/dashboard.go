@@ -1,47 +1,17 @@
 package transport
 
-// DashboardHTML is the embedded dashboard page. The page's script is served
-// separately at /dashboard.js so we can keep CSP as "script-src 'self'"
-// without relying on brittle inline-script hashes.
+// DashboardHTML is the embedded dashboard page. Both CSS and JS are served
+// from external files (/dashboard.css, /dashboard.js) so the CSP can stay
+// strict ("style-src 'self'; script-src 'self'") without inline-element
+// hashes that drift every time the markup changes.
 const DashboardHTML = `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>DFMT Dashboard</title>
-<style>
-* { box-sizing: border-box; margin: 0; padding: 0; }
-body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #1a1a2e; color: #eee; min-height: 100vh; padding: 20px; }
-h1 { color: #00d4ff; margin-bottom: 20px; font-size: 1.5rem; }
-h2 { color: #aaa; margin: 20px 0 10px; font-size: 1rem; text-transform: uppercase; letter-spacing: 1px; }
-.container { max-width: 900px; margin: 0 auto; }
-.header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; flex-wrap: wrap; gap: 10px; }
-.header-left { display: flex; align-items: center; gap: 15px; }
-.header-right { display: flex; align-items: center; gap: 10px; }
-select { background: #16213e; color: #eee; border: 1px solid #0f3460; border-radius: 6px; padding: 8px 12px; font-size: 0.9rem; min-width: 200px; cursor: pointer; }
-select:focus { outline: none; border-color: #00d4ff; }
-.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 15px; margin-bottom: 20px; }
-.card { background: #16213e; border-radius: 8px; padding: 15px; border: 1px solid #0f3460; }
-.card-value { font-size: 2rem; font-weight: bold; color: #00d4ff; }
-.card-label { font-size: 0.8rem; color: #888; margin-top: 5px; }
-.chart { background: #16213e; border-radius: 8px; padding: 15px; border: 1px solid #0f3460; }
-.bar-chart { display: flex; flex-direction: column; gap: 8px; }
-.bar-row { display: flex; align-items: center; gap: 10px; }
-.bar-label { width: 120px; font-size: 0.8rem; color: #aaa; text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.bar-container { flex: 1; height: 20px; background: #0f3460; border-radius: 4px; overflow: hidden; }
-.bar-fill { height: 100%; background: linear-gradient(90deg, #00d4ff, #00ff88); border-radius: 4px; transition: width 0.3s; min-width: 2px; }
-.bar-value { width: 60px; font-size: 0.8rem; color: #888; text-align: right; }
-.btn { background: #0f3460; color: #00d4ff; border: 1px solid #00d4ff; border-radius: 6px; padding: 10px 20px; cursor: pointer; font-size: 0.9rem; }
-.btn:hover { background: #00d4ff; color: #1a1a2e; }
-.session { background: #16213e; border-radius: 8px; padding: 15px; border: 1px solid #0f3460; font-size: 0.9rem; }
-.session-row { display: flex; justify-content: space-between; padding: 5px 0; border-bottom: 1px solid #0f3460; }
-.session-row:last-child { border-bottom: none; }
-.loading { text-align: center; padding: 40px; color: #888; }
-.error { background: #ff4444; color: white; padding: 15px; border-radius: 8px; margin-bottom: 20px; display: none; }
-.daemon-badge { background: #00ff88; color: #1a1a2e; padding: 4px 8px; border-radius: 4px; font-size: 0.75rem; font-weight: bold; }
-.daemon-badge.dead { background: #ff4444; color: white; }
-.hidden { display: none; }
-</style>
+<link rel="stylesheet" href="/dashboard.css">
+<link rel="icon" href="data:,">
 </head>
 <body>
 <div class="container">
@@ -93,6 +63,43 @@ select:focus { outline: none; border-color: #00d4ff; }
 <script src="/dashboard.js"></script>
 </body>
 </html>
+`
+
+// DashboardCSS is the dashboard's stylesheet, served at /dashboard.css so the
+// CSP `style-src 'self'` directive is enough — no inline-style hashes to keep
+// in sync with the source. The colors/layout match the prior inline block
+// byte-for-byte; only the delivery channel changed.
+const DashboardCSS = `* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #1a1a2e; color: #eee; min-height: 100vh; padding: 20px; }
+h1 { color: #00d4ff; margin-bottom: 20px; font-size: 1.5rem; }
+h2 { color: #aaa; margin: 20px 0 10px; font-size: 1rem; text-transform: uppercase; letter-spacing: 1px; }
+.container { max-width: 900px; margin: 0 auto; }
+.header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; flex-wrap: wrap; gap: 10px; }
+.header-left { display: flex; align-items: center; gap: 15px; }
+.header-right { display: flex; align-items: center; gap: 10px; }
+select { background: #16213e; color: #eee; border: 1px solid #0f3460; border-radius: 6px; padding: 8px 12px; font-size: 0.9rem; min-width: 200px; cursor: pointer; }
+select:focus { outline: none; border-color: #00d4ff; }
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 15px; margin-bottom: 20px; }
+.card { background: #16213e; border-radius: 8px; padding: 15px; border: 1px solid #0f3460; }
+.card-value { font-size: 2rem; font-weight: bold; color: #00d4ff; }
+.card-label { font-size: 0.8rem; color: #888; margin-top: 5px; }
+.chart { background: #16213e; border-radius: 8px; padding: 15px; border: 1px solid #0f3460; }
+.bar-chart { display: flex; flex-direction: column; gap: 8px; }
+.bar-row { display: flex; align-items: center; gap: 10px; }
+.bar-label { width: 120px; font-size: 0.8rem; color: #aaa; text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bar-container { flex: 1; height: 20px; background: #0f3460; border-radius: 4px; overflow: hidden; }
+.bar-fill { height: 100%; background: linear-gradient(90deg, #00d4ff, #00ff88); border-radius: 4px; transition: width 0.3s; min-width: 2px; }
+.bar-value { width: 60px; font-size: 0.8rem; color: #888; text-align: right; }
+.btn { background: #0f3460; color: #00d4ff; border: 1px solid #00d4ff; border-radius: 6px; padding: 10px 20px; cursor: pointer; font-size: 0.9rem; }
+.btn:hover { background: #00d4ff; color: #1a1a2e; }
+.session { background: #16213e; border-radius: 8px; padding: 15px; border: 1px solid #0f3460; font-size: 0.9rem; }
+.session-row { display: flex; justify-content: space-between; padding: 5px 0; border-bottom: 1px solid #0f3460; }
+.session-row:last-child { border-bottom: none; }
+.loading { text-align: center; padding: 40px; color: #888; }
+.error { background: #ff4444; color: white; padding: 15px; border-radius: 8px; margin-bottom: 20px; display: none; }
+.daemon-badge { background: #00ff88; color: #1a1a2e; padding: 4px 8px; border-radius: 4px; font-size: 0.75rem; font-weight: bold; }
+.daemon-badge.dead { background: #ff4444; color: white; }
+.hidden { display: none; }
 `
 
 // DashboardJS is the dashboard's JavaScript, served at /dashboard.js so CSP

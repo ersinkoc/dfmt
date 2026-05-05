@@ -165,6 +165,8 @@ func (s *HTTPServer) Start(ctx context.Context) error {
 	mux.HandleFunc("/", s.handle)
 	mux.HandleFunc("/dashboard", s.handleDashboard)
 	mux.HandleFunc("/dashboard.js", s.handleDashboardJS)
+	mux.HandleFunc("/dashboard.css", s.handleDashboardCSS)
+	mux.HandleFunc("/favicon.ico", s.handleFavicon)
 	mux.HandleFunc("/api/stats", s.handleAPIStats)
 	mux.HandleFunc("/api/daemons", s.handleAPIDaemons)
 	mux.HandleFunc("/api/all-daemons", s.handleAPIAllDaemons)
@@ -660,6 +662,28 @@ func (s *HTTPServer) handleDashboardJS(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	_, _ = w.Write([]byte(DashboardJS))
+}
+
+// handleDashboardCSS serves the dashboard's stylesheet from an external file
+// so CSP can use the simple `style-src 'self'` directive — no inline-style
+// hashes drifting on every markup change.
+func (s *HTTPServer) handleDashboardCSS(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/css; charset=utf-8")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	_, _ = w.Write([]byte(DashboardCSS))
+}
+
+// handleFavicon answers GET /favicon.ico with 204 so browsers stop logging
+// 405 on every dashboard load. The HTML already wires `<link rel="icon"
+// href="data:,">` to suppress the request entirely on modern browsers; this
+// route covers older clients and direct hits.
+func (s *HTTPServer) handleFavicon(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	w.Header().Set("Cache-Control", "public, max-age=86400")
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *HTTPServer) handleAPIStats(w http.ResponseWriter, r *http.Request) {
