@@ -14,6 +14,7 @@ import (
 
 	"github.com/ersinkoc/dfmt/internal/content"
 	"github.com/ersinkoc/dfmt/internal/core"
+	"github.com/ersinkoc/dfmt/internal/logging"
 	"github.com/ersinkoc/dfmt/internal/redact"
 	"github.com/ersinkoc/dfmt/internal/retrieve"
 	"github.com/ersinkoc/dfmt/internal/sandbox"
@@ -1553,6 +1554,12 @@ func (h *Handlers) Fetch(ctx context.Context, params FetchParams) (_ *FetchRespo
 
 	resp, err := h.sandbox.Fetch(ctx, req)
 	if err != nil {
+		// SSRF-006: log when fetch is blocked by SSRF policy so operators can
+		// see when blocked attempts occur (no alerting UI yet, but the event
+		// is in the journal for forensic use).
+		if errors.Is(err, sandbox.ErrBlockedHost) {
+			logging.Warnf("fetch blocked by SSRF policy: %s — %s", params.URL, err.Error())
+		}
 		return nil, err
 	}
 
