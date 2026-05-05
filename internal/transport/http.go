@@ -653,8 +653,10 @@ func (s *HTTPServer) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Frame-Options", "DENY")
 	// Script is served from /dashboard.js so 'script-src self' is sufficient —
 	// no fragile inline-script hash to keep in sync with the source.
+	// Styles are all class-based (no inline style= attributes), so 'unsafe-inline'
+	// is not needed for the dashboard. Removing it improves XSS posture (XSS-01).
 	w.Header().Set("Content-Security-Policy",
-		"default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'")
+		"default-src 'self'; style-src 'self'; script-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'")
 	_, _ = w.Write([]byte(DashboardHTML))
 }
 

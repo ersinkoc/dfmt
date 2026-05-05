@@ -40,6 +40,7 @@ select:focus { outline: none; border-color: #00d4ff; }
 .error { background: #ff4444; color: white; padding: 15px; border-radius: 8px; margin-bottom: 20px; display: none; }
 .daemon-badge { background: #00ff88; color: #1a1a2e; padding: 4px 8px; border-radius: 4px; font-size: 0.75rem; font-weight: bold; }
 .daemon-badge.dead { background: #ff4444; color: white; }
+.hidden { display: none; }
 </style>
 </head>
 <body>
@@ -58,7 +59,7 @@ select:focus { outline: none; border-color: #00d4ff; }
 </div>
 <div id="error" class="error"></div>
 <div id="loading" class="loading">Loading stats...</div>
-<div id="stats" style="display:none">
+<div id="stats" class="hidden">
 <div class="cards">
 <div class="card"><div class="card-value" id="total-events">0</div><div class="card-label">Total Events</div></div>
 <div class="card"><div class="card-value" id="session-duration">-</div><div class="card-label">Session Duration</div></div>
@@ -110,12 +111,12 @@ function showError(msg) {
 function showLoading() {
   errorEl.style.display = 'none';
   loadingEl.style.display = 'block';
-  statsEl.style.display = 'none';
+  statsEl.classList.add('hidden');
 }
 
 function showStats() {
   loadingEl.style.display = 'none';
-  statsEl.style.display = 'block';
+  statsEl.classList.remove('hidden');
 }
 
 function formatDuration(ms) {
