@@ -25,6 +25,36 @@ The wire surfaces under SemVer guarantees today are:
 
 Internal package shapes (`internal/...`) are NOT covered by SemVer.
 
+## [0.2.6] — 2026-05-05
+
+Security release: fixes and verifies 8 security findings.
+
+### Security
+
+- **Bearer token auth on HTTP endpoints** (AUTH-01/02) — all HTTP endpoints
+  now require `Authorization: Bearer <token>` header. Token is generated
+  on daemon startup and stored in `.dfmt/port` alongside the port number.
+  Unauthenticated requests receive 401.
+- **PATH prepend world-writable rejection** (CMDI-002) — `ValidatePathPrepend`
+  now returns an error (not warning) when path_prepend entries are
+  world-writable or non-existent. Daemon startup fails fast on invalid config.
+- **Azure IMDS IP blocked** (SSRF-001) — `168.63.129.16` added to `isBlockedIP()`.
+- **GCP metadata hostname blocklist expanded** (SSRF-002) — `metadata.goog.internal`
+  and `metadata.goog.com` added alongside existing `metadata.google.internal`.
+- **IPv6 AWS IMDS blocked** (SSRF-003) — `fd00:ec2::254` added to `isBlockedIP()`.
+- **SSRF block logging** (SSRF-006) — blocked fetch attempts are now logged
+  via `logging.Warnf` for operator visibility.
+- **Dashboard CSP hardened** (XSS-01) — removed `unsafe-inline` from
+  Content-Security-Policy header; replaced inline `style="display:none"`
+  with class-based visibility toggling.
+
+### Verified Protected (no action needed)
+
+- CMDI-001/010 (shell chaining) — `hasShellChainOperators` + `splitByShellOperators`
+- CMDI-003/004/009/01/02 — env var injection, LookPath, heredoc, here-string
+- SSRF-005/007 — redirect metadata check, URL scheme enforcement
+- RACE-01/02/03 — logger mutex, registry snapshot, FSWatcher recover
+
 ## [0.2.5] — 2026-05-03
 
 Feature release: dashboard multi-project switching.
