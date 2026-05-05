@@ -369,12 +369,115 @@ if (-not $SkipSetup) {
     if (-not (Test-Path $ClaudeJson)) {
         Write-Warn "~/.claude.json not found -- Claude Code may not be installed; skipping patch"
     } else {
-        try {
-            $raw = [System.IO.File]::ReadAllText($ClaudeJson) -replace 'D:/CODEBOX/PROJECTS/DFMT', 'D:/codebox/PROJECTS/DFMT'
-            $claudeJson = $raw | ConvertFrom-Json -ErrorAction Stop
-        } catch {
-            Write-Err "could not parse ~/.claude.json: $_"
-            exit 1
+        # Skip past whitespace/quoted-string content from a starting offset.
+        # Helper for the JSON value-end finder below.
+        function Get-JsonValueEndPos([string]$text, [int]$startPos) {
+            $i = $startPos
+            while ($i -lt $text.Length -and ($text[$i] -eq ' ' -or $text[$i] -eq "`t" -or $text[$i] -eq "`n" -or $text[$i] -eq "`r")) { $i++ }
+            if ($i -ge $text.Length) { return -1 }
+            $c = $text[$i]
+            if ($c -eq '"') {
+                $j = $i + 1
+                while ($j -lt $text.Length) {
+                    if ($text[$j] -eq '\') { $j += 2; continue }
+                    if ($text[$j] -eq '"') { return $j + 1 }
+                    $j++
+                }
+                return -1
+            }
+            if ($c -eq '{' -or $c -eq '[') {
+                $open = $c
+                $close = if ($c -eq '{') { '}' } else { ']' }
+                $depth = 1; $j = $i + 1; $inStr = $false
+                while ($j -lt $text.Length) {
+                    $ch = $text[$j]
+                    if ($inStr) {
+                        if ($ch -eq '\') { $j += 2; continue }
+                        if ($ch -eq '"') { $inStr = $false }
+                    } else {
+                        if ($ch -eq '"') { $inStr = $true }
+                        elseif ($ch -eq $open) { $depth++ }
+                        elseif ($ch -eq $close) {
+                            $depth--
+                            if ($depth -eq 0) { return $j + 1 }
+                        }
+                    }
+                    $j++
+                }
+                return -1
+            }
+            # Primitive: scan until comma / closing brace / whitespace boundary.
+            $j = $i
+            while ($j -lt $text.Length -and $text[$j] -ne ',' -and $text[$j] -ne '}' -and $text[$j] -ne ']') { $j++ }
+            return $j
+        }
+
+        # Remove the LAST occurrence of "key" from raw JSON text including its
+        # value and the appropriate trailing-or-leading comma. Returns the
+        # rewritten text. If the key appears 0 or 1 times, returns the input
+        # unchanged so the retry loop can give up cleanly.
+        function Remove-LastJsonKeyOccurrence([string]$text, [string]$key) {
+            $needle = '"' + [regex]::Escape($key) + '"'
+            $pat = [regex]("(?<=[\{,]\s*)" + $needle + "\s*:")
+            $matches = @($pat.Matches($text))
+            if ($matches.Count -lt 2) { return $text }
+            $m = $matches[$matches.Count - 1]
+            $valStart = $m.Index + $m.Length
+            $valEnd = Get-JsonValueEndPos -text $text -startPos $valStart
+            if ($valEnd -lt 0) { return $text }
+            $sliceStart = $m.Index
+            $sliceEnd = $valEnd
+            # Prefer eating a trailing comma; if none, eat the preceding one.
+            $i = $sliceEnd
+            while ($i -lt $text.Length -and ($text[$i] -eq ' ' -or $text[$i] -eq "`t" -or $text[$i] -eq "`n" -or $text[$i] -eq "`r")) { $i++ }
+            if ($i -lt $text.Length -and $text[$i] -eq ',') {
+                $sliceEnd = $i + 1
+            } else {
+                $j = $sliceStart - 1
+                while ($j -ge 0 -and ($text[$j] -eq ' ' -or $text[$j] -eq "`t" -or $text[$j] -eq "`n" -or $text[$j] -eq "`r")) { $j-- }
+                if ($j -ge 0 -and $text[$j] -eq ',') { $sliceStart = $j }
+            }
+            return $text.Substring(0, $sliceStart) + $text.Substring($sliceEnd)
+        }
+
+        $raw = [System.IO.File]::ReadAllText($ClaudeJson) -replace 'D:/CODEBOX/PROJECTS/DFMT', 'D:/codebox/PROJECTS/DFMT'
+
+        # ConvertFrom-Json on PS 5.1 throws on case-only duplicate keys (e.g.
+        # `D:/CODEBOX/PROJECTS/X` vs `D:/Codebox/PROJECTS/X`). Loop: parse,
+        # if duplicate-keys error fires, peel the LATER occurrence of the
+        # second-named key, retry. Bounded to 50 attempts so a malformed file
+        # can't spin forever.
+        $claudeJson = $null
+        $attempts = 0
+        while ($null -eq $claudeJson) {
+            $attempts++
+            if ($attempts -gt 50) {
+                Write-Err "could not dedup ~/.claude.json after 50 attempts; please clean manually"
+                exit 1
+            }
+            try {
+                $claudeJson = $raw | ConvertFrom-Json -ErrorAction Stop
+                break
+            } catch {
+                $msg = $_.Exception.Message
+                if ($msg -match "duplicated keys '([^']+)' and '([^']+)'") {
+                    $keyA = $Matches[1]; $keyB = $Matches[2]
+                    Write-Info "merging case-only duplicate key: '$keyA' / '$keyB'"
+                    $newRaw = Remove-LastJsonKeyOccurrence -text $raw -key $keyB
+                    if ($newRaw -eq $raw) {
+                        # Try the other side if first peel made no progress.
+                        $newRaw = Remove-LastJsonKeyOccurrence -text $raw -key $keyA
+                    }
+                    if ($newRaw -eq $raw) {
+                        Write-Err "could not strip duplicate key '$keyB' / '$keyA' from ~/.claude.json"
+                        exit 1
+                    }
+                    $raw = $newRaw
+                } else {
+                    Write-Err "could not parse ~/.claude.json: $_"
+                    exit 1
+                }
+            }
         }
 
         if (-not $claudeJson.PSObject.Properties['mcpServers']) {
