@@ -27,7 +27,7 @@ Internal package shapes (`internal/...`) are NOT covered by SemVer.
 
 ## [Unreleased]
 
-## [0.2.8] — 2026-05-05
+## [0.3.0] — 2026-05-05
 
 ### Changed
 
@@ -364,7 +364,8 @@ for v0.3.x:
   `privacy.allow_nonlocal_http` not wired — DFMT never
   phones home regardless.
 
-[Unreleased]: https://github.com/ersinkoc/dfmt/compare/v0.2.2...HEAD
+[Unreleased]: https://github.com/ersinkoc/dfmt/compare/v0.3.0...HEAD
+[0.2.8]: https://github.com/ersinkoc/dfmt/releases/tag/v0.2.8
 [0.2.2]: https://github.com/ersinkoc/dfmt/releases/tag/v0.2.2
 [0.2.1]: https://github.com/ersinkoc/dfmt/releases/tag/v0.2.1
 [0.2.0]: https://github.com/ersinkoc/dfmt/releases/tag/v0.2.0
