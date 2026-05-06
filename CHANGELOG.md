@@ -27,6 +27,38 @@ Internal package shapes (`internal/...`) are NOT covered by SemVer.
 
 ## [Unreleased]
 
+## [0.4.3] — 2026-05-06
+
+Patch release closing three more global-daemon visibility gaps
+caught in the v0.4.2 audit pass.
+
+### Fixed
+
+- **`dfmt mcp` registers project with the host-wide daemon at
+  startup.** MCP-only projects (no other CLI command had touched
+  them yet) were invisible to the dashboard's project switcher
+  even though events were being recorded. `runMCP` now fires an
+  async best-effort Stats RPC at startup so the daemon's
+  Resources(projectID) lazy-loads the project into extraProjects.
+  Never spawns a daemon, never blocks startup.
+- **`dfmt list` shows the global daemon.** Was reporting "No
+  running daemons" against a live host-wide daemon because the
+  on-disk registry stays empty in global mode. Now synthesizes
+  rows from `/api/all-daemons` so every project the daemon's
+  resource cache holds appears in the listing.
+- **`dfmt doctor` port + PID checks see the global paths.** Both
+  rows flagged red under the global daemon because they only
+  checked `<proj>/.dfmt/{port,daemon.pid}`. They now check the
+  global paths first and fall back to per-project for v0.3.x
+  straddle setups.
+
+### Note
+
+The deeper architectural issue — `dfmt mcp` writing to its own
+journal/index handles instead of forwarding through the daemon —
+is preserved for v0.5.0. The MCP startup ping is a v0.4.x
+visibility fix, not the proxy refactor.
+
 ## [0.4.2] — 2026-05-06
 
 Patch release closing two more audit findings against the global
