@@ -523,6 +523,37 @@ func (h *Handlers) redactData(data map[string]any) map[string]any {
 	return r.RedactEvent(data)
 }
 
+// redactEventForRender returns a copy of e with Actor, Tags, and Data scrubbed
+// through the redactor. Closes V-01: redaction on the journal-write path
+// catches secrets the regex knows about at the moment of write, but a pattern
+// added later (or a near-miss the original write missed) would leak forever
+// through dfmt_recall snapshots without this second pass at render time.
+//
+// The returned Event shares the original's typed fields (ID, TS, Type,
+// Priority, Project, Sig) — those are server-set or hash-bound and need no
+// redaction. Only the agent-controllable string surfaces are reprocessed.
+func (h *Handlers) redactEventForRender(e core.Event) core.Event {
+	r := h.getRedactor()
+	if r == nil {
+		return e
+	}
+	out := e
+	if e.Actor != "" {
+		out.Actor = r.Redact(e.Actor)
+	}
+	if len(e.Tags) > 0 {
+		redactedTags := make([]string, len(e.Tags))
+		for i, t := range e.Tags {
+			redactedTags[i] = r.Redact(t)
+		}
+		out.Tags = redactedTags
+	}
+	if e.Data != nil {
+		out.Data = r.RedactEvent(e.Data)
+	}
+	return out
+}
+
 // SetProject sets the project identifier stamped on all events written by this handler.
 func (h *Handlers) SetProject(p string) {
 	h.mu.Lock()
@@ -865,6 +896,11 @@ func (h *Handlers) Recall(ctx context.Context, params RecallParams) (_ *RecallRe
 	lines = append(lines, "# Session Snapshot\n")
 
 	for _, e := range sorted {
+		// V-01: re-redact on render. The journal-write redactor catches
+		// what its patterns matched at the time of write; this second pass
+		// covers near-misses, retroactively-added patterns, and operator-
+		// supplied custom patterns added after the event was journaled.
+		e = h.redactEventForRender(e)
 		var dataStr string
 		if e.Data != nil {
 			dataStr = formatEventData(e.Data)
@@ -920,8 +956,16 @@ func (h *Handlers) Recall(ctx context.Context, params RecallParams) (_ *RecallRe
 				Format:   format,
 			}, nil
 		}
+		// V-01: re-redact each event before handing it to the renderer.
+		// The markdown path above redacts inline; for json/xml we have to
+		// pre-build the redacted slice because SnapshotBuilder reads the
+		// fields directly.
+		redacted := make([]core.Event, len(selected))
+		for i, e := range selected {
+			redacted[i] = h.redactEventForRender(e)
+		}
 		sb := retrieve.NewSnapshotBuilder(budget)
-		snap, _ := sb.Build(selected)
+		snap, _ := sb.Build(redacted)
 		if format == "json" {
 			snapshot = retrieve.NewJSONRenderer().Render(snap)
 		} else {
@@ -1277,9 +1321,19 @@ func (h *Handlers) Exec(ctx context.Context, params ExecParams) (_ *ExecResponse
 	}
 	defer release()
 
+	// V-17 / G-02: clamp the agent-supplied timeout BEFORE the
+	// time.Duration multiplication. A sufficiently large params.Timeout
+	// (e.g., int64 max) would overflow `time.Duration(params.Timeout) *
+	// time.Second` to a negative duration and the post-clamp `<= 0`
+	// reset would silently mask the wrap. Clamping the int seconds to
+	// MaxExecTimeout/Second first makes both directions safe.
 	var timeout time.Duration
 	if params.Timeout > 0 {
-		timeout = time.Duration(params.Timeout) * time.Second
+		secs := params.Timeout
+		if maxSecs := int(sandbox.MaxExecTimeout / time.Second); secs > maxSecs {
+			secs = maxSecs
+		}
+		timeout = time.Duration(secs) * time.Second
 	} else {
 		timeout = sandbox.DefaultExecTimeout
 	}
@@ -1535,11 +1589,18 @@ func (h *Handlers) Fetch(ctx context.Context, params FetchParams) (_ *FetchRespo
 	}
 	defer release()
 
+	// V-17 / G-02: clamp before multiplication, same reasoning as Exec.
+	// MaxFetchTimeout caps the agent-supplied positive value; the
+	// `<= 0` else branch supplies the default.
 	var timeout time.Duration
 	if params.Timeout > 0 {
-		timeout = time.Duration(params.Timeout) * time.Second
+		secs := params.Timeout
+		if maxSecs := int(sandbox.MaxFetchTimeout / time.Second); secs > maxSecs {
+			secs = maxSecs
+		}
+		timeout = time.Duration(secs) * time.Second
 	} else {
-		timeout = 30 * time.Second
+		timeout = sandbox.DefaultFetchTimeout
 	}
 
 	req := sandbox.FetchReq{

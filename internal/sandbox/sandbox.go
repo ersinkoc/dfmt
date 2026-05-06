@@ -182,6 +182,17 @@ const DefaultExecTimeout = 60 * time.Second
 // MaxExecTimeout is the maximum allowed execution timeout.
 const MaxExecTimeout = 300 * time.Second
 
+// DefaultFetchTimeout is the default HTTP fetch timeout when the caller
+// does not supply one (the inner sandbox Fetch also defaults to 30s).
+const DefaultFetchTimeout = 30 * time.Second
+
+// MaxFetchTimeout caps the agent-supplied fetch timeout. Closes V-17:
+// without a ceiling, an agent could set Timeout=2147483647 (~68 years)
+// and pin a fetch-semaphore slot indefinitely against a slow-loris
+// server. Combined with the fetchSem cap of 8, a malicious agent could
+// otherwise lock the entire fetch capability for arbitrary duration.
+const MaxFetchTimeout = 5 * time.Minute
+
 // InlineThreshold is the legacy byte-based inline cap (4 KB). Retained
 // for tests that pin the historical boundary and for the Windows
 // PowerShell truncation fallback. The active policy boundary is
