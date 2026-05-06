@@ -9,6 +9,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -846,6 +847,39 @@ func registerProjectWithGlobalDaemon(projectPath string) {
 	_, _ = cl.Stats(ctx, transport.StatsParams{NoCache: true})
 }
 
+// loadedProjectsViaAPI calls /api/all-daemons against the global
+// daemon at the given port and returns the project paths it
+// reports. Used by `dfmt list` to enumerate every project the
+// daemon's resource cache currently holds. Returns nil on any
+// error so the caller can fall back to a single "<global>" row.
+func loadedProjectsViaAPI(port int) []string {
+	if port <= 0 {
+		return nil
+	}
+	url := fmt.Sprintf("http://127.0.0.1:%d/api/all-daemons", port)
+	httpClient := &http.Client{Timeout: 500 * time.Millisecond}
+	resp, err := httpClient.Get(url)
+	if err != nil {
+		return nil
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return nil
+	}
+	var rows []map[string]any
+	if jerr := json.Unmarshal(body, &rows); jerr != nil {
+		return nil
+	}
+	out := make([]string, 0, len(rows))
+	for _, r := range rows {
+		if p, ok := r["project_path"].(string); ok && p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
 // readGlobalDaemonPID reads ~/.dfmt/daemon.pid and returns the
 // daemon's PID, or 0 on any read / parse error. Best-effort —
 // callers display the value to the operator but don't depend on it
@@ -1313,6 +1347,39 @@ func signalStopProcess(pid int, force bool) {
 func runList(_ []string) int {
 	daemons := client.GetRegistry().List()
 
+	// Phase 2: synthesize a registry-shaped row for the host-wide
+	// global daemon when one is up. The global daemon doesn't write
+	// to ~/.dfmt/daemons.json (Mode field forward-compat is deferred
+	// to v0.5.0), so without this `dfmt list` reports "No running
+	// daemons" while the daemon is plainly alive and serving every
+	// project. We pull project paths from the dashboard URL helper
+	// and the global PID file; ProjectPath is set to "<global>" to
+	// distinguish from per-project legacy rows.
+	if globalURL := globalDashboardURL(); globalURL != "" {
+		gpid := readGlobalDaemonPID()
+		port := 0
+		if p, _, err := readGlobalPortFile(); err == nil {
+			port = p
+		}
+		// One synthetic row per loaded project, all sharing the
+		// daemon's PID/port. Operators reading `dfmt list` see
+		// every project the global daemon has cached, mirroring
+		// the dashboard switcher.
+		loaded := loadedProjectsViaAPI(port)
+		if len(loaded) == 0 {
+			loaded = []string{"<global>"}
+		}
+		for _, p := range loaded {
+			daemons = append(daemons, client.DaemonEntry{
+				ProjectPath: p,
+				PID:         gpid,
+				Port:        port,
+				StartedAt:   time.Now(),
+				LastSeen:    time.Now(),
+			})
+		}
+	}
+
 	if len(daemons) == 0 {
 		if flagJSON {
 			fmt.Println("[]")
@@ -1462,6 +1529,15 @@ func runDoctor(args []string) int {
 			return true, fmt.Sprintf("%d bytes", fi.Size())
 		}},
 		{"Port file consistent with daemon liveness", func() (bool, string) {
+			// Phase 2: prefer the global port file when a host-wide
+			// daemon is up. The legacy per-project file is still
+			// checked as a fallback so v0.3.x straddle setups don't
+			// flip the row red just because they're running both.
+			if globalDashboardURL() != "" {
+				if _, err := os.Stat(project.GlobalPortPath()); err == nil {
+					return true, "(global daemon)"
+				}
+			}
 			if _, err := os.Stat(portPath); os.IsNotExist(err) {
 				if daemonAlive {
 					return false, "daemon is alive but port file missing"
@@ -1474,6 +1550,15 @@ func runDoctor(args []string) int {
 			return true, ""
 		}},
 		{"PID file consistent with daemon liveness", func() (bool, string) {
+			// Same global-first ordering as the port-file check.
+			if globalDashboardURL() != "" {
+				if pid := readGlobalDaemonPID(); pid > 0 {
+					return true, fmt.Sprintf("global daemon PID %d", pid)
+				}
+				if daemonAlive {
+					return false, "global daemon is alive but ~/.dfmt/daemon.pid is missing"
+				}
+			}
 			data, err := os.ReadFile(pidPath)
 			if os.IsNotExist(err) {
 				if daemonAlive {
