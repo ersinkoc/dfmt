@@ -294,12 +294,36 @@ func (h *Handlers) getStore() *content.Store {
 	return s
 }
 
-// getProject returns the project identifier under read-lock.
+// getProject returns the per-handler default project identifier under read-lock.
+// Prefer getProjectFor(ctx) for any new call site — that helper consults the
+// request context first and only falls back to the default when no per-call
+// project is attached.
 func (h *Handlers) getProject() string {
 	h.mu.RLock()
 	p := h.project
 	h.mu.RUnlock()
 	return p
+}
+
+// getProjectFor returns the project identifier that an in-flight RPC targets.
+// Resolution order:
+//
+//  1. transport.ProjectIDFrom(ctx) — set by the MCP transport when the
+//     subprocess pinned a project_id at startup, or by HTTP/CLI clients
+//     passing it through the request body.
+//  2. h.project — the per-handler default, set once via SetProject. This
+//     covers the legacy single-project daemon (one Handlers instance owns
+//     one project for its lifetime) and the degraded MCP-without-project
+//     mode (h.project == "").
+//
+// New code paths must call this helper instead of h.project / h.getProject()
+// so the global daemon (Phase 2) can multiplex per-call routing without
+// rewriting every event source again.
+func (h *Handlers) getProjectFor(ctx context.Context) string {
+	if pid := ProjectIDFrom(ctx); pid != "" {
+		return pid
+	}
+	return h.getProject()
 }
 
 // SetActivityFn registers a callback invoked on every inbound RPC. The daemon
@@ -571,7 +595,7 @@ func (h *Handlers) logEvent(ctx context.Context, eventType, summary string, data
 	e := core.Event{
 		ID:       string(core.NewULID(time.Now())),
 		TS:       time.Now(),
-		Project:  h.getProject(),
+		Project:  h.getProjectFor(ctx),
 		Type:     core.EventType(eventType),
 		Priority: core.PriP4,
 		Source:   core.SrcMCP,
@@ -589,13 +613,17 @@ func (h *Handlers) logEvent(ctx context.Context, eventType, summary string, data
 
 // RememberParams are the parameters for the Remember method.
 type RememberParams struct {
-	Type     string         `json:"type"`
-	Priority string         `json:"priority"`
-	Source   string         `json:"source"`
-	Actor    string         `json:"actor,omitempty"`
-	Data     map[string]any `json:"data,omitempty"`
-	Refs     []string       `json:"refs,omitempty"`
-	Tags     []string       `json:"tags,omitempty"`
+	// ProjectID, when set, routes the call to the per-project resources
+	// (journal/index) for that project root instead of the per-handler
+	// default. Optional for backward compat with pre-Phase-2 callers.
+	ProjectID string         `json:"project_id,omitempty"`
+	Type      string         `json:"type"`
+	Priority  string         `json:"priority"`
+	Source    string         `json:"source"`
+	Actor     string         `json:"actor,omitempty"`
+	Data      map[string]any `json:"data,omitempty"`
+	Refs      []string       `json:"refs,omitempty"`
+	Tags      []string       `json:"tags,omitempty"`
 	// Direct token fields for MCP tools
 	InputTokens  int    `json:"input_tokens,omitempty"`
 	OutputTokens int    `json:"output_tokens,omitempty"`
@@ -678,7 +706,7 @@ func (h *Handlers) Remember(ctx context.Context, params RememberParams) (*Rememb
 	e := core.Event{
 		ID:       string(core.NewULID(time.Now())),
 		TS:       time.Now(),
-		Project:  h.getProject(),
+		Project:  h.getProjectFor(ctx),
 		Type:     core.EventType(params.Type),
 		Priority: priority,
 		Source:   core.SrcMCP,
@@ -709,9 +737,10 @@ func (h *Handlers) Remember(ctx context.Context, params RememberParams) (*Rememb
 
 // SearchParams are the parameters for the Search method.
 type SearchParams struct {
-	Query string `json:"query"`
-	Limit int    `json:"limit,omitempty"`
-	Layer string `json:"layer,omitempty"` // "bm25", "trigram", "fuzzy"
+	ProjectID string `json:"project_id,omitempty"`
+	Query     string `json:"query"`
+	Limit     int    `json:"limit,omitempty"`
+	Layer     string `json:"layer,omitempty"` // "bm25", "trigram", "fuzzy"
 }
 
 // SearchResponse is the response for the Search method.
@@ -791,8 +820,9 @@ func (h *Handlers) Search(ctx context.Context, params SearchParams) (_ *SearchRe
 
 // RecallParams are the parameters for the Recall method.
 type RecallParams struct {
-	Budget int    `json:"budget,omitempty"`
-	Format string `json:"format,omitempty"`
+	ProjectID string `json:"project_id,omitempty"`
+	Budget    int    `json:"budget,omitempty"`
+	Format    string `json:"format,omitempty"`
 }
 
 // RecallResponse is the response for the Recall method.
@@ -981,6 +1011,7 @@ func (h *Handlers) Recall(ctx context.Context, params RecallParams) (_ *RecallRe
 
 // StatsParams are the parameters for the Stats method.
 type StatsParams struct {
+	ProjectID string `json:"project_id,omitempty"`
 	// NoCache bypasses the TTL-based memoisation. Human-driven CLI
 	// callers (`dfmt stats`) set this so successive runs reflect the
 	// current journal instead of a 5-second-stale snapshot. Dashboard
@@ -1274,7 +1305,8 @@ func getInt(data map[string]any, key string) (int, bool) {
 
 // StreamParams are the parameters for the Stream method.
 type StreamParams struct {
-	From string `json:"from,omitempty"`
+	ProjectID string `json:"project_id,omitempty"`
+	From      string `json:"from,omitempty"`
 }
 
 // Stream streams events from the journal.
@@ -1290,12 +1322,13 @@ func (h *Handlers) Stream(ctx context.Context, params StreamParams) (<-chan core
 
 // ExecParams are the parameters for sandbox execution.
 type ExecParams struct {
-	Code    string            `json:"code"`
-	Lang    string            `json:"lang,omitempty"`
-	Intent  string            `json:"intent,omitempty"`
-	Timeout int               `json:"timeout,omitempty"` // seconds
-	Return  string            `json:"return,omitempty"`
-	Env     map[string]string `json:"env,omitempty"`
+	ProjectID string            `json:"project_id,omitempty"`
+	Code      string            `json:"code"`
+	Lang      string            `json:"lang,omitempty"`
+	Intent    string            `json:"intent,omitempty"`
+	Timeout   int               `json:"timeout,omitempty"` // seconds
+	Return    string            `json:"return,omitempty"`
+	Env       map[string]string `json:"env,omitempty"`
 }
 
 // ExecResponse is the response from sandbox execution.
@@ -1436,11 +1469,12 @@ func (h *Handlers) redactMatches(in []sandbox.ContentMatch) []sandbox.ContentMat
 
 // ReadParams are the parameters for sandbox file reading.
 type ReadParams struct {
-	Path   string `json:"path"`
-	Intent string `json:"intent,omitempty"`
-	Offset int64  `json:"offset,omitempty"`
-	Limit  int64  `json:"limit,omitempty"`
-	Return string `json:"return,omitempty"`
+	ProjectID string `json:"project_id,omitempty"`
+	Path      string `json:"path"`
+	Intent    string `json:"intent,omitempty"`
+	Offset    int64  `json:"offset,omitempty"`
+	Limit     int64  `json:"limit,omitempty"`
+	Return    string `json:"return,omitempty"`
 }
 
 // ReadResponse is the response from sandbox file reading.
@@ -1530,13 +1564,14 @@ func (h *Handlers) Read(ctx context.Context, params ReadParams) (_ *ReadResponse
 
 // FetchParams are the parameters for sandbox HTTP fetching.
 type FetchParams struct {
-	URL     string            `json:"url"`
-	Intent  string            `json:"intent,omitempty"`
-	Method  string            `json:"method,omitempty"`
-	Headers map[string]string `json:"headers,omitempty"`
-	Body    string            `json:"body,omitempty"`
-	Return  string            `json:"return,omitempty"`
-	Timeout int               `json:"timeout,omitempty"` // seconds
+	ProjectID string            `json:"project_id,omitempty"`
+	URL       string            `json:"url"`
+	Intent    string            `json:"intent,omitempty"`
+	Method    string            `json:"method,omitempty"`
+	Headers   map[string]string `json:"headers,omitempty"`
+	Body      string            `json:"body,omitempty"`
+	Return    string            `json:"return,omitempty"`
+	Timeout   int               `json:"timeout,omitempty"` // seconds
 }
 
 // FetchResponse is the response from sandbox HTTP fetching.
@@ -1553,8 +1588,9 @@ type FetchResponse struct {
 
 // GlobParams are the parameters for the Glob method.
 type GlobParams struct {
-	Pattern string `json:"pattern"`
-	Intent  string `json:"intent,omitempty"`
+	ProjectID string `json:"project_id,omitempty"`
+	Pattern   string `json:"pattern"`
+	Intent    string `json:"intent,omitempty"`
 }
 
 // GlobResponse is the response from a glob operation.
@@ -1565,6 +1601,7 @@ type GlobResponse struct {
 
 // GrepParams are the parameters for the Grep method.
 type GrepParams struct {
+	ProjectID       string `json:"project_id,omitempty"`
 	Pattern         string `json:"pattern"`
 	Path            string `json:"path,omitempty"`
 	Files           string `json:"files,omitempty"`
@@ -1755,6 +1792,7 @@ func (h *Handlers) Grep(ctx context.Context, params GrepParams) (_ *GrepResponse
 
 // EditParams are the parameters for the Edit method.
 type EditParams struct {
+	ProjectID string `json:"project_id,omitempty"`
 	Path      string `json:"path"`
 	OldString string `json:"old_string"`
 	NewString string `json:"new_string"`
@@ -1768,8 +1806,9 @@ type EditResponse struct {
 
 // WriteParams are the parameters for the Write method.
 type WriteParams struct {
-	Path    string `json:"path"`
-	Content string `json:"content"`
+	ProjectID string `json:"project_id,omitempty"`
+	Path      string `json:"path"`
+	Content   string `json:"content"`
 }
 
 // WriteResponse is the response from a write operation.

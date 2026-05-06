@@ -29,3 +29,26 @@ func SessionIDFrom(ctx context.Context) string {
 	v, _ := ctx.Value(sessionIDKey{}).(string)
 	return v
 }
+
+// projectIDKey is the unexported context key for the canonical project root
+// path that an inbound RPC targets. The global daemon (Phase 2) routes each
+// call to per-project resources (journal, index, content store, redact /
+// permission overrides) using this value; legacy single-project daemons
+// ignore it and use Handlers.project instead.
+type projectIDKey struct{}
+
+// WithProjectID returns ctx with projectID attached. Empty IDs are stored
+// as-is — callers must handle the absence explicitly so the legacy fallback
+// (h.project) remains visible at the resolution site.
+func WithProjectID(ctx context.Context, projectID string) context.Context {
+	return context.WithValue(ctx, projectIDKey{}, projectID)
+}
+
+// ProjectIDFrom returns the project ID attached to ctx, or "" when none was
+// set. Handlers fall back to the per-process default project when this is
+// empty so pre-Phase-2 callers (and the degraded MCP-without-project mode)
+// keep working unchanged.
+func ProjectIDFrom(ctx context.Context) string {
+	v, _ := ctx.Value(projectIDKey{}).(string)
+	return v
+}
