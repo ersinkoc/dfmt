@@ -2258,13 +2258,19 @@ func getConfigField(cfg *config.Config, key string) (string, bool) {
 	}
 }
 
+// configBoolTrue is the literal a config-set value must equal to
+// flip a boolean field on. Extracted to a constant per goconst's
+// repeat-literal threshold; the value is "true" because that's
+// what the CLI documentation tells operators to type.
+const configBoolTrue = "true"
+
 // setConfigField parses and sets a dot-delimited key path.
 func setConfigField(cfg *config.Config, key, value string) error {
 	switch key {
 	case "version":
 		return fmt.Errorf("version is read-only")
 	case "capture.fs.enabled":
-		cfg.Capture.FS.Enabled = value == "true"
+		cfg.Capture.FS.Enabled = value == configBoolTrue
 	case "capture.fs.debounce_ms":
 		v, err := strconv.Atoi(value)
 		if err != nil {
@@ -2290,7 +2296,7 @@ func setConfigField(cfg *config.Config, key, value string) error {
 		}
 		cfg.Storage.JournalMaxBytes = v
 	case "storage.compress_rotated":
-		cfg.Storage.CompressRotated = value == "true"
+		cfg.Storage.CompressRotated = value == configBoolTrue
 	case "retrieval.default_budget":
 		v, err := strconv.Atoi(value)
 		if err != nil {
@@ -2318,21 +2324,21 @@ func setConfigField(cfg *config.Config, key, value string) error {
 		}
 		cfg.Index.HeadingBoost = v
 	case "transport.http.enabled":
-		cfg.Transport.HTTP.Enabled = value == "true"
+		cfg.Transport.HTTP.Enabled = value == configBoolTrue
 	case "transport.http.bind":
 		cfg.Transport.HTTP.Bind = value
 	case "transport.socket.enabled":
-		cfg.Transport.Socket.Enabled = value == "true"
+		cfg.Transport.Socket.Enabled = value == configBoolTrue
 	case "lifecycle.idle_timeout":
 		cfg.Lifecycle.IdleTimeout = value
 	case "lifecycle.shutdown_timeout":
 		cfg.Lifecycle.ShutdownTimeout = value
 	case "privacy.telemetry":
-		cfg.Privacy.Telemetry = value == "true"
+		cfg.Privacy.Telemetry = value == configBoolTrue
 	case "privacy.remote_sync":
 		cfg.Privacy.RemoteSync = value
 	case "privacy.allow_nonlocal_http":
-		cfg.Privacy.AllowNonlocalHTTP = value == "true"
+		cfg.Privacy.AllowNonlocalHTTP = value == configBoolTrue
 	case "logging.level":
 		cfg.Logging.Level = value
 	case "logging.format":
