@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -8,6 +9,7 @@ import (
 	"runtime"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"github.com/ersinkoc/dfmt/internal/capture"
 	"github.com/ersinkoc/dfmt/internal/config"
@@ -202,11 +204,7 @@ func (d *Daemon) defaultResourcesView() *ProjectResources {
 // watchers across the cache would compete for the daemon's single
 // fswatch consumer goroutine. The default project keeps its watcher;
 // extra projects fall back to journal-only event sources (MCP/CLI).
-func loadProjectResources(projectPath string, cfg *config.Config) (*ProjectResources, error) {
-	if cfg == nil {
-		cfg = &config.Config{}
-	}
-
+func loadProjectResources(projectPath string, fallbackCfg *config.Config) (*ProjectResources, error) {
 	// Resolve to absolute so cache key and on-disk paths are canonical.
 	abs, err := filepath.Abs(projectPath)
 	if err != nil {
@@ -217,6 +215,27 @@ func loadProjectResources(projectPath string, cfg *config.Config) (*ProjectResou
 	dfmtDir := filepath.Join(projectPath, ".dfmt")
 	if err := os.MkdirAll(dfmtDir, 0o700); err != nil {
 		return nil, fmt.Errorf("create %s: %w", dfmtDir, err)
+	}
+
+	// Each project's .dfmt/config.yaml wins over the daemon's startup
+	// cfg. Without this, project B inherited project A's retention,
+	// budget, redact, and sandbox knobs the moment the global daemon
+	// served them both — silently overriding the YAML the user wrote
+	// into B/.dfmt/config.yaml.
+	//
+	// fallbackCfg keeps the old behavior when config.Load returns an
+	// error (typo'd YAML) or finds nothing on disk: we still need
+	// non-nil knobs so journal options / sandbox rules don't crash on
+	// zero-value reads. The error is surfaced via logging.Warnf so
+	// `dfmt doctor` callers can see the project went degraded.
+	cfg := fallbackCfg
+	if loaded, lerr := config.Load(projectPath); lerr == nil && loaded != nil {
+		cfg = loaded
+	} else if lerr != nil {
+		logging.Warnf("config for %s: %v (using daemon defaults)", projectPath, lerr)
+	}
+	if cfg == nil {
+		cfg = &config.Config{}
 	}
 
 	// Journal.
@@ -303,20 +322,40 @@ func loadProjectResources(projectPath string, cfg *config.Config) (*ProjectResou
 // resource bundle. Called from Daemon.Stop after the default project's
 // journal/index are persisted. Failures are logged but never fatal —
 // Stop must complete even if a cache entry leaks state.
+//
+// Each extra project's index is persisted before its journal closes so
+// the next daemon start does not have to replay the full journal for
+// recall to work — for a global daemon serving N projects, that
+// rebuild cost was paid once per project per restart in v0.4.0–v0.4.3.
+// Skip persist when NeedsRebuild was true at load time: that index
+// contains only events that arrived after daemon start (the historical
+// journal has not been replayed yet), so writing cursor=HEAD would
+// silently mark older events as indexed and search would miss them on
+// the next run.
 func (d *Daemon) closeExtraProjects() {
 	d.projectsMu.Lock()
 	defer d.projectsMu.Unlock()
+	// Bound the per-project checkpoint+persist work so a wedged journal
+	// can't hang Stop. 5 s matches the default-project Stop budget.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
 	for k, r := range d.extraProjects {
 		if r == nil {
 			continue
+		}
+		if r.Journal != nil && r.Index != nil && r.IndexPath != "" && !r.NeedsRebuild {
+			hiID, cerr := r.Journal.Checkpoint(ctx)
+			if cerr != nil {
+				logging.Warnf("checkpoint journal for %s: %v", k, cerr)
+			} else if perr := core.PersistIndex(r.Index, r.IndexPath, hiID); perr != nil {
+				logging.Warnf("persist index for %s: %v", k, perr)
+			}
 		}
 		if r.Journal != nil {
 			if err := r.Journal.Close(); err != nil {
 				logging.Warnf("close journal for %s: %v", k, err)
 			}
 		}
-		// Index is in-memory only for now; persistence on shutdown
-		// belongs in a follow-up commit alongside the wire-through.
 	}
 	d.extraProjects = nil
 }

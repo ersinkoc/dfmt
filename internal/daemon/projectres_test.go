@@ -164,6 +164,136 @@ func TestResourcesIsolatesJournalAppends(t *testing.T) {
 	}
 }
 
+// TestCloseExtraProjectsPersistsIndex proves that closeExtraProjects
+// writes each cached project's index to disk before closing its
+// journal. Without this, every restart of a global daemon serving N
+// projects would force a full journal replay per project on the next
+// run — the user-visible symptom is a cold-recall pause that scales
+// with journal size.
+//
+// The skip-on-NeedsRebuild branch is exercised by the second
+// sub-assertion: a fresh daemon load that finds no on-disk index
+// (NeedsRebuild=true) MUST NOT persist a near-empty index, because
+// doing so would write cursor=HEAD and cause the next start to skip
+// the rebuild that historic events depend on.
+func TestCloseExtraProjectsPersistsIndex(t *testing.T) {
+	defaultRoot := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(defaultRoot, ".dfmt"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	d, err := New(defaultRoot, newTestConfig())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	extraRoot := t.TempDir()
+	r, err := d.Resources(extraRoot)
+	if err != nil {
+		t.Fatalf("Resources(extra): %v", err)
+	}
+
+	// Force the persist-eligible branch: simulate a healthy load where
+	// the cursor was already up-to-date so writing index.gob is safe.
+	r.NeedsRebuild = false
+
+	// Append something so the index has content worth persisting.
+	ctx := context.Background()
+	e := core.Event{
+		ID:      "01PERSIST",
+		Type:    core.EvtNote,
+		Project: extraRoot,
+		Tags:    []string{"persist-check"},
+	}
+	e.Sig = e.ComputeSig()
+	if err := r.Journal.Append(ctx, e); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	r.Index.Add(e)
+
+	// Close the default project's journal so closeExtraProjects can run
+	// without contention with daemon Stop sequencing.
+	if d.journal != nil {
+		_ = d.journal.Close()
+	}
+	d.closeExtraProjects()
+
+	indexPath := filepath.Join(extraRoot, ".dfmt", "index.gob")
+	st, err := os.Stat(indexPath)
+	if err != nil {
+		t.Fatalf("index file missing after closeExtraProjects: %v", err)
+	}
+	if st.Size() == 0 {
+		t.Errorf("index file is empty after closeExtraProjects (size=%d)", st.Size())
+	}
+
+	// Now exercise the skip branch: a second extra project where
+	// NeedsRebuild stays true must NOT have an index file written.
+	d2, err := New(t.TempDir(), newTestConfig())
+	if err != nil {
+		t.Fatalf("New d2: %v", err)
+	}
+	skipRoot := t.TempDir()
+	rSkip, err := d2.Resources(skipRoot)
+	if err != nil {
+		t.Fatalf("Resources(skip): %v", err)
+	}
+	rSkip.NeedsRebuild = true
+	if d2.journal != nil {
+		_ = d2.journal.Close()
+	}
+	d2.closeExtraProjects()
+	if _, err := os.Stat(filepath.Join(skipRoot, ".dfmt", "index.gob")); err == nil {
+		t.Errorf("index.gob written for NeedsRebuild=true project — would cause next start to skip rebuild and lose historic events")
+	}
+}
+
+// TestResourcesLoadsProjectOwnConfig proves that an extra project loads
+// its own .dfmt/config.yaml rather than inheriting the daemon's
+// startup cfg. Before this fix a global daemon serving both project A
+// and project B silently used A's retention/budget/path_prepend for
+// every B call, regardless of what B's YAML said.
+func TestResourcesLoadsProjectOwnConfig(t *testing.T) {
+	defaultRoot := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(defaultRoot, ".dfmt"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	d, err := New(defaultRoot, newTestConfig())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() {
+		if d.journal != nil {
+			_ = d.journal.Close()
+		}
+	}()
+
+	// Project B has its own config.yaml with a non-default budget.
+	extraRoot := t.TempDir()
+	dfmtDir := filepath.Join(extraRoot, ".dfmt")
+	if err := os.MkdirAll(dfmtDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfgPath := filepath.Join(dfmtDir, "config.yaml")
+	cfgYAML := "retrieval:\n  default_budget: 12345\n"
+	if err := os.WriteFile(cfgPath, []byte(cfgYAML), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	r, err := d.Resources(extraRoot)
+	if err != nil {
+		t.Fatalf("Resources(extra): %v", err)
+	}
+	defer func() { _ = r.Journal.Close() }()
+
+	if r.Config == nil {
+		t.Fatal("extra project resources have nil Config")
+	}
+	if r.Config.Retrieval.DefaultBudget != 12345 {
+		t.Errorf("extra project default_budget: got %d, want 12345 (project YAML must override daemon cfg)",
+			r.Config.Retrieval.DefaultBudget)
+	}
+}
+
 // TestResourcesEmptyProjectIDOnDegradedDaemon verifies the degraded-mode
 // contract: a daemon constructed without a discoverable project (empty
 // projectPath) returns errProjectIDRequired when asked to resolve an
