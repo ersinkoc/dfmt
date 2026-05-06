@@ -27,6 +27,37 @@ Internal package shapes (`internal/...`) are NOT covered by SemVer.
 
 ## [Unreleased]
 
+## [0.4.1] — 2026-05-06
+
+Patch release for the dashboard's cross-project switcher. Phase 2's
+project_id routing already worked in v0.4.0 (the daemon serves every
+project from one process, every RPC carries `project_id`), but the
+dashboard's project-selector dropdown was reading from the on-disk
+daemon registry — which the host-wide daemon doesn't populate. The
+result was an empty dropdown that broke the user-visible promise of
+"every project monitored from one dashboard."
+
+### Fixed
+
+- `/api/all-daemons` now enumerates the daemon's in-process project
+  cache when the host daemon installs a `ProjectsLister` (global
+  mode). Falls back to the on-disk registry only when no lister is
+  installed (back-compat for v0.3.x straddle setups).
+- Dashboard JS `loadStatsForProject` no longer routes through
+  `/api/proxy` (which was designed for cross-daemon forwarding in the
+  per-project model). It POSTs `/api/stats` with `project_id`
+  stamped in params and lets the daemon's resolveBundle route to the
+  right cache. `/api/proxy` is preserved on the daemon side for
+  operators still running per-project daemons.
+
+### Added
+
+- `Daemon.LoadedProjects()` — returns the union of
+  `defaultProjectPath` and the keys of `extraProjects` for the
+  cross-project view.
+- `Handlers.SetProjectsLister` / `LoadedProjects()` — parallel seam
+  to `SetResourceFetcher` / `resolveBundle`.
+
 ## [0.4.0] — 2026-05-06
 
 Phase 2: host-wide global daemon. The "tek daemon" rework — one DFMT
