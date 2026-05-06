@@ -27,6 +27,105 @@ Internal package shapes (`internal/...`) are NOT covered by SemVer.
 
 ## [Unreleased]
 
+## [0.3.2] — 2026-05-06
+
+Security audit remediation cycle. The 4-phase pipeline (Recon → Hunt
+→ Verify → Report) closed 26 findings: 0 critical, 4 high, 12 medium,
+5 low, 5 informational. No exploitable issue reached production.
+
+### Security
+
+- **Recall snapshots are re-redacted before render** (V-01) — the
+  recall path streamed events through markdown / JSON / XML
+  formatters without re-applying the redactor, so a value redacted
+  at journal-append time but updated by a later patch could leak
+  through `dfmt_recall`. Redact now runs in both the inline-markdown
+  and structured render paths.
+- **Log file sink is `0o600`, not `0o644`** (V-02) — pre-fix the
+  log file was world-readable; mkdir mode was `0o755` instead of
+  `0o700`. Both tightened.
+- **Deny rules normalized; reserved-name check hoisted into Write/
+  Edit; default-policy doc aligned with default-permissive design**
+  (V-03, V-05, V-15) — `extractBaseCommand` strips leading directory
+  and treats tab/newline as IFS separators so `/usr/bin/sudo\twhoami`
+  no longer slips past `deny:exec:sudo *`. `globToRegexShell` maps a
+  literal space to `[ \t]+`. `safefs.CheckNoReservedNames` is now
+  invoked on the Write/Edit hot path so `dfmt_write path="NUL"` is
+  refused on Windows.
+- **Setup writers preserve foreign MCP entries** (V-04) — pre-fix
+  `dfmt setup` clobbered each agent's `mcp.json` with a single-key
+  `{"mcpServers":{"dfmt":{...}}}`, silently destroying any other
+  MCP servers (playwright, context7, github, …) the user had
+  configured. New `MergeMCPServerEntry` splices our entry in and
+  preserves every other key. A one-shot `<path>.dfmt.bak` pristine
+  backup is captured on first patch.
+- **Markdown injection in render pipeline closed** (V-06) — table
+  cell pipes are escaped, code fence lengths grow with the body's
+  longest backtick run, and recall ref-token forgery (`[r12]` from
+  agent-controlled text) is escaped before render.
+- **HTML tokenizer hardened** (V-07, V-08) — drop-set widened to
+  cover `object`/`embed`/`applet`/`link`/`template`/`frame`/`frameset`/
+  `math`/`portal`/`meta`. Raw-text scan switched to a windowed case-
+  fold compare (was `strings.ToLower(t.src[t.pos:])` — O(N²) on
+  pathological input). Token cap (200_000) and tag-depth cap (1024)
+  added.
+- **Sandbox Read closes TOCTOU via `O_NOFOLLOW`** (V-09) — Unix
+  uses the syscall flag directly; Windows Lstat-then-Open with a
+  reparse-point check on the leaf.
+- **JSON decoders depth-capped on every agent-controlled path**
+  (V-10) — new `internal/safejson` package; HTTP body decode (3
+  call-sites), JSON-RPC envelope, journal lines, persisted index,
+  and cursor file all run through `safejson.Unmarshal` with a
+  64-deep nesting limit.
+- **HTTP body and connection caps** (V-11, V-12) — `/api/proxy`
+  bodies capped at 1 MiB (`MaxBytesReader`); HTTP and Unix-socket
+  listeners wrapped with `LimitListener` (max 128 concurrent
+  connections each).
+- **In-memory index bounded** (V-13) — `MaxIndexDocs` (100_000)
+  with FIFO eviction by oldest event ID. ULID time-sortable IDs
+  give the eviction stable lexicographic ordering.
+- **Setup integrity follow-ups** (V-14) — manifest now persisted
+  BEFORE the agent file write so a save failure can never leave an
+  injected file with no uninstall row. Claude trust flags
+  (`hasTrustDialogAccepted`, `hasClaudeMdExternalIncludesApproved`,
+  `hasClaudeMdExternalIncludesWarningShown`) are now captured to
+  `<state>/claude-trust-prior.json` on first patch and restored on
+  uninstall. Capture is idempotent so a re-patch doesn't lose the
+  original state.
+- **Redactor unicode-aware** (V-16) — bearer / generic-secret /
+  basic / password patterns switched from ASCII `\s` to
+  `[\s\p{Z}]` so NBSP / ZWSP / YAML whitespace-only emits don't
+  bypass redaction. Truncated-PEM pattern added.
+- **Fetch / exec timeouts clamped** (V-17) — pre-fix
+  `time.Duration(params.Timeout) * time.Second` could overflow on
+  large user-supplied values; the post-multiply `<= 0` floor reset
+  to default but pinned a fetch semaphore slot for arbitrarily
+  long. Now clamped to ceiling before multiplication.
+- **MCP `tools/call` decoder is strict** (V-18) — was bare
+  `json.Unmarshal`; now uses `decodeParams` (DisallowUnknownFields,
+  trailing-token reject) plus `decodeRequiredParams` for tools whose
+  schema needs at least one field. Agent-side typos (`limt: 10`)
+  surface as -32602 instead of silently running with limit=0.
+- **`safefs.WriteFile` clamps mode to user-only bits** (V-19) — the
+  helper had been trusting caller-passed mode; one accidental
+  `0o644` would have shipped world-readable secrets.
+- **Setup writers all routed through safefs** (V-20) — `.dfmt/
+  config.yaml` seed and the setup manifest itself were still using
+  `os.WriteFile` (no symlink protection). Both now use
+  `safefs.WriteFileAtomic`.
+- **`/api/proxy` Unix-branch tightened** (V-21) — switched to
+  `io.ReadAll(io.LimitReader(conn, 16<<20))` so multi-packet
+  responses are read fully and oversized bodies surface explicitly
+  rather than silently truncating; the post-write `err` shadowing
+  is fixed.
+- **Default response headers strict everywhere** (V-I1) —
+  `wrapSecurity` now sets `X-Frame-Options: DENY` and a strict CSP
+  (`default-src 'none'; frame-ancestors 'none'; base-uri 'none'`)
+  on every non-health endpoint, not just `/dashboard`.
+- **RFC 6598 CGNAT range blocked in SSRF defense** (V-I2) —
+  `100.64.0.0/10` was uncovered by Go's `IsPrivate()` but routes to
+  internal infrastructure on AWS NAT-gateway-fronted hosts.
+
 ## [0.3.1] — 2026-05-05
 
 ### Changed
