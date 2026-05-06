@@ -54,10 +54,15 @@ func openFileNoFollow(path string, flag int, mode os.FileMode) (*os.File, error)
 
 // WriteFile is the Windows-specific implementation that uses
 // FILE_FLAG_OPEN_REPARSE_POINT instead of O_NOFOLLOW.
+//
+// V-19: Mode is masked to user-only bits for parity with the Unix variant.
+// Windows file ACLs ignore the Unix mode bits anyway, but we mirror the
+// invariant so the call signature carries the same guarantee on both OSes.
 func WriteFile(baseDir, path string, data []byte, mode os.FileMode) error {
 	if err := CheckNoSymlinks(baseDir, path); err != nil {
 		return err
 	}
+	mode &= 0o700
 	f, err := openFileNoFollow(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode)
 	if err != nil {
 		return err
