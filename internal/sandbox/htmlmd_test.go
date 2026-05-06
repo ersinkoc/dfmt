@@ -11,6 +11,43 @@ func convert(html string) string {
 	return ConvertHTML("<!doctype html>" + html)
 }
 
+// TestConvertHTML_V07DropSetExpanded pins V-07: tags added to
+// htmlDropElements (object/embed/applet/link/template/frame/frameset/
+// math/portal/meta) must have their body content suppressed entirely.
+// Pre-fix the unknown-tag default branch emitted body text verbatim
+// for these, leaking <object> data, MathML formula payloads,
+// <link rel=stylesheet> URLs, and <meta http-equiv=refresh> redirect
+// targets into the LLM consumer's context.
+func TestConvertHTML_V07DropSetExpanded(t *testing.T) {
+	cases := []struct {
+		name    string
+		html    string
+		mustNot string
+	}{
+		{"object", `<object data="evil.swf">SECRET_PAYLOAD</object>`, "SECRET_PAYLOAD"},
+		// embed is a void element so its "body" text is actually
+		// document text, not element body — the V-07 win for embed
+		// is suppressing attribute-derived URL leakage.
+		{"embed-attr", `<embed src="https://attacker/leak.swf">`, "attacker"},
+		{"applet", `<applet code="x">SECRET_PAYLOAD</applet>`, "SECRET_PAYLOAD"},
+		{"link", `<link rel="stylesheet" href="https://attacker/leak.css">`, "attacker"},
+		{"template", `<template>SECRET_PAYLOAD</template>`, "SECRET_PAYLOAD"},
+		{"frame", `<frame src="x">SECRET_PAYLOAD</frame>`, "SECRET_PAYLOAD"},
+		{"frameset", `<frameset>SECRET_PAYLOAD</frameset>`, "SECRET_PAYLOAD"},
+		{"math", `<math>SECRET_PAYLOAD</math>`, "SECRET_PAYLOAD"},
+		{"portal", `<portal>SECRET_PAYLOAD</portal>`, "SECRET_PAYLOAD"},
+		{"meta-refresh", `<meta http-equiv="refresh" content="0;url=https://attacker/">`, "attacker"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := convert(c.html)
+			if strings.Contains(got, c.mustNot) {
+				t.Errorf("%s body leaked through: convert(%q) = %q (must not contain %q)", c.name, c.html, got, c.mustNot)
+			}
+		})
+	}
+}
+
 // TestConvertHTML_Headings: each heading level emits `#` repeated
 // `level` times. Markdown standard is N hashes + space + content.
 func TestConvertHTML_Headings(t *testing.T) {

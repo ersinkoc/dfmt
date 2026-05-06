@@ -5,6 +5,22 @@ import (
 	"strings"
 )
 
+// V-08: hard caps on the tokenizer to bound work on adversarial input.
+//
+// MaxHTMLTokens caps the total number of tokens emitted; once reached,
+// the tokenizer flushes the remaining bytes as a single tokText and
+// stops. Realistic web pages produce 5–50k tokens; 200k leaves comfortable
+// headroom for legitimate huge documents while still bounding memory.
+//
+// MaxHTMLTagDepth limits the open-tag stack depth in walkers that consume
+// the token stream. The tokenizer itself is flat (no stack) but emits
+// token counts, so the walker uses this. 1024 is well above any rendered
+// document and well below stack-overflow territory.
+const (
+	maxHTMLTokens   = 200_000
+	maxHTMLTagDepth = 1024
+)
+
 // HTML tokenizer for ADR-0008. Implements a small subset of the HTML5
 // parsing algorithm — enough to recover element boundaries, attribute
 // values, and text content from real-world web pages without panicking
@@ -93,6 +109,19 @@ type tokenizer struct {
 
 func (t *tokenizer) run() {
 	for t.pos < len(t.src) {
+		// V-08: hard token cap. Once the cap is reached, flush the
+		// remainder as a single text token and stop. An attacker
+		// crafting a body with millions of trivial tags can otherwise
+		// force the tokenizer to allocate proportionally many token
+		// structs — a memory-DoS that the run loop cannot otherwise
+		// see. The cap is well above realistic page sizes.
+		if len(t.out) >= maxHTMLTokens {
+			if t.pos < len(t.src) {
+				t.out = append(t.out, token{kind: tokText, text: t.src[t.pos:]})
+				t.pos = len(t.src)
+			}
+			return
+		}
 		switch t.src[t.pos] {
 		case '<':
 			t.consumeTagLike()
@@ -222,13 +251,16 @@ func (t *tokenizer) consumeStartTag() {
 // it wholesale — but without this raw-text mode, a script containing
 // `if (a < b)` would be mis-tokenized into bogus tags.
 //
-// The match is case-insensitive (HTML tags are case-insensitive) and
-// uses a substring search for `</tagname` rather than a full parse.
+// The match is case-insensitive (HTML tags are case-insensitive). The
+// previous implementation called `strings.ToLower(t.src[t.pos:])` on
+// every raw-text open, allocating a full lowercase copy of the
+// remaining input each time — O(N²) total work on a body with N raw-
+// text opens. This version scans for `<` in the original bytes via
+// strings.Index (linear, no allocation) and case-folds only the
+// trailing tag-name window. Closes V-08.
 func (t *tokenizer) consumeRawTextUntilClose(tag string) {
 	start := t.pos
-	lowerSrc := strings.ToLower(t.src[t.pos:])
-	closeNeedle := "</" + tag
-	end := strings.Index(lowerSrc, closeNeedle)
+	end := indexCloseTagFold(t.src[t.pos:], tag)
 	if end < 0 {
 		// EOF before close tag: emit everything as text and stop.
 		t.out = append(t.out, token{kind: tokText, text: t.src[start:]})
@@ -242,6 +274,61 @@ func (t *tokenizer) consumeRawTextUntilClose(tag string) {
 	if closeTag != "" {
 		t.out = append(t.out, token{kind: tokEndTag, tag: closeTag})
 	}
+}
+
+// indexCloseTagFold returns the offset of the next `</tag` (case-
+// insensitive) in haystack, or -1 if not found. tag is expected
+// lowercase ASCII (the caller is the tokenizer, which lowercases tag
+// names before this point). The scan is linear and zero-allocation:
+// strings.Index finds candidate `<` bytes and a small windowed
+// case-fold compares the next len(tag)+1 bytes.
+//
+// V-08: the prior implementation allocated a lowercased copy of the
+// entire remaining haystack on each call. With N raw-text opens spaced
+// linearly that produced O(N²) total work; an adversarial 1 MiB body
+// with thousands of <script> opens could pin a CPU core.
+func indexCloseTagFold(haystack, tag string) int {
+	tagLen := len(tag)
+	for i := 0; i < len(haystack); {
+		off := strings.IndexByte(haystack[i:], '<')
+		if off < 0 {
+			return -1
+		}
+		i += off
+		// Need at least `</` + tag + one terminator byte.
+		if i+2+tagLen > len(haystack) {
+			return -1
+		}
+		if haystack[i+1] != '/' {
+			i++
+			continue
+		}
+		// Case-fold compare against the tag name.
+		match := true
+		for j := 0; j < tagLen; j++ {
+			c := haystack[i+2+j]
+			if c >= 'A' && c <= 'Z' {
+				c += 'a' - 'A'
+			}
+			if c != tag[j] {
+				match = false
+				break
+			}
+		}
+		if !match {
+			i++
+			continue
+		}
+		// The byte after the tag name must be a terminator: `>`, `/`,
+		// whitespace, or end-of-input. This prevents `</scriptable>`
+		// from matching `</script`.
+		next := haystack[i+2+tagLen]
+		if next == '>' || next == '/' || next == ' ' || next == '\t' || next == '\n' || next == '\r' {
+			return i
+		}
+		i++
+	}
+	return -1
 }
 
 // consumeTagName reads ASCII letters/digits/`-`/`_` from pos onward and

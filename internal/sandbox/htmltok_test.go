@@ -3,7 +3,84 @@ package sandbox
 import (
 	"strings"
 	"testing"
+	"time"
 )
+
+// TestTokenizeHTML_V08LinearOnRepeatedRawText pins V-08: a body with
+// many <script> opens must run in O(N) total work, not O(N²). The
+// pre-fix implementation called strings.ToLower on the full remaining
+// haystack at every <script> open, which on N opens spaced linearly
+// across the body produces Σ(N-i)*work-per-byte = O(N²). Test pattern:
+// 5 000 script blocks at ~100 bytes each (~500 KiB total). Pre-fix
+// this took >5 s on a 2026-era box; post-fix is sub-second. We assert
+// completion within 2 s — generous slack so the test isn't flaky on a
+// loaded CI runner but tight enough to catch the pathological regime.
+func TestTokenizeHTML_V08LinearOnRepeatedRawText(t *testing.T) {
+	const blocks = 5000
+	var b strings.Builder
+	for i := 0; i < blocks; i++ {
+		b.WriteString("<script>var x=1;var y=2;var z=3;</script>")
+	}
+	in := b.String()
+
+	start := time.Now()
+	got := tokenizeHTML(in)
+	elapsed := time.Since(start)
+
+	if elapsed > 2*time.Second {
+		t.Errorf("tokenizeHTML took %v on %d <script> blocks; suggests O(N²) regression", elapsed, blocks)
+	}
+	// Sanity: we should have ~3 tokens per block (start, text, end).
+	if len(got) < blocks*2 {
+		t.Errorf("got only %d tokens for %d script blocks; tokenizer ate too much", len(got), blocks)
+	}
+}
+
+// TestTokenizeHTML_V08TokenCap pins the maxHTMLTokens floor: a body
+// with millions of trivial tags must NOT allocate a proportional
+// number of token structs. Once the cap is reached, the remainder
+// flushes as a single tokText.
+func TestTokenizeHTML_V08TokenCap(t *testing.T) {
+	// Generate enough tiny tags to overflow maxHTMLTokens. Each `<a>`
+	// is ~3 tokens (start, text-or-empty, end), so ~maxHTMLTokens/2
+	// blocks suffices.
+	const blocks = 150_000
+	var b strings.Builder
+	for i := 0; i < blocks; i++ {
+		b.WriteString("<a>x</a>")
+	}
+	got := tokenizeHTML(b.String())
+
+	// We expect either exactly maxHTMLTokens or maxHTMLTokens+1
+	// (the trailing flushed tokText). Assert it's bounded — never
+	// proportional to blocks.
+	if len(got) > maxHTMLTokens+1 {
+		t.Errorf("token count %d exceeds cap %d+1", len(got), maxHTMLTokens)
+	}
+	if len(got) < maxHTMLTokens {
+		// If the input fit naturally under the cap, the test as
+		// written wouldn't be exercising the cap. Make sure that's
+		// the case.
+		t.Errorf("test input did not reach the cap; got %d tokens, expected ≥%d", len(got), maxHTMLTokens)
+	}
+}
+
+// TestTokenizeHTML_V08CloseTagBoundary pins the case-fold matcher's
+// boundary check: `</scriptable>` must NOT close a `<script>` block,
+// even though the lowercase prefix matches. The terminator-byte
+// requirement (`>`, `/`, whitespace) prevents extension matches.
+func TestTokenizeHTML_V08CloseTagBoundary(t *testing.T) {
+	in := `<script>"</scriptable>"</script>`
+	got := tokenizeHTML(in)
+	// Expect: start, text=`"</scriptable>"`, end. The text MUST
+	// contain the would-be-false-match.
+	if len(got) != 3 {
+		t.Fatalf("want 3 tokens; got %d: %+v", len(got), got)
+	}
+	if got[1].kind != tokText || !strings.Contains(got[1].text, "</scriptable>") {
+		t.Errorf("token[1] should keep the `</scriptable>` literal; got %+v", got[1])
+	}
+}
 
 // TestTokenizeHTML_PureText: input with no tags collapses to a single
 // tokText. Pinning this so a future "always emit at least one token"

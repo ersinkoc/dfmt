@@ -19,6 +19,22 @@ import (
 // interactive elements (form/button/iframe) the lite path didn't
 // originally cover, since the walker can drop them precisely without
 // the regex's nested-tag concerns.
+//
+// V-07: extends the original set with object/embed/applet/link/template/
+// frame/frameset/math/portal/meta. Without these:
+//   - <object>/<embed>/<applet> can carry executable plugin payload as
+//     body text that the unknown-tag default branch would emit verbatim.
+//   - <link rel="stylesheet"> imports remote CSS that bypasses the
+//     style-element filter on equivalent grounds.
+//   - <template>'s content is a separate document fragment whose meaning
+//     is consumer-defined; emitting it as text leaks raw markup.
+//   - <frame>/<frameset> carry navigation chrome the same way <iframe>
+//     does (and were the legacy way to do iframes).
+//   - <math> is the MathML root; emitting its body text turns formula
+//     markup into noise and gives an attacker a place to hide payloads.
+//   - <portal> is the experimental embedded-browsing-context tag.
+//   - <meta http-equiv="refresh"> can carry an instruction-shaped redirect
+//     URL into the agent's context.
 var htmlDropElements = map[string]struct{}{
 	"script":   {},
 	"style":    {},
@@ -31,6 +47,17 @@ var htmlDropElements = map[string]struct{}{
 	"form":     {},
 	"button":   {},
 	"iframe":   {},
+	// V-07 additions:
+	"object":   {},
+	"embed":    {},
+	"applet":   {},
+	"link":     {},
+	"template": {},
+	"frame":    {},
+	"frameset": {},
+	"math":     {},
+	"portal":   {},
+	"meta":     {},
 }
 
 // htmlBlockElements list tags that produce a paragraph break around
