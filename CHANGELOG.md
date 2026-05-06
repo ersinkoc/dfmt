@@ -27,6 +27,33 @@ Internal package shapes (`internal/...`) are NOT covered by SemVer.
 
 ## [Unreleased]
 
+## [0.4.2] — 2026-05-06
+
+Patch release closing two more audit findings against the global
+daemon. v0.4.0 shipped the host-wide daemon; v0.4.1 wired the
+dashboard cross-project switcher; v0.4.2 closes the gaps in the
+SSE stream endpoint and the `dfmt stop` command.
+
+### Fixed
+
+- **`/api/stream` accepts `project_id` query param.** The SSE
+  endpoint used by `Client.StreamEvents` and any future dashboard
+  live-event view broke against the global daemon: Stream(ctx,...)
+  was called with no project_id pushed in, so resolveBundle
+  returned `project_id required: daemon has no default project`
+  and every connection failed. `Client.StreamEvents` now appends
+  the client's project_id to the URL on both Unix-socket and TCP
+  paths.
+- **`dfmt stop` actually stops the global daemon.** v0.4.0/v0.4.1
+  read only `<proj>/.dfmt/daemon.pid`, saw no PID against a host-
+  wide daemon, deleted per-project lock/socket files (which were
+  never there), and printed "Daemon stopped" while the process
+  kept running. `runStop` now short-circuits to a global-aware
+  shutdown when `globalDashboardURL` is non-empty: SIGINT (or
+  taskkill /T on Windows), 5 s graceful window, escalate to
+  SIGKILL / taskkill /F if needed, then remove ~/.dfmt/{port,
+  daemon.pid, lock, daemon.sock} once the process is gone.
+
 ## [0.4.1] — 2026-05-06
 
 Patch release for the dashboard's cross-project switcher. Phase 2's

@@ -34,4 +34,4 @@ package version
 //
 // The default tracks the most-recently-released tag so that an
 // untagged `go install` produces a sensible string.
-var Current = "v0.4.1"
+var Current = "v0.4.2"
