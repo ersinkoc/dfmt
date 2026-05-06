@@ -704,13 +704,21 @@ func runRecall(args []string) int {
 }
 
 func runStatus(_ []string) int {
-	proj, err := getProject()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		return 1
+	// `dfmt status` is useful even outside a DFMT-initialized project —
+	// the host-wide global daemon may be serving other projects, and the
+	// operator wants to know whether anything is up. Pre-Phase-2 the
+	// command errored out with "no project found" before checking the
+	// daemon, which made the global daemon invisible from any directory
+	// the operator hadn't touched yet. Treat the missing-project case
+	// as a degraded report: skip per-project fields, still show global
+	// daemon liveness + dashboard URL + last crash.
+	proj, projErr := getProject()
+	running := false
+	if projErr == nil {
+		running = client.DaemonRunning(proj)
+	} else if globalDashboardURL() != "" {
+		running = true
 	}
-
-	running := client.DaemonRunning(proj)
 
 	// Dashboard URL is derived from the global daemon registry's Port
 	// field. Empty (Unix-socket-bound daemons without TCP opt-in) means
@@ -719,7 +727,14 @@ func runStatus(_ []string) int {
 	// Listed only when a daemon for this project is alive.
 	dashboardURL := ""
 	if running {
-		dashboardURL = lookupDashboardURL(proj)
+		if projErr == nil {
+			dashboardURL = lookupDashboardURL(proj)
+		} else {
+			// No project resolved, but the global daemon is reachable —
+			// surface its URL directly so the operator can still navigate
+			// to the dashboard.
+			dashboardURL = globalDashboardURL()
+		}
 	}
 
 	// last_crash is reported in JSON only when the file actually exists,
@@ -739,7 +754,10 @@ func runStatus(_ []string) int {
 	// artifact (legacy v0.3.x lived there); the real listener is at
 	// the host-wide path. Reporting the per-project path in global
 	// mode misled operators debugging "why won't my client connect".
-	socketPath := project.SocketPath(proj)
+	socketPath := ""
+	if projErr == nil {
+		socketPath = project.SocketPath(proj)
+	}
 	if globalDashboardURL() != "" {
 		if runtime.GOOS == "windows" {
 			socketPath = project.GlobalPortPath()
@@ -758,13 +776,20 @@ func runStatus(_ []string) int {
 			"socket":         socketPath,
 			"dashboard":      dashboardURL,
 		}
+		if projErr != nil {
+			payload["project_error"] = projErr.Error()
+		}
 		if lastCrash != nil {
 			payload["last_crash"] = lastCrash
 		}
 		out, _ := json.Marshal(payload)
 		fmt.Println(string(out))
 	} else {
-		fmt.Printf("Project: %s\n", proj)
+		if projErr == nil {
+			fmt.Printf("Project: %s\n", proj)
+		} else {
+			fmt.Printf("Project: (none — %v)\n", projErr)
+		}
 		if running {
 			fmt.Println("Daemon: running")
 			if dashboardURL != "" {
