@@ -11,6 +11,7 @@ import (
 	"github.com/ersinkoc/dfmt/internal/config"
 	"github.com/ersinkoc/dfmt/internal/logging"
 	"github.com/ersinkoc/dfmt/internal/project"
+	"github.com/ersinkoc/dfmt/internal/safefs"
 )
 
 // EnsureProjectInitialized makes dir into a usable DFMT project. It is
@@ -41,9 +42,12 @@ func EnsureProjectInitialized(dir string) error {
 
 	// 0o600 to match other .dfmt/ artifacts. Only write when missing so a
 	// user-customized config.yaml is never clobbered on re-run / auto-init.
+	// V-20: route through safefs so a symlink planted at .dfmt/config.yaml
+	// (between project init runs, or by an attacker who got write access
+	// to .dfmt/ once) can't redirect the seed write.
 	configPath := filepath.Join(dfmtDir, "config.yaml")
 	if _, err := os.Stat(configPath); os.IsNotExist(err) {
-		if werr := os.WriteFile(configPath, []byte(config.DefaultConfigYAML()), 0o600); werr != nil {
+		if werr := safefs.WriteFileAtomic(dfmtDir, configPath, []byte(config.DefaultConfigYAML()), 0o600); werr != nil {
 			return fmt.Errorf("write %s: %w", configPath, werr)
 		}
 	} else if err != nil {

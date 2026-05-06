@@ -437,7 +437,11 @@ func SaveManifest(m *Manifest) error {
 	}
 	// 0600: the manifest lists every file DFMT has installed or modified
 	// in user config dirs — useful info for an attacker planning tampering.
-	return os.WriteFile(path, data, 0o600)
+	// V-20: route through safefs.WriteFileAtomic so a symlink planted at
+	// the manifest path can't redirect the write outside the intended
+	// directory. Atomic rename also avoids torn writes if a concurrent
+	// dfmt setup --uninstall reads mid-write.
+	return safefs.WriteFileAtomic(dir, path, data, 0o600)
 }
 
 // BackupFile creates a backup of a config file before modification.
