@@ -19,7 +19,23 @@ import (
 
 func TestMain(m *testing.M) {
 	os.Setenv("DFMT_DISABLE_AUTOSTART", "1")
-	os.Exit(m.Run())
+	// Phase 2: NewClient probes ~/.dfmt/{port|daemon.sock} before
+	// falling back to the per-project address. If the developer
+	// running `go test` has a real global daemon up, every legacy
+	// test that expected a per-project socketPath would suddenly
+	// see the global one. Pin DFMT_GLOBAL_DIR to a sandbox dir so
+	// the probe never finds anything unless a test explicitly seeds
+	// it (TestNewClientPrefersRunningGlobalDaemon does this with
+	// its own t.Setenv override).
+	sandbox, err := os.MkdirTemp("", "dfmt-client-test-global-")
+	if err == nil {
+		os.Setenv("DFMT_GLOBAL_DIR", sandbox)
+	}
+	code := m.Run()
+	if sandbox != "" {
+		_ = os.RemoveAll(sandbox)
+	}
+	os.Exit(code)
 }
 
 // serveMockHTTP starts an HTTP server on ln that dispatches each request to

@@ -594,9 +594,25 @@ func (c *Client) StreamEvents(ctx context.Context, from string) (<-chan core.Eve
 	return ch, nil
 }
 
-// DaemonRunning checks if a daemon is running for the project.
-// It actually tries to connect and verify via health check.
+// DaemonRunning checks if a daemon is reachable for the given project.
+// Phase 2: a host-wide global daemon at ~/.dfmt/{port|daemon.sock} is
+// the canonical answer. We probe it first; the per-project legacy
+// endpoint is only consulted as a fallback for v0.3.x daemons that
+// haven't been migrated yet via `dfmt setup --refresh`. Either path
+// returning a successful dial is the ground truth.
 func DaemonRunning(projectPath string) bool {
+	// Step 1: probe the global daemon. fastDialOK is the same liveness
+	// check NewClient uses, so the two stay in sync — `dfmt status`
+	// will not say "not running" while the next `dfmt stats` succeeds.
+	globalAddress, _, globalNetwork, _ := globalDaemonTarget()
+	if fastDialOK(globalNetwork, globalAddress) {
+		return true
+	}
+
+	// Step 2: legacy per-project endpoint. Same shape as pre-Phase-2
+	// — read the port file (Windows) or build the socket path (Unix)
+	// and dial. A v0.3.x daemon that survived `setup --refresh` lands
+	// here; a fresh v0.4.x install never does.
 	portFile := filepath.Join(projectPath, ".dfmt", "port")
 	socketPath := project.SocketPath(projectPath)
 
@@ -616,8 +632,6 @@ func DaemonRunning(projectPath string) bool {
 		return false
 	}
 
-	// Try to connect — a successful dial is the ground truth that a daemon
-	// is accepting requests, regardless of PID file state.
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
 

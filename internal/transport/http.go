@@ -526,6 +526,7 @@ func (s *HTTPServer) handleRemember(ctx context.Context, req Request) Response {
 	if r := decodeRPCParams(req, &params); r != nil {
 		return *r
 	}
+	ctx = WithProjectID(ctx, params.ProjectID)
 
 	resp, err := s.handlers.Remember(ctx, params)
 	if err != nil {
@@ -543,6 +544,7 @@ func (s *HTTPServer) handleSearch(ctx context.Context, req Request) Response {
 	if r := decodeRPCParams(req, &params); r != nil {
 		return *r
 	}
+	ctx = WithProjectID(ctx, params.ProjectID)
 
 	resp, err := s.handlers.Search(ctx, params)
 	if err != nil {
@@ -560,6 +562,7 @@ func (s *HTTPServer) handleRecall(ctx context.Context, req Request) Response {
 	if r := decodeRPCParams(req, &params); r != nil {
 		return *r
 	}
+	ctx = WithProjectID(ctx, params.ProjectID)
 
 	resp, err := s.handlers.Recall(ctx, params)
 	if err != nil {
@@ -577,6 +580,7 @@ func (s *HTTPServer) handleStats(ctx context.Context, req Request) Response {
 	if r := decodeRPCParams(req, &params); r != nil {
 		return *r
 	}
+	ctx = WithProjectID(ctx, params.ProjectID)
 
 	resp, err := s.handlers.Stats(ctx, params)
 	if err != nil {
@@ -772,7 +776,8 @@ func (s *HTTPServer) handleAPIStats(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	resp, err := s.handlers.Stats(r.Context(), params)
+	ctx := WithProjectID(r.Context(), params.ProjectID)
+	resp, err := s.handlers.Stats(ctx, params)
 	if err != nil {
 		_ = json.NewEncoder(w).Encode(Response{
 			JSONRPC: jsonRPCVersion,
@@ -1262,6 +1267,7 @@ func (s *HTTPServer) handleExec(ctx context.Context, req Request) Response {
 	if r := decodeRPCParams(req, &params); r != nil {
 		return *r
 	}
+	ctx = WithProjectID(ctx, params.ProjectID)
 
 	resp, err := s.handlers.Exec(ctx, params)
 	if err != nil {
@@ -1295,6 +1301,7 @@ func (s *HTTPServer) handleRead(ctx context.Context, req Request) Response {
 	if r := decodeRPCParams(req, &params); r != nil {
 		return *r
 	}
+	ctx = WithProjectID(ctx, params.ProjectID)
 
 	resp, err := s.handlers.Read(ctx, params)
 	if err != nil {
@@ -1312,6 +1319,7 @@ func (s *HTTPServer) handleFetch(ctx context.Context, req Request) Response {
 	if r := decodeRPCParams(req, &params); r != nil {
 		return *r
 	}
+	ctx = WithProjectID(ctx, params.ProjectID)
 
 	resp, err := s.handlers.Fetch(ctx, params)
 	if err != nil {
@@ -1329,6 +1337,7 @@ func (s *HTTPServer) handleGlob(ctx context.Context, req Request) Response {
 	if r := decodeRPCParams(req, &params); r != nil {
 		return *r
 	}
+	ctx = WithProjectID(ctx, params.ProjectID)
 
 	resp, err := s.handlers.Glob(ctx, params)
 	if err != nil {
@@ -1346,6 +1355,7 @@ func (s *HTTPServer) handleGrep(ctx context.Context, req Request) Response {
 	if r := decodeRPCParams(req, &params); r != nil {
 		return *r
 	}
+	ctx = WithProjectID(ctx, params.ProjectID)
 
 	resp, err := s.handlers.Grep(ctx, params)
 	if err != nil {
@@ -1363,6 +1373,7 @@ func (s *HTTPServer) handleEdit(ctx context.Context, req Request) Response {
 	if r := decodeRPCParams(req, &params); r != nil {
 		return *r
 	}
+	ctx = WithProjectID(ctx, params.ProjectID)
 
 	resp, err := s.handlers.Edit(ctx, params)
 	if err != nil {
@@ -1380,6 +1391,7 @@ func (s *HTTPServer) handleWrite(ctx context.Context, req Request) Response {
 	if r := decodeRPCParams(req, &params); r != nil {
 		return *r
 	}
+	ctx = WithProjectID(ctx, params.ProjectID)
 
 	resp, err := s.handlers.Write(ctx, params)
 	if err != nil {

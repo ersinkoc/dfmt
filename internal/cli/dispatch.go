@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -773,11 +774,17 @@ func runStatus(_ []string) int {
 }
 
 // lookupDashboardURL returns the http://127.0.0.1:<port>/dashboard URL
-// of the daemon attached to projectPath, or "" if either no daemon is
-// registered for that project or the daemon is bound to a Unix socket
-// only (no Port field). Errors reading the registry are non-fatal --
-// the URL is informational, not load-bearing for anything else.
+// for the running daemon. Phase 2: prefers the host-wide global daemon's
+// port (every project shares the same dashboard URL), falls back to a
+// legacy per-project daemon's registry entry only if no global daemon
+// is up. Returns "" when no TCP-bound daemon exists — Unix-socket-only
+// daemons have no browser-reachable URL even if they're alive.
 func lookupDashboardURL(projectPath string) string {
+	if u := globalDashboardURL(); u != "" {
+		return u
+	}
+
+	// Step 2: legacy per-project daemon, looked up via the registry.
 	reg := client.GetRegistry()
 	if reg == nil {
 		return ""
@@ -794,6 +801,59 @@ func lookupDashboardURL(projectPath string) string {
 	return ""
 }
 
+// readGlobalDaemonPID reads ~/.dfmt/daemon.pid and returns the
+// daemon's PID, or 0 on any read / parse error. Best-effort —
+// callers display the value to the operator but don't depend on it
+// for liveness (the port file + fastDialOK already serve that role).
+func readGlobalDaemonPID() int {
+	data, err := os.ReadFile(project.GlobalPIDPath())
+	if err != nil {
+		return 0
+	}
+	var pid int
+	_, _ = fmt.Sscanf(strings.TrimSpace(string(data)), "%d", &pid)
+	return pid
+}
+
+// globalDashboardURL returns the http://127.0.0.1:<port>/dashboard
+// URL of the host-wide global daemon, or "" if no global daemon is
+// reachable. Used by `dfmt status` and `dfmt dashboard` so both
+// surfaces agree on what the dashboard URL is at any moment.
+func globalDashboardURL() string {
+	port, _, err := readGlobalPortFile()
+	if err != nil || port <= 0 {
+		return ""
+	}
+	return fmt.Sprintf("http://127.0.0.1:%d/dashboard", port)
+}
+
+// readGlobalPortFile reads the host-wide daemon's port + token from
+// ~/.dfmt/port (or DFMT_GLOBAL_DIR override). Returns the same
+// (port, token, error) shape as the per-project port reader so
+// callers can swap which file they consult without touching parse logic.
+func readGlobalPortFile() (int, string, error) {
+	data, err := os.ReadFile(project.GlobalPortPath())
+	if err != nil {
+		return 0, "", err
+	}
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 {
+		return 0, "", errors.New("empty port file")
+	}
+	if trimmed[0] == '{' {
+		var pf transport.PortFile
+		if jerr := json.Unmarshal(trimmed, &pf); jerr != nil {
+			return 0, "", fmt.Errorf("parse port file: %w", jerr)
+		}
+		return pf.Port, pf.Token, nil
+	}
+	port, err := strconv.Atoi(string(trimmed))
+	if err != nil {
+		return 0, "", fmt.Errorf("parse port file: %w", err)
+	}
+	return port, "", nil
+}
+
 // samePathCLI compares two paths case-insensitively on Windows, exactly
 // elsewhere. Duplicated from setup.samePath to avoid importing the
 // setup package into the dispatch hot path; the constant "windows" is
@@ -806,24 +866,48 @@ func samePathCLI(a, b string) bool {
 }
 
 func runDaemon(args []string) int {
-	var foreground, globalMode bool
+	var foreground, legacyMode bool
+	// Phase 2: `dfmt daemon` defaults to the host-wide global daemon.
+	// `--global` is kept as an explicit no-op alias for back-compat
+	// with v0.4.0-rc scripts that wrote `dfmt daemon --global`. Pass
+	// `--legacy` (or the older `--project <p>` global flag at the
+	// dispatch boundary) to bring up a per-project daemon — kept
+	// available through v0.4.x for operators with hand-rolled
+	// systemd / launchctl units pinning a project.
+	var globalAlias bool
 	fs := flag.NewFlagSet("daemon", flag.ContinueOnError)
 	fs.BoolVar(&foreground, "foreground", false, "Run in foreground")
-	fs.BoolVar(&globalMode, "global", false, "Run as host-wide global daemon serving all projects (default off; auto-spawn from clients sets this)")
+	fs.BoolVar(&globalAlias, "global", true, "Run as host-wide global daemon (default; passing --global is a no-op kept for v0.4.0-rc compat)")
+	fs.BoolVar(&legacyMode, "legacy", false, "Run as a per-project daemon bound to --project <path> (deprecated; removed in v0.5.0)")
 	if err := fs.Parse(args); err != nil {
 		if err == flag.ErrHelp {
 			return 0
 		}
 		return 2
 	}
+	_ = globalAlias // accepted for back-compat; the legacyMode flag is the routing knob now.
 
-	// Global daemon path: no project required. The daemon binds at
-	// ~/.dfmt/{port|daemon.sock} and lazily loads per-project resources
-	// on each RPC. We still want a config — fall back to the default.
-	if globalMode {
+	// Default path: host-wide global daemon. The daemon binds at
+	// ~/.dfmt/{port|daemon.sock} and lazily loads per-project
+	// resources on each RPC. No project required at startup.
+	if !legacyMode {
 		cfg := config.Default()
 		if foreground {
 			return runGlobalDaemonForeground(cfg)
+		}
+		// Short-circuit: if a global daemon is already up, say so and
+		// exit successfully. Without this the spawn would bind-fail
+		// against the singleton lock and the user would see a
+		// confusing "Global daemon started (PID N)" line for a child
+		// that died milliseconds later.
+		if globalURL := globalDashboardURL(); globalURL != "" {
+			pid := readGlobalDaemonPID()
+			if pid > 0 {
+				fmt.Printf("Global daemon already running (PID %d). Dashboard: %s\n", pid, globalURL)
+			} else {
+				fmt.Printf("Global daemon already running. Dashboard: %s\n", globalURL)
+			}
+			return 0
 		}
 		pid, err := startGlobalDaemonBackground()
 		if err != nil {
@@ -2214,6 +2298,23 @@ func runDashboard(args []string) int {
 			return 0
 		}
 		return 2
+	}
+
+	// Phase 2: if the host-wide global daemon is up, that's the only
+	// dashboard URL — every project shares it. Short-circuit before
+	// touching the registry (which only knows about legacy per-project
+	// daemons). Only Windows reaches this branch today because Unix
+	// global daemons bind to a Unix socket only; the platform hint
+	// below still applies.
+	if globalURL := globalDashboardURL(); globalURL != "" {
+		fmt.Println(globalURL)
+		if openBrowser {
+			if err := openInBrowser(globalURL); err != nil {
+				logging.Warnf("open browser: %v", err)
+				return 1
+			}
+		}
+		return 0
 	}
 
 	reg := client.GetRegistry()
