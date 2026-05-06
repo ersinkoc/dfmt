@@ -44,6 +44,14 @@ jobs:
         # `-coverprofile` is cheap (~few percent overhead) so we always
         # produce one. The gate below is gated to a single matrix slot so
         # we don't redundantly check four identical profiles.
+        #
+        # Force bash on every runner: pwsh on Windows mis-tokenizes
+        # `-coverprofile=cover.out` (the trailing `.out` is parsed as a
+        # separate positional argument, so `go test` thinks `.out` is a
+        # package and exits with "no required module provides package
+        # .out"). bash on the Windows runner is provided by Git for
+        # Windows and handles the GNU-style flag form cleanly.
+        shell: bash
         run: go test -coverprofile=cover.out -covermode=atomic ./...
 
       - name: Coverage gate
