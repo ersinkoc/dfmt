@@ -253,7 +253,14 @@ func startDaemon(projectPath string) error {
 		return fmt.Errorf("refusing to spawn daemon from test binary: %s", exePath)
 	}
 
-	cmd := exec.Command(exePath, "daemon")
+	// Pass the project path as a global flag (parsed by cmd/dfmt/main.go
+	// before dispatch) so it shows up in the spawned process's command
+	// line. Pre-fix the spawn was just `dfmt daemon` with cmd.Dir set —
+	// the daemon resolved the project from cwd, but task managers and
+	// `tasklist` / `ps` had no way to tell apart two daemons attached to
+	// different projects. With --project on the command line, both UIs
+	// and `Get-CimInstance Win32_Process` show the binding directly.
+	cmd := exec.Command(exePath, "--project", projectPath, "daemon")
 	cmd.Dir = projectPath
 	cmd.Stdout = nil
 	cmd.Stderr = nil

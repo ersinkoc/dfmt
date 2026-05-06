@@ -804,7 +804,11 @@ func startDaemonBackground(proj string) (int, error) {
 		return 0, fmt.Errorf("refusing to spawn daemon from test binary: %s", exePath)
 	}
 
-	cmd := exec.Command(exePath, "daemon", "--foreground")
+	// Same project-on-cmdline rationale as client.startDaemon: --project
+	// is a global flag (handled by cmd/dfmt/main.go before dispatch) so
+	// task managers and `tasklist`/`ps` can identify which daemon is
+	// attached to which project without needing `dfmt list`.
+	cmd := exec.Command(exePath, "--project", proj, "daemon", "--foreground")
 	cmd.Dir = proj
 	cmd.Stdout = nil
 	cmd.Stderr = nil
