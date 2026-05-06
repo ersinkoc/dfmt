@@ -60,6 +60,12 @@ type Handlers struct {
 	// registry. Set once at startup via SetProjectsLister.
 	listProjects ProjectsLister
 
+	// dropProject, when non-nil, evicts a project from the daemon's
+	// resource cache. Wired by the global daemon for `dfmt remove`'s
+	// in-memory cleanup path; legacy daemons leave it nil and the RPC
+	// returns "drop not supported on this daemon".
+	dropProject ProjectDropper
+
 	// dedupMu guards the short-lived stash dedup cache. Kept separate from
 	// h.mu because stashContent runs on the hot path of every Exec/Read/
 	// Fetch and must not contend with project/redactor setters.
@@ -453,6 +459,71 @@ func (h *Handlers) LoadedProjects() []string {
 		return nil
 	}
 	return f()
+}
+
+// ProjectDropper evicts a single project from the host daemon's
+// resource cache (closing its journal, persisting the index where
+// safe, stopping watchers). Wired by the global daemon so v0.5.0's
+// `dfmt remove` flow can clear stale cache entries without
+// restarting the daemon.
+//
+// Returning an error surfaces to the RPC caller as -32603. Empty
+// projectID returns an error rather than silently no-oping; the
+// daemon's default project is also a no-op (handled inside the
+// dropper itself, not by the seam).
+type ProjectDropper func(projectID string) error
+
+// SetProjectDropper installs a dropper that DropProject RPC calls.
+// Same setter discipline as SetResourceFetcher / SetProjectsLister:
+// set once at daemon startup, mu-guarded so an in-flight RPC never
+// sees a torn pointer.
+func (h *Handlers) SetProjectDropper(f ProjectDropper) {
+	h.mu.Lock()
+	h.dropProject = f
+	h.mu.Unlock()
+}
+
+// DropProjectParams names the project to evict from the daemon's
+// resource cache. Empty ProjectID is rejected with -32602 — the
+// dropper does not fall back to a default project (the default's
+// resources live on Daemon, not in the cache).
+type DropProjectParams struct {
+	ProjectID string `json:"project_id"`
+}
+
+// DropProjectResponse acknowledges the eviction. Dropped is true
+// when the project was found in the cache and torn down; false
+// when the dropper is unconfigured (legacy daemon) or the project
+// was not cached. Either way the RPC succeeds — clients use Dropped
+// only for telemetry, not control flow.
+type DropProjectResponse struct {
+	Dropped bool `json:"dropped"`
+}
+
+// DropProject evicts the named project from the daemon's resource
+// cache. Used by `dfmt remove` to clear in-memory state alongside
+// the on-disk setup-manifest entry; without it, a stale ProjectResources
+// would survive in the cache until daemon restart and the dashboard
+// switcher would still list the removed project.
+//
+// Legacy single-project daemons (no dropper installed) return
+// {Dropped: false} without error — there is no cache to evict from
+// in that mode, and the operation is semantically a no-op.
+func (h *Handlers) DropProject(ctx context.Context, params DropProjectParams) (*DropProjectResponse, error) {
+	_ = ctx
+	if params.ProjectID == "" {
+		return nil, errors.New("project_id required")
+	}
+	h.mu.RLock()
+	f := h.dropProject
+	h.mu.RUnlock()
+	if f == nil {
+		return &DropProjectResponse{Dropped: false}, nil
+	}
+	if err := f(params.ProjectID); err != nil {
+		return nil, err
+	}
+	return &DropProjectResponse{Dropped: true}, nil
 }
 
 // resolveBundle returns the resource Bundle a handler method should

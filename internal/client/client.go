@@ -744,6 +744,42 @@ func (c *Client) Stats(ctx context.Context, params transport.StatsParams) (*tran
 	return &result, nil
 }
 
+// DropProject evicts a project from the daemon's resource cache.
+// `dfmt remove` calls this before deleting the project's .dfmt
+// directory so the daemon does not hold open file handles to the
+// soon-to-be-deleted journal/index.
+//
+// projectPath is the absolute project root. Empty value returns an
+// error rather than silently no-oping. Errors from the daemon are
+// returned verbatim — callers (notably runRemove) decide whether to
+// continue with the on-disk removal anyway.
+func (c *Client) DropProject(ctx context.Context, projectPath string) (*transport.DropProjectResponse, error) {
+	if projectPath == "" {
+		return nil, fmt.Errorf("DropProject: projectPath required")
+	}
+	params := transport.DropProjectParams{ProjectID: projectPath}
+	body, err := c.doHTTP("/", transport.Request{
+		Method: "drop_project",
+		Params: mustMarshal(params),
+		ID:     1,
+	})
+	if err != nil {
+		return nil, err
+	}
+	var resp transport.Response
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, fmt.Errorf("unmarshal response: %w", err)
+	}
+	if resp.Error != nil {
+		return nil, fmt.Errorf("rpc error: %s", resp.Error.Message)
+	}
+	var result transport.DropProjectResponse
+	if err := json.Unmarshal(mustMarshal(resp.Result), &result); err != nil {
+		return nil, fmt.Errorf("unmarshal result: %w", err)
+	}
+	return &result, nil
+}
+
 // Exec executes code via the daemon (journal logged, intent-filtered).
 func (c *Client) Exec(ctx context.Context, params transport.ExecParams) (*transport.ExecResponse, error) {
 	if params.ProjectID == "" {

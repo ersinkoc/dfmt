@@ -592,6 +592,73 @@ func (r *ProjectResources) stopFSWatch() {
 	r.fsStop = nil
 }
 
+// DropProject removes a single project from the extraProjects cache,
+// shutting down its fswatch + index-tail goroutines, checkpointing
+// the journal, persisting the index (when safe), and closing the
+// journal handle. The next Resources(projectID) call after DropProject
+// reloads the project from disk into a fresh bundle.
+//
+// No-op when projectID names the daemon's default project (defaultRes
+// is owned by Daemon.Stop's lifecycle, not by per-project eviction)
+// or when the project is not in the cache.
+//
+// Used by:
+//   - `dfmt remove` to drop the cache entry alongside removing the
+//     project's setup-manifest entry, so a stale entry never lingers
+//     on the next `dfmt list` / dashboard render.
+//   - LRU eviction in Resources() when extraProjects exceeds its cap.
+//
+// Errors from Close are logged and swallowed: DropProject must always
+// remove the cache entry, even if a journal close racy-failed, to
+// prevent half-evicted state.
+func (d *Daemon) DropProject(projectID string) error {
+	if projectID == "" {
+		return errors.New("DropProject: projectID required")
+	}
+	if sameProjectID(projectID, d.projectPath) {
+		// The default project's resources are owned by Daemon, not by
+		// the cache. Eviction would race with Stop's per-phase shutdown.
+		return nil
+	}
+	key := resolveProjectID(projectID)
+
+	d.projectsMu.Lock()
+	r, ok := d.extraProjects[key]
+	if ok {
+		delete(d.extraProjects, key)
+	}
+	d.projectsMu.Unlock()
+
+	if !ok || r == nil {
+		return nil
+	}
+
+	// Same teardown order as closeExtraProjects: fswatch (so no new
+	// appends arrive), then index tail (drains in-flight Stream), then
+	// Checkpoint + PersistIndex (when the index covers the journal),
+	// then Journal.Close. Doing this outside the projectsMu lock keeps
+	// concurrent Resources() lookups from blocking on a slow journal
+	// flush.
+	r.stopFSWatch()
+	r.stopIndexTail()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if r.Journal != nil && r.Index != nil && r.IndexPath != "" && !r.NeedsRebuild {
+		if hiID, cerr := r.Journal.Checkpoint(ctx); cerr != nil {
+			logging.Warnf("DropProject %s: checkpoint: %v", projectID, cerr)
+		} else if perr := core.PersistIndex(r.Index, r.IndexPath, hiID); perr != nil {
+			logging.Warnf("DropProject %s: persist index: %v", projectID, perr)
+		}
+	}
+	if r.Journal != nil {
+		if err := r.Journal.Close(); err != nil {
+			logging.Warnf("DropProject %s: close journal: %v", projectID, err)
+		}
+	}
+	return nil
+}
+
 // closeExtraProjects shuts down every cached additional-project
 // resource bundle. Called from Daemon.Stop after the default project's
 // journal/index are persisted. Failures are logged but never fatal —

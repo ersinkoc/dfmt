@@ -42,6 +42,7 @@ const (
 	methodGrep     = "dfmt.grep"
 	methodEdit     = "dfmt.edit"
 	methodWrite    = "dfmt.write"
+	methodDrop     = "dfmt.drop_project"
 	aliasRemember  = "remember"
 	aliasSearch    = "search"
 	aliasRecall    = "recall"
@@ -53,6 +54,7 @@ const (
 	aliasGrep      = "grep"
 	aliasEdit      = "edit"
 	aliasWrite     = "write"
+	aliasDrop      = "drop_project"
 	// mcpToolXxx are the names exposed over the MCP stdio transport. The MCP
 	// spec restricts tool names to ^[a-zA-Z][a-zA-Z0-9_-]*$ — dots are
 	// rejected by Claude Code's MCP client, which silently drops every tool
@@ -486,6 +488,8 @@ func (s *HTTPServer) handle(w http.ResponseWriter, r *http.Request) {
 		resp = s.handleEdit(ctx, req)
 	case methodWrite, aliasWrite:
 		resp = s.handleWrite(ctx, req)
+	case methodDrop, aliasDrop:
+		resp = s.handleDropProject(ctx, req)
 	default:
 		resp = Response{
 			JSONRPC: jsonRPCVersion,
@@ -583,6 +587,27 @@ func (s *HTTPServer) handleStats(ctx context.Context, req Request) Response {
 	ctx = WithProjectID(ctx, params.ProjectID)
 
 	resp, err := s.handlers.Stats(ctx, params)
+	if err != nil {
+		return Response{
+			JSONRPC: jsonRPCVersion,
+			ID:      req.ID,
+			Error:   &RPCError{Code: -32603, Message: err.Error()},
+		}
+	}
+	return Response{JSONRPC: jsonRPCVersion, ID: req.ID, Result: resp}
+}
+
+// handleDropProject services the dfmt.drop_project RPC. `dfmt remove`
+// calls this so the daemon's resource cache evicts the named project
+// before the on-disk .dfmt directory is deleted, preventing the old
+// ProjectResources from holding open file handles to the removed
+// directory or surfacing in the dashboard switcher.
+func (s *HTTPServer) handleDropProject(ctx context.Context, req Request) Response {
+	var params DropProjectParams
+	if r := decodeRPCParams(req, &params); r != nil {
+		return *r
+	}
+	resp, err := s.handlers.DropProject(ctx, params)
 	if err != nil {
 		return Response{
 			JSONRPC: jsonRPCVersion,

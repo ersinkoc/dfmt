@@ -486,6 +486,12 @@ func NewGlobal(cfg *config.Config) (*Daemon, error) {
 	// (when set) plus the keys of extraProjects under projectsMu.
 	handlers.SetProjectsLister(d.LoadedProjects)
 
+	// Wire `dfmt remove` cache eviction to the daemon's DropProject.
+	// Without this seam, a removed project would linger in the resource
+	// cache until daemon restart and the dashboard switcher would still
+	// list it.
+	handlers.SetProjectDropper(d.DropProject)
+
 	return d, nil
 }
 

@@ -251,6 +251,28 @@ func runRemove(args []string) int {
 		return 2
 	}
 
+	// Ask the daemon to evict its in-memory cache for this project
+	// BEFORE we delete .dfmt/. Without this, a running global daemon
+	// would keep open file handles to the soon-to-be-deleted journal/
+	// index, the dashboard switcher would still list the removed
+	// project, and the next Resources(dir) call would race against the
+	// missing directory.
+	//
+	// Best-effort: only attempt when a daemon is reachable; never spawn
+	// one just for cleanup. Errors are logged but never block the
+	// on-disk removal — the cache evicts itself the next time the
+	// daemon restarts.
+	abs, _ := filepath.Abs(dir)
+	if abs != "" && client.DaemonRunning(abs) {
+		if cl, cerr := client.NewClient(abs); cerr == nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			if _, derr := cl.DropProject(ctx, abs); derr != nil {
+				fmt.Fprintf(os.Stderr, "warn: daemon DropProject(%s): %v\n", abs, derr)
+			}
+			cancel()
+		}
+	}
+
 	if err := setup.RemoveProject(dir); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		return 1

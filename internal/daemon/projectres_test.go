@@ -387,6 +387,87 @@ func TestResourcesEmptyProjectIDOnDegradedDaemon(t *testing.T) {
 	}
 }
 
+// TestDropProjectClearsCache proves DropProject evicts the cached
+// ProjectResources so a subsequent Resources(P) call reloads from
+// disk into a fresh bundle. Without this, `dfmt remove`'s on-disk
+// cleanup would race against a daemon still holding open journal/
+// index file handles to the deleted directory.
+func TestDropProjectClearsCache(t *testing.T) {
+	defaultRoot := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(defaultRoot, ".dfmt"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	d, err := New(defaultRoot, newTestConfig())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() {
+		if d.journal != nil {
+			_ = d.journal.Close()
+		}
+		d.closeExtraProjects()
+	}()
+
+	extraRoot := t.TempDir()
+	r1, err := d.Resources(extraRoot)
+	if err != nil {
+		t.Fatalf("Resources(extra): %v", err)
+	}
+	if r1 == nil {
+		t.Fatal("Resources returned nil bundle")
+	}
+
+	if err := d.DropProject(extraRoot); err != nil {
+		t.Fatalf("DropProject: %v", err)
+	}
+
+	// Cache must no longer hold the entry.
+	d.projectsMu.RLock()
+	_, stillCached := d.extraProjects[resolveProjectID(extraRoot)]
+	d.projectsMu.RUnlock()
+	if stillCached {
+		t.Error("DropProject did not remove the cache entry")
+	}
+
+	// Reload returns a *different* instance — proves the bundle was
+	// genuinely reconstructed, not just rebound from the same handles.
+	r2, err := d.Resources(extraRoot)
+	if err != nil {
+		t.Fatalf("Resources after Drop: %v", err)
+	}
+	if r1 == r2 {
+		t.Error("Resources(extra) after DropProject returned the same bundle pointer; cache eviction is incomplete")
+	}
+}
+
+// TestDropProjectDefaultIsNoop verifies the safety contract: Drop on
+// the daemon's own default project does NOT tear down its journal/
+// index handles, since those are owned by Daemon.Stop's lifecycle and
+// closing them mid-session would crash subsequent RPCs.
+func TestDropProjectDefaultIsNoop(t *testing.T) {
+	defaultRoot := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(defaultRoot, ".dfmt"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	d, err := New(defaultRoot, newTestConfig())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() {
+		if d.journal != nil {
+			_ = d.journal.Close()
+		}
+	}()
+
+	preJournal := d.journal
+	if err := d.DropProject(defaultRoot); err != nil {
+		t.Fatalf("DropProject(default): %v", err)
+	}
+	if d.journal != preJournal {
+		t.Error("DropProject(default) replaced the daemon's journal handle; it must be a no-op")
+	}
+}
+
 // TestFSWatcherPerExtraProject verifies the v0.5.0 contract: when an
 // extra project's config opts into Capture.FS.Enabled, a per-project
 // FSWatcher attaches to that project and a filesystem mutation in
