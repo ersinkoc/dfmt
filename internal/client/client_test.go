@@ -1973,7 +1973,7 @@ func TestStartDaemonRefusesTestBinary(t *testing.T) {
 	defer func() { os.Args = origArgs }()
 
 	os.Args = []string{"dfmt.test"}
-	err := startDaemon("/tmp")
+	err := startDaemon("/tmp", false)
 	if err == nil {
 		t.Error("startDaemon should refuse test binary")
 	}

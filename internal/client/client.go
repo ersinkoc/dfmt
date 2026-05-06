@@ -51,6 +51,13 @@ type Client struct {
 	// daemon falls back to its default project (legacy single-project
 	// daemon) or returns errNoProject.
 	projectID string
+
+	// globalMode is true when this client is dialing the host-wide
+	// global daemon at ~/.dfmt/{port|sock}. Set by NewClient when a
+	// running global daemon is detected, or when auto-spawn fell back
+	// to spawning one. Influences the auto-spawn retry loop so we
+	// re-read the right port file on Windows.
+	globalMode bool
 }
 
 // resolveSessionID returns the session ID to use for outbound HTTP calls.
@@ -109,6 +116,17 @@ const maxRPCResponseBytes = 16 << 20
 // NewClient creates a new client for the given project.
 // If the project is not initialized, it auto-initializes.
 // If the daemon is not running, it automatically starts it.
+//
+// Phase 2 connection order:
+//
+//  1. Try the host-wide global daemon at ~/.dfmt/{port|daemon.sock}.
+//     A running global daemon serves every project from one process,
+//     so dialing it is preferred over starting a new per-project one.
+//  2. Fall back to the legacy per-project port/socket if the global
+//     daemon is not responsive. Older operators with already-running
+//     per-project daemons keep working.
+//  3. If neither is responsive, auto-spawn a global daemon
+//     (`dfmt daemon --global`). The next call lands in branch 1.
 func NewClient(projectPath string) (*Client, error) {
 	// Auto-init project if not initialized. Delegates to setup so the
 	// `dfmt init` and lazy-client init paths converge on the same merge-
@@ -119,6 +137,37 @@ func NewClient(projectPath string) (*Client, error) {
 		return nil, fmt.Errorf("auto-init project: %w", err)
 	}
 
+	// Resolve absolute project path so Client.projectID is canonical and
+	// matches what the daemon stores. filepath.Abs falls back gracefully
+	// on error — the projectID stays as-passed and the daemon-side
+	// resolver still finds it via samePath comparison.
+	resolvedProj := projectPath
+	if abs, aerr := filepath.Abs(projectPath); aerr == nil {
+		resolvedProj = abs
+	}
+
+	// Step 1: probe the global daemon. fastDialOK does a sub-second dial
+	// that succeeds only when something is actually listening, so we
+	// don't accidentally resolve to stale port/lock files left over from
+	// a crashed daemon (the cleanup path in DaemonRunning handles those).
+	globalAddress, globalToken, globalNetwork, globalSocket := globalDaemonTarget()
+	if globalAddress != "" && fastDialOK(globalNetwork, globalAddress) {
+		c := &Client{
+			socketPath: globalSocket,
+			network:    globalNetwork,
+			address:    globalAddress,
+			authToken:  globalToken,
+			timeout:    5 * time.Second,
+			sessionID:  resolveSessionID(),
+			projectID:  resolvedProj,
+			globalMode: true,
+		}
+		return c, nil
+	}
+
+	// Step 2: legacy per-project address. Same logic as pre-Phase-2 —
+	// reads <project>/.dfmt/port (Windows) or builds the per-project
+	// socket path (Unix).
 	socketPath := project.SocketPath(projectPath)
 	portFile := filepath.Join(projectPath, ".dfmt", "port")
 
@@ -138,15 +187,6 @@ func NewClient(projectPath string) (*Client, error) {
 		address = socketPath
 	}
 
-	// Resolve absolute project path so Client.projectID is canonical and
-	// matches what the daemon stores. filepath.Abs falls back gracefully
-	// on error — the projectID stays as-passed and the daemon-side
-	// resolver still finds it via samePath comparison.
-	resolvedProj := projectPath
-	if abs, aerr := filepath.Abs(projectPath); aerr == nil {
-		resolvedProj = abs
-	}
-
 	c := &Client{
 		socketPath: socketPath, // For debugging
 		network:    network,
@@ -163,12 +203,68 @@ func NewClient(projectPath string) (*Client, error) {
 		}
 	}
 
-	// Try to connect; if fails, auto-start daemon and retry
+	// Step 2b: legacy per-project daemon already running? Use it.
+	if fastDialOK(c.network, c.address) {
+		return c, nil
+	}
+
+	// Step 3: nothing's running. Auto-spawn a global daemon and switch
+	// the client over to it. ensureDaemon handles the wait + retry +
+	// post-spawn port/token re-read.
+	c.globalMode = true
+	if globalAddress != "" {
+		c.network = globalNetwork
+		c.address = globalAddress
+		c.socketPath = globalSocket
+		c.authToken = globalToken
+	}
 	if err := c.ensureDaemon(projectPath); err != nil {
 		return nil, fmt.Errorf("start daemon: %w", err)
 	}
 
 	return c, nil
+}
+
+// globalDaemonTarget returns the network + address + token + socket
+// fields a Client should use to dial the host-wide daemon. The address
+// can be empty when no port file or socket file exists yet — the
+// caller decides whether to spawn a global daemon or fall back to
+// legacy. The token is empty on Unix (Unix socket has no bearer token).
+func globalDaemonTarget() (address, token, network, socketPath string) {
+	if runtime.GOOS == goosWindows {
+		network = "tcp"
+		socketPath = ""
+		port, t, err := readPortFile(project.GlobalPortPath())
+		if err == nil && port > 0 {
+			return fmt.Sprintf("127.0.0.1:%d", port), t, network, socketPath
+		}
+		// No port file → no running global daemon. Address empty.
+		return "", "", network, socketPath
+	}
+	socketPath = project.GlobalSocketPath()
+	return socketPath, "", netUnix, socketPath
+}
+
+// fastDialOK does a 500-ms dial against the address. Used as the
+// liveness probe for global vs legacy daemon selection — a successful
+// dial means something is actually listening, regardless of port/lock
+// file state.
+func fastDialOK(network, address string) bool {
+	if address == "" {
+		return false
+	}
+	if network == netUnix {
+		if _, err := os.Stat(address); err != nil {
+			return false
+		}
+	}
+	dialer := net.Dialer{Timeout: 500 * time.Millisecond}
+	conn, err := dialer.Dial(network, address)
+	if err != nil {
+		return false
+	}
+	_ = conn.Close()
+	return true
 }
 
 // ensureDaemon ensures the daemon is running, starting it if needed.
@@ -180,7 +276,14 @@ func (c *Client) ensureDaemon(projectPath string) error {
 		return nil
 	}
 
+	// Pick the port file we'll re-read after the daemon comes up. In
+	// global mode the daemon writes ~/.dfmt/port, not the per-project
+	// one, so post-spawn we must look at the global path or we'll keep
+	// dialing addrLocalhost0 forever.
 	portFile := filepath.Join(projectPath, ".dfmt", "port")
+	if c.globalMode {
+		portFile = project.GlobalPortPath()
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -194,7 +297,7 @@ func (c *Client) ensureDaemon(projectPath string) error {
 	// First, cleanup any stale daemon state
 	cleanupStaleDaemon(projectPath)
 
-	if startErr := startDaemon(projectPath); startErr != nil {
+	if startErr := startDaemon(projectPath, c.globalMode); startErr != nil {
 		return fmt.Errorf("failed to start daemon: %w (try: dfmt daemon --foreground to see errors)", startErr)
 	}
 
@@ -212,11 +315,22 @@ func (c *Client) ensureDaemon(projectPath string) error {
 	for i, delay := range delays {
 		time.Sleep(delay)
 
-		// Update address and auth token from port file on Windows
+		// Update address and auth token from the appropriate port file.
+		// On Unix the socket path is fixed at construction time, so the
+		// only thing to refresh is auth token (which Unix sockets don't
+		// use anyway), so this branch is a no-op there.
 		if runtime.GOOS == goosWindows {
 			if port, token, err := readPortFile(portFile); err == nil && port > 0 {
 				c.address = fmt.Sprintf("127.0.0.1:%d", port)
 				c.authToken = token
+			}
+		} else if c.globalMode {
+			// Global mode on Unix: we may have raced the daemon writing
+			// its socket file; if the address is still empty (no socket
+			// existed at NewClient time) point at the global socket now.
+			if c.address == "" {
+				c.address = project.GlobalSocketPath()
+				c.socketPath = c.address
 			}
 		}
 
@@ -246,8 +360,11 @@ func isTestBinary() bool {
 	return strings.HasSuffix(base, ".test") || strings.HasSuffix(base, ".test.exe")
 }
 
-// startDaemon starts the dfmt daemon for the given project.
-func startDaemon(projectPath string) error {
+// startDaemon starts the dfmt daemon. When globalMode is true the
+// child is spawned as `dfmt daemon --global` so it owns the host-wide
+// listener; otherwise it runs in legacy per-project mode for backward
+// compatibility with operators who manually pinned a project.
+func startDaemon(projectPath string, globalMode bool) error {
 	// Belt-and-braces: refuse to re-exec a test binary even if a caller
 	// reaches this function directly. See isTestBinary for the rationale.
 	if isTestBinary() {
@@ -271,14 +388,20 @@ func startDaemon(projectPath string) error {
 		return fmt.Errorf("refusing to spawn daemon from test binary: %s", exePath)
 	}
 
-	// Pass the project path as a global flag (parsed by cmd/dfmt/main.go
-	// before dispatch) so it shows up in the spawned process's command
-	// line. Pre-fix the spawn was just `dfmt daemon` with cmd.Dir set —
-	// the daemon resolved the project from cwd, but task managers and
-	// `tasklist` / `ps` had no way to tell apart two daemons attached to
-	// different projects. With --project on the command line, both UIs
-	// and `Get-CimInstance Win32_Process` show the binding directly.
-	cmd := exec.Command(exePath, "--project", projectPath, "daemon")
+	// Argv shape:
+	//   global mode  → dfmt daemon --global    (no --project)
+	//   legacy mode  → dfmt --project <p> daemon
+	//
+	// Global is the Phase 2 default — the spawned daemon serves every
+	// project from one process. Legacy mode is preserved so manually-
+	// pinned per-project daemons still come up the same way during the
+	// v0.4.x deprecation window.
+	var cmd *exec.Cmd
+	if globalMode {
+		cmd = exec.Command(exePath, "daemon", "--global")
+	} else {
+		cmd = exec.Command(exePath, "--project", projectPath, "daemon")
+	}
 	cmd.Dir = projectPath
 	cmd.Stdout = nil
 	cmd.Stderr = nil

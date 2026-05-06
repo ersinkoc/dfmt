@@ -784,14 +784,32 @@ func samePathCLI(a, b string) bool {
 }
 
 func runDaemon(args []string) int {
-	var foreground bool
+	var foreground, globalMode bool
 	fs := flag.NewFlagSet("daemon", flag.ContinueOnError)
 	fs.BoolVar(&foreground, "foreground", false, "Run in foreground")
+	fs.BoolVar(&globalMode, "global", false, "Run as host-wide global daemon serving all projects (default off; auto-spawn from clients sets this)")
 	if err := fs.Parse(args); err != nil {
 		if err == flag.ErrHelp {
 			return 0
 		}
 		return 2
+	}
+
+	// Global daemon path: no project required. The daemon binds at
+	// ~/.dfmt/{port|daemon.sock} and lazily loads per-project resources
+	// on each RPC. We still want a config — fall back to the default.
+	if globalMode {
+		cfg := config.Default()
+		if foreground {
+			return runGlobalDaemonForeground(cfg)
+		}
+		pid, err := startGlobalDaemonBackground()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error starting global daemon: %v\n", err)
+			return 1
+		}
+		fmt.Printf("Global daemon started (PID %d)\n", pid)
+		return 0
 	}
 
 	proj, err := getProject()
@@ -830,6 +848,34 @@ func runDaemon(args []string) int {
 	return 0
 }
 
+// runGlobalDaemonForeground brings up the host-wide daemon attached to
+// the current terminal. The lifecycle mirrors runDaemonForeground but
+// uses daemon.NewGlobal so no per-project journal/index is loaded at
+// startup — every RPC resolves its target via Daemon.Resources(pid).
+func runGlobalDaemonForeground(cfg *config.Config) int {
+	d, err := daemon.NewGlobal(cfg)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error creating global daemon: %v\n", err)
+		return 1
+	}
+
+	ctx := context.Background()
+	if err := d.Start(ctx); err != nil {
+		fmt.Fprintf(os.Stderr, "error starting global daemon: %v\n", err)
+		return 1
+	}
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	<-sigCh
+
+	fmt.Println("\nShutting down global daemon...")
+	stopCtx, cancel := context.WithTimeout(context.Background(), d.ShutdownGrace())
+	defer cancel()
+	d.Stop(stopCtx)
+	return 0
+}
+
 func runDaemonForeground(proj string, cfg *config.Config) int {
 	d, err := daemon.New(proj, cfg)
 	if err != nil {
@@ -853,6 +899,44 @@ func runDaemonForeground(proj string, cfg *config.Config) int {
 	defer cancel()
 	d.Stop(stopCtx)
 	return 0
+}
+
+// startGlobalDaemonBackground spawns the host-wide daemon as a
+// detached child. Lock acquisition (~/.dfmt/lock) enforces singleton
+// semantics — a second invocation while one is already running fails
+// at lock time, not here, and the user sees the LockError message.
+func startGlobalDaemonBackground() (int, error) {
+	if flag.Lookup("test.v") != nil {
+		return 0, errors.New("refusing to spawn daemon from test binary")
+	}
+
+	exePath, err := os.Executable()
+	if err != nil {
+		return 0, fmt.Errorf("find executable: %w", err)
+	}
+
+	exeBase := strings.ToLower(filepath.Base(exePath))
+	if strings.HasSuffix(exeBase, ".test") || strings.HasSuffix(exeBase, ".test.exe") {
+		return 0, fmt.Errorf("refusing to spawn daemon from test binary: %s", exePath)
+	}
+
+	cmd := exec.Command(exePath, "daemon", "--global", "--foreground")
+	cmd.Stdout = nil
+	cmd.Stderr = nil
+
+	if err := cmd.Start(); err != nil {
+		return 0, fmt.Errorf("start global daemon: %w", err)
+	}
+	go func() {
+		defer func() { _ = recover() }()
+		_ = cmd.Wait()
+	}()
+
+	// PID file lives under ~/.dfmt/, written by the daemon itself once it
+	// successfully acquires the lock. We don't write it from here because
+	// the child may fail (e.g. lock contention) and we don't want a stale
+	// PID pointing at a process that exited within milliseconds.
+	return cmd.Process.Pid, nil
 }
 
 func startDaemonBackground(proj string) (int, error) {
