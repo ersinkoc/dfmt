@@ -27,6 +27,97 @@ Internal package shapes (`internal/...`) are NOT covered by SemVer.
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-05-06
+
+The architectural cleanup release. `dfmt mcp` is now a thin proxy over
+the global daemon — no more duplicate journal handles, no more
+in-memory index drift between MCP subprocess and daemon. Per-project
+filesystem capture, `dfmt remove` cache eviction, live SSE event log
+on the dashboard, and a bounded multi-project cache.
+
+### Breaking
+
+- **`dfmt daemon --legacy` is gone.** The per-project daemon mode
+  (kept on life support during the v0.4.x deprecation window) is
+  removed. `dfmt daemon` always brings up the host-wide global
+  daemon. Operators upgrading from v0.3.x must run `dfmt setup
+  --refresh` (which already migrates legacy daemons in v0.4.x) and
+  update any hand-rolled systemd / launchctl units to drop `--legacy`.
+
+- **`dfmt mcp` requires a daemon.** The subprocess no longer opens
+  its own journal/index/sandbox state. When the daemon is unreachable
+  (and auto-spawn fails within ~4 s), tool calls return JSON-RPC
+  error `-32603 daemon unreachable` instead of falling back to local
+  state. There is no silent local mode — this is the deliberate
+  trade-off behind closing the duplicate-journal-handle borç.
+
+### Added
+
+- **MCP proxy mode.** `dfmt mcp` forwards every tool call through
+  `client.NewClient` to the daemon. The MCPProtocol now reads from a
+  `transport.Backend` interface; the local `*Handlers` and the new
+  `client.ClientBackend` adapter both satisfy it. Effects: zero
+  duplicated journal handles, zero per-startup journal replay in the
+  MCP subprocess, all per-project state owned by one process.
+
+- **Per-project filesystem watcher.** Extra projects served by the
+  global daemon now get their own `FSWatcher` when their config opts
+  in via `capture.fs.enabled: true`. `ProjectResources.startFSWatch`
+  spawns the consume goroutine; teardown order in
+  `closeExtraProjects` is fswatch → index-tail → journal close so a
+  shutting-down project never appends past its own journal close.
+  v0.4.x only ran fswatch for the default project; secondary projects
+  fell back to MCP/CLI events alone.
+
+- **Live SSE journal tail.** `/api/stream?follow=true` now keeps the
+  connection open after historical replay drains, polls every 2 s for
+  events strictly after the last cursor, and forwards them to the
+  client. The dashboard's project switcher opens an `EventSource`
+  with `follow=true` so the new "Live Events" panel surfaces appends
+  without a page reload. Without `follow=true` the endpoint stays in
+  its pre-v0.5.0 one-shot replay contract — `dfmt tail` and
+  `Client.StreamEvents` both depend on the channel closing at HEAD.
+
+- **`dfmt remove` daemon cache eviction.** When a daemon is reachable,
+  `dfmt remove` calls `dfmt.drop_project` so the running daemon
+  evicts its `ProjectResources` cache entry (Checkpoint + Persist +
+  Close, then drop) before .dfmt/ is deleted on disk. Without this,
+  the daemon kept open file handles to the removed journal/index, the
+  dashboard switcher continued to list the dead project, and the next
+  `Resources(P)` call would race against the missing directory. New
+  RPC method on the JSON-RPC surface (also accessible via the
+  `drop_project` alias).
+
+- **LRU eviction in extra-project cache.** The `extraProjects` map
+  caps at 8 entries (`extraProjectsMaxEntries`). On a cache miss
+  when full, the project with the oldest `LastActivityNs` is evicted
+  before the new bundle loads. Eviction teardown runs in a goroutine
+  after the cache entry is removed under the write lock, so concurrent
+  `Resources()` lookups never block on the slow flush. A long-running
+  global daemon serving 50+ projects no longer accumulates unbounded
+  memory.
+
+### Changed
+
+- **`compressionStats` reads the journal via Backend.StreamEvents.**
+  The MCP-side stats summary used to reach into `m.handlers.journal`
+  directly; it now goes through the same Backend interface as every
+  other tool call. Local mode reads the daemon's journal as before;
+  proxy mode reads the daemon's journal via the network call.
+
+### Notes
+
+- `Client.NewClient`'s legacy port-file fallback (Step 2/2b/2c) is
+  intentionally still present. Removing it requires updating ~20
+  `TestClient_*` tests that seed legacy port files to assert behavior;
+  that follow-up is queued for v0.5.x. User-visible behavior is
+  unchanged: a v0.3.x port file still gets reaped on first auto-spawn
+  and the global daemon takes over.
+
+- Default project's filesystem watcher continues to use the existing
+  `Daemon.fswatcher` / `Daemon.consumeFSWatch` path. Migrating it to
+  `defaultRes` is a cleanup for a follow-up.
+
 ## [0.4.7] — 2026-05-06
 
 The biggest pre-v0.5.0 correctness fix: the daemon's in-memory search

@@ -28,6 +28,7 @@ See [ADR-0000](0000-adr-process.md) for the process governing how ADRs are writt
 | [0017](0017-journal-size-method.md) | Journal `Size()` Interface Extension | Accepted | Adds `Size() (int64, error)` to `core.Journal`. Surfaces `dfmt_journal_bytes` gauge for active-file size; rotated archives explicitly out of scope for this metric. Mock journals updated; non-nil error encodes as `-1` at the gauge layer. |
 | [0018](0018-tool-call-duration-histograms.md) | Tool-Call Duration Histograms | Accepted | `dfmt_tool_call_duration_seconds` histogram per tool, Prometheus default bucket set. Migration contract: append-only — finer buckets may be inserted, existing boundaries never mutated. Cancellation excluded from observations. |
 | [0019](0019-global-daemon.md) | Host-Wide Global Daemon | Accepted | Supersedes ADR-0001. One daemon per host (~/.dfmt/{port,sock,pid,lock}), lazy per-project resource cache, wire-level `project_id` routing. Legacy per-project mode preserved through v0.4.x; removed in v0.5.0. |
+| [0020](0020-mcp-proxy-and-cleanup.md) | MCP Subprocess as Daemon Proxy + v0.5.0 Cleanup | Accepted | `dfmt mcp` becomes a thin proxy via the new `transport.Backend` interface and `client.ClientBackend` adapter — no more duplicate journal/index handles. Adds per-project FSWatcher, `dfmt.drop_project` RPC for `dfmt remove` cache eviction, LRU eviction in `extraProjects`, and live SSE tail (`?follow=true`). Removes `dfmt daemon --legacy`. |
 
 ## Superseded Decisions
 
