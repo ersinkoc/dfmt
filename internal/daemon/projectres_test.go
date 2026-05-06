@@ -386,3 +386,112 @@ func TestResourcesEmptyProjectIDOnDegradedDaemon(t *testing.T) {
 		t.Error("Resources(\"\") on degraded daemon: got nil error, want errProjectIDRequired")
 	}
 }
+
+// TestFSWatcherPerExtraProject verifies the v0.5.0 contract: when an
+// extra project's config opts into Capture.FS.Enabled, a per-project
+// FSWatcher attaches to that project and a filesystem mutation in
+// that root lands in *that* project's journal — not the default's.
+//
+// This closes the multi-project FS-capture gap that v0.4.x left open:
+// only the default project ever received fswatch events, so secondary
+// projects relied on MCP/CLI events alone for their recall surface.
+func TestFSWatcherPerExtraProject(t *testing.T) {
+	defaultRoot := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(defaultRoot, ".dfmt"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	d, err := New(defaultRoot, newTestConfig())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() {
+		if d.journal != nil {
+			_ = d.journal.Close()
+		}
+		d.closeExtraProjects()
+	}()
+
+	// Extra project with its own config.yaml enabling FS capture.
+	// Without the on-disk file the extra project would inherit the
+	// daemon's fallback cfg (FS disabled by default) and the watcher
+	// would never start — that's the v0.4.x behavior we're replacing.
+	extraRoot := t.TempDir()
+	extraDfmt := filepath.Join(extraRoot, ".dfmt")
+	if err := os.MkdirAll(extraDfmt, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfgYAML := "" +
+		"capture:\n" +
+		"  fs:\n" +
+		"    enabled: true\n" +
+		"    ignore: [\".git/**\"]\n" +
+		"    debounce_ms: 50\n"
+	if err := os.WriteFile(filepath.Join(extraDfmt, "config.yaml"), []byte(cfgYAML), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	r, err := d.Resources(extraRoot)
+	if err != nil {
+		t.Fatalf("Resources(extra): %v", err)
+	}
+	if r.FSWatcher == nil {
+		t.Fatal("extra project FSWatcher is nil despite cfg.Capture.FS.Enabled=true")
+	}
+	if r.fsStop == nil {
+		t.Fatal("startFSWatch did not run: fsStop is nil")
+	}
+
+	// Touch a file in the extra project root. The watcher's debounce
+	// window (50 ms) plus capture pipeline latency means we may need
+	// a few hundred ms before the event lands in the journal.
+	target := filepath.Join(extraRoot, "trigger.txt")
+	if err := os.WriteFile(target, []byte("hello"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+		stream, serr := r.Journal.Stream(ctx, "")
+		if serr != nil {
+			cancel()
+			time.Sleep(50 * time.Millisecond)
+			continue
+		}
+		var found bool
+		for e := range stream {
+			if strings.Contains(strings.ToLower(string(e.Source)), "fs") ||
+				strings.Contains(strings.ToLower(string(e.Type)), "fs") {
+				found = true
+				break
+			}
+			if path, ok := e.Data["path"].(string); ok && strings.HasSuffix(path, "trigger.txt") {
+				found = true
+				break
+			}
+		}
+		cancel()
+		if found {
+			// Belt and suspenders: the default project's journal must
+			// NOT contain this event. Otherwise the per-project routing
+			// regressed.
+			ctx2, cancel2 := context.WithTimeout(context.Background(), 200*time.Millisecond)
+			ds, derr := d.journal.Stream(ctx2, "")
+			if derr == nil {
+				for e := range ds {
+					if path, ok := e.Data["path"].(string); ok && strings.HasSuffix(path, "trigger.txt") {
+						cancel2()
+						t.Fatalf("default project journal received extra-project fswatch event for %s", path)
+					}
+				}
+			}
+			cancel2()
+			// Use core.Event to avoid an unused-import error if the
+			// matcher above changes shape.
+			_ = core.Event{}
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Errorf("FSWatcher event for trigger.txt never landed in extra project's journal within 3 s")
+}

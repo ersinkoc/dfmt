@@ -80,6 +80,16 @@ type ProjectResources struct {
 	// the tail goroutine is mid-Stream, and the goroutine's read
 	// would race with file close.
 	tailWG sync.WaitGroup
+
+	// fsStop cancels the fswatcher consume goroutine on Close. Set by
+	// startFSWatch when the project's config opted into Capture.FS;
+	// nil otherwise.
+	fsStop context.CancelFunc
+
+	// fsWG waits for the fswatcher consume goroutine to drain. Same
+	// reasoning as tailWG: closeExtraProjects must not close the
+	// journal handle while consumeFSWatch is mid-Append.
+	fsWG sync.WaitGroup
 }
 
 // errProjectIDRequired is returned by Resources when the caller passed
@@ -204,6 +214,9 @@ func (d *Daemon) Resources(projectID string) (*ProjectResources, error) {
 	// by the resource bundle, not the request that triggered the
 	// load. Cancellation arrives via stopIndexTail on Close.
 	r.startIndexTail(context.Background())
+	// Same lifetime story for the per-project fswatcher consumer:
+	// no-op when cfg.Capture.FS.Enabled was false.
+	r.startFSWatch(context.Background())
 	return r, nil
 }
 
@@ -251,10 +264,12 @@ func (d *Daemon) defaultResourcesView() *ProjectResources {
 //   - redact.LoadProjectRedactor for project-local redact.yaml,
 //     warnings logged.
 //
-// FSWatcher is intentionally NOT started here; spawning per-project
-// watchers across the cache would compete for the daemon's single
-// fswatch consumer goroutine. The default project keeps its watcher;
-// extra projects fall back to journal-only event sources (MCP/CLI).
+// FSWatcher is constructed (but not Start()ed) when cfg.Capture.FS.Enabled
+// is true. Resources() spawns the consume goroutine via startFSWatch right
+// after startIndexTail, mirroring the default project's wiring in Daemon.New
+// + Daemon.Start. The default project still uses Daemon.fswatcher /
+// Daemon.consumeFSWatch — extra projects use the per-project path here so
+// each watcher writes to the right journal.
 func loadProjectResources(projectPath string, fallbackCfg *config.Config) (*ProjectResources, error) {
 	// Resolve to absolute so cache key and on-disk paths are canonical.
 	abs, err := filepath.Abs(projectPath)
@@ -364,8 +379,23 @@ func loadProjectResources(projectPath string, fallbackCfg *config.Config) (*Proj
 		Redactor:     redactor,
 		ContentStore: store,
 		Sandbox:      sb,
-		// FSWatcher intentionally nil; see top-of-function note.
 	}
+
+	// Construct (but do not Start) the FSWatcher when the project opted
+	// into filesystem capture. Start needs a context tied to the daemon's
+	// lifetime, which Resources() supplies via startFSWatch on the same
+	// tick that launches the index-tail goroutine. A nil watcher here
+	// means "this project does not want fswatch" — config silence is a
+	// stronger contract than implicit-on.
+	if cfg.Capture.FS.Enabled {
+		w, werr := capture.NewFSWatcher(projectPath, cfg.Capture.FS.Ignore, cfg.Capture.FS.DebounceMS)
+		if werr != nil {
+			logging.Warnf("create fswatcher for %s: %v", projectPath, werr)
+		} else {
+			r.FSWatcher = w
+		}
+	}
+
 	return r, nil
 }
 
@@ -472,6 +502,96 @@ func (r *ProjectResources) stopIndexTail() {
 	r.tailStop = nil
 }
 
+// startFSWatch spawns the per-project filesystem-watcher consume
+// goroutine when r.FSWatcher is non-nil (the project opted in via
+// cfg.Capture.FS.Enabled). The goroutine forwards each fswatch event
+// into r.Journal/r.Index after redacting paths through r.Redactor.
+//
+// This mirrors Daemon.consumeFSWatch for the default project. The
+// reason both exist is lifecycle: the default project's watcher is
+// owned by Daemon and torn down in Stop's per-phase ordering;
+// extra-project watchers are owned by ProjectResources and torn down
+// in closeExtraProjects. Until Daemon.fswatcher migrates onto
+// defaultRes, the duplication is intentional.
+//
+// Idempotent: if r.FSWatcher is nil or fsStop is already set, this
+// returns without effect.
+func (r *ProjectResources) startFSWatch(parent context.Context) {
+	if r == nil || r.FSWatcher == nil || r.Journal == nil {
+		return
+	}
+	if r.fsStop != nil {
+		return
+	}
+	ctx, cancel := context.WithCancel(parent)
+	if err := r.FSWatcher.Start(ctx); err != nil {
+		logging.Warnf("fswatcher start for %s: %v", r.ProjectPath, err)
+		cancel()
+		return
+	}
+	r.fsStop = cancel
+	r.fsWG.Add(1)
+	go r.consumeFSWatch(ctx)
+}
+
+// consumeFSWatch drains r.FSWatcher.Events() into r.Journal and
+// r.Index. Returns when the events channel closes or ctx cancels.
+// Best-effort like Daemon.consumeFSWatch: a single Append failure is
+// logged and the loop continues, since dropping the daemon over a
+// transient I/O blip is the wrong tradeoff.
+func (r *ProjectResources) consumeFSWatch(ctx context.Context) {
+	defer r.fsWG.Done()
+	defer func() {
+		if rec := recover(); rec != nil {
+			logging.Errorf("fswatch consume panic for %s recovered: %v", r.ProjectPath, rec)
+		}
+	}()
+	events := r.FSWatcher.Events()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case e, ok := <-events:
+			if !ok {
+				return
+			}
+			if r.Redactor != nil {
+				e.Data = r.Redactor.RedactEvent(e.Data)
+				for i, tag := range e.Tags {
+					e.Tags[i] = r.Redactor.Redact(tag)
+				}
+				e.Sig = e.ComputeSig()
+			}
+			if err := r.Journal.Append(ctx, e); err != nil {
+				logging.Warnf("fswatch journal append for %s: %v", r.ProjectPath, err)
+				continue
+			}
+			r.Index.Add(e)
+		}
+	}
+}
+
+// stopFSWatch cancels the fswatch consume goroutine, stops the
+// watcher, and waits for the consumer to drain. Must run before
+// Journal.Close so consumeFSWatch's in-flight Append cannot race the
+// close. Idempotent.
+func (r *ProjectResources) stopFSWatch() {
+	if r == nil || r.fsStop == nil {
+		return
+	}
+	r.fsStop()
+	if r.FSWatcher != nil {
+		// Stop is fire-and-forget for our purposes — the cancel above
+		// already unblocks the consumer; Stop just releases the OS-level
+		// watch handles. 5 s budget mirrors closeExtraProjects.
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_ = r.FSWatcher.Stop(ctx)
+		cancel()
+	}
+	r.fsWG.Wait()
+	r.fsStop = nil
+}
+
 // closeExtraProjects shuts down every cached additional-project
 // resource bundle. Called from Daemon.Stop after the default project's
 // journal/index are persisted. Failures are logged but never fatal —
@@ -497,8 +617,13 @@ func (d *Daemon) closeExtraProjects() {
 		if r == nil {
 			continue
 		}
-		// Stop the tail goroutine BEFORE touching the journal handle
-		// so its in-flight Stream cannot race the Close below.
+		// Stop fswatch first so no new events arrive while we wind down.
+		// Then stop the tail goroutine so its in-flight Stream cannot
+		// race the journal Close below. Order matters: a fswatch event
+		// arriving after the tail stops would still be Append()ed but
+		// not Add()ed to the index — survivable because the tail-on-
+		// reload path picks it up on next daemon start.
+		r.stopFSWatch()
 		r.stopIndexTail()
 		if r.Journal != nil && r.Index != nil && r.IndexPath != "" && !r.NeedsRebuild {
 			hiID, cerr := r.Journal.Checkpoint(ctx)
