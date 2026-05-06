@@ -27,6 +27,58 @@ Internal package shapes (`internal/...`) are NOT covered by SemVer.
 
 ## [Unreleased]
 
+## [0.4.4] — 2026-05-06
+
+Patch release closing four cross-project correctness gaps in the
+host-wide daemon's resource cache. Each is a real bug that hits
+users running one DFMT daemon for multiple projects (the v0.4.0
+default).
+
+### Fixed
+
+- **Per-project redactor routing.** Every redactor-touching helper
+  (`redactString`, `redactData`, `redactEventForRender`,
+  `redactMatches`) read the default project's redactor on every call.
+  In global daemon mode that meant project A's `redact.yaml` patterns
+  scrubbed project B's tool output, and project B's own patterns
+  never fired against its own bytes — a two-direction privacy leak.
+  New `redactorFor(ctx)` helper resolves the per-project redactor
+  via the bundle; legacy single-project daemons keep working through
+  the fallback path.
+- **Per-project content store + dedup key.** `stashContent` read
+  `h.getStore()` (default project's store, nil in global mode) so
+  every Exec / Read / Fetch returned `content_id=""` and the
+  dashboard's "show content" links broke for every project. The
+  dedup cache was also project-blind: identical bytes from project
+  A and B collapsed to one chunk-set ID pointing into A's store,
+  so B's lookup 404'd. Both fixed by routing through
+  `bundle.ContentStore` + `bundle.ProjectPath` and prepending
+  project ID to the dedup key.
+- **Per-project config.** `loadProjectResources` reused the daemon's
+  startup cfg for every cached extra project. A global daemon
+  serving project A and B silently used A's retention / budget /
+  path_prepend on every B call regardless of B's `.dfmt/config.yaml`.
+  Each project now loads its own config; daemon-level cfg is the
+  fallback when project YAML is missing or malformed.
+- **Index persistence on shutdown.** `closeExtraProjects` (the Stop
+  path for the per-project resource cache) closed each cached
+  journal but never persisted its index. Every restart of a global
+  daemon serving N projects forced a full journal replay per project
+  on the next run — user-visible as a cold-recall pause that scaled
+  with journal size. Persist now happens before Close, gated on
+  `NeedsRebuild=false` to avoid writing a cursor=HEAD that would
+  silently mark older events as indexed.
+
+### Internal
+
+- **Daemon registry honors `DFMT_GLOBAL_DIR`.** The `~/.dfmt/daemons.json`
+  path now resolves on every save/load instead of caching at first
+  `GetRegistry()` call, so test sandboxes and migration tooling get
+  the right path. Test pollution of the developer's real registry
+  from `internal/daemon/{TestRegister,TestUnregister}` closed via
+  `t.Setenv("DFMT_GLOBAL_DIR", t.TempDir())` + a deferred
+  `unregister()` cleanup.
+
 ## [0.4.3] — 2026-05-06
 
 Patch release closing three more global-daemon visibility gaps
