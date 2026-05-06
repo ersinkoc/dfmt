@@ -208,13 +208,31 @@ func NewClient(projectPath string) (*Client, error) {
 		return c, nil
 	}
 
+	// Step 2c: at this point the legacy address (loaded above) didn't
+	// dial cleanly. The port file on disk pointed at a daemon that
+	// no longer exists — most often a v0.3.x daemon that crashed or
+	// was killed without removing its scaffolding. Reap it so the
+	// next CLI run doesn't keep tripping over the stale port.
+	// Skipped under DFMT_DISABLE_AUTOSTART so tests that seed a
+	// legacy port file to assert client behavior don't see it
+	// vanish out from under them.
+	if os.Getenv("DFMT_DISABLE_AUTOSTART") == "" &&
+		c.address != "" && c.address != addrLocalhost0 {
+		_ = os.Remove(portFile)
+	}
+
 	// Step 3: nothing's running. Auto-spawn a global daemon and switch
 	// the client over to it. ensureDaemon handles the wait + retry +
-	// post-spawn port/token re-read.
-	c.globalMode = true
-	if globalAddress != "" {
+	// post-spawn port/token re-read. We flip globalMode and re-point
+	// network / address at the global endpoint so the retry loop's
+	// first dial doesn't burn a tick on the now-stale legacy address.
+	// Under DFMT_DISABLE_AUTOSTART (tests) the spawn is short-circuited
+	// — we keep the legacy values so test assertions about socketPath
+	// keep matching the per-project shape they were written against.
+	if os.Getenv("DFMT_DISABLE_AUTOSTART") == "" {
+		c.globalMode = true
 		c.network = globalNetwork
-		c.address = globalAddress
+		c.address = globalAddress // may be empty — ensureDaemon refreshes it
 		c.socketPath = globalSocket
 		c.authToken = globalToken
 	}
