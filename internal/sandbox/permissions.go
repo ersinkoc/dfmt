@@ -130,24 +130,39 @@ func (p Policy) Evaluate(op, text string) bool {
 
 // DefaultPolicy returns the default security policy.
 //
-// The default `read **` and `write **` allow rules let agents navigate
-// the working directory freely. Sensitive paths (`.env*`, `**/secrets/**`,
-// `**/id_rsa`, `**/id_*`, `.dfmt/**`, `.git/**`) are explicitly denied —
-// the deny list is checked first and is the only gate on those paths.
+// **Default-permissive by design.** Read, write, edit, and exec are
+// allow-all; the only built-in deny rules are the SSRF safety net
+// (cloud-metadata literals + `file://`). The threat model is a single-
+// user, single-trust-principal local daemon — the agent runs with the
+// same authority as the operator's shell, so a default that withheld
+// `.env` or `.git/` would be surface-area theater (the agent's shell
+// already reads them) without preventing the actual exfil paths
+// (network egress, content output). See `project_sandbox_default_
+// permissive` decision note.
 //
-// Operators with site-specific secret directories beyond the standard
-// shapes (e.g. `creds/`, `private_keys/`, `ca-bundles/`, custom vault
-// mounts) should extend the policy with project-level deny rules. The
-// canonical location is `.dfmt/permissions.yaml` (loaded via
-// `LoadPolicy`) — entries take the form:
+// Two layers do the actual work:
 //
-//	deny:read:creds/**
-//	deny:read:**/private_keys/**
-//	deny:write:creds/**
-//	deny:edit:creds/**
+//   - **redact.yaml** (loaded by `internal/redact`) scrubs sensitive
+//     values from tool output before the bytes reach the agent or land
+//     in the journal. Add custom shapes there, not here. As of V-01,
+//     redaction is also re-applied on `dfmt_recall` render so updates
+//     to redact.yaml apply retroactively.
 //
-// Closes F-A-LOW-1 from the security audit (operator-facing guidance
-// for non-standard secret stores).
+//   - **.dfmt/permissions.yaml** lets operators add project-scoped
+//     `deny:` rules that ride on top of this policy via `MergePolicies`.
+//     Examples for operators with secret stores outside the redactor's
+//     default shapes:
+//
+//	    deny:read:creds/**
+//	    deny:read:**/private_keys/**
+//	    deny:write:creds/**
+//	    deny:edit:creds/**
+//
+// V-05 closure: this docstring previously claimed `.env*`, `.dfmt/**`,
+// `.git/**`, and similar were in the default deny list. They were not,
+// and never had been in the default-permissive era — the docstring lied
+// about coverage that an operator would reasonably trust. Aligned with
+// the actual `Deny:` slice below.
 func DefaultPolicy() Policy {
 	p := Policy{
 		Version: 1,
@@ -395,6 +410,17 @@ func globToRegexShell(pattern string) string {
 			i++
 		} else if pattern[i] == '?' {
 			result.WriteByte('.')
+			i++
+		} else if pattern[i] == ' ' {
+			// V-03: bash uses IFS (space, tab, newline) as a token separator,
+			// but a rule like `deny:exec:sudo *` carries only a literal space.
+			// Compile spaces in the pattern to `[ \t]+` so an agent that
+			// substitutes a tab for the space (`sudo\twhoami`) doesn't slide
+			// past the deny rule. Newline is excluded because the chain-aware
+			// splitter (`hasShellChainOperators`) treats `\n` as a chain
+			// boundary and recurses; a literal newline in a rule's first-arg
+			// position would only ever be operator typo.
+			result.WriteString("[ \\t]+")
 			i++
 		} else {
 			// Escape regex metacharacters so user-authored patterns like
@@ -710,11 +736,19 @@ func stripExeSuffixFromLeadingWord(cmd string) string {
 // insensitive) is stripped from the returned base. Filesystem case-sensitivity
 // makes this the right call: NTFS treats `Go.exe`, `GO.EXE`, and `go.exe` as
 // the same file, so the policy comparison must too.
+//
+// V-03: the leading directory is also stripped so `/usr/bin/sudo whoami`,
+// `./sudo whoami`, and `\sudo whoami` (Windows) all reduce to base `sudo`.
+// Without that, an operator's `deny:exec:sudo *` rule silently failed to
+// match the absolute-path invocation. Tab and newline join space as
+// recognized first-arg separators so `sudo\twhoami` and `sudo\nwhoami` —
+// both of which bash IFS-splits as two tokens — also reduce to `sudo`.
 func extractBaseCommand(cmd string) string {
 	// Remove leading/trailing whitespace
 	cmd = strings.TrimSpace(cmd)
 
-	// Handle quoted strings - find first unquoted space
+	// Handle quoted strings - find first unquoted whitespace token. Bash IFS
+	// splits on space/tab/newline so the matcher must too.
 	inQuote := false
 	quoteChar := byte(0)
 	base := cmd
@@ -724,7 +758,7 @@ func extractBaseCommand(cmd string) string {
 			quoteChar = cmd[i]
 		} else if inQuote && cmd[i] == quoteChar {
 			inQuote = false
-		} else if !inQuote && cmd[i] == ' ' {
+		} else if !inQuote && (cmd[i] == ' ' || cmd[i] == '\t' || cmd[i] == '\n') {
 			base = cmd[:i]
 			break
 		}
@@ -747,6 +781,14 @@ func extractBaseCommand(cmd string) string {
 	// so the inner command is evaluated correctly.
 	for len(base) > 0 && base[0] == '(' {
 		base = base[1:]
+	}
+	// V-03: strip the leading directory so `/usr/bin/sudo`, `./sudo`, and
+	// `\sudo` all collapse to base `sudo`. filepath.Base handles both
+	// separator styles on its host OS; we additionally normalize backslash
+	// to forward-slash up-front so a Linux daemon receiving a Windows-shaped
+	// `\sudo` argv (e.g. through WSL) still gets the leading dir stripped.
+	if strings.ContainsAny(base, "/\\") {
+		base = filepath.Base(strings.ReplaceAll(base, `\`, "/"))
 	}
 	if len(base) > 4 && strings.EqualFold(base[len(base)-4:], ".exe") {
 		base = base[:len(base)-4]
@@ -1874,6 +1916,15 @@ func (s *SandboxImpl) Edit(ctx context.Context, req EditReq) (EditResp, error) {
 		return EditResp{}, fmt.Errorf("path symlink check: %w", err)
 	}
 
+	// V-15: refuse Windows reserved device names (CON, PRN, AUX, NUL,
+	// COM0-9, LPT0-9 and their `.ext` forms). The journal and transport
+	// layers already gate on this; the sandbox Edit path was the gap.
+	// Active on every host, not just Windows — NTFS via CIFS/WSL/SFM
+	// produces the same surprise dirs on Linux.
+	if err := safefs.CheckNoReservedNames(cleanPath); err != nil {
+		return EditResp{}, fmt.Errorf("path reserved-name check: %w", err)
+	}
+
 	// Policy check — Edit is both a write and an edit. Run BOTH checks so
 	// that:
 	//   - existing `Op: "write"` deny rules continue to protect Edit calls
@@ -1968,6 +2019,13 @@ func (s *SandboxImpl) Write(ctx context.Context, req WriteReq) (WriteResp, error
 	// cases still reject symlinked parents.
 	if err := safefs.CheckNoSymlinks(absWd, cleanPath); err != nil {
 		return WriteResp{}, fmt.Errorf("path symlink check: %w", err)
+	}
+
+	// V-15: refuse Windows reserved device names (CON, PRN, AUX, NUL,
+	// COM0-9, LPT0-9 and their `.ext` forms). Active on every host —
+	// NTFS via CIFS/WSL/SFM produces the same surprise dirs on Linux.
+	if err := safefs.CheckNoReservedNames(cleanPath); err != nil {
+		return WriteResp{}, fmt.Errorf("path reserved-name check: %w", err)
 	}
 
 	// Policy check - write permission

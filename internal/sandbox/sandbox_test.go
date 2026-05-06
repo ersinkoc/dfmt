@@ -2078,6 +2078,58 @@ func TestSandboxWriteOutsideWorkingDir(t *testing.T) {
 	}
 }
 
+// TestSandboxWriteEditRejectReservedNames pins V-15: the sandbox Write
+// and Edit paths must refuse Windows reserved device names (CON, PRN,
+// AUX, NUL, COM0-9, LPT0-9) and their `.ext` forms. Active on every
+// host because NTFS-via-CIFS/WSL/SFM produces the same surprise dirs
+// on Linux. Pre-fix, only the journal and transport layers gated on
+// this; the sandbox Write/Edit was the gap. The check returns an
+// error path that wraps safefs.ErrReservedName.
+func TestSandboxWriteEditRejectReservedNames(t *testing.T) {
+	tmpdir := t.TempDir()
+	sb := NewSandbox(tmpdir)
+	ctx := context.Background()
+
+	cases := []string{
+		"NUL",
+		"CON",
+		"con",         // case-insensitive
+		"NUL.txt",     // reserved with extension
+		"sub/PRN",     // reserved as a non-leaf component (per safefs design)
+		"COM1",
+		"LPT9",
+	}
+	for _, name := range cases {
+		t.Run("write_"+name, func(t *testing.T) {
+			path := filepath.Join(tmpdir, name)
+			_, err := sb.Write(ctx, WriteReq{Path: path, Content: "x"})
+			if err == nil {
+				t.Errorf("Write(%q) accepted reserved name; want rejection", name)
+			}
+		})
+	}
+
+	// Edit also gates on the reserved-name check. Seed a benign file
+	// under a benign name first so the Edit reaches the new check on
+	// targets it can actually open. The reserved-name check runs
+	// alongside symlink + policy checks at the top of Edit, so a
+	// reserved-name path is rejected before Edit even tries to open
+	// the file.
+	for _, name := range []string{"NUL", "AUX", "CON.txt"} {
+		t.Run("edit_"+name, func(t *testing.T) {
+			path := filepath.Join(tmpdir, name)
+			_, err := sb.Edit(ctx, EditReq{
+				Path:      path,
+				OldString: "x",
+				NewString: "y",
+			})
+			if err == nil {
+				t.Errorf("Edit(%q) accepted reserved name; want rejection", name)
+			}
+		})
+	}
+}
+
 func TestSandboxEditReadOnly(t *testing.T) {
 	// Use a dedicated parent dir we can also chmod read-only — Edit goes
 	// through safefs.WriteFileAtomic which writes a tempfile then rename(2)s

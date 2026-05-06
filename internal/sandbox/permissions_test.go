@@ -1570,6 +1570,68 @@ func TestExecQuotedHereStringDenied(t *testing.T) {
 	}
 }
 
+// TestExtractBaseCommandV03Normalization pins V-03: the leading directory
+// is stripped (so an operator deny rule on a base name fires regardless of
+// how the agent invoked the binary), and tab and newline join space as
+// recognized first-arg separators (bash IFS-splits on all three; the
+// matcher must too). Pre-fix, `deny:exec:sudo *` failed to match
+// `/usr/bin/sudo whoami` and `sudo\twhoami`.
+func TestExtractBaseCommandV03Normalization(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		// Leading directory variants — all reduce to the base name.
+		{"/usr/bin/sudo whoami", "sudo"},
+		{"/usr/local/bin/rm -rf /", "rm"},
+		{"./sudo whoami", "sudo"},
+		{`\sudo whoami`, "sudo"},
+		{`C:\Windows\System32\cmd.exe /c whoami`, "cmd"},
+		{"/bin/bash -c 'echo hi'", "bash"},
+		// Tab and newline separators — bash IFS recognizes them.
+		{"sudo\twhoami", "sudo"},
+		{"sudo\nwhoami", "sudo"},
+		{"/usr/bin/sudo\twhoami", "sudo"},
+		// Quoted-program absolute paths still reduce after quote strip.
+		{`"/usr/bin/sudo" whoami`, "sudo"},
+		// Trailing .exe still stripped after directory removal.
+		{`/usr/bin/sudo.exe whoami`, "sudo"},
+		// No path separator → unchanged base.
+		{"git status", "git"},
+	}
+	for _, c := range cases {
+		got := extractBaseCommand(c.in)
+		if got != c.want {
+			t.Errorf("extractBaseCommand(%q) = %q; want %q", c.in, got, c.want)
+		}
+	}
+}
+
+// TestGlobToRegexShellV03TabSeparator pins the second half of V-03:
+// a literal space in an exec rule must compile to `[ \t]+` so an agent
+// substituting a tab for the rule's space (`sudo\twhoami` against
+// `deny:exec:sudo *`) still triggers the deny rule.
+func TestGlobToRegexShellV03TabSeparator(t *testing.T) {
+	rule := Rule{Op: "exec", Text: "sudo *"}
+	rule.Compile()
+	cases := []struct {
+		in    string
+		match bool
+	}{
+		{"sudo whoami", true},
+		{"sudo\twhoami", true},
+		{"sudo\t\twhoami", true}, // multiple tabs
+		{"sudo  whoami", true},   // multiple spaces
+		{"sudoer", false},        // must not match a substring of a different binary
+		{"echo sudo", false},     // not a leading match
+	}
+	for _, c := range cases {
+		got := rule.Match("exec", c.in)
+		if got != c.match {
+			t.Errorf("Rule(%q).Match(%q) = %v; want %v", rule.Text, c.in, got, c.match)
+		}
+	}
+}
+
 // TestExtractBaseCommandStripsOuterQuotes pins the V-05 contract directly.
 func TestExtractBaseCommandStripsOuterQuotes(t *testing.T) {
 	cases := []struct {
