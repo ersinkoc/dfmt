@@ -7,7 +7,7 @@ import (
 
 func TestMCPProtocol_Handle_ToolsCall_NilHandlers(t *testing.T) {
 	// Create protocol with nil handlers
-	p := &MCPProtocol{handlers: nil}
+	p := &MCPProtocol{backend: nil}
 
 	req := &MCPRequest{
 		JSONRPC: "2.0",
@@ -36,7 +36,7 @@ func TestMCPProtocol_Handle_ToolsCall_NilHandlers(t *testing.T) {
 
 func TestMCPProtocol_Handle_ToolsCall_EmptyParams(t *testing.T) {
 	// Create protocol with nil handlers - should error on params parse
-	p := &MCPProtocol{handlers: nil}
+	p := &MCPProtocol{backend: nil}
 
 	// Empty params should still hit the nil handlers check before parsing
 	req := &MCPRequest{

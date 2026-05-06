@@ -32,8 +32,15 @@ func mcpLegacyContent() bool {
 }
 
 // MCPProtocol implements the Model Context Protocol over JSON-RPC.
+//
+// As of v0.5.0, MCPProtocol depends on the Backend interface rather
+// than *Handlers directly. Local-mode tests and legacy single-project
+// daemons pass a *Handlers (which satisfies Backend); the proxy mode
+// of `dfmt mcp` (the default in v0.5.0) passes a *client.ClientBackend
+// that forwards every call to the host-wide daemon, eliminating the
+// duplicate journal/index handles the subprocess used to open.
 type MCPProtocol struct {
-	handlers *Handlers
+	backend Backend
 
 	// sessionID identifies this MCPProtocol instance for the wire-dedup
 	// cache (ADR-0011). Generated as a ULID at construction time so each
@@ -194,9 +201,13 @@ type MCPResponse struct {
 // resolving the cwd-bound project root, so test seams that don't care
 // about per-call project routing can construct an MCPProtocol without
 // touching this field.
-func NewMCPProtocol(handlers *Handlers) *MCPProtocol {
+// NewMCPProtocol accepts any Backend; pass a *Handlers for in-process
+// dispatch (legacy daemon, unit tests) or a *client.ClientBackend for
+// the v0.5.0 proxy path. Existing callers passing a *Handlers
+// continue to compile because Handlers satisfies the interface.
+func NewMCPProtocol(backend Backend) *MCPProtocol {
 	return &MCPProtocol{
-		handlers:  handlers,
+		backend:   backend,
 		sessionID: string(core.NewULID(time.Now())),
 	}
 }
@@ -266,7 +277,7 @@ func (m *MCPProtocol) compressionStats() map[string]toolCompression {
 	}
 
 	out := map[string]toolCompression{}
-	if m.handlers == nil || m.handlers.journal == nil {
+	if m.backend == nil {
 		m.statsCache = out
 		m.statsCachedAt = time.Now()
 		return out
@@ -274,11 +285,14 @@ func (m *MCPProtocol) compressionStats() map[string]toolCompression {
 
 	// Bound the time spent here: a misbehaving Stream shouldn't wedge the
 	// MCP handshake. 2s is generous for an in-memory mock journal and the
-	// production file-backed journal at the 10 MB cap.
+	// production file-backed journal at the 10 MB cap. For the proxy
+	// backend (ClientBackend) the timeout doubles as a network-failure
+	// guard — if the daemon is slow or unreachable, tools/list still
+	// returns within budget without per-tool savings hints.
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	stream, err := m.handlers.journal.Stream(ctx, "")
+	stream, err := m.backend.StreamEvents(ctx, "")
 	if err != nil {
 		m.statsCache = out
 		m.statsCachedAt = time.Now()
@@ -701,7 +715,7 @@ func (m *MCPProtocol) handleToolsList(req *MCPRequest) (*MCPResponse, error) {
 }
 
 func (m *MCPProtocol) handleToolsCall(ctx context.Context, req *MCPRequest) (*MCPResponse, error) {
-	if m.handlers == nil {
+	if m.backend == nil {
 		return m.errorResult(req.ID, -32603, "daemon not connected")
 	}
 
@@ -746,7 +760,7 @@ func (m *MCPProtocol) handleToolsCall(ctx context.Context, req *MCPRequest) (*MC
 			return m.errorResult(req.ID, -32602, err.Error())
 		}
 		ctx = WithProjectID(ctx, m.effectiveProjectID(args.ProjectID))
-		result, err := m.handlers.Exec(ctx, args)
+		result, err := m.backend.Exec(ctx, args)
 		if err != nil {
 			return m.errorResult(req.ID, -32603, err.Error())
 		}
@@ -762,7 +776,7 @@ func (m *MCPProtocol) handleToolsCall(ctx context.Context, req *MCPRequest) (*MC
 			return m.errorResult(req.ID, -32602, err.Error())
 		}
 		ctx = WithProjectID(ctx, m.effectiveProjectID(args.ProjectID))
-		result, err := m.handlers.Read(ctx, args)
+		result, err := m.backend.Read(ctx, args)
 		if err != nil {
 			return m.errorResult(req.ID, -32603, err.Error())
 		}
@@ -778,7 +792,7 @@ func (m *MCPProtocol) handleToolsCall(ctx context.Context, req *MCPRequest) (*MC
 			return m.errorResult(req.ID, -32602, err.Error())
 		}
 		ctx = WithProjectID(ctx, m.effectiveProjectID(args.ProjectID))
-		result, err := m.handlers.Fetch(ctx, args)
+		result, err := m.backend.Fetch(ctx, args)
 		if err != nil {
 			return m.errorResult(req.ID, -32603, err.Error())
 		}
@@ -794,7 +808,7 @@ func (m *MCPProtocol) handleToolsCall(ctx context.Context, req *MCPRequest) (*MC
 			return m.errorResult(req.ID, -32602, err.Error())
 		}
 		ctx = WithProjectID(ctx, m.effectiveProjectID(args.ProjectID))
-		result, err := m.handlers.Remember(ctx, args)
+		result, err := m.backend.Remember(ctx, args)
 		if err != nil {
 			return m.errorResult(req.ID, -32603, err.Error())
 		}
@@ -818,7 +832,7 @@ func (m *MCPProtocol) handleToolsCall(ctx context.Context, req *MCPRequest) (*MC
 			}
 		}
 		ctx = WithProjectID(ctx, m.effectiveProjectID(args.ProjectID))
-		result, err := m.handlers.Stats(ctx, args)
+		result, err := m.backend.Stats(ctx, args)
 		if err != nil {
 			return m.errorResult(req.ID, -32603, err.Error())
 		}
@@ -834,7 +848,7 @@ func (m *MCPProtocol) handleToolsCall(ctx context.Context, req *MCPRequest) (*MC
 			return m.errorResult(req.ID, -32602, err.Error())
 		}
 		ctx = WithProjectID(ctx, m.effectiveProjectID(args.ProjectID))
-		result, err := m.handlers.Search(ctx, args)
+		result, err := m.backend.Search(ctx, args)
 		if err != nil {
 			return m.errorResult(req.ID, -32603, err.Error())
 		}
@@ -850,7 +864,7 @@ func (m *MCPProtocol) handleToolsCall(ctx context.Context, req *MCPRequest) (*MC
 			return m.errorResult(req.ID, -32602, err.Error())
 		}
 		ctx = WithProjectID(ctx, m.effectiveProjectID(args.ProjectID))
-		result, err := m.handlers.Recall(ctx, args)
+		result, err := m.backend.Recall(ctx, args)
 		if err != nil {
 			return m.errorResult(req.ID, -32603, err.Error())
 		}
@@ -866,7 +880,7 @@ func (m *MCPProtocol) handleToolsCall(ctx context.Context, req *MCPRequest) (*MC
 			return m.errorResult(req.ID, -32602, err.Error())
 		}
 		ctx = WithProjectID(ctx, m.effectiveProjectID(args.ProjectID))
-		result, err := m.handlers.Glob(ctx, args)
+		result, err := m.backend.Glob(ctx, args)
 		if err != nil {
 			return m.errorResult(req.ID, -32603, err.Error())
 		}
@@ -882,7 +896,7 @@ func (m *MCPProtocol) handleToolsCall(ctx context.Context, req *MCPRequest) (*MC
 			return m.errorResult(req.ID, -32602, err.Error())
 		}
 		ctx = WithProjectID(ctx, m.effectiveProjectID(args.ProjectID))
-		result, err := m.handlers.Grep(ctx, args)
+		result, err := m.backend.Grep(ctx, args)
 		if err != nil {
 			return m.errorResult(req.ID, -32603, err.Error())
 		}
@@ -898,7 +912,7 @@ func (m *MCPProtocol) handleToolsCall(ctx context.Context, req *MCPRequest) (*MC
 			return m.errorResult(req.ID, -32602, err.Error())
 		}
 		ctx = WithProjectID(ctx, m.effectiveProjectID(args.ProjectID))
-		result, err := m.handlers.Edit(ctx, args)
+		result, err := m.backend.Edit(ctx, args)
 		if err != nil {
 			return m.errorResult(req.ID, -32603, err.Error())
 		}
@@ -914,7 +928,7 @@ func (m *MCPProtocol) handleToolsCall(ctx context.Context, req *MCPRequest) (*MC
 			return m.errorResult(req.ID, -32602, err.Error())
 		}
 		ctx = WithProjectID(ctx, m.effectiveProjectID(args.ProjectID))
-		result, err := m.handlers.Write(ctx, args)
+		result, err := m.backend.Write(ctx, args)
 		if err != nil {
 			return m.errorResult(req.ID, -32603, err.Error())
 		}
