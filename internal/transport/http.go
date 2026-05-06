@@ -252,9 +252,20 @@ func (s *HTTPServer) Start(ctx context.Context) error {
 // send `Host: attacker.com` after the rebind), and sets minimal security
 // response headers. Health endpoints bypass the origin/host checks so
 // readiness probes work.
+//
+// V-I1: extend the default response headers (CSP + X-Frame-Options +
+// nosniff) to every non-health endpoint, not just /dashboard. Pre-fix,
+// /api/* and /metrics responses inherited only nosniff. The defaults
+// here are intentionally strict because most endpoints (JSON APIs,
+// metrics text) reference no external resources and embed no markup —
+// the dashboard handler overrides CSP with its own less-restrictive
+// 'self' policy via a later w.Header().Set call.
 func (s *HTTPServer) wrapSecurity(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("Content-Security-Policy",
+			"default-src 'none'; frame-ancestors 'none'; base-uri 'none'")
 
 		if r.URL.Path == "/healthz" || r.URL.Path == "/readyz" {
 			next.ServeHTTP(w, r)
@@ -1075,28 +1086,40 @@ func (s *HTTPServer) handleAPIProxy(w http.ResponseWriter, r *http.Request) {
 		defer conn.Close()
 
 		// Write request directly to socket
-		_, err = conn.Write(body)
-		if err != nil {
+		if _, werr := conn.Write(body); werr != nil {
 			_ = json.NewEncoder(w).Encode(Response{
 				JSONRPC: jsonRPCVersion,
-				Error:   &RPCError{Code: -32603, Message: "could not send request: " + err.Error()},
+				Error:   &RPCError{Code: -32603, Message: "could not send request: " + werr.Error()},
 				ID:      nil,
 			})
 			return
 		}
 
-		// Read response
-		respBuf := make([]byte, 16<<20) // 16 MB like maxRPCResponseBytes
-		n, err := conn.Read(respBuf)
-		if err != nil && err != io.EOF {
+		// V-21: read with an io.LimitReader cap rather than a fixed-size
+		// buffer + single Read. The prior `conn.Read(respBuf)` could
+		// return short on a multi-packet response (the socket protocol
+		// is stream-oriented, not message-oriented), and the 16 MiB
+		// buffer was allocated up-front regardless of actual response
+		// size. ReadAll-with-cap allocates only what's needed and
+		// surfaces oversized responses as an explicit error rather
+		// than silent truncation.
+		respBytes, rerr := io.ReadAll(io.LimitReader(conn, 16<<20))
+		if rerr != nil && rerr != io.EOF {
 			_ = json.NewEncoder(w).Encode(Response{
 				JSONRPC: jsonRPCVersion,
-				Error:   &RPCError{Code: -32603, Message: "could not read response: " + err.Error()},
+				Error:   &RPCError{Code: -32603, Message: "could not read response: " + rerr.Error()},
 				ID:      nil,
 			})
 			return
 		}
-		_, err = w.Write(respBuf[:n])
+		// V-21: do NOT shadow the outer err with the Write result; the
+		// pre-fix code did so and then returned without checking, masking
+		// the failure. Log a write error directly — the response has
+		// already been committed so we can't switch to a JSON-RPC error
+		// at this point.
+		if _, werr := w.Write(respBytes); werr != nil {
+			logging.Warnf("api/proxy unix-branch write failed: %v", werr)
+		}
 		return
 	}
 
