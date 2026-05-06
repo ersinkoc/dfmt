@@ -471,7 +471,38 @@ func NewGlobal(cfg *config.Config) (*Daemon, error) {
 		}, nil
 	})
 
+	// Install the project lister so the dashboard can populate its
+	// cross-project switcher from the daemon's in-process cache rather
+	// than the on-disk registry (which only knows about per-project
+	// legacy daemons). LoadedProjects() returns defaultProjectPath
+	// (when set) plus the keys of extraProjects under projectsMu.
+	handlers.SetProjectsLister(d.LoadedProjects)
+
 	return d, nil
+}
+
+// LoadedProjects returns every project path the daemon currently has
+// resources cached for. The default (single-project) project — if any
+// — is included alongside the keys of extraProjects. The result is a
+// fresh slice safe for the caller to iterate or sort without holding
+// the daemon's lock.
+func (d *Daemon) LoadedProjects() []string {
+	d.projectsMu.RLock()
+	defer d.projectsMu.RUnlock()
+	out := make([]string, 0, len(d.extraProjects)+1)
+	if d.projectPath != "" {
+		out = append(out, d.projectPath)
+	}
+	for path := range d.extraProjects {
+		// Skip if the alias path was also recorded as default; the
+		// global daemon defaults projectPath to "" so this never fires
+		// in practice, but legacy single-project daemons that load
+		// their own path into extraProjects benefit from the dedup.
+		if path != d.projectPath {
+			out = append(out, path)
+		}
+	}
+	return out
 }
 
 // Start starts the daemon with panic recovery. The whole start sequence is

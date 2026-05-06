@@ -211,13 +211,21 @@ async function loadDaemons() {
 async function loadStatsForProject(projectPath) {
   showLoading();
   try {
-    var resp = await fetch('/api/proxy', {
+    // Phase 2: the host-wide daemon serves every project from one
+    // process, so we just POST /api/stats with project_id stamped
+    // in params and let the daemon route to the right cache. The
+    // older /api/proxy path (registry-lookup + cross-daemon HTTP
+    // forward) is preserved on the daemon side for v0.3.x straddle
+    // setups but the dashboard no longer needs it for the common
+    // global-mode flow.
+    var resp = await fetch('/api/stats', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({
-        target_project_path: projectPath,
+        jsonrpc: '2.0',
         method: 'dfmt.stats',
-        params: {no_cache: true}
+        params: {project_id: projectPath, no_cache: true},
+        id: 1
       })
     });
     var data = await resp.json();

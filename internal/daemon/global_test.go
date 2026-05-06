@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -153,4 +154,82 @@ func TestNewGlobalSecondInstanceFailsLockAcquisition(t *testing.T) {
 		defer cancel()
 		_ = d2.Stop(stopCtx)
 	}
+}
+
+// TestLoadedProjectsReflectsCacheState pins the dashboard's
+// cross-project visibility contract: every project the daemon's
+// resource cache has loaded should appear in LoadedProjects(), and
+// projects that were never touched should not. The dashboard switcher
+// reads this via Handlers.LoadedProjects() in handleAPIAllDaemons.
+//
+// Path comparison goes through samePath because Resources()
+// canonicalizes incoming project IDs (lowercase on Windows / abs on
+// Unix), so the strings the daemon hands back may differ from what
+// t.TempDir() produced even when they point at the same directory.
+func TestLoadedProjectsReflectsCacheState(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("DFMT_GLOBAL_DIR", tmp)
+
+	cfg := newTestConfig()
+	d, err := NewGlobal(cfg)
+	if err != nil {
+		t.Fatalf("NewGlobal: %v", err)
+	}
+	t.Cleanup(func() {
+		// Close cached journals so t.TempDir's RemoveAll doesn't
+		// trip over an open .dfmt/journal.jsonl on Windows.
+		d.closeExtraProjects()
+	})
+
+	if got := d.LoadedProjects(); len(got) != 0 {
+		t.Errorf("fresh daemon LoadedProjects = %v, want empty", got)
+	}
+
+	projA := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(projA, ".dfmt"), 0o700); err != nil {
+		t.Fatalf("seed projA: %v", err)
+	}
+	if _, err := d.Resources(projA); err != nil {
+		t.Fatalf("Resources(projA): %v", err)
+	}
+
+	got := d.LoadedProjects()
+	if len(got) != 1 || !samePathTest(got[0], projA) {
+		t.Errorf("after touching projA, LoadedProjects = %v, want one entry matching %s", got, projA)
+	}
+
+	projB := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(projB, ".dfmt"), 0o700); err != nil {
+		t.Fatalf("seed projB: %v", err)
+	}
+	if _, err := d.Resources(projB); err != nil {
+		t.Fatalf("Resources(projB): %v", err)
+	}
+
+	got = d.LoadedProjects()
+	if len(got) != 2 {
+		t.Errorf("after touching projB, LoadedProjects len = %d, want 2: %v", len(got), got)
+	}
+	haveA, haveB := false, false
+	for _, p := range got {
+		if samePathTest(p, projA) {
+			haveA = true
+		}
+		if samePathTest(p, projB) {
+			haveB = true
+		}
+	}
+	if !haveA || !haveB {
+		t.Errorf("LoadedProjects missing one of {projA=%s, projB=%s}: %v", projA, projB, got)
+	}
+}
+
+// samePathTest is the test-local case-insensitive-on-Windows
+// equality comparison; cli.samePathCLI does the same job in
+// production but lives in a different import graph.
+func samePathTest(a, b string) bool {
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(a, b)
+	}
+	return a == b
 }

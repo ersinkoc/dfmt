@@ -53,6 +53,13 @@ type Handlers struct {
 	// once at startup via SetResourceFetcher.
 	fetchResources ResourceFetcher
 
+	// listProjects, when non-nil, returns the set of project paths the
+	// host daemon currently has resources cached for. The dashboard's
+	// project switcher reads this; legacy single-project daemons leave
+	// it nil and the dashboard falls back to the on-disk daemon
+	// registry. Set once at startup via SetProjectsLister.
+	listProjects ProjectsLister
+
 	// dedupMu guards the short-lived stash dedup cache. Kept separate from
 	// h.mu because stashContent runs on the hot path of every Exec/Read/
 	// Fetch and must not contend with project/redactor setters.
@@ -381,6 +388,43 @@ func (h *Handlers) SetResourceFetcher(f ResourceFetcher) {
 	h.mu.Lock()
 	h.fetchResources = f
 	h.mu.Unlock()
+}
+
+// ProjectsLister returns the set of project paths the host daemon
+// currently has resources cached for. Phase 2: the dashboard's
+// project switcher reads this via handleAPIAllDaemons so the user
+// can hop between every project that has touched the global daemon
+// in the current session, even ones with no per-process registry
+// row of their own.
+//
+// Returning nil or an empty slice is interpreted as "no projects
+// loaded" — the dashboard then surfaces only legacy registry rows
+// (back-compat for v0.3.x daemons still running side-by-side).
+type ProjectsLister func() []string
+
+// SetProjectsLister installs a lister that surfaces the daemon's
+// loaded project paths to the dashboard. Same setter discipline as
+// SetResourceFetcher (set once at daemon startup, mu-guarded so an
+// in-flight RPC never sees a torn pointer).
+func (h *Handlers) SetProjectsLister(f ProjectsLister) {
+	h.mu.Lock()
+	h.listProjects = f
+	h.mu.Unlock()
+}
+
+// LoadedProjects returns the project paths the lister knows about,
+// or nil when no lister is installed. HTTP handlers use this to
+// populate the cross-project dashboard view; tests and the legacy
+// single-project daemon path leave the lister nil and continue
+// reading the on-disk registry.
+func (h *Handlers) LoadedProjects() []string {
+	h.mu.RLock()
+	f := h.listProjects
+	h.mu.RUnlock()
+	if f == nil {
+		return nil
+	}
+	return f()
 }
 
 // resolveBundle returns the resource Bundle a handler method should

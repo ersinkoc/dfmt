@@ -897,10 +897,14 @@ func (s *HTTPServer) handleAPIDaemons(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handleAPIAllDaemons returns the full daemon registry without project filtering.
-// This is used by the dashboard to populate the project switcher dropdown.
-// Unlike handleAPIDaemons (which filters to only the current project), this returns
-// all registered daemons so users can switch between projects.
+// handleAPIAllDaemons returns the projects the dashboard switcher
+// should expose. Phase 2: when the host daemon installs a
+// ProjectsLister (global mode), we return one row per loaded project
+// — every project is served by THIS process, so pid/port are the
+// daemon's own. The legacy registry file is consulted only when no
+// lister is installed (per-project daemons coexisting on the host)
+// so v0.3.x → v0.4.x straddle setups keep showing every running
+// daemon in the picker.
 func (s *HTTPServer) handleAPIAllDaemons(w http.ResponseWriter, r *http.Request) {
 	defer func() {
 		if rec := recover(); rec != nil {
@@ -914,7 +918,34 @@ func (s *HTTPServer) handleAPIAllDaemons(w http.ResponseWriter, r *http.Request)
 	}
 	w.Header().Set("Content-Type", "application/json")
 
-	// Read registry file directly (same as handleAPIDaemons)
+	// Global daemon path: enumerate in-process loaded projects.
+	if s.handlers != nil {
+		if projects := s.handlers.LoadedProjects(); projects != nil {
+			rows := make([]map[string]any, 0, len(projects))
+			now := time.Now()
+			pid := os.Getpid()
+			for _, p := range projects {
+				rows = append(rows, map[string]any{
+					"project_path": p,
+					"pid":          pid,
+					// last_seen / started_at are placeholders — the
+					// daemon owns them at the process level. Per-project
+					// timestamps would require plumbing
+					// ProjectResources.LastActivityNs through the lister;
+					// deferred until a metric on the dashboard actually
+					// needs the granularity.
+					"last_seen":  now.Format(time.RFC3339),
+					"started_at": now.Format(time.RFC3339),
+				})
+			}
+			if err := json.NewEncoder(w).Encode(rows); err != nil {
+				fmt.Fprintf(os.Stderr, "encode all daemons: %v\n", err)
+			}
+			return
+		}
+	}
+
+	// Legacy fallback: read the daemon registry file.
 	home, _ := os.UserHomeDir()
 	if home == "" {
 		home = os.TempDir()
