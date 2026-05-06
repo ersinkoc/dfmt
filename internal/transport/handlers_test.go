@@ -330,6 +330,7 @@ func TestCodecWriteError(t *testing.T) {
 }
 
 type mockJournal struct {
+	mu           sync.Mutex
 	events       []core.Event
 	failRemember bool
 	failSearch   bool
@@ -340,7 +341,9 @@ func (m *mockJournal) Append(ctx context.Context, e core.Event) error {
 	if m.failRemember {
 		return fmt.Errorf("mock remember failure")
 	}
+	m.mu.Lock()
 	m.events = append(m.events, e)
+	m.mu.Unlock()
 	return nil
 }
 
@@ -348,8 +351,24 @@ func (m *mockJournal) Stream(ctx context.Context, from string) (<-chan core.Even
 	if m.failSearch || m.failRecall {
 		return nil, fmt.Errorf("mock stream failure")
 	}
-	ch := make(chan core.Event, len(m.events))
-	for _, e := range m.events {
+	// Snapshot under the lock so a concurrent Append (e.g. the live-tail
+	// SSE test) cannot mutate the slice mid-iteration.
+	m.mu.Lock()
+	snap := make([]core.Event, len(m.events))
+	copy(snap, m.events)
+	m.mu.Unlock()
+	// Honor `from`: production journalImpl.Stream skips past the matching
+	// ID and emits everything after. Without this the live-tail tail
+	// logic would replay historical events on every poll tick.
+	ch := make(chan core.Event, len(snap))
+	emitted := from == ""
+	for _, e := range snap {
+		if !emitted {
+			if e.ID == from {
+				emitted = true
+			}
+			continue
+		}
 		ch <- e
 	}
 	close(ch)

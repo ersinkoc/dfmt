@@ -58,6 +58,8 @@ const DashboardHTML = `<!DOCTYPE html>
 <div class="session-row"><span>Session Start</span><span id="session-start">-</span></div>
 <div class="session-row"><span>Session End</span><span id="session-end">-</span></div>
 </div>
+<h2>Live Events</h2>
+<div class="event-log" id="eventLog"><div class="event-log-empty">Waiting for events...</div></div>
 </div>
 </div>
 <script src="/dashboard.js"></script>
@@ -100,6 +102,17 @@ select:focus { outline: none; border-color: #00d4ff; }
 .daemon-badge { background: #00ff88; color: #1a1a2e; padding: 4px 8px; border-radius: 4px; font-size: 0.75rem; font-weight: bold; }
 .daemon-badge.dead { background: #ff4444; color: white; }
 .hidden { display: none; }
+.event-log { background: #16213e; border: 1px solid #0f3460; border-radius: 6px; padding: 10px; max-height: 280px; overflow-y: auto; font-family: 'SF Mono', Monaco, Menlo, Consolas, monospace; font-size: 0.78rem; }
+.event-log-empty { color: #666; font-style: italic; padding: 6px; }
+.event-log-row { padding: 4px 6px; border-bottom: 1px solid #0f3460; line-height: 1.5; }
+.event-log-row:last-child { border-bottom: none; }
+.event-log-ts { color: #888; }
+.event-log-type { color: #00d4ff; margin-left: 8px; font-weight: 600; }
+.event-log-prio-p1 { color: #ff6b6b; }
+.event-log-prio-p2 { color: #ffd93d; }
+.event-log-prio-p3 { color: #6bcf7f; }
+.event-log-prio-p4 { color: #888; }
+.event-log-msg { color: #ccc; margin-left: 8px; }
 `
 
 // DashboardJS is the dashboard's JavaScript, served at /dashboard.js so CSP
@@ -294,6 +307,103 @@ async function loadStats() {
   }
 }
 
+// Live event log via /api/stream SSE. Pre-v0.5.0 the endpoint was
+// one-shot playback (closed at HEAD); v0.5.0 added a polling tail
+// loop server-side, so this client subscription stays open and
+// receives events in near-real-time. closeEventLog cleanly tears
+// down the prior EventSource when the user switches projects so the
+// dashboard never accumulates orphan SSE connections.
+var eventLogES = null;
+var EVENT_LOG_MAX_ROWS = 100;
+
+function closeEventLog() {
+  if (eventLogES) {
+    try { eventLogES.close(); } catch (_) {}
+    eventLogES = null;
+  }
+}
+
+function escapeText(s) {
+  // Plain text helper — never inject HTML. The dashboard's CSP forbids
+  // inline scripts but a leaked <script> tag in event data could still
+  // confuse a future maintainer reading the DOM.
+  if (s == null) return '';
+  return String(s);
+}
+
+function appendEventRow(e) {
+  var log = document.getElementById('eventLog');
+  if (!log) return;
+  // Drop the placeholder once the first event arrives.
+  var empty = log.querySelector('.event-log-empty');
+  if (empty) empty.remove();
+
+  var row = document.createElement('div');
+  row.className = 'event-log-row';
+
+  var ts = document.createElement('span');
+  ts.className = 'event-log-ts';
+  var d = e.ts ? new Date(e.ts) : new Date();
+  ts.textContent = d.toLocaleTimeString();
+  row.appendChild(ts);
+
+  var type = document.createElement('span');
+  type.className = 'event-log-type event-log-prio-' + escapeText(e.priority || 'p4');
+  type.textContent = escapeText(e.type || '');
+  row.appendChild(type);
+
+  // Surface a one-line summary from common fields. Code/path/url cover
+  // exec/read/fetch; tags cover remember/note. Truncate so a long line
+  // doesn't blow out the log row width.
+  var msgText = '';
+  if (e.data) {
+    msgText = e.data.code || e.data.path || e.data.url || '';
+  }
+  if (!msgText && Array.isArray(e.tags) && e.tags.length > 0) {
+    msgText = e.tags.join(' ');
+  }
+  if (msgText) {
+    var msg = document.createElement('span');
+    msg.className = 'event-log-msg';
+    msg.textContent = ' ' + (msgText.length > 80 ? msgText.slice(0, 77) + '...' : msgText);
+    row.appendChild(msg);
+  }
+
+  // Append-bottom + auto-scroll matches a streaming log feel. Cap row
+  // count so a long-running session doesn't grow the DOM unboundedly.
+  log.appendChild(row);
+  while (log.childElementCount > EVENT_LOG_MAX_ROWS) {
+    log.removeChild(log.firstChild);
+  }
+  log.scrollTop = log.scrollHeight;
+}
+
+function openEventLog(projectPath) {
+  closeEventLog();
+  if (!projectPath) return;
+  var url = '/api/stream?follow=true&project_id=' + encodeURIComponent(projectPath);
+  try {
+    eventLogES = new EventSource(url);
+  } catch (err) {
+    console.error('EventSource construction failed:', err);
+    return;
+  }
+  eventLogES.onmessage = function(ev) {
+    try {
+      var e = JSON.parse(ev.data);
+      appendEventRow(e);
+    } catch (err) {
+      console.error('SSE parse error:', err);
+    }
+  };
+  eventLogES.onerror = function() {
+    // Browsers retry EventSource automatically; we just log and rely
+    // on the built-in retry. If the server is down for good, the user
+    // will notice via the stats card going stale.
+    console.warn('SSE connection error (will retry)');
+  };
+}
+
 function refreshCurrentView() {
   // Refresh button must respect the project selector. Pre-Phase-2 the
   // dashboard had a single daemon view so loadStats() was unambiguous;
@@ -323,6 +433,9 @@ async function init() {
     var selected = projectSelect.value;
     if (selected) {
       loadStatsForProject(selected);
+      openEventLog(selected);
+    } else {
+      closeEventLog();
     }
   });
   // Resolve which project to load before kicking off the first stats
@@ -335,6 +448,7 @@ async function init() {
   if (firstProject) {
     projectSelect.value = firstProject;
     loadStatsForProject(firstProject);
+    openEventLog(firstProject);
   } else {
     loadStats();
   }

@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ersinkoc/dfmt/internal/core"
 	"github.com/ersinkoc/dfmt/internal/sandbox"
@@ -434,7 +435,13 @@ func TestHTTPHandleAPIStream_OK(t *testing.T) {
 	handlers := NewHandlers(idx, mj, nil)
 	hs := NewHTTPServer("127.0.0.1:0", handlers)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/stream", nil)
+	// One-shot replay path (no `follow=true`): handler returns when
+	// journal HEAD is reached. ctx timeout is a backstop in case the
+	// loop ever regresses; under normal behavior the replay finishes
+	// in microseconds against the in-memory mockJournal.
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	defer cancel()
+	req := httptest.NewRequest(http.MethodGet, "/api/stream", nil).WithContext(ctx)
 	rec := httptest.NewRecorder()
 
 	hs.handleAPIStream(rec, req)
@@ -450,6 +457,74 @@ func TestHTTPHandleAPIStream_OK(t *testing.T) {
 	if !strings.Contains(body, "data: ") {
 		t.Error("expected SSE data: lines")
 	}
+}
+
+// TestHTTPHandleAPIStream_LiveTail proves the v0.5.0 polling loop
+// catches events appended AFTER the initial replay drains. The test
+// runs the SSE handler in a goroutine, lets the historical replay
+// finish, appends a new event to the mock journal, and waits for the
+// SSE body to contain it. Without the tail loop the connection would
+// have closed at HEAD and the new event would be invisible.
+func TestHTTPHandleAPIStream_LiveTail(t *testing.T) {
+	prev := streamLivePollInterval
+	streamLivePollInterval = 20 * time.Millisecond
+	t.Cleanup(func() { streamLivePollInterval = prev })
+
+	mj := &mockJournal{
+		events: []core.Event{
+			{ID: "01HISTORIC", TS: core.Now(), Type: "tool.exec", Priority: "p1"},
+		},
+	}
+	idx := core.NewIndex()
+	handlers := NewHandlers(idx, mj, nil)
+	hs := NewHTTPServer("127.0.0.1:0", handlers)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	defer cancel()
+	req := httptest.NewRequest(http.MethodGet, "/api/stream?follow=true", nil).WithContext(ctx)
+	rec := httptest.NewRecorder()
+
+	done := make(chan struct{})
+	go func() {
+		hs.handleAPIStream(rec, req)
+		close(done)
+	}()
+
+	// Wait for the historical replay to land in the recorder body.
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if strings.Contains(rec.Body.String(), "01HISTORIC") {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// Append a new event *after* the replay. The poll loop should see
+	// it within streamLivePollInterval and forward it to the SSE body.
+	mj.mu.Lock()
+	mj.events = append(mj.events, core.Event{
+		ID:       "01LIVETAIL_XPLT9",
+		TS:       core.Now(),
+		Type:     core.EvtNote,
+		Priority: "p3",
+	})
+	mj.mu.Unlock()
+
+	deadline = time.Now().Add(500 * time.Millisecond)
+	saw := false
+	for time.Now().Before(deadline) {
+		if strings.Contains(rec.Body.String(), "01LIVETAIL_XPLT9") {
+			saw = true
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !saw {
+		t.Errorf("live tail did not surface post-replay event; SSE body=%q",
+			rec.Body.String())
+	}
+	cancel()
+	<-done
 }
 
 func TestHTTPHandleAPIStream_MethodNotAllowed(t *testing.T) {

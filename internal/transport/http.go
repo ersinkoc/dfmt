@@ -1248,6 +1248,12 @@ func (s *HTTPServer) handleAPIStream(w http.ResponseWriter, r *http.Request) {
 
 	from := r.URL.Query().Get("from")
 	projectID := r.URL.Query().Get("project_id")
+	// follow=true switches the endpoint from one-shot replay (pre-v0.5.0
+	// contract — used by `dfmt tail` and ClientBackend.StreamEvents) to
+	// live polling tail (used by the dashboard SSE). Without the flag
+	// the handler returns when journal HEAD is reached, which is what
+	// every non-dashboard caller still expects.
+	follow := r.URL.Query().Get("follow") == "true"
 
 	// SSE requires flushing after each event. Use a FlushCapture wrapper.
 	flusher, ok := w.(http.Flusher)
@@ -1265,40 +1271,99 @@ func (s *HTTPServer) handleAPIStream(w http.ResponseWriter, r *http.Request) {
 	flusher.Flush()
 
 	ctx := WithProjectID(r.Context(), projectID)
+
+	// v0.5.0: live tail. Phase A streams the historical events from
+	// `from` to journal HEAD. Phase B polls every streamLivePollInterval
+	// for events appended after the last cursor — same code path as
+	// the per-project index-tail goroutine in the daemon, just routed
+	// to the SSE client instead of the in-memory index. Without this
+	// polling loop the dashboard's live event view shipped a pure
+	// playback (closed the connection at HEAD) and the only way to see
+	// new events was a manual reload.
+	//
+	// ADR-0004 stdlib-only: polling instead of fsnotify. A single
+	// dashboard tab is the common case, so the cost (one Stream call
+	// per tick per connected SSE client) is negligible. Revisit if
+	// per-project Prometheus metrics show >10 sustained SSE clients.
+	lastID := from
+	sendEvent := func(e core.Event) bool {
+		data, merr := json.Marshal(e)
+		if merr != nil {
+			fmt.Fprintf(w, ": marshal error: %v\n\n", merr)
+			flusher.Flush()
+			return true // keep going; bad event != fatal
+		}
+		if _, werr := fmt.Fprintf(w, "data: %s\n\n", data); werr != nil {
+			return false // client disconnected
+		}
+		flusher.Flush()
+		lastID = e.ID
+		return true
+	}
+
+	// Phase A — historical replay. Stream("from") returns a channel
+	// that closes once journal HEAD is reached, mirroring the v0.4.x
+	// behavior. Drains under ctx so the client can disconnect mid-replay
+	// without leaving the goroutine running.
 	stream, err := s.handlers.Stream(ctx, StreamParams{From: from, ProjectID: projectID})
 	if err != nil {
-		// Channel not established yet — send error as SSE comment and close.
 		fmt.Fprintf(w, ": stream error: %v\n\n", err)
 		flusher.Flush()
 		return
 	}
-
-	_ = json.NewEncoder(w)
 	for {
 		select {
 		case e, ok := <-stream:
 			if !ok {
-				// Channel closed cleanly.
+				if follow {
+					goto liveTail
+				}
 				return
 			}
-			data, merr := json.Marshal(e)
-			if merr != nil {
-				fmt.Fprintf(w, ": marshal error: %v\n\n", merr)
-				flusher.Flush()
-				continue
-			}
-			_, werr := fmt.Fprintf(w, "data: %s\n\n", data)
-			if werr != nil {
-				// Client disconnected.
+			if !sendEvent(e) {
 				return
 			}
-			flusher.Flush()
 		case <-ctx.Done():
-			// Client disconnected or context canceled.
 			return
 		}
 	}
+
+liveTail:
+	// Phase B — live polling. Tick every streamLivePollInterval, ask
+	// for events strictly after lastID, forward each. Empty ticks (no
+	// new events) cost one Stream call which short-circuits at the
+	// scanner-loop's first iteration since `from` is past EOF.
+	ticker := time.NewTicker(streamLivePollInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			pollStream, perr := s.handlers.Stream(ctx, StreamParams{From: lastID, ProjectID: projectID})
+			if perr != nil {
+				fmt.Fprintf(w, ": stream error: %v\n\n", perr)
+				flusher.Flush()
+				continue
+			}
+			for e := range pollStream {
+				if !sendEvent(e) {
+					return
+				}
+			}
+		}
+	}
 }
+
+// streamLivePollInterval is how often handleAPIStream polls for new
+// events after the historical replay drains. 2 s keeps the dashboard
+// real-time view feeling current without imposing measurable load
+// when no events arrive (Stream's `from` cursor short-circuits past
+// the last-known event ID).
+//
+// var (not const) so tests can compress the tick to milliseconds.
+// Production callers never mutate it.
+var streamLivePollInterval = 2 * time.Second
 
 func (s *HTTPServer) handleExec(ctx context.Context, req Request) Response {
 	var params ExecParams
