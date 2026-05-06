@@ -11,6 +11,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	neturl "net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -546,8 +547,16 @@ func (c *Client) Recall(ctx context.Context, params transport.RecallParams) (*tr
 func (c *Client) StreamEvents(ctx context.Context, from string) (<-chan core.Event, error) {
 	var url string
 	client := &http.Client{Timeout: 0} // No timeout for streaming.
+	// Phase 2: append project_id so the global daemon (which has no
+	// default project) can route the stream to the right per-project
+	// journal. Empty when c.projectID isn't set; daemon-side falls
+	// back to its legacy default project pin in that case.
+	pidQuery := ""
+	if c.projectID != "" {
+		pidQuery = "&project_id=" + neturl.QueryEscape(c.projectID)
+	}
 	if c.network == netUnix {
-		url = "http://unix/api/stream?from=" + from
+		url = "http://unix/api/stream?from=" + neturl.QueryEscape(from) + pidQuery
 		client.Transport = &http.Transport{
 			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 				d := net.Dialer{Timeout: c.timeout}
@@ -555,7 +564,7 @@ func (c *Client) StreamEvents(ctx context.Context, from string) (<-chan core.Eve
 			},
 		}
 	} else {
-		url = fmt.Sprintf("http://%s/api/stream?from=%s", c.address, from)
+		url = fmt.Sprintf("http://%s/api/stream?from=%s%s", c.address, neturl.QueryEscape(from), pidQuery)
 	}
 
 	req, err := http.NewRequest(http.MethodGet, url, nil)

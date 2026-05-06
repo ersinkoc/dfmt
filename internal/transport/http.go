@@ -1219,8 +1219,14 @@ func (s *HTTPServer) handleAPIProxy(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleAPIStream streams journal events via SSE (Server-Sent Events).
-// GET /api/stream?from=<cursor>
+// GET /api/stream?from=<cursor>&project_id=<path>
 // Each event is sent as: data: <json>\n\n
+//
+// Phase 2: project_id is read from the query string and pushed into
+// the request context so resolveBundle routes to the right per-
+// project journal. Without it the global daemon (no defaultProject)
+// would error every stream request with `project_id required` and
+// the dashboard's live view would be permanently broken.
 func (s *HTTPServer) handleAPIStream(w http.ResponseWriter, r *http.Request) {
 	defer func() {
 		if rec := recover(); rec != nil {
@@ -1241,6 +1247,7 @@ func (s *HTTPServer) handleAPIStream(w http.ResponseWriter, r *http.Request) {
 	}
 
 	from := r.URL.Query().Get("from")
+	projectID := r.URL.Query().Get("project_id")
 
 	// SSE requires flushing after each event. Use a FlushCapture wrapper.
 	flusher, ok := w.(http.Flusher)
@@ -1257,8 +1264,8 @@ func (s *HTTPServer) handleAPIStream(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	flusher.Flush()
 
-	ctx := r.Context()
-	stream, err := s.handlers.Stream(ctx, StreamParams{From: from})
+	ctx := WithProjectID(r.Context(), projectID)
+	stream, err := s.handlers.Stream(ctx, StreamParams{From: from, ProjectID: projectID})
 	if err != nil {
 		// Channel not established yet — send error as SSE comment and close.
 		fmt.Fprintf(w, ": stream error: %v\n\n", err)
