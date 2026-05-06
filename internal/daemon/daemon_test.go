@@ -407,6 +407,13 @@ func TestStartIdleMonitorZeroDuration(t *testing.T) {
 }
 
 func TestRegister(t *testing.T) {
+	// Pin DFMT_GLOBAL_DIR so the registry write lands in a sandbox
+	// directory rather than the developer's real ~/.dfmt/daemons.json.
+	// Pre-fix this test left a stale row pointing at a t.TempDir()
+	// path on every CI / local run, polluting the host registry
+	// indefinitely.
+	t.Setenv("DFMT_GLOBAL_DIR", t.TempDir())
+
 	tmpDir := t.TempDir()
 	dfmtDir := filepath.Join(tmpDir, ".dfmt")
 	os.MkdirAll(dfmtDir, 0755)
@@ -418,16 +425,22 @@ func TestRegister(t *testing.T) {
 		t.Fatalf("New failed: %v", err)
 	}
 
-	// register() is a no-op, just verify it doesn't panic
 	d.register()
-
-	// Clean up journal
-	if d.journal != nil {
-		d.journal.Close()
-	}
+	t.Cleanup(func() {
+		// Belt-and-braces: unregister even though the sandboxed
+		// DFMT_GLOBAL_DIR is wiped by t.TempDir() on test exit. Keeps
+		// the in-process Registry singleton from holding a stale
+		// entry across the rest of the suite.
+		d.unregister()
+		if d.journal != nil {
+			_ = d.journal.Close()
+		}
+	})
 }
 
 func TestUnregister(t *testing.T) {
+	t.Setenv("DFMT_GLOBAL_DIR", t.TempDir())
+
 	tmpDir := t.TempDir()
 	dfmtDir := filepath.Join(tmpDir, ".dfmt")
 	os.MkdirAll(dfmtDir, 0755)
@@ -439,13 +452,13 @@ func TestUnregister(t *testing.T) {
 		t.Fatalf("New failed: %v", err)
 	}
 
-	// unregister() is a no-op, just verify it doesn't panic
 	d.unregister()
 
-	// Clean up journal
-	if d.journal != nil {
-		d.journal.Close()
-	}
+	t.Cleanup(func() {
+		if d.journal != nil {
+			_ = d.journal.Close()
+		}
+	})
 }
 
 func TestDaemonStartAlreadyRunning(t *testing.T) {
@@ -1015,6 +1028,8 @@ func TestLockErrorMethods(t *testing.T) {
 }
 
 func TestRegisterUnregister(t *testing.T) {
+	t.Setenv("DFMT_GLOBAL_DIR", t.TempDir())
+
 	tmpDir := t.TempDir()
 	dfmtDir := filepath.Join(tmpDir, ".dfmt")
 	os.MkdirAll(dfmtDir, 0755)
@@ -1025,6 +1040,7 @@ func TestRegisterUnregister(t *testing.T) {
 		t.Fatalf("New failed: %v", err)
 	}
 	defer func() {
+		d.unregister() // belt-and-braces; the body Unregister'ı zaten çağırıyor
 		if d.journal != nil {
 			d.journal.Close()
 		}

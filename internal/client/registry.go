@@ -24,9 +24,28 @@ type DaemonEntry struct {
 
 // Registry tracks all running daemons globally.
 type Registry struct {
-	mu       sync.Mutex
-	daemons  map[string]DaemonEntry
+	mu      sync.Mutex
+	daemons map[string]DaemonEntry
+	// filePath, when non-empty, pins the registry to a specific path
+	// and bypasses registryPath() resolution. Production callers leave
+	// this empty so DFMT_GLOBAL_DIR overrides take effect on every
+	// save/load. Tests that need a sandbox path use newTestRegistry
+	// to set it explicitly.
 	filePath string
+}
+
+// path returns the file the registry should read/write. The
+// per-instance filePath wins when set (tests); otherwise we resolve
+// via registryPath() which honors DFMT_GLOBAL_DIR. Resolving on
+// every call rather than caching at construction lets a test that
+// flips DFMT_GLOBAL_DIR mid-suite observe the new value — the
+// production singleton was previously a hidden coupling that meant
+// the FIRST test to call GetRegistry() pinned the path forever.
+func (r *Registry) path() string {
+	if r.filePath != "" {
+		return r.filePath
+	}
+	return registryPath()
 }
 
 // Global registry instance.
@@ -39,8 +58,7 @@ var (
 func GetRegistry() *Registry {
 	globalRegistryOnce.Do(func() {
 		globalRegistry = &Registry{
-			daemons:  make(map[string]DaemonEntry),
-			filePath: registryPath(),
+			daemons: make(map[string]DaemonEntry),
 		}
 		globalRegistry.load()
 	})
@@ -48,7 +66,16 @@ func GetRegistry() *Registry {
 }
 
 // registryPath returns the path to the global registry file.
+// Honors DFMT_GLOBAL_DIR for parity with project.GlobalDir() — same
+// override the global daemon respects for its port/lock/pid files,
+// so tests pinning DFMT_GLOBAL_DIR to a sandbox dir keep the daemon
+// registry inside that sandbox too. Without this override the
+// per-project tests in internal/daemon would write live registry
+// rows into the developer's real ~/.dfmt/daemons.json on every run.
 func registryPath() string {
+	if env := os.Getenv("DFMT_GLOBAL_DIR"); env != "" {
+		return filepath.Join(env, "daemons.json")
+	}
 	home, _ := os.UserHomeDir()
 	if home == "" {
 		// Fallback to temp directory
@@ -62,7 +89,7 @@ func (r *Registry) load() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	data, err := os.ReadFile(r.filePath)
+	data, err := os.ReadFile(r.path())
 	if err != nil {
 		return // No registry yet
 	}
@@ -98,10 +125,11 @@ func (r *Registry) snapshotEntriesLocked() []DaemonEntry {
 // directly; concurrent List + Register/Unregister tripped Go's "fatal
 // error: concurrent map read and map write" — V-03.)
 func (r *Registry) saveSnapshot(entries []DaemonEntry) {
+	path := r.path()
 	// Ensure directory exists. 0o700 to match the registry file (0600) — the
 	// directory enumerates "~/.dfmt" usage and should not be readable by other
 	// local users on shared hosts.
-	dir := filepath.Dir(r.filePath)
+	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return
 	}
@@ -116,7 +144,7 @@ func (r *Registry) saveSnapshot(entries []DaemonEntry) {
 	// users. Atomic tmp+rename closes F-25 (concurrent registration from
 	// two daemons starting up simultaneously) and CheckNoSymlinks closes
 	// the symlink-plant attack.
-	_ = safefs.WriteFileAtomic(dir, r.filePath, data, 0o600)
+	_ = safefs.WriteFileAtomic(dir, path, data, 0o600)
 }
 
 // Register adds a daemon to the registry.
