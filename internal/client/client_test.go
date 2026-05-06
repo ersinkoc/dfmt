@@ -1782,48 +1782,10 @@ func TestResolveSessionIDEmptyEnvVar(t *testing.T) {
 	}
 }
 
-func TestIsTestBinaryFlag(t *testing.T) {
-	// When run via `go test`, flag.Lookup("test.v") returns non-nil
-	result := isTestBinary()
-	// In normal test context flag should be set, but the function's
-	// branching is what matters to cover
-	_ = result // Just exercise the code path
-}
-
-func TestIsTestBinaryNormalBinary(t *testing.T) {
-	// NOTE: When running under `go test`, flag.Lookup("test.v") is always set,
-	// so isTestBinary() returns true regardless of os.Args. This test documents
-	// that reality — the flag-check path takes precedence over the name check.
-	origArgs := os.Args
-	defer func() { os.Args = origArgs }()
-
-	os.Args = []string{"dfmt", "daemon"}
-	result := isTestBinary()
-	// In `go test` context, flag is set, so result is true (not a bug)
-	_ = result
-}
-
-func TestIsTestBinaryTestSuffix(t *testing.T) {
-	origArgs := os.Args
-	defer func() { os.Args = origArgs }()
-
-	os.Args = []string{"dfmt.test"}
-	result := isTestBinary()
-	if !result {
-		t.Error("isTestBinary() = false for .test binary, want true")
-	}
-}
-
-func TestIsTestBinaryTestExeSuffix(t *testing.T) {
-	origArgs := os.Args
-	defer func() { os.Args = origArgs }()
-
-	os.Args = []string{"dfmt.test.exe"}
-	result := isTestBinary()
-	if !result {
-		t.Error("isTestBinary() = false for .test.exe binary, want true")
-	}
-}
+// v0.6.1: isTestBinary, startDaemon, and ensureDaemon were removed
+// from client.NewClient when the auto-spawn path retired. Their tests
+// (TestIsTestBinary*, TestStartDaemon*, TestEnsureDaemon*) deleted
+// alongside.
 
 func TestReadPortFileJSON(t *testing.T) {
 	tmpDir := t.TempDir()
@@ -1984,43 +1946,9 @@ func TestCleanupStaleDaemonMissing(t *testing.T) {
 	cleanupStaleDaemon("/nonexistent/path")
 }
 
-func TestStartDaemonRefusesTestBinary(t *testing.T) {
-	origArgs := os.Args
-	defer func() { os.Args = origArgs }()
-
-	os.Args = []string{"dfmt.test"}
-	err := startDaemon("/tmp", false)
-	if err == nil {
-		t.Error("startDaemon should refuse test binary")
-	}
-	if !strings.Contains(err.Error(), "test binary") {
-		t.Errorf("expected 'test binary' in error, got: %v", err)
-	}
-}
-
-func TestStartDaemonNotFound(t *testing.T) {
-	origArgs := os.Args
-	defer func() { os.Args = origArgs }()
-
-	// Make os.Args look like a real binary (not test)
-	os.Args = []string{"dfmt", "daemon"}
-
-	// Temporarily make lookPath fail by manipulating PATH
-	origPath := os.Getenv("PATH")
-	defer os.Setenv("PATH", origPath)
-	os.Setenv("PATH", "/nonexistent")
-
-	// Make os.Executable return something that looks like a test binary
-	// to exercise the extra guard path
-	tmpDir := t.TempDir()
-	testExe := filepath.Join(tmpDir, "dfmt.test.exe")
-	if err := os.WriteFile(testExe, []byte("fake"), 0644); err != nil {
-		t.Skipf("could not create test exe: %v", err)
-	}
-
-	// Can't easily test the full path without mocking os.Executable,
-	// but we can test that the function structure is correct
-}
+// v0.6.1: startDaemon retired. CLI self-promotion lives in
+// daemon.PromoteInProcess; the client no longer spawns.
+// TestStartDaemonRefusesTestBinary / TestStartDaemonNotFound deleted.
 
 func TestClientDoHTTPUnixSocket(t *testing.T) {
 	if os.PathSeparator == '\\' {
@@ -2553,83 +2481,10 @@ func TestNewClientAutoInitFailure(t *testing.T) {
 	}
 }
 
-func TestEnsureDaemonDisabled(t *testing.T) {
-	os.Setenv("DFMT_DISABLE_AUTOSTART", "1")
-	defer os.Unsetenv("DFMT_DISABLE_AUTOSTART")
-
-	tmpDir := t.TempDir()
-	cl := &Client{
-		network:   "tcp",
-		address:   "localhost:54321",
-		timeout:   100 * time.Millisecond,
-		sessionID: "test",
-	}
-
-	err := cl.ensureDaemon(tmpDir)
-	if err != nil {
-		t.Errorf("ensureDaemon with DFMT_DISABLE_AUTOSTART: %v", err)
-	}
-}
-
-func TestEnsureDaemonAlreadyRunning(t *testing.T) {
-	if os.PathSeparator == '\\' {
-		t.Skip("skipping Unix socket test on Windows")
-	}
-	os.Setenv("DFMT_DISABLE_AUTOSTART", "1")
-	defer os.Unsetenv("DFMT_DISABLE_AUTOSTART")
-
-	tmpDir := t.TempDir()
-	socketPath := project.SocketPath(tmpDir)
-
-	ln, err := net.Listen("unix", socketPath)
-	if err != nil {
-		t.Skipf("skipping: could not create socket: %v", err)
-	}
-	defer ln.Close()
-
-	stop := serveMockHTTP(t, ln, func(w http.ResponseWriter, r *http.Request) {
-		resp := transport.Response{JSONRPC: "2.0", ID: 1, Result: map[string]string{"ok": "1"}}
-		_ = json.NewEncoder(w).Encode(resp)
-	})
-	defer stop()
-
-	cl := &Client{
-		network:   "unix",
-		address:   socketPath,
-		timeout:   500 * time.Millisecond,
-		sessionID: "test",
-	}
-
-	err = cl.ensureDaemon(tmpDir)
-	if err != nil {
-		t.Errorf("ensureDaemon should succeed when daemon is running: %v", err)
-	}
-}
-
-func TestEnsureDaemonStartsNewDaemon(t *testing.T) {
-	if os.PathSeparator == '\\' {
-		t.Skip("skipping Unix socket test on Windows")
-	}
-	// Smoke: ensureDaemon must not panic when invoked from a test binary
-	// against a non-existent socket. With DFMT_DISABLE_AUTOSTART set (or
-	// any test binary, per isTestBinary's fork-bomb guard) the contract
-	// is "no-op return nil"; the historical "should fail" assertion was
-	// inconsistent with the function's documented opt-out behavior.
-	os.Setenv("DFMT_DISABLE_AUTOSTART", "1")
-	defer os.Unsetenv("DFMT_DISABLE_AUTOSTART")
-
-	tmpDir := t.TempDir()
-	cl := &Client{
-		network:   "unix",
-		address:   "/nonexistent/socket",
-		timeout:   50 * time.Millisecond,
-		sessionID: "test",
-	}
-
-	if err := cl.ensureDaemon(tmpDir); err != nil {
-		t.Errorf("ensureDaemon under DFMT_DISABLE_AUTOSTART: got err=%v, want nil (documented opt-out path)", err)
-	}
-}
+// v0.6.1: ensureDaemon retired. CLI callers self-promote via
+// daemon.PromoteInProcess instead of asking the client to spawn.
+// TestEnsureDaemonDisabled / TestEnsureDaemonAlreadyRunning /
+// TestEnsureDaemonStartsNewDaemon deleted.
 
 func TestStreamEventsMock(t *testing.T) {
 	if os.PathSeparator == '\\' {
@@ -2931,29 +2786,8 @@ func TestNewClientDefaultSessionID(t *testing.T) {
 	}
 }
 
-func TestEnsureDaemonContextCancel(t *testing.T) {
-	if os.PathSeparator == '\\' {
-		t.Skip("skipping Unix socket test on Windows")
-	}
-	// Smoke: same opt-out contract as TestEnsureDaemonStartsNewDaemon —
-	// the original "should fail on non-routable address" assertion was
-	// unreachable because ensureDaemon short-circuits on the test binary
-	// guard before any network call. Verify the no-op return instead.
-	os.Setenv("DFMT_DISABLE_AUTOSTART", "1")
-	defer os.Unsetenv("DFMT_DISABLE_AUTOSTART")
-
-	tmpDir := t.TempDir()
-	cl := &Client{
-		network:   "tcp",
-		address:   "10.255.255.1:1", // never reached under the opt-out
-		timeout:   10 * time.Millisecond,
-		sessionID: "test",
-	}
-
-	if err := cl.ensureDaemon(tmpDir); err != nil {
-		t.Errorf("ensureDaemon under DFMT_DISABLE_AUTOSTART: got err=%v, want nil (documented opt-out path)", err)
-	}
-}
+// v0.6.1: TestEnsureDaemonContextCancel deleted — ensureDaemon was
+// retired alongside the rest of the auto-spawn path.
 
 func TestNewClientHomeUnset(t *testing.T) {
 	// Test that registryPath handles empty home directory
@@ -2972,21 +2806,8 @@ func TestNewClientHomeUnset(t *testing.T) {
 	_, _ = NewClient(t.TempDir())
 }
 
-func TestStartDaemonLookPathFailure(t *testing.T) {
-	origArgs := os.Args
-	defer func() { os.Args = origArgs }()
-	origPath := os.Getenv("PATH")
-	defer os.Setenv("PATH", origPath)
-
-	os.Args = []string{"dfmt", "daemon"}
-	os.Setenv("PATH", "/nonexistent")
-
-	// Make os.Executable return something that looks like a test binary
-	// to exercise the extra guard path
-	_ = t.TempDir() // temp dir for future use
-	// Create a file named dfmt.test.exe
-	// startDaemon will refuse it before calling LookPath
-}
+// v0.6.1: TestStartDaemonLookPathFailure deleted — startDaemon was
+// retired alongside the rest of the auto-spawn path.
 
 // =============================================================================
 // End of additional client tests
