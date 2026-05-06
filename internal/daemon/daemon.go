@@ -74,6 +74,15 @@ type Daemon struct {
 	// existing Start/Stop/idle/register/fswatch lifecycles are unchanged.
 	projectsMu    sync.RWMutex
 	extraProjects map[string]*ProjectResources
+
+	// globalMode is set by NewGlobal: the daemon listens at host-scoped
+	// paths (~/.dfmt/{daemon.sock|port,daemon.pid,lock}) instead of
+	// per-project (<proj>/.dfmt/...) and serves every call through the
+	// per-project resource cache (no eager default project). Start/Stop
+	// branch on this to choose lock + PID locations; the bind itself is
+	// already correct because globalMode swaps the server's port-file /
+	// socket-path during construction.
+	globalMode bool
 }
 
 // Touch records inbound activity so the idle monitor resets. Wired into
@@ -356,6 +365,115 @@ func New(projectPath string, cfg *config.Config) (*Daemon, error) {
 	return d, nil
 }
 
+// NewGlobal creates a host-wide daemon that serves every DFMT-initialized
+// project from a single process. Unlike New, it does not load a default
+// project at construction — every inbound RPC must carry a project_id
+// (Phase 2 commit 2 ensures MCP subprocesses and CLI clients always do)
+// which routes through Daemon.Resources(pid) to lazily-loaded per-project
+// state.
+//
+// Listener bind, lock, and PID locations come from internal/project's
+// global helpers (~/.dfmt/{daemon.sock|port,daemon.pid,lock}). Two
+// global daemons cannot coexist on the same host — the second one's
+// AcquireGlobalLock fails with LockError.
+//
+// The constructed daemon's handlers have NO direct journal/index/redactor/
+// store/sandbox handles. A ResourceFetcher is installed instead, closing
+// over Resources(pid) so each tool call resolves its bundle per-call.
+// errProjectIDRequired surfaces as -32603 to MCP clients when a call
+// arrives without a project_id (degraded clients, mis-rigged hooks).
+func NewGlobal(cfg *config.Config) (*Daemon, error) {
+	if cfg == nil {
+		cfg = &config.Config{}
+	}
+	logging.ApplyConfig(cfg.Logging.Level)
+
+	// Ensure ~/.dfmt/ exists before the listener tries to drop port/pid
+	// files into it. project.GlobalDir() already does this side-effect
+	// but the caller may have nil-ified it via env override; double
+	// MkdirAll is harmless.
+	globalDir := project.GlobalDir()
+	if err := os.MkdirAll(globalDir, 0o700); err != nil {
+		return nil, fmt.Errorf("create global dir: %w", err)
+	}
+
+	// Handlers without direct project state. SetResourceFetcher below
+	// installs the per-call routing closure; resolveBundle reads
+	// bundle.Sandbox / bundle.Journal / bundle.Index / bundle.Redactor /
+	// bundle.ContentStore from the fetcher's Bundle.
+	handlers := transport.NewHandlers(nil, nil, nil)
+	handlers.SetRecallDefaults(
+		cfg.Retrieval.DefaultBudget,
+		cfg.Retrieval.DefaultFormat,
+	)
+
+	// Server creation. Same platform/cfg branching as New, but the port
+	// file / socket path point at global locations. SetProjectPath stays
+	// empty — the dashboard uses the registry's per-project rows, not a
+	// daemon-level default.
+	var server Server
+	var httpServer *transport.HTTPServer
+	tcpOptIn := cfg.Transport.HTTP.Enabled && cfg.Transport.HTTP.Bind != ""
+	switch {
+	case runtime.GOOS == goosWindows:
+		bind := ephemeralLoopback
+		if tcpOptIn {
+			bind = cfg.Transport.HTTP.Bind
+		}
+		httpServer = transport.NewHTTPServer(bind, handlers)
+		httpServer.SetPortFile(project.GlobalPortPath())
+	case tcpOptIn:
+		httpServer = transport.NewHTTPServer(cfg.Transport.HTTP.Bind, handlers)
+		httpServer.SetPortFile(project.GlobalPortPath())
+	default:
+		if !cfg.Transport.Socket.Enabled {
+			return nil, fmt.Errorf("transport: no listener configured — transport.socket.enabled is false and transport.http.enabled is also false. " +
+				"Set one of them to true (HTTP requires transport.http.bind to also be non-empty)")
+		}
+		socketPath := project.GlobalSocketPath()
+		ln, err := transport.ListenUnixSocket(socketPath)
+		if err != nil {
+			return nil, fmt.Errorf("create global socket listener: %w", err)
+		}
+		if cerr := os.Chmod(socketPath, 0o700); cerr != nil {
+			logging.Warnf("chmod global socket: %v", cerr)
+		}
+		httpServer = transport.NewHTTPServerWithListener(ln, handlers, socketPath)
+	}
+	server = httpServer
+
+	d := &Daemon{
+		config:     cfg,
+		server:     server,
+		handlers:   handlers,
+		shutdownCh: make(chan struct{}),
+		globalMode: true,
+	}
+	d.lastActivityNs.Store(time.Now().UnixNano())
+	handlers.SetActivityFn(d.Touch)
+
+	// Install the per-call resource fetcher. Resources(pid) handles
+	// cache lookup + lazy load of per-project journal/index/sandbox
+	// state. errProjectIDRequired surfaces here on empty pid, which
+	// resolveBundle propagates to the caller as a -32603 RPC error.
+	handlers.SetResourceFetcher(func(projectID string) (transport.Bundle, error) {
+		r, err := d.Resources(projectID)
+		if err != nil {
+			return transport.Bundle{}, err
+		}
+		return transport.Bundle{
+			Journal:      r.Journal,
+			Index:        r.Index,
+			Redactor:     r.Redactor,
+			ContentStore: r.ContentStore,
+			Sandbox:      r.Sandbox,
+			ProjectPath:  r.ProjectPath,
+		}, nil
+	})
+
+	return d, nil
+}
+
 // Start starts the daemon with panic recovery. The whole start sequence is
 // wrapped so a panic in any phase (server, fswatcher, registry) is reported
 // as an error rather than crashing the daemon process — and any partially-
@@ -384,7 +502,13 @@ func (d *Daemon) Start(ctx context.Context) error {
 		logging.Warnf("daemon running as root (euid=0); sandbox runs every command at root privilege. Run as your user account instead.")
 	}
 
-	lock, lerr := AcquireLock(d.projectPath)
+	var lock *LockFile
+	var lerr error
+	if d.globalMode {
+		lock, lerr = AcquireGlobalLock()
+	} else {
+		lock, lerr = AcquireLock(d.projectPath)
+	}
 	if lerr != nil {
 		// New() opened the journal; lock contention means this Daemon will
 		// never reach Stop's normal cleanup path (Stop short-circuits when
@@ -422,13 +546,20 @@ func (d *Daemon) Start(ctx context.Context) error {
 		// safefs.WriteFile refuses if .dfmt/ or daemon.pid is a symlink — closes
 		// F-08 (attacker plants daemon.pid -> /etc/cron.d/x before daemon
 		// start, host PID gets injected into the symlink target).
-		absProject, perr := filepath.Abs(d.projectPath)
-		if perr != nil {
-			absProject = d.projectPath
+		var pidBaseDir, pidPath string
+		if d.globalMode {
+			pidBaseDir = project.GlobalDir()
+			pidPath = project.GlobalPIDPath()
+		} else {
+			absProject, perr := filepath.Abs(d.projectPath)
+			if perr != nil {
+				absProject = d.projectPath
+			}
+			pidBaseDir = absProject
+			pidPath = filepath.Join(absProject, ".dfmt", "daemon.pid")
 		}
-		pidPath := filepath.Join(absProject, ".dfmt", "daemon.pid")
 		pidData := fmt.Sprintf("%d\n", os.Getpid())
-		if err := safefs.WriteFile(absProject, pidPath, []byte(pidData), 0o600); err != nil {
+		if err := safefs.WriteFile(pidBaseDir, pidPath, []byte(pidData), 0o600); err != nil {
 			logging.Warnf("write pid file: %v", err)
 		}
 
@@ -554,7 +685,10 @@ func (d *Daemon) Stop(ctx context.Context) error {
 		// journal.Stream on a closed journal.
 		d.wg.Wait()
 
-		// (5) Persist the index while the journal is still open for Checkpoint.
+		// (5) Persist the default-project index while its journal is
+		// still open for Checkpoint. Global daemons have no default
+		// project (d.journal / d.index are nil); their per-project
+		// caches persist via closeExtraProjects below.
 		//
 		// Skip persist if an async rebuild was in flight and got canceled
 		// before completing. In that case d.index holds events only up to
@@ -563,17 +697,19 @@ func (d *Daemon) Stop(ctx context.Context) error {
 		// start would skip rebuild and search would silently miss events
 		// (Y, X]. Letting the cursor stay where it was lets the next daemon
 		// detect needsRebuild and replay correctly.
-		indexPath := filepath.Join(d.projectPath, ".dfmt", "index.gob")
-		skipPersist := d.needsRebuild && !d.rebuildComplete.Load()
-		if skipPersist {
-			fmt.Println("Skipping index persist — async rebuild was incomplete; next start will replay journal")
-		} else {
-			hiID, err := d.journal.Checkpoint(ctx)
-			if err != nil {
-				logging.Warnf("checkpoint failed: %v", err)
-			}
-			if perr := core.PersistIndex(d.index, indexPath, hiID); perr != nil {
-				logging.Warnf("persist index: %v", perr)
+		if !d.globalMode && d.journal != nil && d.index != nil {
+			indexPath := filepath.Join(d.projectPath, ".dfmt", "index.gob")
+			skipPersist := d.needsRebuild && !d.rebuildComplete.Load()
+			if skipPersist {
+				fmt.Println("Skipping index persist — async rebuild was incomplete; next start will replay journal")
+			} else {
+				hiID, err := d.journal.Checkpoint(ctx)
+				if err != nil {
+					logging.Warnf("checkpoint failed: %v", err)
+				}
+				if perr := core.PersistIndex(d.index, indexPath, hiID); perr != nil {
+					logging.Warnf("persist index: %v", perr)
+				}
 			}
 		}
 
@@ -583,9 +719,11 @@ func (d *Daemon) Stop(ctx context.Context) error {
 			// Fall through — we still want to close the journal and unregister.
 		}
 
-		// (7) Close the journal last.
-		if err := d.journal.Close(); err != nil && retErr == nil {
-			retErr = fmt.Errorf("close journal: %w", err)
+		// (7) Close the default-project journal last. nil in global mode.
+		if d.journal != nil {
+			if err := d.journal.Close(); err != nil && retErr == nil {
+				retErr = fmt.Errorf("close journal: %w", err)
+			}
 		}
 
 		// (7b) Close any extra-project journals the cache holds. This
@@ -594,8 +732,14 @@ func (d *Daemon) Stop(ctx context.Context) error {
 		// logs per-entry warnings; it never returns an error.
 		d.closeExtraProjects()
 
-		// Best-effort housekeeping.
-		pidPath := filepath.Join(d.projectPath, ".dfmt", "daemon.pid")
+		// Best-effort housekeeping. Global daemons clean up the host-wide
+		// PID file; legacy daemons clean up the per-project one.
+		var pidPath string
+		if d.globalMode {
+			pidPath = project.GlobalPIDPath()
+		} else {
+			pidPath = filepath.Join(d.projectPath, ".dfmt", "daemon.pid")
+		}
 		_ = os.Remove(pidPath)
 		d.unregister()
 		// Release the singleton lock LAST so a fresh daemon spawned the
@@ -746,10 +890,23 @@ func (d *Daemon) startIdleMonitor(_ context.Context) {
 }
 
 func (d *Daemon) register() {
+	// Global daemon: skip the per-project registry row entirely. The
+	// global daemon's discoverability comes from the well-known path
+	// (~/.dfmt/{port|sock} + the global PID file), not from N rows in
+	// daemons.json. Registering with d.projectPath="" would still write
+	// a row but with an empty key, which the registry's dial code
+	// (`portFile := filepath.Join(projectPath, ".dfmt", "port")`)
+	// would try to read from `.dfmt/port` in the cwd — not what we want.
+	if d.globalMode {
+		return
+	}
 	entry := client.NewDaemonEntry(d.projectPath, os.Getpid())
 	client.GetRegistry().Register(entry)
 }
 
 func (d *Daemon) unregister() {
+	if d.globalMode {
+		return
+	}
 	client.GetRegistry().Unregister(d.projectPath)
 }

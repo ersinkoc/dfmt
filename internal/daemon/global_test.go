@@ -1,0 +1,156 @@
+package daemon
+
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"runtime"
+	"testing"
+	"time"
+
+	"github.com/ersinkoc/dfmt/internal/transport"
+)
+
+// TestNewGlobalConstructsWithoutDefaultProject verifies the NewGlobal
+// path: daemon comes up with no per-project journal/index/redactor
+// pre-loaded, but the resource fetcher is wired and globalMode is set.
+// This is the "tek bir daemon" entry point — no project required at
+// startup.
+func TestNewGlobalConstructsWithoutDefaultProject(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("DFMT_GLOBAL_DIR", tmp)
+
+	cfg := newTestConfig()
+	d, err := NewGlobal(cfg)
+	if err != nil {
+		t.Fatalf("NewGlobal: %v", err)
+	}
+	if !d.globalMode {
+		t.Error("globalMode should be true")
+	}
+	if d.projectPath != "" {
+		t.Errorf("projectPath should be empty in global mode, got %q", d.projectPath)
+	}
+	if d.journal != nil {
+		t.Error("journal should be nil in global mode (per-project, lazy)")
+	}
+	if d.index != nil {
+		t.Error("index should be nil in global mode (per-project, lazy)")
+	}
+	if d.handlers == nil {
+		t.Fatal("handlers must not be nil")
+	}
+}
+
+// TestNewGlobalServerBindsAtGlobalPaths verifies the listener bind
+// paths come from project.GlobalPortPath / GlobalSocketPath rather
+// than from any per-project location. Without this, the user-visible
+// "stable URL" promise would be broken.
+func TestNewGlobalServerBindsAtGlobalPaths(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("DFMT_GLOBAL_DIR", tmp)
+
+	cfg := newTestConfig()
+	d, err := NewGlobal(cfg)
+	if err != nil {
+		t.Fatalf("NewGlobal: %v", err)
+	}
+
+	hs, ok := d.server.(*transport.HTTPServer)
+	if !ok {
+		t.Fatalf("d.server type = %T, want *transport.HTTPServer", d.server)
+	}
+
+	// On Windows the bind goes to the port file; on Unix it goes to
+	// the socket path. Either way the relevant path must sit inside
+	// the global override directory.
+	want := tmp
+	switch runtime.GOOS {
+	case "windows":
+		got := hs.PortFile()
+		if got == "" || filepath.Dir(got) != want {
+			t.Errorf("port file %q should sit inside %q", got, want)
+		}
+	default:
+		got := hs.SocketPath()
+		if got == "" || filepath.Dir(got) != want {
+			t.Errorf("socket path %q should sit inside %q", got, want)
+		}
+	}
+}
+
+// TestNewGlobalStartStopWritesAndCleansPID verifies the lifecycle
+// invariants: Start writes ~/.dfmt/daemon.pid and acquires the global
+// lock, Stop removes the PID and releases the lock so the next global
+// daemon can bind cleanly.
+func TestNewGlobalStartStopWritesAndCleansPID(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("DFMT_GLOBAL_DIR", tmp)
+	// Speed up shutdown grace — default is 10s, way too long for a test.
+	cfg := newTestConfig()
+	cfg.Lifecycle.ShutdownTimeout = "2s"
+
+	d, err := NewGlobal(cfg)
+	if err != nil {
+		t.Fatalf("NewGlobal: %v", err)
+	}
+
+	ctx := context.Background()
+	if err := d.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	pidPath := filepath.Join(tmp, "daemon.pid")
+	if _, err := os.Stat(pidPath); err != nil {
+		t.Errorf("global PID file not written at %q: %v", pidPath, err)
+	}
+	lockPath := filepath.Join(tmp, "lock")
+	if _, err := os.Stat(lockPath); err != nil {
+		t.Errorf("global lock file not present at %q: %v", lockPath, err)
+	}
+
+	stopCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if err := d.Stop(stopCtx); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	if _, err := os.Stat(pidPath); !os.IsNotExist(err) {
+		t.Errorf("global PID file should be removed after Stop, but stat returned: %v", err)
+	}
+}
+
+// TestNewGlobalSecondInstanceFailsLockAcquisition proves the singleton
+// invariant: only one global daemon can run on a host. The second
+// NewGlobal+Start must fail at lock acquisition (not silently bind a
+// different ephemeral port).
+func TestNewGlobalSecondInstanceFailsLockAcquisition(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("DFMT_GLOBAL_DIR", tmp)
+	cfg := newTestConfig()
+	cfg.Lifecycle.ShutdownTimeout = "2s"
+
+	d1, err := NewGlobal(cfg)
+	if err != nil {
+		t.Fatalf("first NewGlobal: %v", err)
+	}
+	if err := d1.Start(context.Background()); err != nil {
+		t.Fatalf("first Start: %v", err)
+	}
+	defer func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = d1.Stop(stopCtx)
+	}()
+
+	d2, err := NewGlobal(cfg)
+	if err != nil {
+		t.Fatalf("second NewGlobal: %v", err)
+	}
+	if err := d2.Start(context.Background()); err == nil {
+		t.Error("second Start should have failed lock acquisition; got nil error")
+		stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = d2.Stop(stopCtx)
+	}
+}

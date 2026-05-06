@@ -664,6 +664,20 @@ func (s *HTTPServer) Bind() string {
 	return s.bind
 }
 
+// PortFile returns the path the server will write its chosen port +
+// token to once the listener binds. Empty when SetPortFile was never
+// called (Unix-socket transports). Exposed for tests + doctor checks.
+func (s *HTTPServer) PortFile() string {
+	return s.portFile
+}
+
+// SocketPath returns the Unix socket path when the server was
+// constructed via NewHTTPServerWithListener. Empty for TCP listeners.
+// Exposed for tests + doctor checks.
+func (s *HTTPServer) SocketPath() string {
+	return s.socketPath
+}
+
 func (s *HTTPServer) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("X-Content-Type-Options", "nosniff")

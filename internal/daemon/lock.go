@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"github.com/ersinkoc/dfmt/internal/project"
 )
 
 // LockFile represents an advisory file lock.
@@ -12,10 +14,28 @@ type LockFile struct {
 	file *os.File
 }
 
-// AcquireLock acquires an exclusive lock on the daemon.
+// AcquireLock acquires an exclusive lock on the per-project daemon.
+// Used by legacy single-project daemons; the global daemon (Phase 2)
+// uses AcquireGlobalLock instead.
 func AcquireLock(projectPath string) (*LockFile, error) {
 	lockPath := filepath.Join(projectPath, ".dfmt", "lock")
+	return acquireLockAt(lockPath, projectPath)
+}
 
+// AcquireGlobalLock acquires the singleton lock for the host-wide
+// daemon at ~/.dfmt/lock. Two `dfmt daemon --global` processes cannot
+// both hold this lock — the second one fails with LockError and exits
+// cleanly so the first daemon's listener stays unique on the loopback
+// port / socket.
+func AcquireGlobalLock() (*LockFile, error) {
+	return acquireLockAt(project.GlobalLockPath(), project.GlobalDir())
+}
+
+// acquireLockAt opens lockPath for read/write (creating it 0o600 if
+// missing) and tries a non-blocking flock. The ownerLabel is only used
+// to seed the LockError message so operators can tell whether they
+// collided with a per-project legacy daemon or the global one.
+func acquireLockAt(lockPath, ownerLabel string) (*LockFile, error) {
 	// Mode 0o600 matches the rest of `.dfmt/`. The flock advisory lock
 	// is what enforces exclusivity; the file mode just keeps other local
 	// users from learning that dfmt is running for the owning user
@@ -25,11 +45,9 @@ func AcquireLock(projectPath string) (*LockFile, error) {
 		return nil, fmt.Errorf("open lock: %w", err)
 	}
 
-	// Try to acquire exclusive lock (non-blocking)
-	err = lockFlock(f, true)
-	if err != nil {
+	if err := lockFlock(f, true); err != nil {
 		f.Close()
-		return nil, &LockError{projectPath}
+		return nil, &LockError{ownerLabel}
 	}
 
 	return &LockFile{
