@@ -27,6 +27,29 @@ Internal package shapes (`internal/...`) are NOT covered by SemVer.
 
 ## [Unreleased]
 
+## [0.4.6] — 2026-05-06
+
+Patch release with two more global-daemon UX fixes after v0.4.5.
+
+### Fixed
+
+- **`dfmt status` works from any directory.** Previously errored out
+  with `error: no project found` when invoked outside a DFMT-
+  initialized directory, hiding the host-wide global daemon from any
+  fresh terminal. The missing-project case is now a degraded report:
+  the project line is annotated with the resolution error, but daemon
+  liveness, dashboard URL, transport endpoint and last-crash all
+  still render. JSON adds a `project_error` field so scripts can
+  distinguish the no-project case from a real failure.
+- **`dfmt setup --uninstall` stops the global daemon up front.** Was
+  stripping agent MCP configs and removing manifest files but
+  leaving the host-wide daemon running for up-to-the-idle-timeout,
+  with stale handles open for every cached project. Also closed the
+  awkward window where agent configs no longer pointed to dfmt but
+  the daemon was still serving requests routed through them.
+  Falls through with a warning if the stop fails so uninstall still
+  completes.
+
 ## [0.4.5] — 2026-05-06
 
 Patch release closing two more global-daemon UX gaps caught after
