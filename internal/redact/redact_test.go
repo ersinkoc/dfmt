@@ -149,6 +149,63 @@ func TestRedact_BearerBasicCoversBase64SpecialChars(t *testing.T) {
 	}
 }
 
+// TestRedact_V16UnicodeWhitespaceBypass pins V-16: realistic agent output
+// can carry a NBSP (U+00A0), narrow no-break space (U+202F), or other
+// unicode separator instead of ASCII space between a key and its value.
+// Pre-fix the `\s+`-anchored bearer/basic/generic-secret patterns matched
+// only ASCII whitespace and let the credential leak verbatim. Post-fix
+// uses `[\s\p{Z}]+` so the unicode-separator class is included.
+func TestRedact_V16UnicodeWhitespaceBypass(t *testing.T) {
+	r := NewRedactor()
+	const nbsp = " "   // NBSP
+	const narrow = " " // narrow no-break space
+
+	cases := []struct {
+		name     string
+		input    string
+		mustLack string
+	}{
+		{"bearer-nbsp", "Authorization: Bearer" + nbsp + "abcDEFGHIJKLmnoPQRsecret123==", "abcDEFGHIJKL"},
+		{"bearer-narrow", "Authorization: Bearer" + narrow + "abcDEFGHIJKLmnoPQRsecret123==", "abcDEFGHIJKL"},
+		{"basic-nbsp", "Authorization: Basic" + nbsp + "dXNlcjpwYXNzd29yZA==", "dXNlcjpwYXNz"},
+		{"generic-secret-nbsp", "api_key" + nbsp + ": " + "Z9plainGenericTokenValue123456", "Z9plainGenericTokenValue123456"},
+		{"password-nbsp", "password" + nbsp + ":" + nbsp + "hunter2hunter2", "hunter2hunter2"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := r.Redact(c.input)
+			if strings.Contains(got, c.mustLack) {
+				t.Errorf("unicode-WS bypass let secret through: redact(%q) = %q (still contains %q)", c.input, got, c.mustLack)
+			}
+			// Accept any redaction marker — different patterns produce
+			// different labels (`[REDACTED]`, `[AWS_KEY]`, etc.) but as
+			// long as the secret is gone the bypass is closed.
+			if !strings.Contains(got, "[") || !strings.Contains(got, "]") {
+				t.Errorf("redacted output missing any [...] marker: %q", got)
+			}
+		})
+	}
+}
+
+// TestRedact_V16TruncatedPEM pins the truncated-private-key half of V-16.
+// A PEM block whose END marker was lost (truncation, log rotation, copy-
+// paste cut at the bottom) used to leak its base64 body verbatim because
+// the full-block regex required matching BEGIN AND END. The fallback
+// pattern catches BEGIN + up to ~1000 base64 chars even without the END.
+func TestRedact_V16TruncatedPEM(t *testing.T) {
+	r := NewRedactor()
+	truncated := "-----BEGIN RSA PRIVATE KEY-----\n" +
+		"MIIEowIBAAKCAQEA1234567890abcdefghijklmnopqrstuvwxyzABCDEFGHIJKL\n" +
+		"MNOPQRSTUVWXYZ0987654321zyxwvutsrqponmlkjihgfedcbaABCDEFGHIJKLM"
+	got := r.Redact(truncated)
+	if strings.Contains(got, "MIIEowIBAA") || strings.Contains(got, "MNOPQRSTUVWXYZ0987654321") {
+		t.Errorf("truncated PEM body leaked: %q", got)
+	}
+	if !strings.Contains(got, "PRIVATE KEY") {
+		t.Errorf("redacted output should retain a PRIVATE KEY marker; got %q", got)
+	}
+}
+
 func TestRedactEnvExport(t *testing.T) {
 	r := NewRedactor()
 

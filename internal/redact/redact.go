@@ -127,7 +127,14 @@ var commonPatterns = []*redactPattern{
 
 	// === Generic auth headers / inline assignments (broadest, run last) ===
 
-	{name: "generic_secret", regex: regexp.MustCompile(`(?i)(api[_-]?key|secret[_-]?key|access[_-]?token|auth[_-]?token)\s*[:=]\s*['"]?([A-Za-z0-9_/+=.-]{20,})['"]?`), repl: "$1: [REDACTED]"},
+	// V-16: replace ASCII-only `\s` with `[\s\p{Z}]` so unicode space
+	// separators (NBSP, narrow no-break space, en/em space, …) between
+	// the key name and the value don't slip the redactor. Realistic
+	// bypass: an attacker emitting `api_key: AKIAxxxx` defeats
+	// the ASCII-class matcher but bash and most viewers render it the
+	// same as a plain space. \p{Z} covers Unicode "separator" general
+	// category which includes NBSP and narrow no-break space.
+	{name: "generic_secret", regex: regexp.MustCompile(`(?i)(api[_-]?key|secret[_-]?key|access[_-]?token|auth[_-]?token)[\s\p{Z}]*[:=][\s\p{Z}]*['"]?([A-Za-z0-9_/+=.-]{20,})['"]?`), repl: "$1: [REDACTED]"},
 	// V-02: password-field redaction for JSON / YAML / log shapes. The
 	// generic_secret pattern above only catches *_key / *_token names;
 	// IsSensitiveKey covers password/passwd/pwd/passphrase but is only
@@ -141,15 +148,21 @@ var commonPatterns = []*redactPattern{
 	// angle brackets (so `<placeholder>` markers stay visible). The
 	// 4-char floor lets short production passwords still get caught
 	// while skipping empty `""` placeholders.
-	{name: "password_field", regex: regexp.MustCompile(`(?i)(password|passwd|passphrase|pwd)['"]?\s*[:=]\s*['"]?([^\s'"\[\],;{}<>]{4,})['"]?`), repl: "$1: [REDACTED]"},
+	{name: "password_field", regex: regexp.MustCompile(`(?i)(password|passwd|passphrase|pwd)['"]?[\s\p{Z}]*[:=][\s\p{Z}]*['"]?([^\s\p{Z}'"\[\],;{}<>]{4,})['"]?`), repl: "$1: [REDACTED]"},
 	// F-12: char classes widened to cover the full base64 alphabet.
 	// Prior `[A-Za-z0-9_.-]` matched only the URL-safe subset; RFC 6750
 	// `b64token` allows `_.~+/` plus trailing `=` padding, and Basic auth
 	// (RFC 7617) base64-encodes `user:pass` which routinely contains `+`,
 	// `/`, and `=`. Without `+/=` the regex stopped at the first special
 	// char and the rest of the credential leaked verbatim.
-	{name: "bearer_token", regex: regexp.MustCompile(`(?i)bearer\s+[A-Za-z0-9_.+/~-]{20,}={0,2}`), repl: "Bearer [REDACTED]"},
-	{name: "basic_auth", regex: regexp.MustCompile(`(?i)basic\s+[A-Za-z0-9_.+/~-]{10,}={0,2}`), repl: "Basic [REDACTED]"},
+	// V-16: same unicode-whitespace bypass treatment as generic_secret —
+	// `Bearer sk-…` (NBSP between scheme and token) is a common
+	// HTTP-header copy-paste artifact and was sliding past the prior
+	// `\s+` matcher. `[\s\p{Z}]+` accepts ASCII WS *and* unicode
+	// separators. Trailing `+` (one or more) preserves the existing
+	// requirement of at least one separator between scheme and value.
+	{name: "bearer_token", regex: regexp.MustCompile(`(?i)bearer[\s\p{Z}]+[A-Za-z0-9_.+/~-]{20,}={0,2}`), repl: "Bearer [REDACTED]"},
+	{name: "basic_auth", regex: regexp.MustCompile(`(?i)basic[\s\p{Z}]+[A-Za-z0-9_.+/~-]{10,}={0,2}`), repl: "Basic [REDACTED]"},
 
 	// env_export is handled in Redact() via ReplaceAllStringFunc so the var
 	// name can be matched against IsSensitiveKey() instead of a brittle regex.
@@ -161,6 +174,16 @@ var commonPatterns = []*redactPattern{
 	// material visible in the journal. (?s) so '.' spans newlines; non-greedy
 	// so multiple blocks in one buffer don't merge.
 	{name: "private_key", regex: regexp.MustCompile(`(?s)-----BEGIN (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----.*?-----END (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----`), repl: "[PRIVATE KEY]"},
+	// V-16: catch truncated PEM blocks where the END marker was lost (output
+	// truncation, log rotation, console copy-paste cut at the bottom). Match
+	// the BEGIN header plus up to ~1000 base64-shaped chars (RE2 default
+	// max-repeat is 1000; that's enough to flag and burn the visible part —
+	// even a partial 1000-char private-key body is unrecoverable for the
+	// attacker who only got the truncated copy, and the redactor is
+	// defense-in-depth, not a hard guarantee). Runs AFTER the full-block
+	// pattern above so a complete block is captured intact (including its
+	// END marker) before this lazier fallback fires.
+	{name: "private_key_truncated", regex: regexp.MustCompile(`(?s)-----BEGIN (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----[\s\nA-Za-z0-9+/=]{0,1000}`), repl: "[PRIVATE KEY (TRUNCATED)]"},
 
 	// JWT tokens
 	{name: "jwt", regex: regexp.MustCompile(`eyJ[A-Za-z0-9_=-]+\.eyJ[A-Za-z0-9_=-]+\.[A-Za-z0-9_/+=.-]*`), repl: "[JWT]"},
