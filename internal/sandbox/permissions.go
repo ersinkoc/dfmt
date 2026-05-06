@@ -1404,6 +1404,13 @@ func isBlockedIP(ip net.IP) bool {
 	if v4 := ip.To4(); v4 != nil && v4[0] == 0 {
 		return true
 	}
+	// V-I2: RFC 6598 carrier-grade NAT space (100.64.0.0/10). Go's
+	// IsPrivate() does not include this range — but on cloud hosts
+	// (especially AWS NAT gateway-fronted) and ISP networks it routes
+	// to internal infrastructure. Treat as private for SSRF purposes.
+	if v4 := ip.To4(); v4 != nil && v4[0] == 100 && v4[1] >= 64 && v4[1] <= 127 {
+		return true
+	}
 	return false
 }
 
