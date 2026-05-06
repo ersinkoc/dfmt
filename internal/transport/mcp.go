@@ -45,6 +45,17 @@ type MCPProtocol struct {
 	// runs before any tool call, so no mutex is needed.
 	sessionID string
 
+	// projectID is the canonical project root path the MCP subprocess
+	// pinned at startup (Phase 2). Each tool call attaches this to the
+	// request context (via WithProjectID) so the daemon's per-call
+	// resolver routes to the correct per-project resources. Empty when
+	// the subprocess started in degraded mode (no project discoverable
+	// from cwd) — in that case the daemon falls back to its default
+	// project (legacy single-project daemon) or returns errNoProject.
+	// Mutated only by SetProjectID before any tool call so no mutex
+	// is needed; the field is treated as immutable post-startup.
+	projectID string
+
 	// statsMu guards the lazily-populated tool-call compression cache used
 	// to enrich tool descriptions with self-tuning telemetry. Computing the
 	// stats requires a journal stream; caching keeps tools/list cheap when
@@ -178,11 +189,34 @@ type MCPResponse struct {
 // (some thin MCP clients go straight to `tools/list`). handleInitialize
 // may later prepend a clientInfo prefix for telemetry; the ULID suffix
 // keeps the ID unique either way.
+//
+// The projectID is left empty here — runMCP calls SetProjectID after
+// resolving the cwd-bound project root, so test seams that don't care
+// about per-call project routing can construct an MCPProtocol without
+// touching this field.
 func NewMCPProtocol(handlers *Handlers) *MCPProtocol {
 	return &MCPProtocol{
 		handlers:  handlers,
 		sessionID: string(core.NewULID(time.Now())),
 	}
+}
+
+// SetProjectID pins the canonical project root path that this MCP
+// subprocess targets. Must be called once at startup, before any tool
+// call. An empty value puts the daemon-side resolver in legacy fallback
+// mode (h.project default).
+func (m *MCPProtocol) SetProjectID(projectID string) {
+	m.projectID = projectID
+}
+
+// effectiveProjectID returns the project ID to attach to a tool call's
+// context. Per-call params win (a future caller may target a different
+// project explicitly); the session-bound projectID is the fallback.
+func (m *MCPProtocol) effectiveProjectID(paramID string) string {
+	if paramID != "" {
+		return paramID
+	}
+	return m.projectID
 }
 
 // toolStatsBlurb returns the trailing description text we append to a tool's
@@ -711,6 +745,7 @@ func (m *MCPProtocol) handleToolsCall(ctx context.Context, req *MCPRequest) (*MC
 		if err := decodeRequiredParams(params.Args, &args); err != nil {
 			return m.errorResult(req.ID, -32602, err.Error())
 		}
+		ctx = WithProjectID(ctx, m.effectiveProjectID(args.ProjectID))
 		result, err := m.handlers.Exec(ctx, args)
 		if err != nil {
 			return m.errorResult(req.ID, -32603, err.Error())
@@ -726,6 +761,7 @@ func (m *MCPProtocol) handleToolsCall(ctx context.Context, req *MCPRequest) (*MC
 		if err := decodeRequiredParams(params.Args, &args); err != nil {
 			return m.errorResult(req.ID, -32602, err.Error())
 		}
+		ctx = WithProjectID(ctx, m.effectiveProjectID(args.ProjectID))
 		result, err := m.handlers.Read(ctx, args)
 		if err != nil {
 			return m.errorResult(req.ID, -32603, err.Error())
@@ -741,6 +777,7 @@ func (m *MCPProtocol) handleToolsCall(ctx context.Context, req *MCPRequest) (*MC
 		if err := decodeRequiredParams(params.Args, &args); err != nil {
 			return m.errorResult(req.ID, -32602, err.Error())
 		}
+		ctx = WithProjectID(ctx, m.effectiveProjectID(args.ProjectID))
 		result, err := m.handlers.Fetch(ctx, args)
 		if err != nil {
 			return m.errorResult(req.ID, -32603, err.Error())
@@ -756,6 +793,7 @@ func (m *MCPProtocol) handleToolsCall(ctx context.Context, req *MCPRequest) (*MC
 		if err := decodeRequiredParams(params.Args, &args); err != nil {
 			return m.errorResult(req.ID, -32602, err.Error())
 		}
+		ctx = WithProjectID(ctx, m.effectiveProjectID(args.ProjectID))
 		result, err := m.handlers.Remember(ctx, args)
 		if err != nil {
 			return m.errorResult(req.ID, -32603, err.Error())
@@ -779,6 +817,7 @@ func (m *MCPProtocol) handleToolsCall(ctx context.Context, req *MCPRequest) (*MC
 				return m.errorResult(req.ID, -32602, err.Error())
 			}
 		}
+		ctx = WithProjectID(ctx, m.effectiveProjectID(args.ProjectID))
 		result, err := m.handlers.Stats(ctx, args)
 		if err != nil {
 			return m.errorResult(req.ID, -32603, err.Error())
@@ -794,6 +833,7 @@ func (m *MCPProtocol) handleToolsCall(ctx context.Context, req *MCPRequest) (*MC
 		if err := decodeRequiredParams(params.Args, &args); err != nil {
 			return m.errorResult(req.ID, -32602, err.Error())
 		}
+		ctx = WithProjectID(ctx, m.effectiveProjectID(args.ProjectID))
 		result, err := m.handlers.Search(ctx, args)
 		if err != nil {
 			return m.errorResult(req.ID, -32603, err.Error())
@@ -809,6 +849,7 @@ func (m *MCPProtocol) handleToolsCall(ctx context.Context, req *MCPRequest) (*MC
 		if err := decodeParams(params.Args, &args); err != nil {
 			return m.errorResult(req.ID, -32602, err.Error())
 		}
+		ctx = WithProjectID(ctx, m.effectiveProjectID(args.ProjectID))
 		result, err := m.handlers.Recall(ctx, args)
 		if err != nil {
 			return m.errorResult(req.ID, -32603, err.Error())
@@ -824,6 +865,7 @@ func (m *MCPProtocol) handleToolsCall(ctx context.Context, req *MCPRequest) (*MC
 		if err := decodeRequiredParams(params.Args, &args); err != nil {
 			return m.errorResult(req.ID, -32602, err.Error())
 		}
+		ctx = WithProjectID(ctx, m.effectiveProjectID(args.ProjectID))
 		result, err := m.handlers.Glob(ctx, args)
 		if err != nil {
 			return m.errorResult(req.ID, -32603, err.Error())
@@ -839,6 +881,7 @@ func (m *MCPProtocol) handleToolsCall(ctx context.Context, req *MCPRequest) (*MC
 		if err := decodeRequiredParams(params.Args, &args); err != nil {
 			return m.errorResult(req.ID, -32602, err.Error())
 		}
+		ctx = WithProjectID(ctx, m.effectiveProjectID(args.ProjectID))
 		result, err := m.handlers.Grep(ctx, args)
 		if err != nil {
 			return m.errorResult(req.ID, -32603, err.Error())
@@ -854,6 +897,7 @@ func (m *MCPProtocol) handleToolsCall(ctx context.Context, req *MCPRequest) (*MC
 		if err := decodeRequiredParams(params.Args, &args); err != nil {
 			return m.errorResult(req.ID, -32602, err.Error())
 		}
+		ctx = WithProjectID(ctx, m.effectiveProjectID(args.ProjectID))
 		result, err := m.handlers.Edit(ctx, args)
 		if err != nil {
 			return m.errorResult(req.ID, -32603, err.Error())
@@ -869,6 +913,7 @@ func (m *MCPProtocol) handleToolsCall(ctx context.Context, req *MCPRequest) (*MC
 		if err := decodeRequiredParams(params.Args, &args); err != nil {
 			return m.errorResult(req.ID, -32602, err.Error())
 		}
+		ctx = WithProjectID(ctx, m.effectiveProjectID(args.ProjectID))
 		result, err := m.handlers.Write(ctx, args)
 		if err != nil {
 			return m.errorResult(req.ID, -32603, err.Error())

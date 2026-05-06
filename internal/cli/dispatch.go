@@ -3465,6 +3465,11 @@ func runMCP(_ []string) int {
 	handlers := transport.NewHandlers(index, journal, sb)
 	handlers.SetProject(proj)
 	mcp := transport.NewMCPProtocol(handlers)
+	// Phase 2: pin the canonical project root for every tool call from this
+	// MCP subprocess. The handler-side resolver (Handlers.getProjectFor)
+	// reads this from ctx, falling back to handlers.SetProject above when
+	// proj is empty (degraded MCP mode).
+	mcp.SetProjectID(proj)
 
 	// Per-process cancellable context. Canceled on stdin EOF (deferred
 	// cancel below) or on SIGINT/SIGTERM (signal goroutine). Threaded into

@@ -43,6 +43,14 @@ type Client struct {
 	// get independent IDs unless the user exports DFMT_SESSION explicitly
 	// — useful for shell loops that want a stable bucket across commands.
 	sessionID string
+
+	// projectID is the canonical project root path this client targets.
+	// Stamped on every RPC's params struct (Phase 2) so the global daemon
+	// can route to the correct per-project resources. Empty when the CLI
+	// is invoked from outside any initialized project — in that case the
+	// daemon falls back to its default project (legacy single-project
+	// daemon) or returns errNoProject.
+	projectID string
 }
 
 // resolveSessionID returns the session ID to use for outbound HTTP calls.
@@ -130,12 +138,22 @@ func NewClient(projectPath string) (*Client, error) {
 		address = socketPath
 	}
 
+	// Resolve absolute project path so Client.projectID is canonical and
+	// matches what the daemon stores. filepath.Abs falls back gracefully
+	// on error — the projectID stays as-passed and the daemon-side
+	// resolver still finds it via samePath comparison.
+	resolvedProj := projectPath
+	if abs, aerr := filepath.Abs(projectPath); aerr == nil {
+		resolvedProj = abs
+	}
+
 	c := &Client{
 		socketPath: socketPath, // For debugging
 		network:    network,
 		address:    address,
 		timeout:    5 * time.Second,
 		sessionID:  resolveSessionID(),
+		projectID:  resolvedProj,
 	}
 
 	// Populate auth token after Client creation
@@ -290,6 +308,9 @@ func (c *Client) Connect(ctx context.Context) (*transport.Codec, error) {
 
 // Remember submits an event to the daemon.
 func (c *Client) Remember(ctx context.Context, params transport.RememberParams) (*transport.RememberResponse, error) {
+	if params.ProjectID == "" {
+		params.ProjectID = c.projectID
+	}
 	body, err := c.doHTTP("/", transport.Request{
 		Method: "remember",
 		Params: mustMarshal(params),
@@ -318,6 +339,9 @@ func (c *Client) Remember(ctx context.Context, params transport.RememberParams) 
 
 // Search queries the daemon.
 func (c *Client) Search(ctx context.Context, params transport.SearchParams) (*transport.SearchResponse, error) {
+	if params.ProjectID == "" {
+		params.ProjectID = c.projectID
+	}
 	body, err := c.doHTTP("/", transport.Request{
 		Method: "search",
 		Params: mustMarshal(params),
@@ -346,6 +370,9 @@ func (c *Client) Search(ctx context.Context, params transport.SearchParams) (*tr
 
 // Recall requests a session snapshot.
 func (c *Client) Recall(ctx context.Context, params transport.RecallParams) (*transport.RecallResponse, error) {
+	if params.ProjectID == "" {
+		params.ProjectID = c.projectID
+	}
 	body, err := c.doHTTP("/", transport.Request{
 		Method: "recall",
 		Params: mustMarshal(params),
@@ -523,6 +550,9 @@ func cleanupStaleDaemon(projectPath string) {
 // bypasses the daemon-side TTL cache; CLI callers set it so successive
 // runs don't all return the same memoised snapshot.
 func (c *Client) Stats(ctx context.Context, params transport.StatsParams) (*transport.StatsResponse, error) {
+	if params.ProjectID == "" {
+		params.ProjectID = c.projectID
+	}
 	// Use HTTP since daemon exposes HTTP endpoint
 	body, err := c.doHTTP("/api/stats", transport.Request{
 		Method: "stats",
@@ -552,6 +582,9 @@ func (c *Client) Stats(ctx context.Context, params transport.StatsParams) (*tran
 
 // Exec executes code via the daemon (journal logged, intent-filtered).
 func (c *Client) Exec(ctx context.Context, params transport.ExecParams) (*transport.ExecResponse, error) {
+	if params.ProjectID == "" {
+		params.ProjectID = c.projectID
+	}
 	body, err := c.doHTTP("/", transport.Request{
 		Method: "exec",
 		Params: mustMarshal(params),
@@ -580,6 +613,9 @@ func (c *Client) Exec(ctx context.Context, params transport.ExecParams) (*transp
 
 // Read reads a file via the daemon (journal logged, intent-filtered).
 func (c *Client) Read(ctx context.Context, params transport.ReadParams) (*transport.ReadResponse, error) {
+	if params.ProjectID == "" {
+		params.ProjectID = c.projectID
+	}
 	body, err := c.doHTTP("/", transport.Request{
 		Method: "read",
 		Params: mustMarshal(params),
@@ -608,6 +644,9 @@ func (c *Client) Read(ctx context.Context, params transport.ReadParams) (*transp
 
 // Fetch fetches a URL via the daemon (journal logged, intent-filtered).
 func (c *Client) Fetch(ctx context.Context, params transport.FetchParams) (*transport.FetchResponse, error) {
+	if params.ProjectID == "" {
+		params.ProjectID = c.projectID
+	}
 	body, err := c.doHTTP("/", transport.Request{
 		Method: "fetch",
 		Params: mustMarshal(params),
@@ -636,6 +675,9 @@ func (c *Client) Fetch(ctx context.Context, params transport.FetchParams) (*tran
 
 // Glob performs glob pattern matching via the daemon.
 func (c *Client) Glob(ctx context.Context, params transport.GlobParams) (*transport.GlobResponse, error) {
+	if params.ProjectID == "" {
+		params.ProjectID = c.projectID
+	}
 	body, err := c.doHTTP("/", transport.Request{
 		Method: "glob",
 		Params: mustMarshal(params),
@@ -664,6 +706,9 @@ func (c *Client) Glob(ctx context.Context, params transport.GlobParams) (*transp
 
 // Grep performs text search via the daemon.
 func (c *Client) Grep(ctx context.Context, params transport.GrepParams) (*transport.GrepResponse, error) {
+	if params.ProjectID == "" {
+		params.ProjectID = c.projectID
+	}
 	body, err := c.doHTTP("/", transport.Request{
 		Method: "grep",
 		Params: mustMarshal(params),
@@ -692,6 +737,9 @@ func (c *Client) Grep(ctx context.Context, params transport.GrepParams) (*transp
 
 // Edit edits a file via the daemon.
 func (c *Client) Edit(ctx context.Context, params transport.EditParams) (*transport.EditResponse, error) {
+	if params.ProjectID == "" {
+		params.ProjectID = c.projectID
+	}
 	body, err := c.doHTTP("/", transport.Request{
 		Method: "edit",
 		Params: mustMarshal(params),
@@ -720,6 +768,9 @@ func (c *Client) Edit(ctx context.Context, params transport.EditParams) (*transp
 
 // Write writes content to a file via the daemon.
 func (c *Client) Write(ctx context.Context, params transport.WriteParams) (*transport.WriteResponse, error) {
+	if params.ProjectID == "" {
+		params.ProjectID = c.projectID
+	}
 	body, err := c.doHTTP("/", transport.Request{
 		Method: "write",
 		Params: mustMarshal(params),
