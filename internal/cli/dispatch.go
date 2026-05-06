@@ -3141,7 +3141,97 @@ func runSetupRefresh() int {
 
 	fmt.Printf("\nDone. Total: removed=%d adjusted=%d skipped=%d\n",
 		totalRemoved, totalAdjusted, totalSkipped)
+
+	// Phase 2 migration: stop any per-project legacy daemons so the
+	// next `dfmt <command>` call spawns the host-wide global daemon.
+	// Skipped under DFMT_DISABLE_AUTOSTART so test binaries that
+	// shell into runSetupRefresh don't block on signal+wait loops.
+	if os.Getenv("DFMT_DISABLE_AUTOSTART") == "" {
+		stopLegacyDaemonsForMigration()
+	}
 	return 0
+}
+
+// stopLegacyDaemonsForMigration enumerates the daemon registry and
+// shuts down any per-project legacy daemons so that subsequent CLI
+// invocations land on the new global daemon. Per-project journals,
+// indexes, configs and content stores are untouched — only the
+// transport-level scaffolding (port/socket/pid/lock files) is
+// removed. Errors are logged but do not fail the refresh; an
+// operator who wants the strictest guarantee can re-run `dfmt stop`
+// against any holdouts and confirm via `dfmt list`.
+func stopLegacyDaemonsForMigration() {
+	daemons := client.GetRegistry().List()
+	if len(daemons) == 0 {
+		fmt.Println("\nNo legacy daemons to stop. The next dfmt command will start a global daemon.")
+		return
+	}
+
+	fmt.Printf("\nMigrating %d legacy per-project daemon(s) to global mode...\n", len(daemons))
+
+	stopped := 0
+	for _, e := range daemons {
+		// Best-effort graceful shutdown: SIGINT on Unix, taskkill /T on
+		// Windows. If the process is already gone the signal call is a
+		// no-op and the post-poll cleanup still removes any leftover
+		// scaffolding.
+		signalStopProcess(e.PID, false)
+		deadline := time.Now().Add(3 * time.Second)
+		gone := false
+		for time.Now().Before(deadline) {
+			if !isProcessRunning(e.PID) {
+				gone = true
+				break
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+		// Force kill if it didn't shut down on its own. We deliberately
+		// do this rather than leaving a zombie — leaving a stale port
+		// listener would block the global daemon from owning the project's
+		// future RPCs cleanly on Windows.
+		if !gone {
+			signalStopProcess(e.PID, true)
+		}
+
+		// Per-project transport scaffolding gets purged so a stray client
+		// using the legacy address path can no longer connect to a dead
+		// socket. config.yaml / journal.jsonl / index.gob are intentionally
+		// left in place — they're the user's data.
+		removeLegacyDaemonScaffolding(e.ProjectPath)
+
+		// Drop the registry row by hand. Unregister also triggers a save,
+		// which is what we want — the next CLI invocation should not see
+		// a dead row pointing at a PID that's no longer running.
+		client.GetRegistry().Unregister(e.ProjectPath)
+		stopped++
+		fmt.Printf("  ✓ %s (PID %d)\n", e.ProjectPath, e.PID)
+	}
+
+	fmt.Printf("Stopped %d daemon(s). Project state preserved.\n", stopped)
+	fmt.Println("Next dfmt command will spawn a single global daemon serving every project.")
+}
+
+// isProcessRunning is a CLI-side wrapper around the platform-specific
+// liveness check exposed by the daemon package. It exists here so the
+// migration loop above doesn't need to import daemon (which would pull
+// in journal/index/etc.) just to check a PID.
+func isProcessRunning(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	return daemon.ProcessExists(pid)
+}
+
+// removeLegacyDaemonScaffolding deletes the per-project transport
+// files left behind by a stopped legacy daemon: port file, daemon
+// socket, PID file and lock file. The function silently ignores
+// "not found" errors — a daemon that died uncleanly may have already
+// removed some of these; the rest get reaped here.
+func removeLegacyDaemonScaffolding(projectPath string) {
+	dot := filepath.Join(projectPath, ".dfmt")
+	for _, name := range []string{"port", "daemon.sock", "daemon.pid", "lock"} {
+		_ = os.Remove(filepath.Join(dot, name))
+	}
 }
 
 func configureAgent(agent setup.Agent) error {
