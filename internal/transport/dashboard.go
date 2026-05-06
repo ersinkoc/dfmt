@@ -195,7 +195,7 @@ async function loadDaemons() {
       opt.value = '';
       opt.textContent = 'No running daemons';
       projectSelect.appendChild(opt);
-      return;
+      return null;
     }
     daemons.forEach(function(d) {
       var opt = document.createElement('option');
@@ -203,8 +203,10 @@ async function loadDaemons() {
       opt.textContent = (d.project_path || '').split(/[/\\]/).pop() + ' (' + (d.project_path || '') + ')';
       projectSelect.appendChild(opt);
     });
+    return daemons[0].project_path || null;
   } catch (err) {
     console.error('Failed to load daemons:', err);
+    return null;
   }
 }
 
@@ -292,7 +294,23 @@ async function loadStats() {
   }
 }
 
-function init() {
+function refreshCurrentView() {
+  // Refresh button must respect the project selector. Pre-Phase-2 the
+  // dashboard had a single daemon view so loadStats() was unambiguous;
+  // in global-daemon mode every project lives behind project_id, so a
+  // bare loadStats() POSTs an empty params and the daemon answers
+  // -32603 (errProjectIDRequired). Route through the selected project
+  // when one is picked; fall back to loadStats() only for the legacy
+  // single-project daemon path where the daemon has a defaultProject.
+  var selected = projectSelect && projectSelect.value;
+  if (selected) {
+    loadStatsForProject(selected);
+  } else {
+    loadStats();
+  }
+}
+
+async function init() {
   errorEl = document.getElementById('error');
   loadingEl = document.getElementById('loading');
   statsEl = document.getElementById('stats');
@@ -300,15 +318,26 @@ function init() {
   projectSelect = document.getElementById('projectSelect');
   daemonBadge = document.getElementById('daemonBadge');
 
-  refreshBtn.addEventListener('click', loadStats);
+  refreshBtn.addEventListener('click', refreshCurrentView);
   projectSelect.addEventListener('change', function() {
     var selected = projectSelect.value;
     if (selected) {
       loadStatsForProject(selected);
     }
   });
-  loadDaemons();
-  loadStats();
+  // Resolve which project to load before kicking off the first stats
+  // request. In global-daemon mode we MUST stamp project_id on the
+  // first call; without this the initial /api/stats POST returns
+  // -32603 and the page shows an error before the user has done
+  // anything. loadDaemons returns the first daemon's project path (or
+  // null when no daemons / legacy single-project mode).
+  var firstProject = await loadDaemons();
+  if (firstProject) {
+    projectSelect.value = firstProject;
+    loadStatsForProject(firstProject);
+  } else {
+    loadStats();
+  }
 }
 
 document.addEventListener('DOMContentLoaded', init);
