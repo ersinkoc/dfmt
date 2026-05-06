@@ -1095,6 +1095,16 @@ func startDaemonBackground(proj string) (int, error) {
 }
 
 func runStop(_ []string) int {
+	// Phase 2: prefer the host-wide global daemon when one is up.
+	// `dfmt stop` previously read only the per-project PID file; in
+	// global mode that file lives at ~/.dfmt/daemon.pid, so the
+	// command always saw pid=0 and falsely reported success without
+	// touching the running process.
+	if globalURL := globalDashboardURL(); globalURL != "" {
+		return stopGlobalDaemon()
+	}
+
+	// Legacy per-project daemon path (v0.3.x straddle setups).
 	proj, err := getProject()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
@@ -1106,51 +1116,18 @@ func runStop(_ []string) int {
 		return 0
 	}
 
-	// Read PID file and signal the daemon to stop. Ordering matters:
-	// 1) signal the process, 2) poll until it terminates, 3) only then
-	// clean up pid/lock/socket files. Removing the socket while the daemon
-	// still holds it breaks existing clients and leaves the live process
-	// orphaned. Windows os.Interrupt is a no-op (syscall.Signal is not
-	// supported for arbitrary PIDs), so we invoke taskkill there.
 	pidPath := filepath.Join(proj, ".dfmt", "daemon.pid")
-	pidData, perr := os.ReadFile(pidPath)
-	var pid int
-	if perr == nil {
-		fmt.Sscanf(string(pidData), "%d", &pid)
-	}
+	pid := readPIDFile(pidPath)
 	if pid > 0 {
 		signalStopProcess(pid, false)
 		fmt.Printf("Sent stop signal to PID %d\n", pid)
-		// Wait up to 5s for graceful shutdown.
-		deadline := time.Now().Add(5 * time.Second)
-		for time.Now().Before(deadline) {
-			if !client.DaemonRunning(proj) {
-				break
-			}
-			time.Sleep(100 * time.Millisecond)
-		}
+		waitForExit(pid, 5*time.Second, proj)
 	}
 
-	// Verify the daemon actually died before clearing state. The previous
-	// behavior — unconditionally removing pid/lock/socket after 5s —
-	// produced a port-conflict scenario when a hung daemon refused to
-	// terminate: the next start would acquire the lock and bind a new
-	// listener while the old daemon was still running on the same port,
-	// causing intermittent "daemon not responding" errors with no obvious
-	// cause. We now escalate to a forced kill and retry the wait. If the
-	// daemon STILL refuses to die (kernel-mode hang, zombied parent), we
-	// surface a clear error and leave the state files alone so the user
-	// can investigate manually.
 	if pid > 0 && client.DaemonRunning(proj) {
 		fmt.Printf("Daemon still running after graceful stop; escalating to forced kill\n")
 		signalStopProcess(pid, true)
-		deadline := time.Now().Add(3 * time.Second)
-		for time.Now().Before(deadline) {
-			if !client.DaemonRunning(proj) {
-				break
-			}
-			time.Sleep(100 * time.Millisecond)
-		}
+		waitForExit(pid, 3*time.Second, proj)
 		if client.DaemonRunning(proj) {
 			fmt.Fprintf(os.Stderr,
 				"error: daemon (PID %d) refused to stop. State files left intact.\n"+
@@ -1159,13 +1136,100 @@ func runStop(_ []string) int {
 		}
 	}
 
-	// Daemon is gone — now safe to remove state files.
 	_ = os.Remove(pidPath)
 	_ = os.Remove(filepath.Join(proj, ".dfmt", "lock"))
 	_ = os.Remove(project.SocketPath(proj))
 
 	fmt.Printf("Daemon stopped for %s\n", proj)
 	return 0
+}
+
+// stopGlobalDaemon shuts the host-wide daemon down. SIGINT (taskkill
+// /T on Windows) first, escalate to SIGKILL/taskkill /F if it doesn't
+// exit within the graceful window. State files at ~/.dfmt/{port,
+// daemon.pid, lock} are removed only after the process actually dies
+// — leaving them in place around a hung daemon would let the next
+// `dfmt daemon` spawn a second listener on a fresh port while the
+// original kept holding the lock.
+func stopGlobalDaemon() int {
+	pid := readGlobalDaemonPID()
+	if pid <= 0 {
+		// PID file gone but globalDashboardURL was non-empty above —
+		// daemon is up but didn't write its PID, or someone deleted it.
+		// We don't have a reliable way to find the process from here,
+		// so surface the inconsistency rather than pretending to stop it.
+		fmt.Fprintln(os.Stderr,
+			"error: global daemon is reachable but ~/.dfmt/daemon.pid is missing.\n"+
+				"Manual recovery: locate the dfmt process via `tasklist`/`ps`, kill it,\n"+
+				"and remove ~/.dfmt/{port,lock,daemon.pid}.")
+		return 1
+	}
+
+	signalStopProcess(pid, false)
+	fmt.Printf("Sent stop signal to global daemon (PID %d)\n", pid)
+	waitForGlobalExit(pid, 5*time.Second)
+
+	if isProcessRunning(pid) {
+		fmt.Printf("Global daemon still running after graceful stop; escalating to forced kill\n")
+		signalStopProcess(pid, true)
+		waitForGlobalExit(pid, 3*time.Second)
+		if isProcessRunning(pid) {
+			fmt.Fprintf(os.Stderr,
+				"error: global daemon (PID %d) refused to stop. State files left intact.\n"+
+					"Manual recovery: kill the process and re-run `dfmt stop`.\n", pid)
+			return 1
+		}
+	}
+
+	_ = os.Remove(project.GlobalPIDPath())
+	_ = os.Remove(project.GlobalLockPath())
+	_ = os.Remove(project.GlobalPortPath())
+	_ = os.Remove(project.GlobalSocketPath())
+
+	fmt.Printf("Global daemon stopped (was PID %d)\n", pid)
+	return 0
+}
+
+// readPIDFile parses an integer PID from a daemon.pid file. Returns
+// 0 on any error so callers can treat "no PID" and "bad PID" the same
+// way. Used by both legacy per-project and global stop paths.
+func readPIDFile(path string) int {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return 0
+	}
+	var pid int
+	_, _ = fmt.Sscanf(strings.TrimSpace(string(data)), "%d", &pid)
+	return pid
+}
+
+// waitForExit polls client.DaemonRunning(proj) until the daemon goes
+// away or the deadline fires. Used by the legacy per-project stop
+// path; the global stop path uses waitForGlobalExit which polls the
+// PID directly.
+func waitForExit(pid int, timeout time.Duration, proj string) {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if !client.DaemonRunning(proj) {
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	_ = pid
+}
+
+// waitForGlobalExit polls the daemon's PID until it disappears from
+// the process table or timeout fires. We can't use
+// client.DaemonRunning here because that would re-spawn a fresh
+// daemon on the auto-spawn path of NewClient.
+func waitForGlobalExit(pid int, timeout time.Duration) {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if !isProcessRunning(pid) {
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
 }
 
 // signalStopProcess asks the OS to terminate pid. Implemented per-platform
