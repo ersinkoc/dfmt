@@ -34,11 +34,19 @@ This repository is DFMT itself. When working on it, you are dogfooding the daemo
 - `cmd/dfmt/main.go` — CLI entry. Parses `--project`, dispatches via `internal/cli.Dispatch()`.
 - `cmd/dfmt-bench/main.go` — token-savings benchmark binary.
 
-### Two-process model
+### Single-binary, self-promoting daemon (v0.6.x)
 
-`internal/cli/dispatch.go` routes subcommands. Local-only commands (`init`, `setup`, `doctor`, `daemon`) run in-process; everything else talks to a **host-wide global daemon** via `internal/client` over a Unix socket (`~/.dfmt/daemon.sock` on Linux/macOS) or loopback TCP (`~/.dfmt/port` on Windows). One daemon process serves every initialized project — first RPC for a project lazy-loads its `config.yaml` / `journal.jsonl` / `index.gob` / `permissions.yaml` / `redact.yaml` into a per-project resource cache; subsequent RPCs reuse the cached handles. The daemon auto-starts on first call (`dfmt daemon --global` under the hood) and idle-exits after the configured timeout. See [ADR-0019](docs/adr/0019-global-daemon.md) for the supersession trail; ADR-0001 is the original per-project model.
+`internal/cli/dispatch.go` routes subcommands. Local-only commands (`init`, `setup`, `doctor`) run in-process; everything else either connects to a running **host-wide global daemon** or self-promotes the current process into one via `daemon.PromoteInProcess`. The transport is a Unix socket (`~/.dfmt/daemon.sock` on Linux/macOS) or loopback TCP (`~/.dfmt/port` on Windows). One daemon process serves every initialized project — first RPC for a project lazy-loads its `config.yaml` / `journal.jsonl` / `index.gob` / `permissions.yaml` / `redact.yaml` into a per-project resource cache; subsequent RPCs reuse the cached handles. Idle-exits after the configured timeout. See [ADR-0019](docs/adr/0019-global-daemon.md) and [ADR-0021](docs/adr/0021-single-binary-self-promotion.md).
 
-Legacy per-project daemons from v0.3.x are stopped during `dfmt setup --refresh`. The daemon-side wire carries a `project_id` field on every RPC so one process can disambiguate calls coming from different projects.
+**No `exec.Command` auto-spawn.** Every `dfmt` subcommand goes through the in-process `acquireBackend` helper: connect to the existing daemon, or become it. There is exactly one `dfmt.exe` per host in steady state. The pre-v0.6.0 pattern (CLI process spawns a sibling daemon child) is gone.
+
+**Recommended workflow:**
+
+- *With Claude Code* (the typical case): the agent automatically launches `dfmt mcp`, that process self-promotes, every other dfmt CLI invocation on the host connects-and-exits fast. Zero terminal blocking.
+- *Standalone CLI without an agent*: run `dfmt daemon` once at session start (use `start /B dfmt daemon` on Windows or `dfmt daemon &` on Unix to background it). Subsequent `dfmt stats` / `dfmt search` connect-and-exit.
+- *Fresh terminal, no prior daemon*: `dfmt stats` self-promotes, prints, and the process keeps running until Ctrl+C or 30 min idle-exit. This is the only case where terminal blocks.
+
+Legacy per-project daemons from v0.3.x are stopped during `dfmt setup --refresh`. The daemon-side wire carries a `project_id` field on every RPC so one process disambiguates calls from different projects.
 
 ### Core domain (`internal/core/`)
 

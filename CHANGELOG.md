@@ -27,6 +27,79 @@ Internal package shapes (`internal/...`) are NOT covered by SemVer.
 
 ## [Unreleased]
 
+## [0.6.2] — 2026-05-06
+
+Documentation release. Closes the v0.6.x roadmap by explicitly
+deciding **not** to implement the terminal-detach helper. The OS-level
+trade-off it would have required (fork-and-exit, breaking the
+"single dfmt.exe" promise that v0.6.0/v0.6.1 just established)
+outweighed its benefit for the typical workflow.
+
+### Recommended workflow
+
+The shortest path to a non-blocking, single-process experience:
+
+- **With Claude Code (the typical case)**: open the project, Claude
+  Code spawns `dfmt mcp` automatically, that process self-promotes
+  to daemon, and stays alive for as long as the agent session runs.
+  Other dfmt invocations (`dfmt stats`, `dfmt list`, etc.) from any
+  terminal connect-and-exit immediately. Zero terminal blocking.
+
+- **Standalone CLI use without Claude Code**: run `dfmt daemon` once
+  at session start. The host-wide global daemon comes up, the
+  terminal returns to the prompt (Windows `start /B dfmt daemon`,
+  Unix `dfmt daemon &` for explicit shell-backgrounding). Subsequent
+  `dfmt stats` / `dfmt search` / `dfmt recall` calls connect-and-exit
+  fast.
+
+- **Quick one-shot from a fresh terminal with no daemon**: `dfmt
+  stats` self-promotes, prints, and the process keeps running until
+  Ctrl+C or the configured idle-exit timer (30 minutes default).
+  Terminal blocks for the duration. This is the only case where the
+  "no detach" decision is visible to operators.
+
+### Why not implement detach
+
+The OS reality on both Windows and Unix is that the parent shell
+(PowerShell, cmd, bash, zsh) waits for the **child process to exit**
+before returning the prompt — closing stdio is not enough. To return
+the prompt while a daemon keeps running, the daemon role must live
+in a **separate process** that survives the original process's exit.
+That separate process is, by definition, a spawn — `os.StartProcess`
+of `os.Args[0]` with a marker flag, or `exec.Command(self, "daemon",
+"--foreground")`. Either way it has the same shape as the
+v0.5.x auto-spawn pattern that v0.6.0/v0.6.1 deliberately retired.
+
+The net steady-state result of fork-and-exit detach would be one
+`dfmt.exe` (the daemon child), so the "tek dfmt.exe" eyeball test
+still passes. But the brief two-process window during the handoff,
+plus the lock-handoff coordination (parent stops listener → spawns
+child → child binds listener) is meaningful complexity for a UX gap
+that only affects a rare workflow (standalone CLI use without a
+prior `dfmt mcp` or `dfmt daemon` invocation).
+
+ADR-0021 captures the full decision tree and the alternatives
+considered. The detach helper is officially **out of scope** for the
+v0.6.x cycle; revisited only if a real operator workflow surfaces
+that needs it.
+
+### Changed
+
+- `docs/adr/0021-single-binary-self-promotion.md` — adds an
+  "Explicitly out of scope: terminal detach" section with the OS
+  reasoning and the workflow guidance above.
+- `CLAUDE.md` / `AGENTS.md` — short note on the recommended
+  daemon-up-first pattern for standalone CLI sessions.
+- `CHANGELOG.md` — v0.6.2 entry covering the deliberate
+  non-implementation.
+
+### Notes
+
+- No code changes. `internal/version.Current` bumped to `v0.6.2`
+  for the release tag only.
+- v0.6.x is now feature-complete; future improvements will land on
+  the v0.7.x track.
+
 ## [0.6.1] — 2026-05-06
 
 The cleanup release that closes v0.6.0's "Notes / known limitations".

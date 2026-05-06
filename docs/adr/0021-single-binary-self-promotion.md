@@ -94,5 +94,42 @@ Rejected for v0.6.0 because:
 
 - **Tool-call wrapper migration** (`dfmt exec`, `dfmt read`, `dfmt fetch`, `dfmt glob`, `dfmt grep`, `dfmt edit`, `dfmt write` to `acquireBackend`). Done in v0.6.1.
 - **Drop `client.NewClient`'s `startDaemon` / `exec.Command`** entirely. Done in v0.6.1.
-- **Detach helper** (`FreeConsole` on Windows; `setsid+fork` on Unix) for short-lived commands. Deferred to v0.6.x; CHANGELOG documents the terminal-blocking interim behavior.
+- **Detach helper** (`FreeConsole` on Windows; `setsid+fork` on Unix) for short-lived commands. **Decided against** in v0.6.2 — see "Explicitly out of scope" below.
 - **Registry extraction** to break the `daemon → client` import cycle. Speculative cleanup; only useful if a future ADR wants `client.NewClient` itself to self-promote.
+
+## Explicitly out of scope: terminal detach (v0.6.2 decision)
+
+The v0.6.0 CHANGELOG entry queued a `FreeConsole` (Windows) / `setsid+fork` (Unix) detach helper for the v0.6.x cycle so that short-lived commands like `dfmt stats` could print their output and return the shell prompt while the daemon role kept running in the background. v0.6.2 explicitly removes this from the roadmap.
+
+### The OS-level trade-off
+
+On both Windows and Unix the parent shell (PowerShell, cmd, bash, zsh) waits for the **child process to exit** before returning the prompt — closing stdio is not enough. To return the prompt while the daemon keeps running, the daemon role must live in a process that survives the original process's exit. That process is, by definition, a spawn:
+
+- Windows: `os.StartProcess(os.Args[0], ..., DETACHED_PROCESS)` followed by parent exit, OR `exec.Command(self, "daemon", "--foreground")` start + parent exit.
+- Unix: `fork()` + child `setsid()` + parent exit. The double-fork pattern is the canonical daemonization sequence; it cannot be done within a single process.
+
+In every shape, the original process has to spawn a child copy of itself, hand off the daemon role, and exit. The steady-state result is still **one** `dfmt.exe` in `tasklist` — the new daemon child — so the "tek dfmt.exe" eyeball test still passes. But:
+
+- During the brief handoff window (parent stops listener → spawns child → child binds listener), no daemon is reachable. Another `dfmt` invocation hitting that gap would itself self-promote, racing the child for the lock. Solvable, but the win is small.
+- The shape of the spawn — `exec.Command(self, "daemon", ...)` — is identical to the pre-v0.6.0 auto-spawn that this ADR (and the v0.6.0/v0.6.1 release pair) deliberately retired. Re-introducing it for short-lived commands would partially reverse the architectural commitment, even if the new spawn fires *after* the work is done rather than before it.
+- The lock-handoff coordination is platform-specific code (file descriptor inheritance differs between Windows and Unix) with its own test surface to maintain.
+
+### The workflow that makes detach unnecessary
+
+The typical operator workflow already provides a non-blocking single-process experience without any detach magic:
+
+1. Open the project in an editor with Claude Code (or another DFMT-aware agent). The agent automatically launches `dfmt mcp` as a long-lived MCP transport. That process self-promotes to daemon on first run.
+2. Every other dfmt invocation on the host — `dfmt stats`, `dfmt list`, `dfmt search`, dashboard refresh — connects to the running daemon via its socket / port, does its RPC, and exits. Zero terminal blocking.
+3. The daemon stays alive for as long as Claude Code is running. When the agent closes, the daemon idle-exits 30 minutes later (configurable).
+
+For operators using DFMT outside an agent context — pure CLI workflow with no MCP — the `dfmt daemon` standalone command (background-spawn mode, opt-in by user invocation) covers the same need. Run it once at session start, every subsequent CLI command connects-and-exits.
+
+### When this decision should be revisited
+
+A real operator workflow that:
+
+- Does NOT involve Claude Code (or any other agent that spawns `dfmt mcp` automatically),
+- Does NOT have access to a session-starter command (`dfmt daemon` once at terminal open),
+- Wants `dfmt stats` to be a fire-and-forget command from any fresh terminal,
+
+…is the case detach would close. Operators with this profile have not surfaced. The implementation cost (~200 lines platform-specific code + lock-handoff testing matrix) does not match the demand. Revisit if it does.
