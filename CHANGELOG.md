@@ -27,6 +27,32 @@ Internal package shapes (`internal/...`) are NOT covered by SemVer.
 
 ## [Unreleased]
 
+## [0.4.5] — 2026-05-06
+
+Patch release closing two more global-daemon UX gaps caught after
+v0.4.4 shipped.
+
+### Fixed
+
+- **Dashboard initial load + refresh.** The page fired `loadStats()`
+  with empty params before any project was selected, so the first
+  `/api/stats` POST returned `-32603` (errProjectIDRequired) and the
+  page showed an error before the user had done anything. Refresh
+  button had the same problem — it always called `loadStats()`,
+  silently navigating back to the empty-params view even after the
+  user picked a project. `loadDaemons` now returns the first project
+  path so init can preselect it; refresh routes through a wrapper
+  that reads the selector value and falls back to bare `loadStats()`
+  only for legacy single-project daemons.
+- **`dfmt status --json` socket field.** Was always emitting the
+  per-project legacy socket path under `socket`, regardless of which
+  daemon was actually answering RPCs. In global daemon mode the
+  per-project path is a stale v0.3.x artifact — the real listener is
+  `~/.dfmt/daemon.sock` (Unix) or `~/.dfmt/port` (Windows). Operators
+  debugging "why won't my client connect" got pointed at the wrong
+  file. Now resolves the global path first when a host-wide daemon
+  is up.
+
 ## [0.4.4] — 2026-05-06
 
 Patch release closing four cross-project correctness gaps in the
