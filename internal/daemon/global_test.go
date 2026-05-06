@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -153,6 +154,72 @@ func TestNewGlobalSecondInstanceFailsLockAcquisition(t *testing.T) {
 		stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_ = d2.Stop(stopCtx)
+	}
+}
+
+// TestPromoteInProcessBringsUpDaemon proves the v0.6.0 entry point:
+// any subcommand can call PromoteInProcess on a daemon-not-running
+// miss and end up with a running global daemon owned by the current
+// process. No exec.Command spawning, no separate dfmt.exe in tasklist.
+func TestPromoteInProcessBringsUpDaemon(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("DFMT_GLOBAL_DIR", tmp)
+
+	cfg := newTestConfig()
+	cfg.Lifecycle.ShutdownTimeout = "2s"
+
+	d, err := PromoteInProcess(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("PromoteInProcess: %v", err)
+	}
+	defer func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = d.Stop(stopCtx)
+	}()
+
+	if !d.globalMode {
+		t.Error("PromoteInProcess produced non-global daemon")
+	}
+	if !d.running.Load() {
+		t.Error("PromoteInProcess did not Start the daemon (running=false)")
+	}
+	if d.handlers == nil {
+		t.Error("PromoteInProcess returned daemon with nil handlers")
+	}
+}
+
+// TestPromoteInProcessReturnsLockErrorWhenAnotherDaemonOwns proves
+// the fallback contract: when a global daemon already holds the
+// host-wide lock, PromoteInProcess returns *LockError so the caller
+// can `errors.As` and connect via the client instead of crashing.
+func TestPromoteInProcessReturnsLockErrorWhenAnotherDaemonOwns(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("DFMT_GLOBAL_DIR", tmp)
+
+	cfg := newTestConfig()
+	cfg.Lifecycle.ShutdownTimeout = "2s"
+
+	d1, err := PromoteInProcess(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("first PromoteInProcess: %v", err)
+	}
+	defer func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = d1.Stop(stopCtx)
+	}()
+
+	d2, err := PromoteInProcess(context.Background(), cfg)
+	if err == nil {
+		t.Fatal("second PromoteInProcess returned nil error; expected *LockError")
+	}
+	var lerr *LockError
+	if !errors.As(err, &lerr) {
+		t.Errorf("second PromoteInProcess error: got %v (%T), want *LockError", err, err)
+	}
+	if d2 != nil {
+		t.Error("second PromoteInProcess returned non-nil daemon on lock contention")
 	}
 }
 

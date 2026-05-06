@@ -495,6 +495,55 @@ func NewGlobal(cfg *config.Config) (*Daemon, error) {
 	return d, nil
 }
 
+// PromoteInProcess constructs a global daemon and starts it in the
+// current process. The returned daemon owns the host-wide listener
+// (~/.dfmt/daemon.sock or ~/.dfmt/port) and the singleton lock — every
+// future RPC from any dfmt CLI invocation, MCP subprocess, or
+// dashboard reload lands here.
+//
+// This is the v0.6.0 alternative to spawning a child via exec.Command.
+// `dfmt mcp`, `dfmt stats`, `dfmt search`, and the rest of the CLI
+// surface call PromoteInProcess on a daemon-not-running miss; the
+// resulting *Daemon serves both the calling subcommand directly
+// (in-process Handlers, no IPC overhead) and any future RPC that
+// arrives on the listener. One process, one binary, end of story.
+//
+// Failure modes:
+//
+//   - Another process already holds the global lock: the returned
+//     error wraps *LockError so callers can use errors.As to detect
+//     it and fall back to client mode (connect to the running
+//     daemon via the loopback / socket address it published).
+//   - Listener bind / port file write / config error: surfaced as-is.
+//
+// On error the constructed Daemon is closed; the caller need not run
+// Stop. On success the caller owns the *Daemon and MUST call Stop
+// (typically on process exit / signal) so the lock, listener, and
+// project resources are torn down cleanly.
+//
+// cfg may be nil; PromoteInProcess substitutes config.Default(). The
+// daemon's per-project YAML overrides still take effect on each
+// Resources(projectID) lookup; the cfg passed here is the host-wide
+// fallback (idle timeout, retention defaults, etc.).
+func PromoteInProcess(ctx context.Context, cfg *config.Config) (*Daemon, error) {
+	d, err := NewGlobal(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("construct global daemon: %w", err)
+	}
+	if err := d.Start(ctx); err != nil {
+		// LockError surfaces unwrapped so callers see the canonical
+		// "already running" sentinel instead of a context-wrapped
+		// fmt.Errorf chain. Other Start failures (port bind, etc.)
+		// keep their wrapping.
+		var lerr *LockError
+		if errors.As(err, &lerr) {
+			return nil, lerr
+		}
+		return nil, fmt.Errorf("start global daemon: %w", err)
+	}
+	return d, nil
+}
+
 // LoadedProjects returns every project path the daemon currently has
 // resources cached for. The default (single-project) project — if any
 // — is included alongside the keys of extraProjects. The result is a
