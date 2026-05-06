@@ -2078,6 +2078,50 @@ func TestSandboxWriteOutsideWorkingDir(t *testing.T) {
 	}
 }
 
+// TestSandboxReadRefusesSymlinkLeaf pins V-09: Read must refuse to open a
+// path whose leaf is a symlink, even if the resolved target sits within
+// the working directory. The kernel-level O_NOFOLLOW close on the open
+// removes the TOCTOU window between the lexical EvalSymlinks check and
+// the os.Open call. Edit and Write already had this guarantee via
+// safefs.WriteFileAtomic; Read was the gap.
+func TestSandboxReadRefusesSymlinkLeaf(t *testing.T) {
+	tmpdir := t.TempDir()
+
+	// Probe whether the OS lets us create symlinks; skip if not (Windows
+	// without elevated privs / Developer Mode).
+	probeTarget := filepath.Join(tmpdir, "probe-target")
+	if err := os.WriteFile(probeTarget, []byte("x"), 0o600); err != nil {
+		t.Fatalf("seed probe target: %v", err)
+	}
+	probeLink := filepath.Join(tmpdir, "probe-link")
+	if err := os.Symlink(probeTarget, probeLink); err != nil {
+		t.Skipf("symlinks not creatable on this platform/permission level: %v", err)
+	}
+	_ = os.Remove(probeLink)
+	_ = os.Remove(probeTarget)
+
+	// Real test setup: a benign file, plus a symlink whose target is the
+	// benign file. Read of the file works; Read of the symlink is refused.
+	target := filepath.Join(tmpdir, "real.txt")
+	if err := os.WriteFile(target, []byte("payload"), 0o600); err != nil {
+		t.Fatalf("seed real file: %v", err)
+	}
+	link := filepath.Join(tmpdir, "link-to-real")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatalf("create symlink: %v", err)
+	}
+
+	sb := NewSandbox(tmpdir)
+	ctx := context.Background()
+
+	if _, err := sb.Read(ctx, ReadReq{Path: target}); err != nil {
+		t.Errorf("Read of regular file failed: %v", err)
+	}
+	if _, err := sb.Read(ctx, ReadReq{Path: link}); err == nil {
+		t.Errorf("Read of symlink leaf accepted; want O_NOFOLLOW refusal")
+	}
+}
+
 // TestSandboxWriteEditRejectReservedNames pins V-15: the sandbox Write
 // and Edit paths must refuse Windows reserved device names (CON, PRN,
 // AUX, NUL, COM0-9, LPT0-9) and their `.ext` forms. Active on every

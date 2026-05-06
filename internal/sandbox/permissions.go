@@ -1223,8 +1223,21 @@ func (s *SandboxImpl) Read(ctx context.Context, req ReadReq) (ReadResp, error) {
 		return ReadResp{}, err
 	}
 
-	// Streaming read with an upper bound to keep memory bounded on huge files.
-	f, err := os.Open(cleanPath)
+	// V-09: open with O_NOFOLLOW (Unix) / FILE_FLAG_OPEN_REPARSE_POINT
+	// (Windows) so an attacker who swaps the leaf for a symlink between
+	// the lexical EvalSymlinks check above and the open here cannot
+	// redirect the read. The check above resolved the path through any
+	// pre-existing symlinks and validated containment of the target; the
+	// no-follow open then refuses any *new* symlink at the leaf,
+	// regardless of where it points. Edit and Write already had this
+	// guarantee via safefs.WriteFileAtomic; Read was the gap.
+	//
+	// Operators with benign within-root symlink leaves who want them
+	// followed can resolve the symlink target themselves and pass that
+	// path — that's the documented Read contract for the read tier (the
+	// looser EnsureResolvedUnder posture, not the strict CheckNoSymlinks
+	// posture used by writes).
+	f, err := safefs.OpenReadNoFollow(cleanPath)
 	if err != nil {
 		return ReadResp{}, err
 	}

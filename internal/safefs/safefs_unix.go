@@ -9,6 +9,22 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+// OpenReadNoFollow opens path read-only and refuses to follow a symlink at
+// the leaf position. Closes V-09's TOCTOU window: lexical containment checks
+// (filepath.EvalSymlinks + Rel) must finish before the open, and a malicious
+// process that swaps the leaf for a symlink between the check and the open
+// would otherwise cause the open to follow the new symlink. O_NOFOLLOW makes
+// the kernel itself refuse the post-swap state, regardless of what the
+// pre-check resolved to.
+//
+// Intermediate path components ARE allowed to be symlinks — the Read tier
+// has always tolerated benign within-root symlinks (see EnsureResolvedUnder
+// docs); only the final component is gated. Use the writer-side
+// CheckNoSymlinks helper if every component must be a regular dir.
+func OpenReadNoFollow(path string) (*os.File, error) {
+	return os.OpenFile(path, os.O_RDONLY|unix.O_NOFOLLOW, 0)
+}
+
 // WriteFile writes data to path with mode after CheckNoSymlinks(baseDir, path)
 // succeeds. Existing regular-file targets are overwritten in place; symlinks
 // or non-regular files anywhere along the path are refused.
