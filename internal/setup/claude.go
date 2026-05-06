@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/ersinkoc/dfmt/internal/logging"
 	"github.com/ersinkoc/dfmt/internal/safefs"
 )
 
@@ -153,6 +154,23 @@ func PatchClaudeCodeUserJSON(projectPath string, setUserScopeMCP bool) error {
 			entry = map[string]any{}
 		}
 
+		// V-14 (F-Setup-4): capture prior flag values BEFORE flipping
+		// them, so uninstall can restore the user's original trust
+		// state. Capture is idempotent (first patch wins), so a re-run
+		// with already-flipped flags doesn't mis-record "true" as the
+		// pre-patch state. Failure here is non-fatal — record an error
+		// in the warning log and proceed; the alternative is failing
+		// patch entirely, which would block setup over a sidecar I/O
+		// glitch on a feature most users won't ever uninstall.
+		if priors, perr := loadClaudeTrustPriors(); perr == nil {
+			captureClaudeTrustPriors(priors, key, entry)
+			if serr := saveClaudeTrustPriors(priors); serr != nil {
+				logging.Warnf("save claude trust priors: %v", serr)
+			}
+		} else {
+			logging.Warnf("load claude trust priors: %v", perr)
+		}
+
 		entry["hasTrustDialogAccepted"] = true
 		entry["hasClaudeMdExternalIncludesApproved"] = true
 		entry["hasClaudeMdExternalIncludesWarningShown"] = true
@@ -229,13 +247,18 @@ func PatchClaudeCodeUserJSON(projectPath string, setUserScopeMCP bool) error {
 //   - top-level `mcpServers.dfmt` (set by `setUserScopeMCP`),
 //   - per-project `projects[*].mcpServers.dfmt`.
 //
-// Trust flags (`hasTrustDialogAccepted`, `hasClaudeMdExternalIncludes-
-// Approved`, `hasClaudeMdExternalIncludesWarningShown`) are deliberately
-// left in place — DFMT cannot tell whether the user accepted them
-// independently of our setup, and removing them would silently un-trust
-// projects the user already trusts. Closes F-G-INFO-2 from the security
-// audit (uninstall left stale `mcpServers.dfmt` entries that surfaced as
-// "failed to start MCP server" in Claude Code after `dfmt` was removed).
+// V-14 (F-Setup-4): trust flags (`hasTrustDialogAccepted`,
+// `hasClaudeMdExternalIncludesApproved`,
+// `hasClaudeMdExternalIncludesWarningShown`) are restored to their
+// pre-patch values from the sidecar at <state>/claude-trust-prior.json,
+// not blindly cleared. The sidecar is captured by Patch on first patch
+// of each project so a re-patch / reinstall doesn't lose the original
+// state. If a project has no captured prior values (sidecar missing,
+// patch from an older dfmt), the flags are left in place — falling
+// back to the historical "leave alone" behavior is safer than guessing.
+// Closes F-G-INFO-2 from the prior audit (uninstall left stale
+// `mcpServers.dfmt` entries that surfaced as "failed to start MCP
+// server" in Claude Code after `dfmt` was removed).
 //
 // Safe against missing files (returns nil), empty files (no-op), and
 // concurrent writers (atomic tmp + rename in the same directory). Empty
@@ -278,6 +301,17 @@ func UnpatchClaudeCodeUserJSON() error {
 		}
 	}
 
+	// V-14 (F-Setup-4): load the trust-flag sidecar once. Per-project loop
+	// below applies restoreClaudeTrustPriors for every project we touch,
+	// regardless of whether we found a dfmt MCP entry there — Patch may
+	// have flipped the flags before a separate failure prevented the
+	// MCP entry from being written, and we still want to restore flags.
+	priors, perr := loadClaudeTrustPriors()
+	if perr != nil {
+		logging.Warnf("load claude trust priors: %v", perr)
+		priors = &claudeTrustPriors{Version: 1, Projects: map[string]map[string]bool{}}
+	}
+
 	// Per-project MCP entries.
 	if projects, ok := cfg["projects"].(map[string]any); ok {
 		for key, val := range projects {
@@ -285,21 +319,41 @@ func UnpatchClaudeCodeUserJSON() error {
 			if !ok {
 				continue
 			}
+			// Restore trust flags even if the dfmt MCP entry has already
+			// been stripped (or was never written for this project), so a
+			// partial-failure setup still cleans up flag state.
+			if restoreClaudeTrustPriors(priors, key, entry) {
+				changed = true
+			}
 			servers, ok := entry["mcpServers"].(map[string]any)
 			if !ok {
+				projects[key] = entry
 				continue
 			}
-			if _, present := servers["dfmt"]; !present {
-				continue
-			}
-			delete(servers, "dfmt")
-			changed = true
-			if len(servers) == 0 {
-				delete(entry, "mcpServers")
-			} else {
-				entry["mcpServers"] = servers
+			if _, present := servers["dfmt"]; present {
+				delete(servers, "dfmt")
+				changed = true
+				if len(servers) == 0 {
+					delete(entry, "mcpServers")
+				} else {
+					entry["mcpServers"] = servers
+				}
 			}
 			projects[key] = entry
+		}
+	}
+
+	// Save the (now potentially smaller) priors file. If the only entries
+	// it had matched projects we just restored, the inner Projects map is
+	// empty — remove the sidecar entirely so we don't leave stale state
+	// for a future reinstall to find.
+	if len(priors.Projects) == 0 {
+		if rerr := removeClaudeTrustPriorFile(); rerr != nil {
+			logging.Warnf("remove claude trust priors: %v", rerr)
+		}
+	} else {
+		if serr := saveClaudeTrustPriors(priors); serr != nil {
+			logging.Warnf("save claude trust priors: %v", serr)
 		}
 	}
 

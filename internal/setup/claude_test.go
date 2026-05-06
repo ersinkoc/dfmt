@@ -568,3 +568,121 @@ func TestUnpatchClaudeCodeUserJSON_NoChangeWhenAbsent(t *testing.T) {
 		t.Errorf("file mtime changed despite no dfmt entries: before=%v after=%v", beforeStat.ModTime(), afterStat.ModTime())
 	}
 }
+
+// TestPatchUnpatchClaudeTrustFlagRoundTrip is the V-14 (F-Setup-4)
+// regression: Patch must capture the prior values of every trust flag
+// for a project, and Unpatch must restore them — flags absent before
+// patch must be deleted from the entry, flags that were false before
+// patch must be set back to false, flags that were true stay true.
+func TestPatchUnpatchClaudeTrustFlagRoundTrip(t *testing.T) {
+	home := t.TempDir()
+	setHome(t, home)
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, ".local", "share"))
+
+	projectKey := "/some/project"
+	// Seed: one flag was already true (e.g. user accepted the trust dialog
+	// on their own), one was explicitly false (user dismissed it), one was
+	// absent (user never saw the prompt).
+	initial := map[string]any{
+		"projects": map[string]any{
+			projectKey: map[string]any{
+				"hasTrustDialogAccepted":              true,
+				"hasClaudeMdExternalIncludesApproved": false,
+				// hasClaudeMdExternalIncludesWarningShown deliberately absent
+			},
+		},
+	}
+	seed, err := json.Marshal(initial)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	claudePath := filepath.Join(home, ".claude.json")
+	if err := os.WriteFile(claudePath, seed, 0o600); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	if err := PatchClaudeCodeUserJSON(projectKey, false); err != nil {
+		t.Fatalf("patch: %v", err)
+	}
+
+	// Post-patch: all three flags must be true.
+	cfg := readClaudeJSON(t, home)
+	entry, _ := getMap(t, cfg, "projects")[projectKey].(map[string]any)
+	for _, flag := range []string{
+		"hasTrustDialogAccepted",
+		"hasClaudeMdExternalIncludesApproved",
+		"hasClaudeMdExternalIncludesWarningShown",
+	} {
+		if v, _ := entry[flag].(bool); !v {
+			t.Errorf("post-patch flag %s = %v, want true", flag, entry[flag])
+		}
+	}
+
+	if err := UnpatchClaudeCodeUserJSON(); err != nil {
+		t.Fatalf("unpatch: %v", err)
+	}
+
+	// Post-unpatch: prior values must be restored exactly.
+	cfg = readClaudeJSON(t, home)
+	entry, _ = getMap(t, cfg, "projects")[projectKey].(map[string]any)
+
+	if v, ok := entry["hasTrustDialogAccepted"].(bool); !ok || !v {
+		t.Errorf("hasTrustDialogAccepted = %v, want true (was true before patch)", entry["hasTrustDialogAccepted"])
+	}
+	if v, ok := entry["hasClaudeMdExternalIncludesApproved"].(bool); !ok || v {
+		t.Errorf("hasClaudeMdExternalIncludesApproved = %v, want false (was false before patch)", entry["hasClaudeMdExternalIncludesApproved"])
+	}
+	if _, present := entry["hasClaudeMdExternalIncludesWarningShown"]; present {
+		t.Errorf("hasClaudeMdExternalIncludesWarningShown present after restore; want absent (was absent before patch)")
+	}
+
+	// The sidecar should be removed once it has no remaining entries.
+	sidecarPath := filepath.Join(home, ".local", "share", "dfmt", "claude-trust-prior.json")
+	if _, err := os.Stat(sidecarPath); !os.IsNotExist(err) {
+		t.Errorf("sidecar at %s not removed after full restore: stat err=%v", sidecarPath, err)
+	}
+}
+
+// TestPatchClaudeCaptureIsIdempotent: a re-patch of the same project must
+// NOT overwrite the captured prior values with the now-flipped post-patch
+// values. Without idempotence, a re-run after the first patch would
+// record "true" as the prior state and uninstall would never roll back.
+func TestPatchClaudeCaptureIsIdempotent(t *testing.T) {
+	home := t.TempDir()
+	setHome(t, home)
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, ".local", "share"))
+
+	projectKey := "/some/project"
+	initial := map[string]any{
+		"projects": map[string]any{
+			projectKey: map[string]any{
+				"hasClaudeMdExternalIncludesApproved": false,
+			},
+		},
+	}
+	seed, _ := json.Marshal(initial)
+	claudePath := filepath.Join(home, ".claude.json")
+	if err := os.WriteFile(claudePath, seed, 0o600); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// Two consecutive patches — the second sees flipped flags.
+	if err := PatchClaudeCodeUserJSON(projectKey, false); err != nil {
+		t.Fatalf("patch 1: %v", err)
+	}
+	if err := PatchClaudeCodeUserJSON(projectKey, false); err != nil {
+		t.Fatalf("patch 2: %v", err)
+	}
+
+	if err := UnpatchClaudeCodeUserJSON(); err != nil {
+		t.Fatalf("unpatch: %v", err)
+	}
+
+	cfg := readClaudeJSON(t, home)
+	entry, _ := getMap(t, cfg, "projects")[projectKey].(map[string]any)
+	// Must restore to the value captured BEFORE the first patch (false),
+	// not the value the second patch saw (true).
+	if v, ok := entry["hasClaudeMdExternalIncludesApproved"].(bool); !ok || v {
+		t.Errorf("hasClaudeMdExternalIncludesApproved = %v after re-patch + unpatch; want false (idempotent capture must preserve original)", entry["hasClaudeMdExternalIncludesApproved"])
+	}
+}
