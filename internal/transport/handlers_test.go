@@ -2098,7 +2098,7 @@ func TestHTTPServerStartWithNilListener(t *testing.T) {
 // TestHandlersRedactStringNilRedactor tests redactString with nil redactor.
 func TestHandlersRedactStringNilRedactor(t *testing.T) {
 	h := NewHandlers(core.NewIndex(), &mockJournal{}, nil)
-	got := h.redactString("test string")
+	got := h.redactString(context.Background(), "test string")
 	if got != "test string" {
 		t.Errorf("redactString with nil redactor returned %q, want %q", got, "test string")
 	}
@@ -2108,7 +2108,7 @@ func TestHandlersRedactStringNilRedactor(t *testing.T) {
 func TestHandlersRedactStringWithRedactor(t *testing.T) {
 	h := NewHandlers(core.NewIndex(), &mockJournal{}, nil)
 	h.SetRedactor(redact.NewRedactor())
-	got := h.redactString("test string")
+	got := h.redactString(context.Background(), "test string")
 	// Redactor replaces strings containing secret patterns
 	_ = got // just exercise the code path
 }
@@ -2444,7 +2444,7 @@ func TestHandlersRedactDataWithRedactor(t *testing.T) {
 		"code": "secret API key here",
 		"path": "/safe/path",
 	}
-	got := h.redactData(input)
+	got := h.redactData(context.Background(), input)
 	if _, ok := got["code"]; !ok {
 		t.Error("redactData result missing 'code' key")
 	}
@@ -2664,7 +2664,7 @@ func TestHandlersRedactDataNilRedactor(t *testing.T) {
 	h := NewHandlers(core.NewIndex(), &mockJournal{}, nil)
 	// With no redactor set, redactData returns input unchanged.
 	input := map[string]any{"key": "value", "num": 42}
-	got := h.redactData(input)
+	got := h.redactData(context.Background(), input)
 	if got["key"] != "value" || got["num"] != 42 {
 		t.Errorf("redactData with nil redactor returned %v, want unchanged", got)
 	}
@@ -2763,7 +2763,7 @@ func TestHandlersRedactDataNested(t *testing.T) {
 			"password": "should-be-redacted",
 		},
 	}
-	got := h.redactData(input)
+	got := h.redactData(context.Background(), input)
 	// Redactor should replace value containing "secret" or "password"
 	_ = got // just exercise the code path
 }
@@ -2800,7 +2800,7 @@ func TestHandlersStashContentNilStore(t *testing.T) {
 // TestHandlersRedactDataWithNilData tests redactData with nil input.
 func TestHandlersRedactDataWithNilData(t *testing.T) {
 	h := NewHandlers(core.NewIndex(), &mockJournal{}, nil)
-	got := h.redactData(nil)
+	got := h.redactData(context.Background(), nil)
 	if got != nil {
 		t.Errorf("redactData(nil) returned %v, want nil", got)
 	}

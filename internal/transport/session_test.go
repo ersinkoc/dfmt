@@ -2,7 +2,10 @@ package transport
 
 import (
 	"context"
+	"strings"
 	"testing"
+
+	"github.com/ersinkoc/dfmt/internal/redact"
 )
 
 // TestProjectIDContext verifies the WithProjectID / ProjectIDFrom round-trip
@@ -118,6 +121,47 @@ func TestHandlersRememberRoutesThroughFetcher(t *testing.T) {
 	}
 	if got := perCallJournal.events[0].Project; got != "/proj/per-call" {
 		t.Errorf("event.Project: got %q, want %q", got, "/proj/per-call")
+	}
+}
+
+// TestHandlersRedactorForRoutesThroughBundle proves the per-call
+// redactor selection: when a ResourceFetcher is installed, every
+// redactor-touching path (redactString / redactData / redactEventForRender)
+// reads bundle.Redactor — the project's own redact.yaml — instead of
+// the default project's redactor on the Handlers struct.
+//
+// Without this, project A's secrets-pattern would scrub project B's
+// tool output. A pattern like "\bpetya\b" added to A/.dfmt/redact.yaml
+// would silently match the same word in B's responses; conversely B's
+// own pattern would NOT match because B's redactor was never loaded.
+func TestHandlersRedactorForRoutesThroughBundle(t *testing.T) {
+	defaultR := redact.NewRedactor()
+	if err := defaultR.AddPattern("default", `DEFAULT_SECRET`, "[D]"); err != nil {
+		t.Fatalf("default AddPattern: %v", err)
+	}
+	perCallR := redact.NewRedactor()
+	if err := perCallR.AddPattern("percall", `PERCALL_SECRET`, "[P]"); err != nil {
+		t.Fatalf("percall AddPattern: %v", err)
+	}
+
+	h := &Handlers{}
+	h.SetRedactor(defaultR) // default project's redactor — must NOT be used when fetcher is set
+	h.SetResourceFetcher(func(string) (Bundle, error) {
+		return Bundle{Redactor: perCallR, ProjectPath: "/proj/per-call"}, nil
+	})
+
+	ctx := WithProjectID(context.Background(), "/proj/per-call")
+
+	// Per-call pattern fires; default pattern does NOT.
+	got := h.redactString(ctx, "hello PERCALL_SECRET and DEFAULT_SECRET world")
+	if !strings.Contains(got, "[P]") {
+		t.Errorf("per-call pattern did not fire on bundle redactor: %q", got)
+	}
+	if strings.Contains(got, "[D]") {
+		t.Errorf("default pattern fired on per-call ctx — redactor leaked across projects: %q", got)
+	}
+	if !strings.Contains(got, "DEFAULT_SECRET") {
+		t.Errorf("default secret should be untouched in per-call ctx (per-call redactor doesn't know it): %q", got)
 	}
 }
 

@@ -215,6 +215,34 @@ func (h *Handlers) getRedactor() *redact.Redactor {
 	return r
 }
 
+// redactorFor resolves the redactor for the given context. When a
+// per-call resource fetcher is installed (global daemon mode), this
+// reads bundle.Redactor — the per-project redactor loaded from
+// <project>/.dfmt/redact.yaml. Without this, every project served by
+// the global daemon would have its tool-output bytes redacted by the
+// default project's patterns; project B's secrets-in-redact.yaml would
+// not apply to its own tool calls.
+//
+// Falls back to h.getRedactor() (the default project's redactor) when:
+//   - No fetcher is installed (legacy single-project daemon mode)
+//   - The fetcher returns an error (e.g. errProjectIDRequired in
+//     degraded mode where no projectID was stamped)
+//
+// The fallback keeps unit tests that construct Handlers directly via
+// NewHandlers + SetRedactor working without changes — they have no
+// fetcher and rely on the field set.
+func (h *Handlers) redactorFor(ctx context.Context) *redact.Redactor {
+	h.mu.RLock()
+	f := h.fetchResources
+	h.mu.RUnlock()
+	if f != nil {
+		if bundle, err := f(ProjectIDFrom(ctx)); err == nil && bundle.Redactor != nil {
+			return bundle.Redactor
+		}
+	}
+	return h.getRedactor()
+}
+
 // wireDedupSize returns the current entry count of the wire-dedup cache
 // under the dedicated sentMu lock. Surfaced via /metrics
 // (dfmt_wire_dedup_entries) for the operator dashboard. Cheap — just
@@ -678,9 +706,11 @@ func (h *Handlers) markSent(ctx context.Context, contentID string) {
 }
 
 // redactString returns s with sensitive data scrubbed, or s unchanged if no
-// redactor is configured.
-func (h *Handlers) redactString(s string) string {
-	r := h.getRedactor()
+// redactor is configured. ctx is used to resolve the per-project
+// redactor in global daemon mode; nil ctx falls back to the default
+// redactor.
+func (h *Handlers) redactString(ctx context.Context, s string) string {
+	r := h.redactorFor(ctx)
 	if r == nil || s == "" {
 		return s
 	}
@@ -690,8 +720,8 @@ func (h *Handlers) redactString(s string) string {
 // redactData walks a map[string]any and redacts any string values in place.
 // Returns a new map rather than mutating the caller's to keep the API safe
 // for concurrent reuse of the original data.
-func (h *Handlers) redactData(data map[string]any) map[string]any {
-	r := h.getRedactor()
+func (h *Handlers) redactData(ctx context.Context, data map[string]any) map[string]any {
+	r := h.redactorFor(ctx)
 	if r == nil {
 		return data
 	}
@@ -707,8 +737,8 @@ func (h *Handlers) redactData(data map[string]any) map[string]any {
 // The returned Event shares the original's typed fields (ID, TS, Type,
 // Priority, Project, Sig) — those are server-set or hash-bound and need no
 // redaction. Only the agent-controllable string surfaces are reprocessed.
-func (h *Handlers) redactEventForRender(e core.Event) core.Event {
-	r := h.getRedactor()
+func (h *Handlers) redactEventForRender(ctx context.Context, e core.Event) core.Event {
+	r := h.redactorFor(ctx)
 	if r == nil {
 		return e
 	}
@@ -751,8 +781,8 @@ func (h *Handlers) logEvent(ctx context.Context, eventType, summary string, data
 		Type:     core.EventType(eventType),
 		Priority: core.PriP4,
 		Source:   core.SrcMCP,
-		Data:     h.redactData(data),
-		Tags:     []string{h.redactString(summary)},
+		Data:     h.redactData(ctx, data),
+		Tags:     []string{h.redactString(ctx, summary)},
 	}
 	e.Sig = e.ComputeSig()
 	if err := bundle.Journal.Append(ctx, e); err != nil {
@@ -835,10 +865,10 @@ func (h *Handlers) Remember(ctx context.Context, params RememberParams) (*Rememb
 
 	// Redact sensitive strings before the event is persisted or indexed.
 	redactedTags := params.Tags
-	if h.getRedactor() != nil && len(redactedTags) > 0 {
+	if h.redactorFor(ctx) != nil && len(redactedTags) > 0 {
 		redactedTags = make([]string, len(params.Tags))
 		for i, t := range params.Tags {
-			redactedTags[i] = h.redactString(t)
+			redactedTags[i] = h.redactString(ctx, t)
 		}
 	}
 
@@ -867,7 +897,7 @@ func (h *Handlers) Remember(ctx context.Context, params RememberParams) (*Rememb
 		Priority: priority,
 		Source:   core.SrcMCP,
 		Actor:    params.Actor,
-		Data:     h.redactData(data),
+		Data:     h.redactData(ctx, data),
 		Refs:     params.Refs,
 		Tags:     redactedTags,
 	}
@@ -1094,7 +1124,7 @@ func (h *Handlers) Recall(ctx context.Context, params RecallParams) (_ *RecallRe
 		// what its patterns matched at the time of write; this second pass
 		// covers near-misses, retroactively-added patterns, and operator-
 		// supplied custom patterns added after the event was journaled.
-		e = h.redactEventForRender(e)
+		e = h.redactEventForRender(ctx, e)
 		var dataStr string
 		if e.Data != nil {
 			dataStr = formatEventData(e.Data)
@@ -1156,7 +1186,7 @@ func (h *Handlers) Recall(ctx context.Context, params RecallParams) (_ *RecallRe
 		// fields directly.
 		redacted := make([]core.Event, len(selected))
 		for i, e := range selected {
-			redacted[i] = h.redactEventForRender(e)
+			redacted[i] = h.redactEventForRender(ctx, e)
 		}
 		sb := retrieve.NewSnapshotBuilder(budget)
 		snap, _ := sb.Build(redacted)
@@ -1570,8 +1600,8 @@ func (h *Handlers) Exec(ctx context.Context, params ExecParams) (_ *ExecResponse
 	// it for stashing would leave the content store with empty bytes and
 	// the chunk-set ID a dead pointer. RawStdout always carries the full
 	// (capped at MaxRawBytes) output.
-	stderr := h.redactString(resp.Stderr)
-	rawStash := h.redactString(resp.RawStdout) + stderr
+	stderr := h.redactString(ctx, resp.Stderr)
+	rawStash := h.redactString(ctx, resp.RawStdout) + stderr
 	contentID := h.stashContent(bundle.ContentStore, bundle.ProjectPath, "exec-stdout", "sandbox.exec", params.Intent, rawStash)
 
 	// Wire dedup (ADR-0009): if the same content_id was emitted earlier in
@@ -1598,9 +1628,9 @@ func (h *Handlers) Exec(ctx context.Context, params ExecParams) (_ *ExecResponse
 		}, nil
 	}
 
-	stdout := h.redactString(resp.Stdout)
-	summary := h.redactString(resp.Summary)
-	matches := h.redactMatches(resp.Matches)
+	stdout := h.redactString(ctx, resp.Stdout)
+	summary := h.redactString(ctx, resp.Summary)
+	matches := h.redactMatches(ctx, resp.Matches)
 
 	rawBytes := len(rawStash)
 	returnedBytes := len(stdout) + len(stderr) + len(summary)
@@ -1633,14 +1663,15 @@ func (h *Handlers) Exec(ctx context.Context, params ExecParams) (_ *ExecResponse
 	}, nil
 }
 
-// redactMatches returns a new slice with Text fields redacted.
-func (h *Handlers) redactMatches(in []sandbox.ContentMatch) []sandbox.ContentMatch {
-	if h.getRedactor() == nil || len(in) == 0 {
+// redactMatches returns a new slice with Text fields redacted using the
+// per-call (project-scoped) redactor when one is available.
+func (h *Handlers) redactMatches(ctx context.Context, in []sandbox.ContentMatch) []sandbox.ContentMatch {
+	if h.redactorFor(ctx) == nil || len(in) == 0 {
 		return in
 	}
 	out := make([]sandbox.ContentMatch, len(in))
 	for i, m := range in {
-		m.Text = h.redactString(m.Text)
+		m.Text = h.redactString(ctx, m.Text)
 		out[i] = m
 	}
 	return out
@@ -1698,7 +1729,7 @@ func (h *Handlers) Read(ctx context.Context, params ReadParams) (_ *ReadResponse
 	// Stash the full pre-filter content (RawContent) so the chunk-set ID is
 	// a real pointer to the bytes. resp.Content carries the filtered view
 	// for the client and may be empty when the policy excluded inline body.
-	rawStash := h.redactString(resp.RawContent)
+	rawStash := h.redactString(ctx, resp.RawContent)
 	contentID := h.stashContent(bundle.ContentStore, bundle.ProjectPath, "file-read", params.Path, params.Intent, rawStash)
 
 	// Wire dedup short-circuit. See ADR-0009 and the matching block in Exec
@@ -1719,9 +1750,9 @@ func (h *Handlers) Read(ctx context.Context, params ReadParams) (_ *ReadResponse
 		}, nil
 	}
 
-	redContent := h.redactString(resp.Content)
-	summary := h.redactString(resp.Summary)
-	matches := h.redactMatches(resp.Matches)
+	redContent := h.redactString(ctx, resp.Content)
+	summary := h.redactString(ctx, resp.Summary)
+	matches := h.redactMatches(ctx, resp.Matches)
 
 	rawBytes := len(rawStash)
 	returnedBytes := len(redContent) + len(summary)
@@ -1855,7 +1886,7 @@ func (h *Handlers) Fetch(ctx context.Context, params FetchParams) (_ *FetchRespo
 	}
 
 	// Stash full pre-filter body (RawBody); see Exec/Read rationale.
-	rawStash := h.redactString(resp.RawBody)
+	rawStash := h.redactString(ctx, resp.RawBody)
 	contentID := h.stashContent(bundle.ContentStore, bundle.ProjectPath, "fetch", params.URL, params.Intent, rawStash)
 
 	// Wire dedup short-circuit. See ADR-0009. Status + Headers are kept
@@ -1878,9 +1909,9 @@ func (h *Handlers) Fetch(ctx context.Context, params FetchParams) (_ *FetchRespo
 		}, nil
 	}
 
-	redBody := h.redactString(resp.Body)
-	summary := h.redactString(resp.Summary)
-	matches := h.redactMatches(resp.Matches)
+	redBody := h.redactString(ctx, resp.Body)
+	summary := h.redactString(ctx, resp.Summary)
+	matches := h.redactMatches(ctx, resp.Matches)
 
 	rawBytes := len(rawStash)
 	returnedBytes := len(redBody) + len(summary)
@@ -1941,7 +1972,7 @@ func (h *Handlers) Glob(ctx context.Context, params GlobParams) (_ *GlobResponse
 
 	return &GlobResponse{
 		Files:   resp.Files,
-		Matches: h.redactMatches(resp.Matches),
+		Matches: h.redactMatches(ctx, resp.Matches),
 	}, nil
 }
 
@@ -1987,13 +2018,13 @@ func (h *Handlers) Grep(ctx context.Context, params GrepParams) (_ *GrepResponse
 		matches[i] = sandbox.GrepMatch{
 			File:    m.File,
 			Line:    m.Line,
-			Content: h.redactString(m.Content),
+			Content: h.redactString(ctx, m.Content),
 		}
 	}
 
 	return &GrepResponse{
 		Matches: matches,
-		Summary: h.redactString(resp.Summary),
+		Summary: h.redactString(ctx, resp.Summary),
 	}, nil
 }
 
