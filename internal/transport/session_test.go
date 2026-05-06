@@ -75,6 +75,52 @@ func TestHandlersResolveBundleUsesFetcherWhenSet(t *testing.T) {
 	}
 }
 
+// TestHandlersRememberRoutesThroughFetcher proves the user-visible wire-
+// up: when a ResourceFetcher is installed, Handlers.Remember actually
+// reads its journal/index from the fetcher's Bundle, not from the
+// direct fields. This is the smoke test that the global-daemon dispatch
+// path (commit 4d) will rely on for cross-project routing — without it
+// the fetcher would be a dead seam.
+func TestHandlersRememberRoutesThroughFetcher(t *testing.T) {
+	// Default fields — these MUST NOT be touched once a fetcher is set.
+	defaultJournal := &mockJournal{}
+
+	// Per-call fields — Remember must write here.
+	perCallJournal := &mockJournal{}
+
+	h := &Handlers{}
+	h.journal = defaultJournal
+	h.SetProject("/legacy/default")
+
+	h.SetResourceFetcher(func(pid string) (Bundle, error) {
+		if pid != "/proj/per-call" {
+			t.Fatalf("fetcher called with unexpected pid %q", pid)
+		}
+		return Bundle{
+			Journal:     perCallJournal,
+			ProjectPath: pid,
+		}, nil
+	})
+
+	ctx := WithProjectID(context.Background(), "/proj/per-call")
+	if _, err := h.Remember(ctx, RememberParams{
+		Type:   "note",
+		Source: "test",
+	}); err != nil {
+		t.Fatalf("Remember: %v", err)
+	}
+
+	if len(defaultJournal.events) != 0 {
+		t.Errorf("default journal got %d events; fetcher should have routed them away", len(defaultJournal.events))
+	}
+	if len(perCallJournal.events) != 1 {
+		t.Errorf("per-call journal got %d events, want 1", len(perCallJournal.events))
+	}
+	if got := perCallJournal.events[0].Project; got != "/proj/per-call" {
+		t.Errorf("event.Project: got %q, want %q", got, "/proj/per-call")
+	}
+}
+
 // TestHandlersResolveBundleFetcherErrorPropagates verifies that a
 // fetcher error short-circuits resolveBundle without silently falling
 // back to direct fields. Global-daemon callers want to see "unknown

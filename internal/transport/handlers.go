@@ -680,7 +680,8 @@ func (h *Handlers) SetProject(p string) {
 // Data is redacted before persistence so secrets in tool arguments/output
 // don't land in journal.jsonl.
 func (h *Handlers) logEvent(ctx context.Context, eventType, summary string, data map[string]any) {
-	if h.journal == nil {
+	bundle, err := h.resolveBundle(ctx)
+	if err != nil || bundle.Journal == nil {
 		return
 	}
 	e := core.Event{
@@ -694,11 +695,11 @@ func (h *Handlers) logEvent(ctx context.Context, eventType, summary string, data
 		Tags:     []string{h.redactString(summary)},
 	}
 	e.Sig = e.ComputeSig()
-	if err := h.journal.Append(ctx, e); err != nil {
+	if err := bundle.Journal.Append(ctx, e); err != nil {
 		fmt.Fprintf(os.Stderr, "logEvent: journal append: %v\n", err)
 	}
-	if h.index != nil {
-		h.index.Add(e)
+	if bundle.Index != nil {
+		bundle.Index.Add(e)
 	}
 }
 
@@ -732,7 +733,11 @@ type RememberResponse struct {
 // Remember adds an event to the journal and index.
 func (h *Handlers) Remember(ctx context.Context, params RememberParams) (*RememberResponse, error) {
 	h.touch()
-	if h.journal == nil {
+	bundle, err := h.resolveBundle(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if bundle.Journal == nil {
 		return nil, errNoProject
 	}
 	// Handle direct token fields and the Message field — both are
@@ -809,15 +814,15 @@ func (h *Handlers) Remember(ctx context.Context, params RememberParams) (*Rememb
 	e.Sig = e.ComputeSig()
 
 	// Append to journal
-	if err := h.journal.Append(ctx, e); err != nil {
+	if err := bundle.Journal.Append(ctx, e); err != nil {
 		return nil, fmt.Errorf("journal append: %w", err)
 	}
 
 	// Add to index (index is paired with journal — both nil in degraded mode,
 	// but the journal nil-guard above already short-circuits that path; this
 	// guard only matters for the daemon test seam where index is omitted).
-	if h.index != nil {
-		h.index.Add(e)
+	if bundle.Index != nil {
+		bundle.Index.Add(e)
 	}
 
 	return &RememberResponse{
@@ -862,7 +867,11 @@ func (h *Handlers) Search(ctx context.Context, params SearchParams) (_ *SearchRe
 		params.Limit = 10
 	}
 
-	if h.index == nil {
+	bundle, berr := h.resolveBundle(ctx)
+	if berr != nil {
+		return nil, berr
+	}
+	if bundle.Index == nil {
 		return &SearchResponse{Results: nil, Layer: params.Layer}, nil
 	}
 
@@ -871,7 +880,7 @@ func (h *Handlers) Search(ctx context.Context, params SearchParams) (_ *SearchRe
 
 	switch params.Layer {
 	case "trigram":
-		hits = h.index.SearchTrigram(params.Query, params.Limit)
+		hits = bundle.Index.SearchTrigram(params.Query, params.Limit)
 	case "fuzzy":
 		// Fuzzy search would go here
 		hits = nil
@@ -882,11 +891,11 @@ func (h *Handlers) Search(ctx context.Context, params SearchParams) (_ *SearchRe
 		// splits awkwardly; trigram match restores them. Reporting the
 		// resolved layer back lets clients distinguish a true miss
 		// from a fallback hit.
-		hits = h.index.SearchBM25(params.Query, params.Limit)
+		hits = bundle.Index.SearchBM25(params.Query, params.Limit)
 		if len(hits) > 0 {
 			resolvedLayer = "bm25"
 		} else {
-			hits = h.index.SearchTrigram(params.Query, params.Limit)
+			hits = bundle.Index.SearchTrigram(params.Query, params.Limit)
 			if len(hits) > 0 {
 				resolvedLayer = "trigram"
 			}
@@ -899,7 +908,7 @@ func (h *Handlers) Search(ctx context.Context, params SearchParams) (_ *SearchRe
 			ID:      hit.ID,
 			Score:   hit.Score,
 			Layer:   hit.Layer,
-			Excerpt: h.index.Excerpt(hit.ID),
+			Excerpt: bundle.Index.Excerpt(hit.ID),
 		}
 	}
 
@@ -926,7 +935,11 @@ type RecallResponse struct {
 func (h *Handlers) Recall(ctx context.Context, params RecallParams) (_ *RecallResponse, err error) {
 	defer recordToolCall("recall", ctx, &err, time.Now())
 	h.touch()
-	if h.journal == nil {
+	bundle, berr := h.resolveBundle(ctx)
+	if berr != nil {
+		return nil, berr
+	}
+	if bundle.Journal == nil {
 		return nil, errNoProject
 	}
 	budget := h.recallBudget(params.Budget)
@@ -953,7 +966,7 @@ func (h *Handlers) Recall(ctx context.Context, params RecallParams) (_ *RecallRe
 	// caller cancellation, downstream render error).
 	streamCtx, streamCancel := context.WithCancel(ctx)
 	defer streamCancel()
-	stream, err := h.journal.Stream(streamCtx, "")
+	stream, err := bundle.Journal.Stream(streamCtx, "")
 	if err != nil {
 		return nil, fmt.Errorf("stream journal: %w", err)
 	}
@@ -1165,7 +1178,11 @@ var knownNativeTools = map[string]struct{}{
 // slice, which grew unbounded on long-running projects.
 func (h *Handlers) Stats(ctx context.Context, params StatsParams) (*StatsResponse, error) {
 	h.touch()
-	if h.journal == nil {
+	bundle, berr := h.resolveBundle(ctx)
+	if berr != nil {
+		return nil, berr
+	}
+	if bundle.Journal == nil {
 		return nil, errNoProject
 	}
 
@@ -1190,7 +1207,7 @@ func (h *Handlers) Stats(ctx context.Context, params StatsParams) (*StatsRespons
 		h.statsCacheMu.RUnlock()
 	}
 
-	stream, err := h.journal.Stream(ctx, "")
+	stream, err := bundle.Journal.Stream(ctx, "")
 	if err != nil {
 		return nil, fmt.Errorf("stream journal: %w", err)
 	}
@@ -1403,10 +1420,14 @@ type StreamParams struct {
 // Stream streams events from the journal.
 func (h *Handlers) Stream(ctx context.Context, params StreamParams) (<-chan core.Event, error) {
 	h.touch()
-	if h.journal == nil {
+	bundle, err := h.resolveBundle(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if bundle.Journal == nil {
 		return nil, errNoProject
 	}
-	return h.journal.Stream(ctx, params.From)
+	return bundle.Journal.Stream(ctx, params.From)
 }
 
 // ── Sandbox wrappers ───────────────────────────────────────────────
@@ -1439,6 +1460,13 @@ type ExecResponse struct {
 func (h *Handlers) Exec(ctx context.Context, params ExecParams) (_ *ExecResponse, err error) {
 	defer recordToolCall("exec", ctx, &err, time.Now())
 	h.touch()
+	bundle, berr := h.resolveBundle(ctx)
+	if berr != nil {
+		return nil, berr
+	}
+	if bundle.Sandbox == nil {
+		return nil, errNoProject
+	}
 	release, err := acquireLimiter(ctx, h.execSem)
 	if err != nil {
 		return nil, err
@@ -1471,7 +1499,7 @@ func (h *Handlers) Exec(ctx context.Context, params ExecParams) (_ *ExecResponse
 		Env:     params.Env,
 	}
 
-	resp, err := h.sandbox.Exec(ctx, req)
+	resp, err := bundle.Sandbox.Exec(ctx, req)
 	if err != nil {
 		return nil, err
 	}
@@ -1582,6 +1610,13 @@ type ReadResponse struct {
 func (h *Handlers) Read(ctx context.Context, params ReadParams) (_ *ReadResponse, err error) {
 	defer recordToolCall("read", ctx, &err, time.Now())
 	h.touch()
+	bundle, berr := h.resolveBundle(ctx)
+	if berr != nil {
+		return nil, berr
+	}
+	if bundle.Sandbox == nil {
+		return nil, errNoProject
+	}
 	release, err := acquireLimiter(ctx, h.readSem)
 	if err != nil {
 		return nil, err
@@ -1595,7 +1630,7 @@ func (h *Handlers) Read(ctx context.Context, params ReadParams) (_ *ReadResponse
 		Return: params.Return,
 	}
 
-	resp, err := h.sandbox.Read(ctx, req)
+	resp, err := bundle.Sandbox.Read(ctx, req)
 	if err != nil {
 		return nil, err
 	}
@@ -1711,6 +1746,13 @@ type GrepResponse struct {
 func (h *Handlers) Fetch(ctx context.Context, params FetchParams) (_ *FetchResponse, err error) {
 	defer recordToolCall("fetch", ctx, &err, time.Now())
 	h.touch()
+	bundle, berr := h.resolveBundle(ctx)
+	if berr != nil {
+		return nil, berr
+	}
+	if bundle.Sandbox == nil {
+		return nil, errNoProject
+	}
 	release, err := acquireLimiter(ctx, h.fetchSem)
 	if err != nil {
 		return nil, err
@@ -1741,7 +1783,7 @@ func (h *Handlers) Fetch(ctx context.Context, params FetchParams) (_ *FetchRespo
 		Timeout: timeout,
 	}
 
-	resp, err := h.sandbox.Fetch(ctx, req)
+	resp, err := bundle.Sandbox.Fetch(ctx, req)
 	if err != nil {
 		// SSRF-006: log when fetch is blocked by SSRF policy so operators can
 		// see when blocked attempts occur (no alerting UI yet, but the event
@@ -1810,6 +1852,13 @@ func (h *Handlers) Fetch(ctx context.Context, params FetchParams) (_ *FetchRespo
 func (h *Handlers) Glob(ctx context.Context, params GlobParams) (_ *GlobResponse, err error) {
 	defer recordToolCall("glob", ctx, &err, time.Now())
 	h.touch()
+	bundle, berr := h.resolveBundle(ctx)
+	if berr != nil {
+		return nil, berr
+	}
+	if bundle.Sandbox == nil {
+		return nil, errNoProject
+	}
 	release, err := acquireLimiter(ctx, h.readSem)
 	if err != nil {
 		return nil, err
@@ -1820,7 +1869,7 @@ func (h *Handlers) Glob(ctx context.Context, params GlobParams) (_ *GlobResponse
 		Intent:  params.Intent,
 	}
 
-	resp, err := h.sandbox.Glob(ctx, req)
+	resp, err := bundle.Sandbox.Glob(ctx, req)
 	if err != nil {
 		return nil, err
 	}
@@ -1840,6 +1889,13 @@ func (h *Handlers) Glob(ctx context.Context, params GlobParams) (_ *GlobResponse
 func (h *Handlers) Grep(ctx context.Context, params GrepParams) (_ *GrepResponse, err error) {
 	defer recordToolCall("grep", ctx, &err, time.Now())
 	h.touch()
+	bundle, berr := h.resolveBundle(ctx)
+	if berr != nil {
+		return nil, berr
+	}
+	if bundle.Sandbox == nil {
+		return nil, errNoProject
+	}
 	release, err := acquireLimiter(ctx, h.readSem)
 	if err != nil {
 		return nil, err
@@ -1854,7 +1910,7 @@ func (h *Handlers) Grep(ctx context.Context, params GrepParams) (_ *GrepResponse
 		Context:         params.Context,
 	}
 
-	resp, err := h.sandbox.Grep(ctx, req)
+	resp, err := bundle.Sandbox.Grep(ctx, req)
 	if err != nil {
 		return nil, err
 	}
@@ -1912,6 +1968,13 @@ type WriteResponse struct {
 func (h *Handlers) Edit(ctx context.Context, params EditParams) (_ *EditResponse, err error) {
 	defer recordToolCall("edit", ctx, &err, time.Now())
 	h.touch()
+	bundle, berr := h.resolveBundle(ctx)
+	if berr != nil {
+		return nil, berr
+	}
+	if bundle.Sandbox == nil {
+		return nil, errNoProject
+	}
 	release, err := acquireLimiter(ctx, h.writeSem)
 	if err != nil {
 		return nil, err
@@ -1923,7 +1986,7 @@ func (h *Handlers) Edit(ctx context.Context, params EditParams) (_ *EditResponse
 		NewString: params.NewString,
 	}
 
-	resp, err := h.sandbox.Edit(ctx, req)
+	resp, err := bundle.Sandbox.Edit(ctx, req)
 	if err != nil {
 		return nil, err
 	}
@@ -1942,6 +2005,13 @@ func (h *Handlers) Edit(ctx context.Context, params EditParams) (_ *EditResponse
 func (h *Handlers) Write(ctx context.Context, params WriteParams) (_ *WriteResponse, err error) {
 	defer recordToolCall("write", ctx, &err, time.Now())
 	h.touch()
+	bundle, berr := h.resolveBundle(ctx)
+	if berr != nil {
+		return nil, berr
+	}
+	if bundle.Sandbox == nil {
+		return nil, errNoProject
+	}
 	release, err := acquireLimiter(ctx, h.writeSem)
 	if err != nil {
 		return nil, err
@@ -1952,7 +2022,7 @@ func (h *Handlers) Write(ctx context.Context, params WriteParams) (_ *WriteRespo
 		Content: params.Content,
 	}
 
-	resp, err := h.sandbox.Write(ctx, req)
+	resp, err := bundle.Sandbox.Write(ctx, req)
 	if err != nil {
 		return nil, err
 	}
