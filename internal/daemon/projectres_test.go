@@ -387,6 +387,75 @@ func TestResourcesEmptyProjectIDOnDegradedDaemon(t *testing.T) {
 	}
 }
 
+// TestExtraProjectsLRUEviction proves the v0.5.0 cache cap kicks in
+// when the cache is full: loading an N+1th project evicts the
+// least-recently-used entry. Without LRU, a long-running global
+// daemon serving many projects accumulated unbounded memory in
+// per-project journal/index/sandbox state.
+func TestExtraProjectsLRUEviction(t *testing.T) {
+	prevCap := extraProjectsMaxEntries
+	extraProjectsMaxEntries = 2
+	t.Cleanup(func() { extraProjectsMaxEntries = prevCap })
+
+	defaultRoot := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(defaultRoot, ".dfmt"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	d, err := New(defaultRoot, newTestConfig())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() {
+		if d.journal != nil {
+			_ = d.journal.Close()
+		}
+		d.closeExtraProjects()
+	}()
+
+	roots := []string{t.TempDir(), t.TempDir(), t.TempDir()}
+
+	// Load A, B in order. A's LastActivityNs is now older than B's.
+	if _, err := d.Resources(roots[0]); err != nil {
+		t.Fatalf("Resources(A): %v", err)
+	}
+	// Force a measurable gap so LastActivityNs values are distinct
+	// across the three loads — the LRU comparison is strict less-than.
+	time.Sleep(2 * time.Millisecond)
+	if _, err := d.Resources(roots[1]); err != nil {
+		t.Fatalf("Resources(B): %v", err)
+	}
+	time.Sleep(2 * time.Millisecond)
+
+	// Load C — should evict A (oldest).
+	if _, err := d.Resources(roots[2]); err != nil {
+		t.Fatalf("Resources(C): %v", err)
+	}
+
+	d.projectsMu.RLock()
+	have := make(map[string]bool, len(d.extraProjects))
+	for k := range d.extraProjects {
+		have[k] = true
+	}
+	d.projectsMu.RUnlock()
+
+	if len(have) != 2 {
+		t.Errorf("cache size after eviction: got %d, want 2", len(have))
+	}
+	if have[resolveProjectID(roots[0])] {
+		t.Errorf("LRU eviction did not drop A; cache=%v", have)
+	}
+	if !have[resolveProjectID(roots[1])] {
+		t.Errorf("LRU eviction unexpectedly dropped B; cache=%v", have)
+	}
+	if !have[resolveProjectID(roots[2])] {
+		t.Errorf("LRU eviction did not retain newly-loaded C; cache=%v", have)
+	}
+
+	// Async eviction goroutine: give it a tick to drain the close so
+	// closeExtraProjects in the deferred cleanup doesn't double-close.
+	time.Sleep(100 * time.Millisecond)
+}
+
 // TestDropProjectClearsCache proves DropProject evicts the cached
 // ProjectResources so a subsequent Resources(P) call reloads from
 // disk into a fresh bundle. Without this, `dfmt remove`'s on-disk

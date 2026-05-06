@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -97,6 +98,24 @@ type ProjectResources struct {
 // back on (degraded mode). Surfaces as -32603 to MCP clients.
 var errProjectIDRequired = errors.New("project_id required: daemon has no default project")
 
+// extraProjectsMaxEntries caps the number of additional projects the
+// daemon keeps live in the resource cache simultaneously. When the
+// cap is hit on a cache miss, the project with the oldest
+// LastActivityNs is evicted via DropProject before the new bundle is
+// loaded.
+//
+// 8 is large enough that almost every realistic developer setup
+// (monorepos, side projects, the DFMT repo + the project they're
+// working on) fits without churning, but small enough to bound the
+// memory growth of a long-running global daemon. A daemon serving 50
+// projects across a single uptime previously held 50 journals + 50
+// indexes + 50 sandboxes resident — measured at hundreds of MiB
+// during the v0.4 audit.
+//
+// var (not const) so tests can compress the cap. Production callers
+// never mutate it.
+var extraProjectsMaxEntries = 8
+
 // resolveProjectID normalizes the requested project ID for cache lookup.
 // On Windows the lookup is case-insensitive (filesystem semantics);
 // on Unix it is exact. Empty input is returned as-is — the caller
@@ -183,10 +202,16 @@ func (d *Daemon) Resources(projectID string) (*ProjectResources, error) {
 
 	key := resolveProjectID(projectID)
 
+	now := time.Now().UnixNano()
+
 	// Cache hit
 	d.projectsMu.RLock()
 	if r, ok := d.extraProjects[key]; ok {
 		d.projectsMu.RUnlock()
+		// Bump per-project access time so LRU eviction picks the right
+		// victim when the cap is hit. Cheap atomic store; the cache is
+		// hot-path and we explicitly do not want this to block.
+		r.LastActivityNs.Store(now)
 		return r, nil
 	}
 	d.projectsMu.RUnlock()
@@ -196,7 +221,67 @@ func (d *Daemon) Resources(projectID string) (*ProjectResources, error) {
 	d.projectsMu.Lock()
 	defer d.projectsMu.Unlock()
 	if r, ok := d.extraProjects[key]; ok {
+		r.LastActivityNs.Store(now)
 		return r, nil
+	}
+
+	// LRU eviction: when the cache is at capacity, evict the project
+	// with the oldest LastActivityNs before loading the new one. This
+	// runs under the write lock; the eviction's own teardown (fswatch
+	// stop, index-tail cancel, journal close) happens after we release
+	// it so no concurrent Resources() lookup blocks on the slow flush.
+	//
+	// The pre-load eviction is not 100% perfect — if the new load
+	// fails, we've evicted a project for nothing. Acceptable: the
+	// alternative (eviction after successful load) would briefly hold
+	// extraProjectsMaxEntries+1 entries, which the cap is supposed to
+	// prevent. The failed-load case is rare (disk I/O issues; .dfmt/
+	// missing), and the evicted project simply reloads on its next
+	// access.
+	if len(d.extraProjects) >= extraProjectsMaxEntries {
+		var oldestKey string
+		var oldestNs int64 = math.MaxInt64
+		for k, r := range d.extraProjects {
+			ns := r.LastActivityNs.Load()
+			if ns < oldestNs {
+				oldestNs = ns
+				oldestKey = k
+			}
+		}
+		if oldestKey != "" {
+			victim := d.extraProjects[oldestKey]
+			delete(d.extraProjects, oldestKey)
+			// Tear down outside the write lock window via a deferred
+			// goroutine — we're holding projectsMu and the teardown
+			// path issues Checkpoint + PersistIndex + Close, all of
+			// which touch disk and could take seconds. Goroutine is
+			// safe because the bundle has been removed from the cache
+			// (no concurrent Resources() lookup can find it), and
+			// stopFSWatch/stopIndexTail are idempotent.
+			go func(r *ProjectResources, k string) {
+				defer func() {
+					if rec := recover(); rec != nil {
+						logging.Errorf("LRU eviction panic for %s recovered: %v", k, rec)
+					}
+				}()
+				r.stopFSWatch()
+				r.stopIndexTail()
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				if r.Journal != nil && r.Index != nil && r.IndexPath != "" && !r.NeedsRebuild {
+					if hiID, cerr := r.Journal.Checkpoint(ctx); cerr != nil {
+						logging.Warnf("LRU evict %s: checkpoint: %v", k, cerr)
+					} else if perr := core.PersistIndex(r.Index, r.IndexPath, hiID); perr != nil {
+						logging.Warnf("LRU evict %s: persist index: %v", k, perr)
+					}
+				}
+				if r.Journal != nil {
+					if err := r.Journal.Close(); err != nil {
+						logging.Warnf("LRU evict %s: close journal: %v", k, err)
+					}
+				}
+			}(victim, oldestKey)
+		}
 	}
 
 	r, err := loadProjectResources(projectID, d.config)
@@ -206,6 +291,7 @@ func (d *Daemon) Resources(projectID string) (*ProjectResources, error) {
 	if d.extraProjects == nil {
 		d.extraProjects = make(map[string]*ProjectResources)
 	}
+	r.LastActivityNs.Store(now)
 	d.extraProjects[key] = r
 	// Start the index-tail goroutine immediately so a `dfmt mcp`
 	// subprocess that has been writing to the same journal file
