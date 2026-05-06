@@ -2835,24 +2835,13 @@ func configureClaudeCode(_ setup.Agent) error {
 		return err
 	}
 
-	// Write MCP config
+	// Write legacy ~/.claude/mcp.json. V-04: merge-aware so we don't clobber
+	// other MCP servers configured under the same key. Uses TargetOSWindows
+	// for the embedded command path — Claude Code on Windows reads this
+	// file and expects a Windows-style command — matching the prior shape.
 	mcpPath := filepath.Join(claudeDir, "mcp.json")
-	if err := setup.BackupFile(mcpPath); err != nil {
-		return fmt.Errorf("backup %s: %w", mcpPath, err)
-	}
-
-	mcpConfig := map[string]any{
-		"mcpServers": map[string]any{
-			"dfmt": map[string]any{
-				"command": setup.ResolveDFMTCommandForEnv(setup.TargetOSWindows),
-				"args":    []string{"mcp"},
-			},
-		},
-	}
-	data, _ := json.MarshalIndent(mcpConfig, "", "  ")
-	// 0600: mcp.json tells the host what command to launch as an MCP server.
-	if err := os.WriteFile(mcpPath, data, 0o600); err != nil {
-		return fmt.Errorf("write %s: %w", mcpPath, err)
+	if err := setup.MergeMCPServerEntry(mcpPath, setup.TargetOSWindows); err != nil {
+		return fmt.Errorf("merge %s: %w", mcpPath, err)
 	}
 
 	// Update manifest
@@ -2967,21 +2956,15 @@ func configureOpenCode(_ setup.Agent) error {
 
 func writeMCPConfig(dir, filename, agentID string) error {
 	mcpPath := filepath.Join(dir, filename)
-	if err := setup.BackupFile(mcpPath); err != nil {
-		return fmt.Errorf("backup %s: %w", mcpPath, err)
-	}
 
-	mcpConfig := map[string]any{
-		"mcpServers": map[string]any{
-			"dfmt": map[string]any{
-				"command": setup.ResolveDFMTCommandForEnv(setup.TargetOSUnix),
-				"args":    []string{"mcp"},
-			},
-		},
-	}
-	data, _ := json.MarshalIndent(mcpConfig, "", "  ")
-	if err := os.WriteFile(mcpPath, data, 0o600); err != nil {
-		return err
+	// V-04: merge-aware write — splice `mcpServers.dfmt` into the existing
+	// config and preserve every other key. The previous implementation
+	// replaced the file outright, silently destroying any other MCP server
+	// (playwright, context7, github, …) the user had configured for this
+	// agent. MergeMCPServerEntry also routes through safefs (V-20) and
+	// captures a one-shot pristine .dfmt.bak (V-04 reinstall safety).
+	if err := setup.MergeMCPServerEntry(mcpPath, setup.TargetOSUnix); err != nil {
+		return fmt.Errorf("merge mcp config %s: %w", mcpPath, err)
 	}
 
 	m, err := setup.LoadManifest()
