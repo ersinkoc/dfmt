@@ -559,11 +559,15 @@ func runRemember(args []string) int {
 		return 1
 	}
 
-	cl, err := client.NewClient(proj)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+	backend, ownedDaemon := acquireBackend(proj)
+	if backend == nil {
 		return 1
 	}
+	defer func() {
+		if ownedDaemon != nil {
+			waitForDaemonShutdown(ownedDaemon)
+		}
+	}()
 
 	var data map[string]any
 	if dataJSON != "" {
@@ -602,8 +606,10 @@ func runRemember(args []string) int {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	ctx = transport.WithProjectID(ctx, proj)
+	params.ProjectID = proj
 
-	resp, err := cl.Remember(ctx, params)
+	resp, err := backend.Remember(ctx, params)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		return 1
@@ -641,18 +647,24 @@ func runSearch(args []string) int {
 		return 1
 	}
 
-	cl, err := client.NewClient(proj)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+	backend, ownedDaemon := acquireBackend(proj)
+	if backend == nil {
 		return 1
 	}
+	defer func() {
+		if ownedDaemon != nil {
+			waitForDaemonShutdown(ownedDaemon)
+		}
+	}()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	ctx = transport.WithProjectID(ctx, proj)
 
-	resp, err := cl.Search(ctx, transport.SearchParams{
-		Query: query,
-		Limit: limit,
+	resp, err := backend.Search(ctx, transport.SearchParams{
+		Query:     query,
+		Limit:     limit,
+		ProjectID: proj,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
@@ -692,18 +704,24 @@ func runRecall(args []string) int {
 		return 1
 	}
 
-	cl, err := client.NewClient(proj)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+	backend, ownedDaemon := acquireBackend(proj)
+	if backend == nil {
 		return 1
 	}
+	defer func() {
+		if ownedDaemon != nil {
+			waitForDaemonShutdown(ownedDaemon)
+		}
+	}()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+	ctx = transport.WithProjectID(ctx, proj)
 
-	resp, err := cl.Recall(ctx, transport.RecallParams{
-		Budget: budget,
-		Format: format,
+	resp, err := backend.Recall(ctx, transport.RecallParams{
+		Budget:    budget,
+		Format:    format,
+		ProjectID: proj,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
@@ -2482,22 +2500,29 @@ func runStats(args []string) int {
 		return 1
 	}
 
-	// NewClient auto-starts daemon if needed
-	cl, err := client.NewClient(proj)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+	// v0.6.0: connect to existing daemon, or promote self in-process.
+	// No exec.Command spawning. Returns a non-nil *Daemon when this
+	// process owns it; the deferred shutdown waits for signal/idle.
+	backend, ownedDaemon := acquireBackend(proj)
+	if backend == nil {
 		return 1
 	}
+	defer func() {
+		if ownedDaemon != nil {
+			waitForDaemonShutdown(ownedDaemon)
+		}
+	}()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	ctx = transport.WithProjectID(ctx, proj)
 
 	// CLI bypasses the daemon-side stats cache: a human running `dfmt
 	// stats` twice in a row interprets identical numbers as "DFMT
 	// stopped recording", but the cache TTL would hold the same value
 	// for 5 seconds. Dashboard polling still gets the cached path
 	// because it sets NoCache=false (default).
-	resp, err := cl.Stats(ctx, transport.StatsParams{NoCache: true})
+	resp, err := backend.Stats(ctx, transport.StatsParams{NoCache: true, ProjectID: proj})
 	if err != nil {
 		if flagJSON {
 			fmt.Fprintf(os.Stderr, "error: %v\n", err)
@@ -2839,11 +2864,15 @@ func runTail(args []string) int {
 		return 1
 	}
 
-	cl, err := client.NewClient(proj)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+	backend, ownedDaemon := acquireBackend(proj)
+	if backend == nil {
 		return 1
 	}
+	defer func() {
+		if ownedDaemon != nil {
+			waitForDaemonShutdown(ownedDaemon)
+		}
+	}()
 
 	ctx := context.Background()
 	if follow {
@@ -2851,8 +2880,9 @@ func runTail(args []string) int {
 		ctx, cancel = context.WithCancel(ctx)
 		defer cancel()
 	}
+	ctx = transport.WithProjectID(ctx, proj)
 
-	events, err := cl.StreamEvents(ctx, from)
+	events, err := backend.StreamEvents(ctx, from)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		return 1
