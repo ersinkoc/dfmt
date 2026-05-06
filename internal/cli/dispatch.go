@@ -3914,139 +3914,66 @@ func runExec(args []string) int {
 func runMCP(_ []string) int {
 	// MCP over stdio - read MCP JSON-RPC from stdin, write to stdout.
 	//
-	// Project resolution: getProject() walks up looking for .dfmt/ or .git/.
-	// When neither is found we deliberately do NOT fall back to cwd-as-project
-	// — that previously scattered .dfmt/journal.jsonl, index.gob and
-	// config.yaml into wherever Claude Code happened to spawn dfmt
-	// (typically ~). Instead we run in degraded mode: sandbox tools
-	// (exec/read/fetch/glob/grep/edit/write) keep working since they only
-	// need a working directory, and memory tools (remember/search/recall/
-	// stats) return "no project" at handler level via nil-journal guards.
+	// v0.5.0: this subprocess is now a thin proxy. It does NOT open its
+	// own journal/index/sandbox/redactor/content store; every tool call
+	// is forwarded to the host-wide daemon over its HTTP / Unix-socket
+	// transport. The duplicate-journal-handle drift that v0.4.7's index
+	// tail goroutine merely papered over is now eliminated at the root
+	// because there is exactly one writer per project: the daemon.
+	//
+	// Project resolution: getProject() walks up looking for .dfmt/ or
+	// .git/. A miss leaves the proxy backend nil so every tool call
+	// returns -32603 ("daemon not connected"). The MCP server itself
+	// still starts so the agent's MCP host doesn't see a dead transport;
+	// the operator gets a clear error in the agent UI when they invoke
+	// a tool without a project. No more local-fallback degraded mode
+	// (v0.5.0 user-decision: clean fail, no silent local sandbox path).
 	proj, projErr := getProject()
 	if projErr != nil {
 		proj = ""
 	}
 
-	// Sandbox needs a cwd regardless of project status — inherit from the
-	// process when there's no project so relative paths still resolve.
-	sandboxWD := proj
-	if sandboxWD == "" {
-		if cwd, gerr := os.Getwd(); gerr == nil {
-			sandboxWD = cwd
-		}
-	}
-
-	var (
-		journal   core.Journal
-		index     *core.Index
-		indexPath string
-	)
-
+	var backend transport.Backend
 	if proj != "" {
 		// Auto-init the project on every MCP startup. Same idempotent
-		// steps as `dfmt init`. Failure of any single step is non-fatal.
+		// steps as `dfmt init`. Failure of any single step is non-fatal —
+		// the proxy can still forward calls; the daemon will handle the
+		// missing-config-file case the same way it handles fresh projects.
 		if ierr := setup.EnsureProjectInitialized(proj); ierr != nil {
 			logging.Warnf("auto-init %s: %v", proj, ierr)
 		}
 
-		// Phase 2 dashboard visibility: ping the host-wide daemon so
-		// it loads this project into its in-process resource cache.
-		// Without the ping, an MCP-only project (one that no other
-		// `dfmt <command>` has touched yet) is invisible to the
-		// dashboard's project switcher even though events are being
-		// recorded to its journal. Async + best-effort: never spawns
-		// a daemon, never blocks MCP startup if the daemon is down.
-		go registerProjectWithGlobalDaemon(proj)
-		dfmtDir := filepath.Join(proj, ".dfmt")
-
-		journalPath := filepath.Join(dfmtDir, "journal.jsonl")
-		journalOpts := core.JournalOptions{
-			Path:     journalPath,
-			MaxBytes: 10 * 1024 * 1024,
-			Durable:  true,
-			BatchMS:  100,
-			Compress: true,
+		// Connect to (or auto-spawn) the global daemon. NewClient already
+		// owns the spawn-with-retry budget (~3.9 s) and the global vs.
+		// legacy fallback selection. Client.projectID is stamped from
+		// `proj` so every Backend method sends the right project_id on
+		// the wire — that's what makes the daemon's lazy-load resource
+		// cache pick up this project on the first real RPC and surface
+		// it to the dashboard. The v0.4.x async registration ping is
+		// gone; the proxy's first tool call now does the work the ping
+		// used to do.
+		cl, cerr := client.NewClient(proj)
+		if cerr != nil {
+			// Daemon unreachable / spawn failed. Log to stderr (visible
+			// in the agent's MCP log) and leave backend nil; tool calls
+			// return -32603. The agent surfaces the error message in
+			// chat so the user sees what happened.
+			fmt.Fprintf(os.Stderr, "dfmt mcp: cannot reach daemon: %v\n", cerr)
+		} else {
+			backend = client.NewBackend(cl)
 		}
-		j, jerr := core.OpenJournal(journalPath, journalOpts)
-		if jerr != nil {
-			logging.Warnf("open journal: %v", jerr)
-		}
-		journal = j
-
-		indexPath = filepath.Join(dfmtDir, "index.gob")
-		cursorPath := filepath.Join(dfmtDir, "index.cursor")
-		idx, _, needsRebuild, lerr := core.LoadIndexWithCursor(indexPath, cursorPath)
-		if lerr != nil || needsRebuild || idx == nil {
-			// Replay the journal so a tokenizer-version bump or corrupt cursor
-			// doesn't silently empty the searchable index for this MCP session.
-			var rebuilt *core.Index
-			var rerr error
-			if journal != nil {
-				func() {
-					defer func() {
-						if r := recover(); r != nil {
-							rerr = fmt.Errorf("panic during rebuild: %v", r)
-						}
-					}()
-					rebuilt, _, rerr = core.RebuildIndexFromJournal(context.Background(), journal)
-				}()
-			}
-			if rebuilt != nil && rerr == nil {
-				idx = rebuilt
-			} else {
-				if rerr != nil {
-					logging.Warnf("rebuild index from journal: %v", rerr)
-				}
-				idx = core.NewIndex()
-			}
-		}
-		index = idx
 	} else {
-		fmt.Fprintln(os.Stderr, "dfmt mcp: no project found — running in degraded mode (sandbox tools only). Open dfmt from a project root or set DFMT_PROJECT to enable memory tools.")
+		fmt.Fprintln(os.Stderr,
+			"dfmt mcp: no project found — tool calls will return -32603. "+
+				"Open dfmt from a project root or set DFMT_PROJECT.")
 	}
 
-	// Persist index on exit so events ingested during the MCP session survive
-	// into the next run. The journal is the durable source of truth, but the
-	// in-memory index would otherwise be rebuilt from scratch every session.
-	defer func() {
-		if journal != nil {
-			if hiID, cerr := journal.Checkpoint(context.Background()); cerr == nil {
-				if perr := core.PersistIndex(index, indexPath, hiID); perr != nil {
-					// Surface the error so operators notice — on Windows a
-					// locked target file would otherwise silently drop the
-					// snapshot and force a full rebuild next launch.
-					logging.Warnf("persist index: %v", perr)
-				}
-			} else {
-				logging.Warnf("journal checkpoint: %v", cerr)
-			}
-			_ = journal.Close()
-		}
-	}()
-
-	// Create sandbox and handlers. Pull cfg.Exec.PathPrepend so a project
-	// with toolchain dirs configured doesn't hit exit 127 when the daemon
-	// inherited a stripped PATH. Config-load failure is non-fatal — only
-	// path_prepend is lost; other defaults still apply.
-	var pathPrepend []string
-	if proj != "" {
-		if cfg, cerr := config.Load(proj); cerr == nil && cfg != nil {
-			pathPrepend = cfg.Exec.PathPrepend
-		}
-	}
-	// MCP fallback path: the policy is keyed off the project root, not the
-	// per-call sandboxWD (which can differ when the agent runs the daemon
-	// from outside the project tree). loadProjectPolicy emits warnings to
-	// stderr — they end up in the agent's MCP server log.
-	sb := sandbox.NewSandboxWithPolicy(sandboxWD, loadProjectPolicy(proj)).
-		WithPathPrepend(pathPrepend)
-	handlers := transport.NewHandlers(index, journal, sb)
-	handlers.SetProject(proj)
-	mcp := transport.NewMCPProtocol(handlers)
-	// Phase 2: pin the canonical project root for every tool call from this
-	// MCP subprocess. The handler-side resolver (Handlers.getProjectFor)
-	// reads this from ctx, falling back to handlers.SetProject above when
-	// proj is empty (degraded MCP mode).
+	mcp := transport.NewMCPProtocol(backend)
+	// SetProjectID still pins the per-call project_id stamp the proxy
+	// adds to every Backend invocation. Empty-proj is fine: the daemon
+	// then routes via its default project (legacy single-project mode)
+	// or returns errProjectIDRequired (global mode) — which agent-side
+	// surfaces as -32603.
 	mcp.SetProjectID(proj)
 
 	// Per-process cancellable context. Canceled on stdin EOF (deferred
