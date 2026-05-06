@@ -63,6 +63,17 @@ type Daemon struct {
 	shutdownCh     chan struct{}
 	stopOnce       sync.Once
 	wg             sync.WaitGroup // tracks background goroutines (e.g. fswatch consumer)
+
+	// extraProjects holds lazily-loaded resource bundles for projects
+	// other than the default one (passed to New). Phase 2 multi-project
+	// support: a single global daemon serves N projects in-process,
+	// each with its own journal/index/content/redact/sandbox state.
+	// projectsMu guards both the map and the per-entry init coordination
+	// inside Resources(). The default project keeps its handles on the
+	// daemon directly (journal, index, redactor, fswatcher) so the
+	// existing Start/Stop/idle/register/fswatch lifecycles are unchanged.
+	projectsMu    sync.RWMutex
+	extraProjects map[string]*ProjectResources
 }
 
 // Touch records inbound activity so the idle monitor resets. Wired into
@@ -576,6 +587,12 @@ func (d *Daemon) Stop(ctx context.Context) error {
 		if err := d.journal.Close(); err != nil && retErr == nil {
 			retErr = fmt.Errorf("close journal: %w", err)
 		}
+
+		// (7b) Close any extra-project journals the cache holds. This
+		// runs after the default project's journal close so an error in
+		// the extras can't mask the primary close error. closeExtraProjects
+		// logs per-entry warnings; it never returns an error.
+		d.closeExtraProjects()
 
 		// Best-effort housekeeping.
 		pidPath := filepath.Join(d.projectPath, ".dfmt", "daemon.pid")
