@@ -27,6 +27,62 @@ Internal package shapes (`internal/...`) are NOT covered by SemVer.
 
 ## [Unreleased]
 
+## [0.6.3] — 2026-05-07
+
+Reverses the v0.6.2 "no detach" decision. Every `dfmt` subcommand now
+brings the daemon up if it is not running AND returns to the shell
+prompt promptly — the daemon role lives on in a detached background
+child. The user-visible contract is now: _whatever command you run,
+it opens the daemon once, and unless killed the daemon always exists_.
+
+### Changed
+
+- `acquireBackend` rewritten: when no daemon is running, spawn a
+  detached `dfmt daemon` child via `startGlobalDaemonBackground`,
+  poll the listener for liveness up to 4 s, then connect as a client.
+  Short-lived commands no longer block the terminal on idle-exit.
+- `startGlobalDaemonBackground` now uses platform-specific detachment
+  (Windows `DETACHED_PROCESS | CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP`,
+  Unix `setsid()`) so the daemon child survives the parent's exit.
+  Pre-v0.6.3 the spawned daemon inherited the parent's console / process
+  group; closing the launching terminal could kill the daemon.
+- `dfmt status`, `dfmt list`, `dfmt doctor` now call the new
+  `ensureGlobalDaemon` helper at function entry. Pre-v0.6.3 these three
+  reported "Daemon: not running" without trying to bring the daemon up,
+  which contradicted the rest of the CLI's "self-promote on demand"
+  story.
+
+### Preserved from v0.6.2
+
+- `runMCP` keeps its in-process self-promotion path
+  (`acquireBackendForLongRunner`). MCP-driven sessions still show
+  exactly one `dfmt.exe` in `tasklist` because MCP itself is the
+  long-lived process.
+- `client.NewClient` still has no auto-spawn. The single spawn site is
+  `startGlobalDaemonBackground`, called from `runDaemon` (explicit) or
+  `ensureGlobalDaemon` (implicit-on-need). Test binaries and
+  `DFMT_DISABLE_AUTOSTART=1` short-circuit to in-process promotion.
+
+### Notes
+
+- Verified end-to-end on Windows: `dfmt status` from a clean state
+  returns in ~100 ms with the daemon spawned; subsequent
+  `stats` / `list` / `remember` / `search` calls return in ~30–70 ms;
+  `tasklist` shows exactly one `dfmt.exe` between commands; `dfmt stop`
+  → next command respawns cleanly.
+
+### Recommended workflow
+
+The single workflow now collapses to: run any `dfmt <command>`. That
+command brings the daemon up if it is not running (~100 ms latency,
+one-time per `dfmt stop` cycle) and returns to the prompt. The daemon
+persists in the background until SIGINT, `dfmt stop`, or the configured
+idle-exit timer.
+
+For the v0.6.2 in-process semantics (no detached child, daemon role
+lives in the foreground process), set `DFMT_DISABLE_AUTOSTART=1`. The
+in-process promote path is preserved as the documented escape hatch.
+
 ## [0.6.2] — 2026-05-06
 
 Documentation release. Closes the v0.6.x roadmap by explicitly

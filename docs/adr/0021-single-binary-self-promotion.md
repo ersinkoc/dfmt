@@ -133,3 +133,58 @@ A real operator workflow that:
 - Wants `dfmt stats` to be a fire-and-forget command from any fresh terminal,
 
 …is the case detach would close. Operators with this profile have not surfaced. The implementation cost (~200 lines platform-specific code + lock-handoff testing matrix) does not match the demand. Revisit if it does.
+
+## v0.6.3 reversal: detach-by-spawn-and-connect (2026-05-07)
+
+The "decided against" stance held for less than 24 hours of operator validation. The operator's revised statement (Turkish, paraphrased): _"Hangi komutla gelsem dfmt'ye, bir kez kendini daemon açmalı, o kadar. Sonra da kill etmedikçe hep var olacak."_ — Whatever command I run with dfmt, it should open itself as a daemon once. Then unless killed, it always exists.
+
+That requirement has two concrete consequences the v0.6.2 design failed to satisfy:
+
+1. **Every short-lived command must bring up the daemon if not running.** v0.6.2's `acquireBackend` did this for `stats` / `search` / `recall` / `tail` / `remember` / the seven tool wrappers, but `status` / `list` / `doctor` had their own probe-only logic that reported "Daemon: not running" without trying to spawn one.
+2. **Short-lived commands must return to the shell prompt promptly.** v0.6.2's in-process self-promote path forced the foreground command to block on idle-exit (or SIGINT) — which is exactly what the workflow analysis above said was acceptable, and exactly what the operator rejected.
+
+### The new shape
+
+`acquireBackend` is rewritten:
+
+1. If a daemon is running → connect as `client.ClientBackend`, return.
+2. If no daemon is running → call `ensureGlobalDaemon`, which spawns a **detached** child via `startGlobalDaemonBackground` (Windows `DETACHED_PROCESS | CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP`, Unix `setsid()`), polls the listener for liveness up to `daemonReadyTimeout` (4 s), then connects as a client. The original process exits as soon as its RPC work is done.
+3. Test binaries and `DFMT_DISABLE_AUTOSTART=1` short-circuit to the v0.6.2 in-process promote path via the new `acquireBackendForLongRunner` helper. Tests cannot fork sibling processes (the test binary is not the dfmt binary); production code never sees this branch.
+
+`runMCP` keeps the in-process self-promote path via `acquireBackendForLongRunner` because MCP is itself a long-lived process — having it spawn a sibling daemon would mean `agent → dfmt mcp + dfmt daemon` (two PIDs) instead of `agent → dfmt mcp = daemon` (one PID). The MCP-driven session, which is the typical operator workflow, still has exactly one `dfmt.exe` in `tasklist`.
+
+`runStatus`, `runList`, `runDoctor` now call `ensureGlobalDaemon` at function entry. They do not need a `Backend` (their work is filesystem probes and registry reads), but they DO need the daemon to be running before they can honestly report on it.
+
+### Why this is not the same as the pre-v0.6.0 auto-spawn
+
+The pre-v0.6.0 pattern was `client.NewClient` calling `exec.Command` from inside a deeply-nested code path — every tool invocation, every CLI command, with no single point of audit. Eight call sites could each trigger a spawn under different conditions, racing each other for the lock.
+
+The v0.6.3 pattern is **one** spawn site: `startGlobalDaemonBackground`, called from exactly two places (`runDaemon`'s explicit `dfmt daemon` and `ensureGlobalDaemon`'s implicit-on-need path). Every short-lived subcommand routes through `acquireBackend` → `ensureGlobalDaemon`. Test binaries are gated. `DFMT_DISABLE_AUTOSTART=1` is honored. The handoff is auditable in one function.
+
+The "tek dfmt.exe" eyeball test still passes: in steady state there is one `dfmt.exe` (the daemon child). The original short-lived command exits within ~100–150 ms of spawn-success.
+
+### Verification (2026-05-07 smoke)
+
+Live test on Windows from a clean state (~/.dfmt/{port,daemon.pid,lock,daemon.sock} all removed, no `dfmt.exe` in `tasklist`):
+
+- `dfmt status` → 98 ms wall, prints "Daemon: running, Dashboard: …", `tasklist` shows 1 `dfmt.exe`.
+- `dfmt stats` → 36 ms wall, full stats output, `tasklist` still 1 `dfmt.exe` (same PID).
+- `dfmt list` → 34 ms wall, lists the running daemon.
+- `dfmt remember "marker"` → 34 ms wall.
+- `dfmt search "marker"` → 34 ms wall, hit returned.
+- `dfmt stop` → daemon killed, `tasklist` 0 processes.
+- `dfmt status` (re-run) → 112 ms wall, daemon respawned with new PID. Cycle holds.
+
+### Migration
+
+No config or wire changes. Operators upgrading from v0.6.2 see the same `~/.dfmt/` layout. The behavioral difference is only visible at the prompt: `dfmt stats` now exits to a fresh prompt instead of blocking until SIGINT.
+
+### When this decision should be revisited
+
+The detach pattern depends on `os.Executable()` returning a path the OS can re-launch. Edge cases that could break it:
+
+- A user installing `dfmt` to a path that becomes unreadable mid-session (rare).
+- A custom `os.StartProcess` sandbox that blocks the `CreationFlags` we use (rare).
+- An operator deploying DFMT inside a container with PID 1 not being a reaper (uncommon for a developer tool).
+
+If any of these surface in real workflows, fall back to v0.6.2-shape in-process self-promotion via `DFMT_DISABLE_AUTOSTART=1` (which now means "do not spawn detached children, fall back to in-process promote").

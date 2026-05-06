@@ -744,6 +744,12 @@ func runRecall(args []string) int {
 }
 
 func runStatus(_ []string) int {
+	// v0.6.3: every command brings the daemon up if it isn't already.
+	// Errors here are non-fatal — runStatus must still report the
+	// "not running" state cleanly when spawning is disallowed (test
+	// binary, DISABLE_AUTOSTART) or fails.
+	_ = ensureGlobalDaemon()
+
 	// `dfmt status` is useful even outside a DFMT-initialized project —
 	// the host-wide global daemon may be serving other projects, and the
 	// operator wants to know whether anything is up. Pre-Phase-2 the
@@ -1069,33 +1075,119 @@ func runDaemon(args []string) int {
 	return 0
 }
 
-// acquireBackend is the v0.6.0 single-binary entry point every
-// daemon-touching subcommand calls before doing its real work.
-// Resolution:
+// daemonReadyTimeout caps how long ensureGlobalDaemon waits for a
+// freshly-spawned daemon child to bind its socket / TCP port. 4 s is
+// generous on a warm host (cold start ~150–400 ms in practice) but
+// short enough that a misconfigured environment surfaces as a clean
+// error rather than a hang. The poll cadence (50 ms) keeps the typical
+// case fast.
+const (
+	daemonReadyTimeout = 4 * time.Second
+	daemonReadyPoll    = 50 * time.Millisecond
+)
+
+// ensureGlobalDaemon makes sure a host-wide daemon is running and
+// ready to accept connections. If one is already up it returns
+// immediately; otherwise it spawns a detached child and polls until
+// the daemon is reachable or the timeout fires.
+//
+// Test binaries short-circuit to a no-op: tests that need a daemon
+// stand one up explicitly via fixtures, and we must never fork the
+// test harness as a sibling process.
+//
+// Returns nil on success (daemon up). Errors are logged on stderr
+// but also returned so callers in degraded mode (status, list) can
+// proceed without a daemon.
+func ensureGlobalDaemon() error {
+	if client.DaemonRunning("") {
+		return nil
+	}
+	if isTestBinary() {
+		// Tests must not spawn detached siblings — every test that
+		// needs a daemon configures one in-process via fixtures.
+		return errors.New("test binary: not spawning daemon")
+	}
+	if os.Getenv("DFMT_DISABLE_AUTOSTART") == "1" {
+		return errors.New("DFMT_DISABLE_AUTOSTART=1: not spawning daemon")
+	}
+	if _, err := startGlobalDaemonBackground(); err != nil {
+		return fmt.Errorf("spawn detached daemon: %w", err)
+	}
+	deadline := time.Now().Add(daemonReadyTimeout)
+	for time.Now().Before(deadline) {
+		if client.DaemonRunning("") {
+			return nil
+		}
+		time.Sleep(daemonReadyPoll)
+	}
+	return fmt.Errorf("daemon did not become ready within %v", daemonReadyTimeout)
+}
+
+// acquireBackend is the v0.6.3 single-binary entry point every
+// short-lived daemon-touching subcommand calls before doing its real
+// work. Resolution:
 //
 //  1. If a global daemon is already running, build a ClientBackend
-//     wrapping client.NewClient — the calling subcommand is a thin
-//     RPC client. Returned daemon is nil (we do not own it).
-//  2. Otherwise, daemon.PromoteInProcess brings up the daemon in
-//     this process. The calling subcommand uses the in-process
-//     Handlers as its Backend (no IPC overhead) AND returns a
-//     non-nil *daemon.Daemon that the caller MUST keep running
-//     until it has finished its work and called waitForDaemonShutdown
-//     (long-lived commands) or detached + handed off (short-lived).
-//  3. Lock-contention race (probe said no daemon, PromoteInProcess
-//     said lock held) falls back to step 1 — another process won
-//     the lock between our two calls.
+//     wrapping client.NewClient and return it.
+//  2. Otherwise, spawn a detached daemon child via
+//     ensureGlobalDaemon and connect to it as a client.
+//  3. In test binaries (no spawn allowed), fall back to in-process
+//     promotion via daemon.PromoteInProcess. The returned *Daemon
+//     is non-nil and the caller MUST stop it (or wait for shutdown)
+//     before exiting — production code paths never see this branch.
 //
-// projectPath is the project root the calling subcommand wants to
-// pin its RPCs to. Empty means "no project" — the daemon's degraded
-// mode. Both NewClient and PromoteInProcess accept empty without
-// error.
+// The pre-v0.6.3 behavior was to ALWAYS in-process-promote when no
+// daemon was up, which forced the foreground command to block on
+// idle-exit. v0.6.3 reverses that: short-lived commands now spawn-
+// and-exit, leaving the daemon persistently in the background, which
+// matches the user-visible contract "ne ile gelsem acsın, kill
+// etmedikçe hep var olacak" (any command brings it up; it persists
+// until killed).
+//
+// runMCP keeps the in-process self-promote path via
+// acquireBackendForLongRunner — MCP is itself a long-running process
+// so a separate daemon child would mean two dfmt.exe in tasklist
+// rather than one.
 //
 // Failure modes return (nil, nil): the caller should report the
-// stderr-logged error and proceed in degraded mode (or exit). We
-// deliberately do NOT return an error value because every caller
-// would do the same thing with it.
+// stderr-logged error and exit. The *daemon.Daemon return is non-nil
+// only in the test-binary fallback path.
 func acquireBackend(projectPath string) (transport.Backend, *daemon.Daemon) {
+	if !client.DaemonRunning(projectPath) {
+		if err := ensureGlobalDaemon(); err != nil {
+			// Test-binary or DISABLE_AUTOSTART: fall back to the legacy
+			// in-process promote so unit tests that exercise this code
+			// path still get a working backend.
+			if isTestBinary() || os.Getenv("DFMT_DISABLE_AUTOSTART") == "1" {
+				return acquireBackendForLongRunner(projectPath)
+			}
+			fmt.Fprintf(os.Stderr, "acquireBackend: %v\n", err)
+			return nil, nil
+		}
+	}
+	cl, cerr := client.NewClient(projectPath)
+	if cerr != nil {
+		fmt.Fprintf(os.Stderr, "acquireBackend: connect failed: %v\n", cerr)
+		return nil, nil
+	}
+	return client.NewBackend(cl), nil
+}
+
+// acquireBackendForLongRunner is the runMCP-and-tests variant of
+// acquireBackend: when no daemon is running, it promotes the current
+// process to daemon role via daemon.PromoteInProcess instead of
+// spawning a detached child. The caller MUST keep the *Daemon alive
+// (and eventually call waitForDaemonShutdown) so the daemon role
+// outlives the original work.
+//
+// runMCP uses this because the MCP stdio loop is itself long-lived —
+// a sibling daemon child would mean two dfmt.exe in tasklist for the
+// duration of the agent session.
+//
+// Tests use this because they cannot fork sibling processes (the
+// test binary is not the dfmt binary; re-execing it would re-run the
+// suite).
+func acquireBackendForLongRunner(projectPath string) (transport.Backend, *daemon.Daemon) {
 	if client.DaemonRunning(projectPath) {
 		cl, cerr := client.NewClient(projectPath)
 		if cerr != nil {
@@ -1105,16 +1197,10 @@ func acquireBackend(projectPath string) (transport.Backend, *daemon.Daemon) {
 		return client.NewBackend(cl), nil
 	}
 
-	// No daemon — promote self. config.Default is the host-wide
-	// fallback; per-project YAML overrides still kick in inside
-	// Resources(projectID) lookups.
 	d, perr := daemon.PromoteInProcess(context.Background(), config.Default())
 	if perr != nil {
 		var lerr *daemon.LockError
 		if errors.As(perr, &lerr) {
-			// Race: another process won the lock between our
-			// DaemonRunning probe and PromoteInProcess. Fall back
-			// to client mode the same way step 1 would.
 			cl, cerr := client.NewClient(projectPath)
 			if cerr != nil {
 				fmt.Fprintf(os.Stderr, "acquireBackend: lock-race fallback: %v\n", cerr)
@@ -1247,16 +1333,24 @@ func startGlobalDaemonBackground() (int, error) {
 	}
 
 	cmd := exec.Command(exePath, "daemon", "--global", "--foreground")
+	cmd.Stdin = nil
 	cmd.Stdout = nil
 	cmd.Stderr = nil
+	// Fully detach from the parent's console / process group so the
+	// daemon survives after the foreground `dfmt <cmd>` returns.
+	// Without this, on Windows the child inherits the parent's console
+	// and on Unix it stays in the parent's process group — closing the
+	// terminal that ran the spawn would kill the daemon.
+	detachSysProcAttr(cmd)
 
 	if err := cmd.Start(); err != nil {
 		return 0, fmt.Errorf("start global daemon: %w", err)
 	}
-	go func() {
-		defer func() { _ = recover() }()
-		_ = cmd.Wait()
-	}()
+	// Detach: do NOT call cmd.Wait or hold the *exec.Cmd reference.
+	// Reaping is the OS's job once we've severed the parent/child
+	// relationship via setsid/DETACHED_PROCESS. Releasing also frees
+	// the underlying file descriptors so the parent can exit cleanly.
+	_ = cmd.Process.Release()
 
 	// PID file lives under ~/.dfmt/, written by the daemon itself once it
 	// successfully acquires the lock. We don't write it from here because
@@ -1486,6 +1580,11 @@ func signalStopProcess(pid int, force bool) {
 }
 
 func runList(_ []string) int {
+	// v0.6.3: bring the daemon up before listing — without this, the
+	// first `dfmt list` after a fresh login showed "No running daemons"
+	// even though the user explicitly invoked dfmt to find out.
+	_ = ensureGlobalDaemon()
+
 	daemons := client.GetRegistry().List()
 
 	// Phase 2: synthesize a registry-shaped row for the host-wide
@@ -1579,6 +1678,11 @@ func runDoctor(args []string) int {
 	if dir == "" {
 		dir, _ = os.Getwd()
 	}
+
+	// v0.6.3: ensure the daemon is up before reporting health — the
+	// "daemon not running" diagnostic should only fire when spawning is
+	// genuinely impossible, not as a default state on a clean shell.
+	_ = ensureGlobalDaemon()
 
 	dfmtDir := filepath.Join(dir, ".dfmt")
 	pidPath := filepath.Join(dfmtDir, "daemon.pid")
@@ -4067,7 +4171,10 @@ func runMCP(_ []string) int {
 			logging.Warnf("auto-init %s: %v", proj, ierr)
 		}
 
-		backend, ownedDaemon = acquireBackend(proj)
+		// MCP is long-lived: prefer in-process promotion so an MCP-
+		// driven session shows exactly one dfmt.exe in tasklist instead
+		// of "agent → dfmt mcp → spawned dfmt daemon" (two processes).
+		backend, ownedDaemon = acquireBackendForLongRunner(proj)
 		if backend == nil {
 			fmt.Fprintln(os.Stderr,
 				"dfmt mcp: cannot reach or promote daemon — tool calls will return -32603.")
