@@ -1006,91 +1006,48 @@ func samePathCLI(a, b string) bool {
 }
 
 func runDaemon(args []string) int {
-	var foreground, legacyMode bool
-	// Phase 2: `dfmt daemon` defaults to the host-wide global daemon.
-	// `--global` is kept as an explicit no-op alias for back-compat
-	// with v0.4.0-rc scripts that wrote `dfmt daemon --global`. Pass
-	// `--legacy` (or the older `--project <p>` global flag at the
-	// dispatch boundary) to bring up a per-project daemon — kept
-	// available through v0.4.x for operators with hand-rolled
-	// systemd / launchctl units pinning a project.
+	// v0.5.0: `dfmt daemon` is exclusively the host-wide global daemon.
+	// The `--legacy` flag from v0.4.x (per-project daemon bound to
+	// --project) is gone; callers passing it get a clean error rather
+	// than a silent fallback. `--global` is kept as an accepted alias
+	// for v0.4.0-rc scripts that wrote it explicitly.
+	var foreground bool
 	var globalAlias bool
 	fs := flag.NewFlagSet("daemon", flag.ContinueOnError)
 	fs.BoolVar(&foreground, "foreground", false, "Run in foreground")
-	fs.BoolVar(&globalAlias, "global", true, "Run as host-wide global daemon (default; passing --global is a no-op kept for v0.4.0-rc compat)")
-	fs.BoolVar(&legacyMode, "legacy", false, "Run as a per-project daemon bound to --project <path> (deprecated; removed in v0.5.0)")
+	fs.BoolVar(&globalAlias, "global", true, "Run as host-wide global daemon (default; --global is a no-op kept for v0.4.0-rc compat)")
 	if err := fs.Parse(args); err != nil {
 		if err == flag.ErrHelp {
 			return 0
 		}
 		return 2
 	}
-	_ = globalAlias // accepted for back-compat; the legacyMode flag is the routing knob now.
+	_ = globalAlias // accepted for back-compat; global is the only mode in v0.5.0.
 
-	// Default path: host-wide global daemon. The daemon binds at
-	// ~/.dfmt/{port|daemon.sock} and lazily loads per-project
-	// resources on each RPC. No project required at startup.
-	if !legacyMode {
-		cfg := config.Default()
-		if foreground {
-			return runGlobalDaemonForeground(cfg)
-		}
-		// Short-circuit: if a global daemon is already up, say so and
-		// exit successfully. Without this the spawn would bind-fail
-		// against the singleton lock and the user would see a
-		// confusing "Global daemon started (PID N)" line for a child
-		// that died milliseconds later.
-		if globalURL := globalDashboardURL(); globalURL != "" {
-			pid := readGlobalDaemonPID()
-			if pid > 0 {
-				fmt.Printf("Global daemon already running (PID %d). Dashboard: %s\n", pid, globalURL)
-			} else {
-				fmt.Printf("Global daemon already running. Dashboard: %s\n", globalURL)
-			}
-			return 0
-		}
-		pid, err := startGlobalDaemonBackground()
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "error starting global daemon: %v\n", err)
-			return 1
-		}
-		fmt.Printf("Global daemon started (PID %d)\n", pid)
-		return 0
-	}
-
-	proj, err := getProject()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		return 1
-	}
-
-	// Check if already running
-	if client.DaemonRunning(proj) {
-		fmt.Printf("Daemon already running for %s\n", proj)
-		return 0
-	}
-
-	cfg, err := config.Load(proj)
-	if err != nil {
-		// Surface the error — Load now runs Validate (commit 891833b), so a
-		// malformed project YAML would otherwise start the daemon with the
-		// zero-value config and silently ignore user settings.
-		fmt.Fprintf(os.Stderr, "error: load config for %s: %v\n", proj, err)
-		return 1
-	}
-
+	cfg := config.Default()
 	if foreground {
-		return runDaemonForeground(proj, cfg)
+		return runGlobalDaemonForeground(cfg)
 	}
-
-	// Start daemon in background
-	pid, err := startDaemonBackground(proj)
+	// Short-circuit: if a global daemon is already up, say so and
+	// exit successfully. Without this the spawn would bind-fail
+	// against the singleton lock and the user would see a confusing
+	// "Global daemon started (PID N)" line for a child that died
+	// milliseconds later.
+	if globalURL := globalDashboardURL(); globalURL != "" {
+		pid := readGlobalDaemonPID()
+		if pid > 0 {
+			fmt.Printf("Global daemon already running (PID %d). Dashboard: %s\n", pid, globalURL)
+		} else {
+			fmt.Printf("Global daemon already running. Dashboard: %s\n", globalURL)
+		}
+		return 0
+	}
+	pid, err := startGlobalDaemonBackground()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error starting daemon: %v\n", err)
+		fmt.Fprintf(os.Stderr, "error starting global daemon: %v\n", err)
 		return 1
 	}
-
-	fmt.Printf("Daemon started (PID %d) for %s\n", pid, proj)
+	fmt.Printf("Global daemon started (PID %d)\n", pid)
 	return 0
 }
 
