@@ -193,6 +193,25 @@ func (ix *Index) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// MaxIndexDocs is the V-13 cap on documents held in the in-memory
+// index. Without it, an agent that floods dfmt_remember in a tight
+// loop with high-entropy unique tokens grows term postings (stemPL,
+// trigramPL) unboundedly — RAM that the journal-rotation budget does
+// not bound. 100k documents accommodates several years of normal
+// development activity (typical projects produce ~10–50 events/day)
+// while bounding worst-case memory to ~tens of MB.
+//
+// At cap, Add evicts the oldest document (smallest ULID, which is
+// time-sortable so smallest = earliest TS) before indexing the new
+// one. Eviction is amortized: a flooding agent pays per-add eviction
+// cost only after the cap is reached, and only for as long as the
+// flood continues.
+//
+// Declared as a var (not const) so tests can temporarily lower the cap
+// to drive the eviction path without inserting 100k events. Production
+// code never mutates it.
+var MaxIndexDocs = 100_000
+
 // Add adds an event to the index. If the event ID was already indexed the
 // call is a no-op — this prevents totalDocs drift and duplicate posting-list
 // entries when a caller (e.g. a retry path) re-submits the same event.
@@ -203,6 +222,16 @@ func (ix *Index) Add(e Event) {
 	id := e.ID
 	if _, exists := ix.docLen[id]; exists {
 		return
+	}
+
+	// V-13: enforce document cap. When at cap, evict the oldest doc
+	// (smallest ULID) before adding the new one. This bounds memory
+	// regardless of dfmt_remember flood rate. The 1-step eviction
+	// keeps amortized cost low; bulk-evict (e.g. 10% at once) is a
+	// future optimization if the per-add eviction cost becomes
+	// noticeable on profiling.
+	if len(ix.docLen) >= MaxIndexDocs {
+		ix.evictOldestLocked()
 	}
 
 	// Stash a short content excerpt for search-result enrichment.
@@ -506,7 +535,14 @@ func (h *hitHeap) Pop() any {
 func (ix *Index) Remove(id string) {
 	ix.mu.Lock()
 	defer ix.mu.Unlock()
+	ix.removeLocked(id)
+}
 
+// removeLocked performs the actual removal work. The caller MUST hold
+// ix.mu (write lock). Extracted from Remove so the V-13 eviction path
+// in Add — which already holds the lock — can reuse the same logic
+// without re-entering the mutex.
+func (ix *Index) removeLocked(id string) {
 	if _, ok := ix.docLen[id]; !ok {
 		// No-op: unknown id. Prevents totalDocs from going negative on
 		// double-remove.
@@ -560,6 +596,33 @@ func (ix *Index) Remove(id string) {
 			total += l
 		}
 		ix.avgDocLen = float64(total) / float64(ix.totalDocs)
+	}
+}
+
+// evictOldestLocked removes the document with the smallest ID. The caller
+// MUST hold ix.mu (write lock). Used by Add when totalDocs >= MaxIndexDocs.
+//
+// Smallest ULID == earliest timestamp because ULIDs encode time in their
+// lexicographically-comparable prefix (Crockford base32 of the milliseconds
+// since epoch). String comparison is therefore equivalent to time
+// comparison without parsing.
+//
+// Walks docLen once (O(N)) to find the min; then removeLocked walks every
+// posting list (O(unique_terms × max_posting_size)) to prune. Eviction
+// fires only when at cap so amortized cost per Add is bounded by the
+// cap, not by the index size.
+func (ix *Index) evictOldestLocked() {
+	if len(ix.docLen) == 0 {
+		return
+	}
+	var oldest string
+	for id := range ix.docLen {
+		if oldest == "" || id < oldest {
+			oldest = id
+		}
+	}
+	if oldest != "" {
+		ix.removeLocked(oldest)
 	}
 }
 
