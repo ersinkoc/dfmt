@@ -276,21 +276,39 @@ if (-not $SkipTests) {
 }
 
 # ---- 3. Build directly to install target -------------------------------------
+# Read the canonical version from internal/version/version.go instead of
+# hardcoding it here -- pre-fix this script pinned v0.3.1 and silently
+# shipped a stale --version string after every release bump. The git short
+# rev is appended so a `dfmt --version` from a dev build is distinguishable
+# from a tagged release at the same version constant.
 Write-Step "Building dfmt to $TargetPath..."
 Set-Location $RepoRoot
 New-Item -ItemType Directory -Force -Path $TargetDir | Out-Null
+
+$versionFile = Join-Path $RepoRoot 'internal/version/version.go'
+$versionMatch = Select-String -Path $versionFile -Pattern 'Current\s*=\s*"(v[^"]+)"' -ErrorAction SilentlyContinue
+if (-not $versionMatch -or $versionMatch.Matches.Count -eq 0) {
+    Write-Err "could not parse version from $versionFile"
+    exit 1
+}
+$version = $versionMatch.Matches[0].Groups[1].Value
+
 $gitRev = "dev"
 try {
     $gitRev = (& git rev-parse --short HEAD 2>$null).Trim()
     if (-not $gitRev) { $gitRev = "dev" }
 } catch { $gitRev = "dev" }
-$ldflags = "-X github.com/ersinkoc/dfmt/internal/version.Current=v0.3.1"
+
+# `version.go` already defaults to the release tag string; we override only
+# to append the short rev so dev builds carry it. Format: "vX.Y.Z+abc1234".
+$ldflagsValue = "$version+$gitRev"
+$ldflags = "-X github.com/ersinkoc/dfmt/internal/version.Current=$ldflagsValue"
 & go build -ldflags $ldflags -o $TargetPath ./cmd/dfmt
 if ($LASTEXITCODE -ne 0 -or -not (Test-Path $TargetPath)) {
     Write-Err "build failed"
     exit 1
 }
-Write-Ok "built $TargetPath"
+Write-Ok "built $TargetPath ($ldflagsValue)"
 
 # ---- 4. PATH (user scope): drop legacy entry, ensure $TargetDir present ------
 Write-Step "Updating user PATH..."
