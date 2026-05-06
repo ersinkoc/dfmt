@@ -49,7 +49,7 @@ var claudeTrustFlags = []string{
 // delete-the-key for "absent" (to leave the entry exactly as it was)
 // versus set-to-false for "false".
 type claudeTrustPriors struct {
-	Version  int                       `json:"version"`
+	Version  int                        `json:"version"`
 	Projects map[string]map[string]bool `json:"projects"`
 }
 

@@ -261,7 +261,7 @@ func TestRecordToolCall_UnknownToolNoOp(t *testing.T) {
 	for tool, c := range toolCallCounters {
 		before[tool] = pair{c.ok.Load(), c.err.Load()}
 	}
-	var e error = errors.New("boom")
+	e := errors.New("boom")
 	recordToolCall("not-a-real-tool", nil, &e, time.Now())
 	for tool, c := range toolCallCounters {
 		if c.ok.Load() != before[tool].ok || c.err.Load() != before[tool].err {

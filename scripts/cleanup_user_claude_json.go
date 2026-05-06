@@ -10,7 +10,8 @@
 // home dir, but the historical leakage remains.
 //
 // Run once after pulling the TestMain fix:
-//   go run scripts/cleanup_user_claude_json.go
+//
+//	go run scripts/cleanup_user_claude_json.go
 //
 // A timestamped backup is written next to the original before any mutation.
 package main

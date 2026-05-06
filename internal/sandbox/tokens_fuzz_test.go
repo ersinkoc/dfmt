@@ -53,13 +53,13 @@ func FuzzNormalizeOutput(f *testing.F) {
 	seeds := []string{
 		"",
 		"plain text",
-		"\x1b[31mred\x1b[0m",                         // ANSI
-		"line1\rline1-overwritten\nline2",            // CR rewrite
-		"same\nsame\nsame\nsame\nsame\nsame\n",       // RLE
-		"{\"a\":1,\"created_at\":\"x\",\"b\":2}",     // structured
-		"---\ntitle: x\n---\n# heading\n",            // markdown frontmatter
-		"<html><body><h1>hi</h1></body></html>",      // HTML
-		"\xff\xfe\x00\x01",                           // binary-ish
+		"\x1b[31mred\x1b[0m",                     // ANSI
+		"line1\rline1-overwritten\nline2",        // CR rewrite
+		"same\nsame\nsame\nsame\nsame\nsame\n",   // RLE
+		"{\"a\":1,\"created_at\":\"x\",\"b\":2}", // structured
+		"---\ntitle: x\n---\n# heading\n",        // markdown frontmatter
+		"<html><body><h1>hi</h1></body></html>",  // HTML
+		"\xff\xfe\x00\x01",                       // binary-ish
 		"diff --git a/x b/x\nindex abc..def 100644\n+foo\n", // git diff
 	}
 	for _, s := range seeds {

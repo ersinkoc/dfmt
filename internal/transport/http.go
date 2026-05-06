@@ -1083,7 +1083,7 @@ func (s *HTTPServer) handleAPIProxy(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 
 		// Write request directly to socket
 		if _, werr := conn.Write(body); werr != nil {
@@ -1144,7 +1144,7 @@ func (s *HTTPServer) handleAPIProxy(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		_ = json.NewEncoder(w).Encode(Response{

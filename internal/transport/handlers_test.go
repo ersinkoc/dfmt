@@ -99,10 +99,9 @@ func TestHandlersStashContentPutChunkSetError(t *testing.T) {
 	// stashContent calls core.NewULID which should always produce a valid ULID,
 	// so PutChunkSet should not fail with a valid store. To trigger the error
 	// path we'd need to mock the store. For now just exercise the normal path.
-	id := h.stashContent("exec-stdout", "sandbox.exec", "test", "hello world")
-	if id == "" {
-		// Store is nil so this returns "" - that's the expected nil-store path
-	}
+	// Store is nil so stashContent returns "" — that's the expected nil-store
+	// path; the assertion is just "no panic".
+	_ = h.stashContent("exec-stdout", "sandbox.exec", "test", "hello world")
 }
 
 // TestHandlersStashContentDedupWithRealStore tests that stashContent correctly

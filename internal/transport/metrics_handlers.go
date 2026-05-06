@@ -176,7 +176,8 @@ func WireHandlerMetrics(h *Handlers) {
 	// a permanent -1 that would noise alerting. ADR-0017.
 	if h.journal != nil {
 		RegisterGaugeFunc("dfmt_journal_bytes",
-			"On-disk byte size of the active journal file. -1 means the underlying Size() call failed (filesystem hiccup, file removed).",
+			"On-disk byte size of the active journal file. -1 means the underlying Size() "+
+				"call failed (filesystem hiccup, file removed).",
 			func() int64 {
 				n, err := h.journal.Size()
 				if err != nil {

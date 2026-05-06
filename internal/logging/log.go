@@ -81,7 +81,7 @@ func init() {
 // keep the existing threshold.
 func parseLevel(s string) (Level, bool) {
 	switch strings.ToLower(s) {
-	case "debug":
+	case levelDebug:
 		return LevelDebug, true
 	case "info":
 		return LevelInfo, true
@@ -177,7 +177,7 @@ func write(lvl Level, prefix, format string, args ...any) {
 
 // Debugf writes a `debug:` prefixed message at LevelDebug. Suppressed
 // unless DFMT_LOG=debug.
-func Debugf(format string, args ...any) { write(LevelDebug, "debug", format, args...) }
+func Debugf(format string, args ...any) { write(LevelDebug, levelDebug, format, args...) }
 
 // Infof writes an `info:` prefixed message at LevelInfo. Suppressed
 // unless DFMT_LOG=info or below.

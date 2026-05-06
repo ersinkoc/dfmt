@@ -2137,9 +2137,9 @@ func TestSandboxWriteEditRejectReservedNames(t *testing.T) {
 	cases := []string{
 		"NUL",
 		"CON",
-		"con",         // case-insensitive
-		"NUL.txt",     // reserved with extension
-		"sub/PRN",     // reserved as a non-leaf component (per safefs design)
+		"con",     // case-insensitive
+		"NUL.txt", // reserved with extension
+		"sub/PRN", // reserved as a non-leaf component (per safefs design)
 		"COM1",
 		"LPT9",
 	}

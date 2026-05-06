@@ -2165,7 +2165,7 @@ func TestClientStatsMock(t *testing.T) {
 			JSONRPC: "2.0",
 			ID:      req.ID,
 			Result: map[string]interface{}{
-				"total_events": 100,
+				"total_events":   100,
 				"session_events": 10,
 			},
 		}
@@ -2203,7 +2203,7 @@ func TestClientExecMock(t *testing.T) {
 			JSONRPC: "2.0",
 			ID:      req.ID,
 			Result: map[string]interface{}{
-				"stdout": "hello world",
+				"stdout":    "hello world",
 				"exit_code": 0,
 			},
 		}
@@ -2241,7 +2241,7 @@ func TestClientReadMock(t *testing.T) {
 			JSONRPC: "2.0",
 			ID:      req.ID,
 			Result: map[string]interface{}{
-				"content": "file contents here",
+				"content":   "file contents here",
 				"truncated": false,
 			},
 		}
@@ -2279,7 +2279,7 @@ func TestClientFetchMock(t *testing.T) {
 			JSONRPC: "2.0",
 			ID:      req.ID,
 			Result: map[string]interface{}{
-				"body": "response body",
+				"body":        "response body",
 				"status_code": 200,
 			},
 		}
@@ -2543,9 +2543,9 @@ func TestEnsureDaemonDisabled(t *testing.T) {
 
 	tmpDir := t.TempDir()
 	cl := &Client{
-		network:  "tcp",
-		address:  "localhost:54321",
-		timeout:  100 * time.Millisecond,
+		network:   "tcp",
+		address:   "localhost:54321",
+		timeout:   100 * time.Millisecond,
 		sessionID: "test",
 	}
 
@@ -2578,9 +2578,9 @@ func TestEnsureDaemonAlreadyRunning(t *testing.T) {
 	defer stop()
 
 	cl := &Client{
-		network:  "unix",
-		address:  socketPath,
-		timeout:  500 * time.Millisecond,
+		network:   "unix",
+		address:   socketPath,
+		timeout:   500 * time.Millisecond,
 		sessionID: "test",
 	}
 
@@ -2648,11 +2648,8 @@ func TestStreamEventsMock(t *testing.T) {
 		t.Fatalf("StreamEvents failed: %v", err)
 	}
 
-	for e := range ch {
-		if e.ID == "" {
-			t.Error("received event with empty ID")
-		}
-		break
+	if e, ok := <-ch; ok && e.ID == "" {
+		t.Error("received event with empty ID")
 	}
 }
 
@@ -2893,9 +2890,9 @@ func TestDoHTTPInvalidStatusCode(t *testing.T) {
 
 func TestClientHTTPClientTimeout(t *testing.T) {
 	cl := &Client{
-		network:  "tcp",
-		address:  "localhost:54321",
-		timeout:  10 * time.Millisecond,
+		network:   "tcp",
+		address:   "localhost:54321",
+		timeout:   10 * time.Millisecond,
 		sessionID: "test",
 	}
 
@@ -2953,11 +2950,10 @@ func TestNewClientHomeUnset(t *testing.T) {
 	}()
 	os.Unsetenv("HOME")
 
-	// Just verify no panic
-	cl, err := NewClient(t.TempDir())
-	if err == nil && cl != nil {
-		// Good - NewClient worked with temp dir
-	}
+	// Just verify no panic; NewClient must produce either an error or a
+	// non-nil client. Both outcomes are acceptable — we only guard that
+	// the function doesn't crash with HOME unset.
+	_, _ = NewClient(t.TempDir())
 }
 
 func TestStartDaemonLookPathFailure(t *testing.T) {

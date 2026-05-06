@@ -172,7 +172,7 @@ func TestSetConfigFieldUnknownKeyError(t *testing.T) {
 }
 
 // TestGetConfigFieldCaptureFSIgnore covers the json.Marshal round-trip for
-// capture.fs.ignore which uses []string serialised as a JSON array.
+// capture.fs.ignore which uses []string serialized as a JSON array.
 func TestGetConfigFieldCaptureFSIgnore(t *testing.T) {
 	cfg := config.Default()
 	cfg.Capture.FS.Ignore = []string{"*.log", "*.tmp", "**/.git/**"}

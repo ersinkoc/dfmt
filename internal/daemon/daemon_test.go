@@ -242,7 +242,7 @@ func TestNew_TCPPathIgnoresSocketDisabled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New with TCP-only must succeed, got: %v", err)
 	}
-	defer d.Stop(context.Background())
+	_ = d.Stop(context.Background())
 }
 
 func TestNewDaemonWithEmptyPath(t *testing.T) {

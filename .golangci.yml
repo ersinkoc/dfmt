@@ -167,7 +167,25 @@ linters:
       - path: internal/transport/http\.go$
         linters:
           - errcheck
-        source: 'defer r\.Body\.Close\(|json\.NewEncoder\(w\)\.Encode\(|json\.Unmarshal\(|w\.Write\(|ln\.Close\(\)|os\.Remove\(|s\.server\.(Shutdown|Serve)\('
+        source: 'defer r\.Body\.Close\(|json\.NewEncoder\(w\)\.Encode\(|json\.Unmarshal\(|w\.Write\(|ln\.Close\(\)|os\.Remove\(|s\.server\.(Shutdown|Serve)\(|fmt\.Fprintf\(w'
+      # Transport metrics: Prometheus text exposition writes to a buffered
+      # response writer; per-line write errors cannot be recovered from
+      # mid-emission and would leave a partial body anyway.
+      - path: internal/transport/metrics\.go$
+        linters:
+          - errcheck
+        source: 'fmt\.Fprintf\(w'
+      # CLI dispatch: PreToolUse hook returns plain JSON to stdout; if the
+      # parent agent's stdout pipe is closed there's nothing to recover.
+      - path: internal/cli/dispatch\.go$
+        linters:
+          - errcheck
+        source: 'fmt\.Fprintln\(os\.Stdout'
+      # CLI dispatch ops tests: test fixture setup, error doesn't gate test
+      - path: internal/cli/dispatch_ops_test\.go$
+        linters:
+          - errcheck
+        source: 'setup\.SaveManifest\('
       # Transport JSON-RPC: write is best-effort
       - path: internal/transport/jsonrpc\.go$
         linters:
@@ -222,6 +240,14 @@ linters:
         linters:
           - goconst
         source: '"windows"'
+      # CLI dispatcher: native tool-name literals ("Bash", "Read", ...) are
+      # wire-protocol values from Claude Code's PreToolUse hook and must
+      # match the agent's literal spelling. Extracting them as constants
+      # spreads the wire-format dependency without clarity gain.
+      - path: internal/cli/dispatch\.go$
+        linters:
+          - goconst
+        source: '"Bash"'
       # Dashboard HTML: CSS lines are inherently long
       - path: internal/transport/dashboard\.go$
         linters:
@@ -338,6 +364,14 @@ linters:
       - path: internal/transport/handlers\.go$
         linters:
           - goconst
+      # ─── goconst: config.go log-level literals ─────────────────────────
+      # `warn` / `info` / `debug` are user-facing config values matching
+      # the YAML schema; extracting them as constants spreads the schema
+      # contract across files for no reader benefit.
+      - path: internal/config/config\.go$
+        linters:
+          - goconst
+        source: '"(warn|info|debug)"'
       # ─── goconst: htmlmd.go HTML tag literals ──────────────────────────
       # `pre` and other HTML tag names appear in stack/serializer paths;
       # extracting them spreads them across files for no reader benefit.

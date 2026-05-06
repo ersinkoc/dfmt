@@ -183,7 +183,7 @@ var commonPatterns = []*redactPattern{
 	// defense-in-depth, not a hard guarantee). Runs AFTER the full-block
 	// pattern above so a complete block is captured intact (including its
 	// END marker) before this lazier fallback fires.
-	{name: "private_key_truncated", regex: regexp.MustCompile(`(?s)-----BEGIN (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----[\s\nA-Za-z0-9+/=]{0,1000}`), repl: "[PRIVATE KEY (TRUNCATED)]"},
+	{name: "private_key_truncated", regex: regexp.MustCompile(`(?s)-----BEGIN (?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----[\sA-Za-z0-9+/=]{0,1000}`), repl: "[PRIVATE KEY (TRUNCATED)]"},
 
 	// JWT tokens
 	{name: "jwt", regex: regexp.MustCompile(`eyJ[A-Za-z0-9_=-]+\.eyJ[A-Za-z0-9_=-]+\.[A-Za-z0-9_/+=.-]*`), repl: "[JWT]"},

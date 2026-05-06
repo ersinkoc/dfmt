@@ -153,10 +153,10 @@ func (p Policy) Evaluate(op, text string) bool {
 //     Examples for operators with secret stores outside the redactor's
 //     default shapes:
 //
-//	    deny:read:creds/**
-//	    deny:read:**/private_keys/**
-//	    deny:write:creds/**
-//	    deny:edit:creds/**
+//     deny:read:creds/**
+//     deny:read:**/private_keys/**
+//     deny:write:creds/**
+//     deny:edit:creds/**
 //
 // V-05 closure: this docstring previously claimed `.env*`, `.dfmt/**`,
 // `.git/**`, and similar were in the default deny list. They were not,

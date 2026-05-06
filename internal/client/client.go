@@ -1,8 +1,8 @@
 package client
 
 import (
-	"bytes"
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -395,12 +395,12 @@ func (c *Client) StreamEvents(ctx context.Context, from string) (<-chan core.Eve
 		req.Header.Set("Authorization", "Bearer "+c.authToken)
 	}
 
-	resp, err := client.Do(req)
+	resp, err := client.Do(req) //nolint:bodyclose // body closed in goroutine below or short-circuit branch
 	if err != nil {
 		return nil, fmt.Errorf("stream request: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		return nil, fmt.Errorf("stream status: %d", resp.StatusCode)
 	}
 

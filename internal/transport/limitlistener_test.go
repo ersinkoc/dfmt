@@ -85,7 +85,7 @@ func TestLimitListenerCapsConcurrent(t *testing.T) {
 
 	// Close one held server-side conn. The semaphore slot frees and the
 	// blocked Accept must unblock with the probe connection.
-	servers[0].Close()
+	_ = servers[0].Close()
 	servers[0] = nil
 
 	select {

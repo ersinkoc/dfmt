@@ -24,20 +24,20 @@ func FuzzConvertHTML(f *testing.F) {
 		"<p>simple</p>",
 		"<html><body><h1>title</h1><p>body</p></body></html>",
 		"<table><tr><td>a</td><td>b</td></tr></table>",
-		"<script>alert(1)</script>after",                    // script body must not leak
-		"<style>x{color:red}</style>visible",                // style body must not leak
-		"<nav>menu</nav><main>content</main>",               // nav drops, main keeps
-		"<a href=\"https://example.com\">link</a>",          // links → markdown
-		"<pre><code class=\"language-go\">x</code></pre>",   // code with language hint
-		"<p>unterminated",                                   // missing close
-		"<<<>>>",                                            // garbage angle brackets
-		"<p attr=\"unterminated",                            // unterminated attr
-		"<p>&amp;&lt;&gt;&#65;&#x41;</p>",                   // entities
-		"<svg><path d=\"...\"/></svg>",                      // svg drops
-		"<form><input type=\"text\"/></form>",               // form drops
-		"\xff\xfe<binary>\x00</binary>",                     // binary in HTML shape
-		"<p>" + "<b>" + "deep" + "</b>" + "</p>",            // nesting
-		"<!--<script>alert(1)</script>-->visible",           // comment with hostile body
+		"<script>alert(1)</script>after",                  // script body must not leak
+		"<style>x{color:red}</style>visible",              // style body must not leak
+		"<nav>menu</nav><main>content</main>",             // nav drops, main keeps
+		"<a href=\"https://example.com\">link</a>",        // links → markdown
+		"<pre><code class=\"language-go\">x</code></pre>", // code with language hint
+		"<p>unterminated",                                 // missing close
+		"<<<>>>",                                          // garbage angle brackets
+		"<p attr=\"unterminated",                          // unterminated attr
+		"<p>&amp;&lt;&gt;&#65;&#x41;</p>",                 // entities
+		"<svg><path d=\"...\"/></svg>",                    // svg drops
+		"<form><input type=\"text\"/></form>",             // form drops
+		"\xff\xfe<binary>\x00</binary>",                   // binary in HTML shape
+		"<p>" + "<b>" + "deep" + "</b>" + "</p>",          // nesting
+		"<!--<script>alert(1)</script>-->visible",         // comment with hostile body
 	}
 	for _, s := range seeds {
 		f.Add(s)
@@ -80,11 +80,11 @@ func FuzzGlobMatch(f *testing.F) {
 		{"https://*", "https://example.com/path"},
 		{"*", ""},
 		{"", "anything"},
-		{"a+b", "a+b"},                  // regex meta in pattern
-		{"a.b.c", "axbxc"},              // dot must NOT broaden
-		{"\xff\xfe", "\x00\x01"},        // binary
-		{"[bracket", "[bracket"},        // unbalanced bracket
-		{"(group)", "(group)"},          // parens must not capture
+		{"a+b", "a+b"},           // regex meta in pattern
+		{"a.b.c", "axbxc"},       // dot must NOT broaden
+		{"\xff\xfe", "\x00\x01"}, // binary
+		{"[bracket", "[bracket"}, // unbalanced bracket
+		{"(group)", "(group)"},   // parens must not capture
 	}
 	for _, s := range seeds {
 		f.Add(s[0], s[1])

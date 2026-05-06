@@ -671,11 +671,11 @@ func (m *mockJournalForRebuild) Stream(ctx context.Context, from string) (<-chan
 	return ch, nil
 }
 
-func (m *mockJournalForRebuild) Append(ctx context.Context, e Event) error { return nil }
+func (m *mockJournalForRebuild) Append(ctx context.Context, e Event) error      { return nil }
 func (m *mockJournalForRebuild) Checkpoint(ctx context.Context) (string, error) { return "", nil }
-func (m *mockJournalForRebuild) Rotate(ctx context.Context) error { return nil }
-func (m *mockJournalForRebuild) Size() (int64, error) { return 0, nil }
-func (m *mockJournalForRebuild) Close() error { return nil }
+func (m *mockJournalForRebuild) Rotate(ctx context.Context) error               { return nil }
+func (m *mockJournalForRebuild) Size() (int64, error)                           { return 0, nil }
+func (m *mockJournalForRebuild) Close() error                                   { return nil }
 
 // TestIndexExcerpt tests the Excerpt method of Index.
 func TestIndexExcerpt(t *testing.T) {

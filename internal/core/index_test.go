@@ -128,9 +128,9 @@ func TestSearchBM25_HonorsConfiguredK1(t *testing.T) {
 
 func TestNewBM25OkapiWithParams_FallbacksOnZeroOrBad(t *testing.T) {
 	cases := []struct {
-		k1, b      float64
+		k1, b         float64
 		wantK1, wantB float64
-		reason     string
+		reason        string
 	}{
 		{0, 0, DefaultBM25K1, DefaultBM25B, "both zero -> defaults"},
 		{-0.5, 0.6, DefaultBM25K1, 0.6, "negative k1 -> default"},

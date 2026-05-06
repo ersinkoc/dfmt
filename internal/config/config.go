@@ -367,7 +367,9 @@ func (c *Config) Validate() error {
 	switch c.Logging.Level {
 	case "", "debug", "info", "warn", "warning", "error", "off", "none", "silent":
 	default:
-		return fmt.Errorf("logging.level must be one of debug|info|warn|warning|error|off|none|silent (or empty), got %q", c.Logging.Level)
+		return fmt.Errorf(
+			"logging.level must be one of debug|info|warn|warning|error|off|none|silent (or empty), got %q",
+			c.Logging.Level)
 	}
 	// logging.format is still Reserved (v0.4): only "text" is a real
 	// emitter today. Operators who set it to anything else are silently
@@ -376,7 +378,9 @@ func (c *Config) Validate() error {
 	switch c.Logging.Format {
 	case "", "text":
 	default:
-		return fmt.Errorf("logging.format must be \"text\" (or empty); JSON output is on the v0.4 roadmap, got %q", c.Logging.Format)
+		return fmt.Errorf(
+			"logging.format must be \"text\" (or empty); JSON output is on the v0.4 roadmap, got %q",
+			c.Logging.Format)
 	}
 
 	for i, p := range c.Exec.PathPrepend {
