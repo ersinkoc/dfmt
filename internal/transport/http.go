@@ -919,7 +919,10 @@ func (s *HTTPServer) handleAPIProxy(w http.ResponseWriter, r *http.Request) {
 		Method            string          `json:"method"`
 		Params            json.RawMessage `json:"params"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	// V-11: cap body the same as the JSON-RPC `/` handler. Without this,
+	// an agent on the loopback can OOM the daemon by sending a multi-GiB
+	// body to /api/proxy (this branch had no MaxBytesReader prior).
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
 		_ = json.NewEncoder(w).Encode(Response{
 			JSONRPC: jsonRPCVersion,
 			Error:   &RPCError{Code: -32600, Message: "invalid request: " + err.Error()},
