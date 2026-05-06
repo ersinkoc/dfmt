@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -53,6 +54,32 @@ type ProjectResources struct {
 	// monitor uses Daemon.lastActivityNs (process-global). Per-project
 	// timeout will read this if/when we shift to staggered shutdown.
 	LastActivityNs atomic.Int64
+
+	// lastIndexedID is the ID of the highest event the index-tail
+	// goroutine has Add()ed for this project. The tail Streams from
+	// this cursor each tick to pick up events written by other
+	// processes (most importantly the `dfmt mcp` subprocess, which
+	// owns its own journal handle to the same .dfmt/journal.jsonl
+	// file as the global daemon and otherwise leaves the daemon's
+	// in-memory index permanently behind). Index.Add is idempotent
+	// (keyed by event ID) so events the daemon itself appended are
+	// safely re-processed as no-ops.
+	//
+	// Stored as *string so atomic.Pointer.CompareAndSwap can advance
+	// it without a mutex; nil means "tail has not run yet — start
+	// from the journal beginning".
+	lastIndexedID atomic.Pointer[string]
+
+	// tailStop cancels the index-tail goroutine on Close. Set by
+	// startIndexTail; safe to call even when nil (CancelFunc is
+	// idempotent).
+	tailStop context.CancelFunc
+
+	// tailWG waits for the tail goroutine to drain on Close. Without
+	// this, closeExtraProjects could close the journal handle while
+	// the tail goroutine is mid-Stream, and the goroutine's read
+	// would race with file close.
+	tailWG sync.WaitGroup
 }
 
 // errProjectIDRequired is returned by Resources when the caller passed
@@ -116,13 +143,30 @@ func (d *Daemon) Resources(projectID string) (*ProjectResources, error) {
 		projectID = d.projectPath
 	}
 
-	// Fast path: default project. The daemon already owns these
-	// handles — wrap them in a ProjectResources view without touching
-	// the cache. The wrapper is constructed fresh each call, but its
-	// fields point at the daemon's existing instances, so the
-	// allocation cost is one struct per RPC at worst.
+	// Fast path: default project. Cache a single ProjectResources
+	// view so the index-tail goroutine has a stable instance to
+	// attach tailStop / tailWG to. The view aliases the daemon's
+	// own Journal/Index/etc. — mutating its LastActivityNs does not
+	// affect the daemon's process-global counter (Daemon.Touch is
+	// the public path for that).
 	if sameProjectID(projectID, d.projectPath) {
-		view := d.defaultResourcesView()
+		d.projectsMu.RLock()
+		view := d.defaultRes
+		d.projectsMu.RUnlock()
+		if view == nil {
+			d.projectsMu.Lock()
+			if d.defaultRes == nil {
+				d.defaultRes = d.defaultResourcesView()
+				// Same lifecycle as extraProjects: the tail picks
+				// up MCP-subprocess writes for the default project
+				// too. Background ctx is correct (lifetime owned
+				// by the daemon, cancellation via stopIndexTail in
+				// Stop).
+				d.defaultRes.startIndexTail(context.Background())
+			}
+			view = d.defaultRes
+			d.projectsMu.Unlock()
+		}
 		view.LastActivityNs.Store(d.lastActivityNs.Load())
 		return view, nil
 	}
@@ -153,6 +197,13 @@ func (d *Daemon) Resources(projectID string) (*ProjectResources, error) {
 		d.extraProjects = make(map[string]*ProjectResources)
 	}
 	d.extraProjects[key] = r
+	// Start the index-tail goroutine immediately so a `dfmt mcp`
+	// subprocess that has been writing to the same journal file
+	// before this Resources call is picked up on the next tick.
+	// Background ctx is correct here — the tail's lifetime is owned
+	// by the resource bundle, not the request that triggered the
+	// load. Cancellation arrives via stopIndexTail on Close.
+	r.startIndexTail(context.Background())
 	return r, nil
 }
 
@@ -318,6 +369,109 @@ func loadProjectResources(projectPath string, fallbackCfg *config.Config) (*Proj
 	return r, nil
 }
 
+// indexTailInterval is how often the tail goroutine polls the journal
+// for new events. 3 s keeps recall/search lag under a normal-paced
+// agent's perception while imposing negligible CPU on idle daemons
+// (one stat call per project per 3 s — segment enumeration short-
+// circuits when no new bytes arrived).
+//
+// Configurable via DFMT_INDEX_TAIL_INTERVAL_MS for tests; production
+// callers pin to the constant default.
+var indexTailInterval = 3 * time.Second
+
+// startIndexTail spawns the per-project goroutine that streams events
+// the daemon's index hasn't seen yet and Add()s them. This closes the
+// MCP-subprocess drift: `dfmt mcp` opens its own journal handle and
+// appends events directly, leaving the global daemon's in-memory
+// index permanently behind on every search until the next daemon
+// restart triggered a journal-replay rebuild. With the tail running,
+// `dfmt_search` and `/api/stats`-via-index converge to the on-disk
+// state within indexTailInterval.
+//
+// Why polling instead of fsnotify: the journal is a single file that
+// rotates infrequently; a 3 s poll Reads only the tail bytes since
+// the last cursor (Stream "from" skips past the matching ID), so the
+// per-tick cost on an idle project is one stat + one short read.
+// fsnotify would shave the latency at the cost of a platform-specific
+// dependency that this codebase avoids (ADR-0004 stdlib-only). When
+// agent-perceptible latency becomes an issue we revisit.
+//
+// Lifecycle: starts on first call to startIndexTail; stops via
+// tailStop on Close. tailWG ensures Close waits for any in-flight
+// Stream to drain before the journal handle is closed.
+func (r *ProjectResources) startIndexTail(parent context.Context) {
+	if r == nil || r.Journal == nil || r.Index == nil {
+		return
+	}
+	if r.tailStop != nil {
+		// Already running. Idempotent for callers that may invoke
+		// startIndexTail more than once across legacy/global paths.
+		return
+	}
+	ctx, cancel := context.WithCancel(parent)
+	r.tailStop = cancel
+	r.tailWG.Add(1)
+	go func() {
+		defer r.tailWG.Done()
+		defer func() {
+			if rec := recover(); rec != nil {
+				logging.Errorf("index tail panic for %s recovered: %v", r.ProjectPath, rec)
+			}
+		}()
+		ticker := time.NewTicker(indexTailInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				r.tailOnce(ctx)
+			}
+		}
+	}()
+}
+
+// tailOnce performs one pass of the journal tail: Stream from
+// lastIndexedID forward, Add each event to the index, advance the
+// cursor. Errors are logged and the next tick retries — tail is
+// best-effort and must never wedge the daemon.
+func (r *ProjectResources) tailOnce(ctx context.Context) {
+	from := ""
+	if cur := r.lastIndexedID.Load(); cur != nil {
+		from = *cur
+	}
+	stream, err := r.Journal.Stream(ctx, from)
+	if err != nil {
+		logging.Warnf("index tail stream for %s: %v", r.ProjectPath, err)
+		return
+	}
+	var newest string
+	for e := range stream {
+		r.Index.Add(e)
+		newest = e.ID
+	}
+	if newest != "" {
+		// Snapshot to a stack copy so atomic.Pointer holds an
+		// independent string. Using &newest directly would expose
+		// the loop variable and a future iteration would mutate
+		// the value the cursor pointed at.
+		id := newest
+		r.lastIndexedID.Store(&id)
+	}
+}
+
+// stopIndexTail cancels the tail goroutine if running and waits for
+// it to drain. Must be called before Journal.Close so the goroutine
+// doesn't read a closed file.
+func (r *ProjectResources) stopIndexTail() {
+	if r == nil || r.tailStop == nil {
+		return
+	}
+	r.tailStop()
+	r.tailWG.Wait()
+	r.tailStop = nil
+}
+
 // closeExtraProjects shuts down every cached additional-project
 // resource bundle. Called from Daemon.Stop after the default project's
 // journal/index are persisted. Failures are logged but never fatal —
@@ -343,6 +497,9 @@ func (d *Daemon) closeExtraProjects() {
 		if r == nil {
 			continue
 		}
+		// Stop the tail goroutine BEFORE touching the journal handle
+		// so its in-flight Stream cannot race the Close below.
+		r.stopIndexTail()
 		if r.Journal != nil && r.Index != nil && r.IndexPath != "" && !r.NeedsRebuild {
 			hiID, cerr := r.Journal.Checkpoint(ctx)
 			if cerr != nil {

@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ersinkoc/dfmt/internal/core"
 )
@@ -292,6 +293,86 @@ func TestResourcesLoadsProjectOwnConfig(t *testing.T) {
 		t.Errorf("extra project default_budget: got %d, want 12345 (project YAML must override daemon cfg)",
 			r.Config.Retrieval.DefaultBudget)
 	}
+}
+
+// TestIndexTailPicksUpExternalAppends proves the per-project index
+// tail goroutine catches events written to the journal by a
+// *different* writer (the production case being a `dfmt mcp`
+// subprocess that owns its own journal handle to the same
+// .dfmt/journal.jsonl file). Before this fix the daemon's in-memory
+// index drifted permanently behind any out-of-process append, and
+// `dfmt_search` results stayed stale until the next daemon restart
+// triggered a journal-replay rebuild.
+//
+// The test uses a tight tail interval and a brief sleep window to
+// keep the run fast without exposing the goroutine's internals.
+func TestIndexTailPicksUpExternalAppends(t *testing.T) {
+	prevInterval := indexTailInterval
+	indexTailInterval = 50 * time.Millisecond
+	t.Cleanup(func() { indexTailInterval = prevInterval })
+
+	defaultRoot := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(defaultRoot, ".dfmt"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	d, err := New(defaultRoot, newTestConfig())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() {
+		if d.journal != nil {
+			_ = d.journal.Close()
+		}
+	}()
+
+	extraRoot := t.TempDir()
+	r, err := d.Resources(extraRoot)
+	if err != nil {
+		t.Fatalf("Resources(extra): %v", err)
+	}
+	defer func() {
+		r.stopIndexTail()
+		if r.Journal != nil {
+			_ = r.Journal.Close()
+		}
+	}()
+
+	// Simulate a second writer (the MCP subprocess analog) by opening
+	// a NEW journal handle to the same on-disk file. Add WITHOUT
+	// going through r.Index — that would defeat the test by
+	// pre-populating the index the daemon owns.
+	externalJournal, err := core.OpenJournal(
+		filepath.Join(extraRoot, ".dfmt", "journal.jsonl"),
+		core.JournalOptions{Path: filepath.Join(extraRoot, ".dfmt", "journal.jsonl")},
+	)
+	if err != nil {
+		t.Fatalf("open external journal: %v", err)
+	}
+	defer func() { _ = externalJournal.Close() }()
+
+	ctx := context.Background()
+	e := core.Event{
+		ID:      "01TAILTEST",
+		Type:    core.EvtNote,
+		Project: extraRoot,
+		Tags:    []string{"tail-witness-XPLT9"},
+	}
+	e.Sig = e.ComputeSig()
+	if err := externalJournal.Append(ctx, e); err != nil {
+		t.Fatalf("external append: %v", err)
+	}
+
+	// Wait up to ~1 s for the tail to converge. Bounded so a
+	// regression that breaks the tail does not hang CI forever.
+	deadline := time.Now().Add(1 * time.Second)
+	for time.Now().Before(deadline) {
+		hits := r.Index.SearchTrigram("tail-witness-XPLT9", 5)
+		if len(hits) > 0 {
+			return // success — tail observed the external append
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Errorf("index tail never observed externally-appended event; daemon's index drifted from on-disk journal")
 }
 
 // TestResourcesEmptyProjectIDOnDegradedDaemon verifies the degraded-mode

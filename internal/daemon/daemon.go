@@ -75,6 +75,14 @@ type Daemon struct {
 	projectsMu    sync.RWMutex
 	extraProjects map[string]*ProjectResources
 
+	// defaultRes caches the default project's ProjectResources view
+	// so the index-tail goroutine attaches to a single instance for
+	// the lifetime of the daemon. Without caching, every Resources("")
+	// call would build a fresh view and the per-bundle tailStop /
+	// tailWG would be on a throwaway struct. Populated lazily by
+	// Resources(); guarded by projectsMu.
+	defaultRes *ProjectResources
+
 	// globalMode is set by NewGlobal: the daemon listens at host-scoped
 	// paths (~/.dfmt/{daemon.sock|port,daemon.pid,lock}) instead of
 	// per-project (<proj>/.dfmt/...) and serves every call through the
@@ -700,6 +708,17 @@ func (d *Daemon) Stop(ctx context.Context) error {
 		// (3) Stop fswatcher so it stops producing events.
 		if d.fswatcher != nil {
 			_ = d.fswatcher.Stop(ctx)
+		}
+
+		// (3b) Stop the default-project index tail before closing the
+		// journal. closeExtraProjects handles the same dance for
+		// per-project caches; this branch covers the legacy single-
+		// project daemon where the tail attached to d.defaultRes.
+		d.projectsMu.Lock()
+		def := d.defaultRes
+		d.projectsMu.Unlock()
+		if def != nil {
+			def.stopIndexTail()
 		}
 
 		// Cancel any in-flight async rebuild. Without this, Stop would block
