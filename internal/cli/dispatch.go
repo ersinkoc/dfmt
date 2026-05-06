@@ -3967,22 +3967,31 @@ func runExec(args []string) int {
 		return 1
 	}
 
-	// Connect to daemon for journal logging and token savings
-	cl, err := client.NewClient(proj)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		return 1
-	}
+	// acquireBackend nil means promote failed AND no remote daemon
+	// reachable. The direct-sandbox fallback below preserves v0.5.x
+	// degraded-mode behavior for `dfmt exec` standalone use.
+	backend, ownedDaemon := acquireBackend(proj)
+	defer func() {
+		if ownedDaemon != nil {
+			waitForDaemonShutdown(ownedDaemon)
+		}
+	}()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
+	ctx = transport.WithProjectID(ctx, proj)
 
-	// Try HTTP daemon call first (journal logged)
-	execResp, err := cl.Exec(ctx, transport.ExecParams{
-		Code:   code,
-		Lang:   lang,
-		Intent: intent,
-	})
+	var execResp *transport.ExecResponse
+	if backend != nil {
+		execResp, err = backend.Exec(ctx, transport.ExecParams{
+			Code:      code,
+			Lang:      lang,
+			Intent:    intent,
+			ProjectID: proj,
+		})
+	} else {
+		err = errors.New("backend unavailable")
+	}
 	if err != nil {
 		// Fallback to direct sandbox if daemon not available. Honor
 		// cfg.Exec.PathPrepend so the CLI fallback isn't stricter than
@@ -4246,21 +4255,29 @@ func runRead(args []string) int {
 		return 1
 	}
 
-	cl, err := client.NewClient(proj)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		return 1
-	}
+	backend, ownedDaemon := acquireBackend(proj)
+	defer func() {
+		if ownedDaemon != nil {
+			waitForDaemonShutdown(ownedDaemon)
+		}
+	}()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+	ctx = transport.WithProjectID(ctx, proj)
 
-	readResp, err := cl.Read(ctx, transport.ReadParams{
-		Path:   path,
-		Intent: intent,
-		Offset: offset,
-		Limit:  limit,
-	})
+	var readResp *transport.ReadResponse
+	if backend != nil {
+		readResp, err = backend.Read(ctx, transport.ReadParams{
+			Path:      path,
+			Intent:    intent,
+			Offset:    offset,
+			Limit:     limit,
+			ProjectID: proj,
+		})
+	} else {
+		err = errors.New("backend unavailable")
+	}
 	if err != nil {
 		// Fallback to direct sandbox
 		resp, err := sandbox.NewSandboxWithPolicy(proj, loadProjectPolicy(proj)).Read(ctx, sandbox.ReadReq{
@@ -4326,20 +4343,26 @@ func runFetch(args []string) int {
 		return 1
 	}
 
-	cl, err := client.NewClient(proj)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+	backend, ownedDaemon := acquireBackend(proj)
+	if backend == nil {
 		return 1
 	}
+	defer func() {
+		if ownedDaemon != nil {
+			waitForDaemonShutdown(ownedDaemon)
+		}
+	}()
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout)*time.Second)
 	defer cancel()
+	ctx = transport.WithProjectID(ctx, proj)
 
-	fetchResp, err := cl.Fetch(ctx, transport.FetchParams{
-		URL:    url,
-		Intent: intent,
-		Method: method,
-		Body:   body,
+	fetchResp, err := backend.Fetch(ctx, transport.FetchParams{
+		URL:       url,
+		Intent:    intent,
+		Method:    method,
+		Body:      body,
+		ProjectID: proj,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
@@ -4385,18 +4408,24 @@ func runGlob(args []string) int {
 		return 1
 	}
 
-	cl, err := client.NewClient(proj)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+	backend, ownedDaemon := acquireBackend(proj)
+	if backend == nil {
 		return 1
 	}
+	defer func() {
+		if ownedDaemon != nil {
+			waitForDaemonShutdown(ownedDaemon)
+		}
+	}()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+	ctx = transport.WithProjectID(ctx, proj)
 
-	globResp, err := cl.Glob(ctx, transport.GlobParams{
-		Pattern: pattern,
-		Intent:  intent,
+	globResp, err := backend.Glob(ctx, transport.GlobParams{
+		Pattern:   pattern,
+		Intent:    intent,
+		ProjectID: proj,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
@@ -4442,20 +4471,26 @@ func runGrep(args []string) int {
 		return 1
 	}
 
-	cl, err := client.NewClient(proj)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+	backend, ownedDaemon := acquireBackend(proj)
+	if backend == nil {
 		return 1
 	}
+	defer func() {
+		if ownedDaemon != nil {
+			waitForDaemonShutdown(ownedDaemon)
+		}
+	}()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+	ctx = transport.WithProjectID(ctx, proj)
 
-	grepResp, err := cl.Grep(ctx, transport.GrepParams{
+	grepResp, err := backend.Grep(ctx, transport.GrepParams{
 		Pattern:         pattern,
 		Files:           files,
 		Intent:          intent,
 		CaseInsensitive: caseInsensitive,
+		ProjectID:       proj,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
@@ -4498,19 +4533,25 @@ func runEdit(args []string) int {
 		return 1
 	}
 
-	cl, err := client.NewClient(proj)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+	backend, ownedDaemon := acquireBackend(proj)
+	if backend == nil {
 		return 1
 	}
+	defer func() {
+		if ownedDaemon != nil {
+			waitForDaemonShutdown(ownedDaemon)
+		}
+	}()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+	ctx = transport.WithProjectID(ctx, proj)
 
-	editResp, err := cl.Edit(ctx, transport.EditParams{
+	editResp, err := backend.Edit(ctx, transport.EditParams{
 		Path:      path,
 		OldString: oldString,
 		NewString: newString,
+		ProjectID: proj,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
@@ -4550,18 +4591,24 @@ func runWrite(args []string) int {
 		return 1
 	}
 
-	cl, err := client.NewClient(proj)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+	backend, ownedDaemon := acquireBackend(proj)
+	if backend == nil {
 		return 1
 	}
+	defer func() {
+		if ownedDaemon != nil {
+			waitForDaemonShutdown(ownedDaemon)
+		}
+	}()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+	ctx = transport.WithProjectID(ctx, proj)
 
-	writeResp, err := cl.Write(ctx, transport.WriteParams{
-		Path:    path,
-		Content: content,
+	writeResp, err := backend.Write(ctx, transport.WriteParams{
+		Path:      path,
+		Content:   content,
+		ProjectID: proj,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
