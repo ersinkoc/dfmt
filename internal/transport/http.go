@@ -21,6 +21,7 @@ import (
 	"github.com/ersinkoc/dfmt/internal/core"
 	"github.com/ersinkoc/dfmt/internal/logging"
 	"github.com/ersinkoc/dfmt/internal/safefs"
+	"github.com/ersinkoc/dfmt/internal/safejson"
 )
 
 const (
@@ -429,8 +430,12 @@ func (s *HTTPServer) handle(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx := WithSessionID(r.Context(), sessionID)
 
+	// V-10: depth-checked decode rejects nesting bombs (a 1 MiB body of
+	// `[[[…` would otherwise burn CPU and risk stack panic on the
+	// recursive json.Unmarshal). Goes through safejson.Unmarshal which
+	// runs CheckDepth before falling through to encoding/json.
 	var req Request
-	if err := json.Unmarshal(body, &req); err != nil {
+	if err := safejson.Unmarshal(body, &req); err != nil {
 		// JSON-RPC 2.0 §5.1: on parse error the response ID MUST be null.
 		w.WriteHeader(http.StatusBadRequest)
 		_ = json.NewEncoder(w).Encode(Response{
@@ -712,8 +717,9 @@ func (s *HTTPServer) handleAPIStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// V-10: depth-checked decode (see same gate on the primary handle()).
 	var req Request
-	if err := json.Unmarshal(body, &req); err != nil {
+	if err := safejson.Unmarshal(body, &req); err != nil {
 		w.WriteHeader(http.StatusBadRequest)
 		_ = json.NewEncoder(w).Encode(Response{
 			JSONRPC: jsonRPCVersion,
@@ -920,9 +926,19 @@ func (s *HTTPServer) handleAPIProxy(w http.ResponseWriter, r *http.Request) {
 		Params            json.RawMessage `json:"params"`
 	}
 	// V-11: cap body the same as the JSON-RPC `/` handler. Without this,
-	// an agent on the loopback can OOM the daemon by sending a multi-GiB
-	// body to /api/proxy (this branch had no MaxBytesReader prior).
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
+	// an agent on the loopback could OOM the daemon by sending a multi-GiB
+	// body to /api/proxy. V-10: route through safejson.Unmarshal so a
+	// nesting bomb in the agent's params payload is rejected before the
+	// recursive json.Unmarshal hits it. Read fully into memory first
+	// (1 MiB cap above already bounds it) so we get a single byte slice
+	// to scan for depth.
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 1<<20))
+	defer r.Body.Close()
+	if err != nil {
+		http.Error(w, "Request too large", http.StatusRequestEntityTooLarge)
+		return
+	}
+	if err := safejson.Unmarshal(body, &req); err != nil {
 		_ = json.NewEncoder(w).Encode(Response{
 			JSONRPC: jsonRPCVersion,
 			Error:   &RPCError{Code: -32600, Message: "invalid request: " + err.Error()},
@@ -1023,7 +1039,7 @@ func (s *HTTPServer) handleAPIProxy(w http.ResponseWriter, r *http.Request) {
 		ID:      1,
 	}
 
-	body, err := json.Marshal(proxyReq)
+	body, err = json.Marshal(proxyReq)
 	if err != nil {
 		_ = json.NewEncoder(w).Encode(Response{
 			JSONRPC: jsonRPCVersion,

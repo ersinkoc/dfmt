@@ -3,9 +3,12 @@ package core
 import (
 	"container/heap"
 	"encoding/json"
+	"io"
 	"os"
 	"strings"
 	"sync"
+
+	"github.com/ersinkoc/dfmt/internal/safejson"
 )
 
 // PostingList holds the document IDs and term frequencies for a term.
@@ -576,6 +579,13 @@ func (ix *Index) Persist(path string) error {
 }
 
 // LoadIndex loads an index from a file using JSON deserialization.
+//
+// V-10: read fully then depth-check before unmarshal. The index file is
+// operator-trust-bounded (anyone with .dfmt/ write access can corrupt it),
+// but the daemon's New() startup path calls LoadIndex without a recover
+// so a poisoned `[[[…` file would otherwise blow the stack on the
+// recursive json.Unmarshal and crash the daemon on every launch. The
+// async-rebuild path is recover-guarded; LoadIndex on cold start was not.
 func LoadIndex(path string) (*Index, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -583,9 +593,12 @@ func LoadIndex(path string) (*Index, error) {
 	}
 	defer f.Close()
 
+	data, err := io.ReadAll(f)
+	if err != nil {
+		return nil, err
+	}
 	var ix Index
-	dec := json.NewDecoder(f)
-	if err := dec.Decode(&ix); err != nil {
+	if err := safejson.Unmarshal(data, &ix); err != nil {
 		return nil, err
 	}
 	return &ix, nil

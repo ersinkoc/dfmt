@@ -211,6 +211,36 @@ func TestHTTPHandleAPIStats_MethodNotAllowed(t *testing.T) {
 	}
 }
 
+// TestHTTPHandleRejectsDepthBomb pins V-10 at the HTTP boundary: a 200-deep
+// nested array body is rejected at the depth gate (returning -32700 parse
+// error) before the recursive json.Unmarshal can blow the stack. The HTTP
+// `/` JSON-RPC handler routes through safejson.Unmarshal, which runs
+// CheckDepth before the stdlib decode.
+func TestHTTPHandleRejectsDepthBomb(t *testing.T) {
+	hs := newTestHTTPServerWithSandbox(nil)
+
+	// Wrap a 200-deep `[[[…]]]` payload as the JSON-RPC top-level body.
+	// We don't have to make it a valid JSON-RPC envelope — the depth gate
+	// runs before any field validation. Just bytes.
+	deep := bytes.Repeat([]byte{'['}, 200)
+	deep = append(deep, bytes.Repeat([]byte{']'}, 200)...)
+
+	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(deep))
+	rec := httptest.NewRecorder()
+	hs.handle(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("HTTP status = %d; want %d", rec.Code, http.StatusBadRequest)
+	}
+	var resp Response
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if resp.Error == nil || resp.Error.Code != -32700 {
+		t.Errorf("want JSON-RPC parse error -32700; got %+v", resp.Error)
+	}
+}
+
 func TestHTTPHandleAPIStats_ParseError(t *testing.T) {
 	hs := newTestHTTPServerWithSandbox(nil)
 	req := httptest.NewRequest(http.MethodPost, "/api/stats", bytes.NewReader([]byte("not json")))

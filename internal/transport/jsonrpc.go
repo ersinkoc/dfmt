@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"sync"
+
+	"github.com/ersinkoc/dfmt/internal/safejson"
 )
 
 // Request represents a JSON-RPC 2.0 request.
@@ -93,8 +95,14 @@ func (c *Codec) ReadRequest() (*Request, error) {
 		return nil, fmt.Errorf("read request: %w", err)
 	}
 
+	// V-10: depth-checked decode rejects nesting bombs across both
+	// transports that flow through this codec — the Unix socket / loopback
+	// TCP CLI path and the MCP stdio path. encoding/json recurses without
+	// bound and a 1 MiB line of `[[[…` would otherwise blow the stack on
+	// the recursive Unmarshal. The line cap (MaxJSONRPCLineBytes) gates
+	// the input length; safejson gates the input shape.
 	var req Request
-	if err := json.Unmarshal(line, &req); err != nil {
+	if err := safejson.Unmarshal(line, &req); err != nil {
 		return nil, fmt.Errorf("unmarshal request: %w", err)
 	}
 

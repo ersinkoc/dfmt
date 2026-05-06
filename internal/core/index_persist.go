@@ -3,8 +3,11 @@ package core
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
+
+	"github.com/ersinkoc/dfmt/internal/safejson"
 )
 
 // RebuildIndexFromJournal streams every event from j into a fresh Index. The
@@ -166,9 +169,17 @@ func loadCursor(path string) (*IndexCursor, error) {
 	}
 	defer f.Close()
 
+	// V-10: read fully then depth-check. The cursor file is operator-trust-
+	// bounded (anyone with .dfmt/ write access can corrupt it), but the
+	// daemon's New() startup path calls LoadIndex without a recover — a
+	// poisoned `[[[…` cursor file would otherwise blow the stack on the
+	// recursive json.Unmarshal and crash the daemon on every launch.
+	data, err := io.ReadAll(f)
+	if err != nil {
+		return nil, err
+	}
 	var cursor IndexCursor
-	dec := json.NewDecoder(f)
-	if err := dec.Decode(&cursor); err != nil {
+	if err := safejson.Unmarshal(data, &cursor); err != nil {
 		return nil, err
 	}
 	return &cursor, nil

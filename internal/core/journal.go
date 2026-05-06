@@ -16,6 +16,7 @@ import (
 
 	"github.com/ersinkoc/dfmt/internal/logging"
 	"github.com/ersinkoc/dfmt/internal/safefs"
+	"github.com/ersinkoc/dfmt/internal/safejson"
 )
 
 var (
@@ -354,8 +355,12 @@ func streamFile(ctx context.Context, path string, ch chan<- Event, foundFromPtr 
 			continue
 		}
 
+		// V-10: depth-checked decode. The journal is operator-trust-bounded
+		// (only an attacker with .dfmt/ write access can plant lines), but
+		// LoadIndex on daemon startup is NOT recover-guarded — a poisoned
+		// `[[[…` line would otherwise crash the daemon on next launch.
 		var e Event
-		if err := json.Unmarshal(line, &e); err != nil {
+		if err := safejson.Unmarshal(line, &e); err != nil {
 			// Surface the corruption — silent skips left no trail for
 			// operators when a journal segment was tampered with or
 			// truncated mid-line. See V-9 in security-report/.
@@ -579,8 +584,9 @@ func (j *journalImpl) scanLastID() error {
 		if len(line) == 0 {
 			continue
 		}
+		// V-10: depth-checked decode (same gate as streamFile above).
 		var e Event
-		if err := json.Unmarshal(line, &e); err != nil {
+		if err := safejson.Unmarshal(line, &e); err != nil {
 			// Same trail-leaving as streamFile — see V-9 in security-report/.
 			journalWarnf("warning: journal %s: skip malformed line during scan: %v (snippet=%q)\n",
 				j.path, err, snippetForWarn(line))
