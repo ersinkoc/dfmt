@@ -1051,6 +1051,111 @@ func runDaemon(args []string) int {
 	return 0
 }
 
+// acquireBackend is the v0.6.0 single-binary entry point every
+// daemon-touching subcommand calls before doing its real work.
+// Resolution:
+//
+//  1. If a global daemon is already running, build a ClientBackend
+//     wrapping client.NewClient — the calling subcommand is a thin
+//     RPC client. Returned daemon is nil (we do not own it).
+//  2. Otherwise, daemon.PromoteInProcess brings up the daemon in
+//     this process. The calling subcommand uses the in-process
+//     Handlers as its Backend (no IPC overhead) AND returns a
+//     non-nil *daemon.Daemon that the caller MUST keep running
+//     until it has finished its work and called waitForDaemonShutdown
+//     (long-lived commands) or detached + handed off (short-lived).
+//  3. Lock-contention race (probe said no daemon, PromoteInProcess
+//     said lock held) falls back to step 1 — another process won
+//     the lock between our two calls.
+//
+// projectPath is the project root the calling subcommand wants to
+// pin its RPCs to. Empty means "no project" — the daemon's degraded
+// mode. Both NewClient and PromoteInProcess accept empty without
+// error.
+//
+// Failure modes return (nil, nil): the caller should report the
+// stderr-logged error and proceed in degraded mode (or exit). We
+// deliberately do NOT return an error value because every caller
+// would do the same thing with it.
+func acquireBackend(projectPath string) (transport.Backend, *daemon.Daemon) {
+	if client.DaemonRunning(projectPath) {
+		cl, cerr := client.NewClient(projectPath)
+		if cerr != nil {
+			fmt.Fprintf(os.Stderr, "acquireBackend: connect failed: %v\n", cerr)
+			return nil, nil
+		}
+		return client.NewBackend(cl), nil
+	}
+
+	// No daemon — promote self. config.Default is the host-wide
+	// fallback; per-project YAML overrides still kick in inside
+	// Resources(projectID) lookups.
+	d, perr := daemon.PromoteInProcess(context.Background(), config.Default())
+	if perr != nil {
+		var lerr *daemon.LockError
+		if errors.As(perr, &lerr) {
+			// Race: another process won the lock between our
+			// DaemonRunning probe and PromoteInProcess. Fall back
+			// to client mode the same way step 1 would.
+			cl, cerr := client.NewClient(projectPath)
+			if cerr != nil {
+				fmt.Fprintf(os.Stderr, "acquireBackend: lock-race fallback: %v\n", cerr)
+				return nil, nil
+			}
+			return client.NewBackend(cl), nil
+		}
+		fmt.Fprintf(os.Stderr, "acquireBackend: promote failed: %v\n", perr)
+		return nil, nil
+	}
+	h := d.Handlers()
+	return h, d
+}
+
+// waitForDaemonShutdown blocks until the daemon stops on its own
+// (idle-exit timer) or the process receives SIGINT/SIGTERM. After
+// shutdown signal, runs Stop within the configured grace window so
+// listeners, project resources, and the lock are torn down cleanly.
+//
+// Used by runMCP after stdin EOF and by other long-lived subcommands
+// after their primary work completes — both want the daemon role to
+// keep serving inbound RPCs from other dfmt invocations on the same
+// host as long as something is alive.
+//
+// In test binaries (`go test`) the wait is short-circuited and the
+// daemon is stopped immediately. Without this, every test that
+// exercises a runMCP / runStats / etc. code path would block on a
+// 30-minute idle-exit timer.
+func waitForDaemonShutdown(d *daemon.Daemon) {
+	if isTestBinary() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), d.ShutdownGrace())
+		defer cancel()
+		_ = d.Stop(stopCtx)
+		return
+	}
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(sigCh)
+	select {
+	case <-sigCh:
+	case <-d.Done():
+	}
+	stopCtx, cancel := context.WithTimeout(context.Background(), d.ShutdownGrace())
+	defer cancel()
+	_ = d.Stop(stopCtx)
+}
+
+// isTestBinary reports whether the current process is a Go test binary.
+// Tests should never block on the daemon idle-exit timer — they exit
+// the daemon immediately and rely on test-fixture teardown for the
+// rest. The check mirrors client.isTestBinary's logic.
+func isTestBinary() bool {
+	if flag.Lookup("test.v") != nil {
+		return true
+	}
+	base := strings.ToLower(filepath.Base(os.Args[0]))
+	return strings.HasSuffix(base, ".test") || strings.HasSuffix(base, ".test.exe")
+}
+
 // runGlobalDaemonForeground brings up the host-wide daemon attached to
 // the current terminal. The lifecycle mirrors runDaemonForeground but
 // uses daemon.NewGlobal so no per-project journal/index is loaded at
@@ -3893,53 +3998,40 @@ func runExec(args []string) int {
 func runMCP(_ []string) int {
 	// MCP over stdio - read MCP JSON-RPC from stdin, write to stdout.
 	//
-	// v0.5.0: this subprocess is now a thin proxy. It does NOT open its
-	// own journal/index/sandbox/redactor/content store; every tool call
-	// is forwarded to the host-wide daemon over its HTTP / Unix-socket
-	// transport. The duplicate-journal-handle drift that v0.4.7's index
-	// tail goroutine merely papered over is now eliminated at the root
-	// because there is exactly one writer per project: the daemon.
+	// v0.6.0: single-binary self-promotion. If a global daemon is
+	// already running this process is a thin client (NewClient + the
+	// ClientBackend adapter). If no daemon is running, *this* process
+	// becomes the daemon via daemon.PromoteInProcess and uses the
+	// in-process Handlers as its Backend — no exec.Command, no second
+	// dfmt.exe in tasklist, no spawn-and-handoff dance. When the MCP
+	// stdio loop exits (Claude Code closes), the daemon role keeps
+	// running until SIGINT or the idle-exit timer fires; another
+	// dfmt invocation on the same host can connect during that window.
 	//
 	// Project resolution: getProject() walks up looking for .dfmt/ or
-	// .git/. A miss leaves the proxy backend nil so every tool call
-	// returns -32603 ("daemon not connected"). The MCP server itself
-	// still starts so the agent's MCP host doesn't see a dead transport;
-	// the operator gets a clear error in the agent UI when they invoke
-	// a tool without a project. No more local-fallback degraded mode
-	// (v0.5.0 user-decision: clean fail, no silent local sandbox path).
+	// .git/. A miss leaves the backend nil so every tool call returns
+	// -32603 ("daemon not connected"). The MCP server itself still
+	// starts so the agent's MCP host doesn't see a dead transport.
 	proj, projErr := getProject()
 	if projErr != nil {
 		proj = ""
 	}
 
 	var backend transport.Backend
+	var ownedDaemon *daemon.Daemon
 	if proj != "" {
 		// Auto-init the project on every MCP startup. Same idempotent
 		// steps as `dfmt init`. Failure of any single step is non-fatal —
-		// the proxy can still forward calls; the daemon will handle the
-		// missing-config-file case the same way it handles fresh projects.
+		// the daemon will handle missing-config the same way it handles
+		// fresh projects.
 		if ierr := setup.EnsureProjectInitialized(proj); ierr != nil {
 			logging.Warnf("auto-init %s: %v", proj, ierr)
 		}
 
-		// Connect to (or auto-spawn) the global daemon. NewClient already
-		// owns the spawn-with-retry budget (~3.9 s) and the global vs.
-		// legacy fallback selection. Client.projectID is stamped from
-		// `proj` so every Backend method sends the right project_id on
-		// the wire — that's what makes the daemon's lazy-load resource
-		// cache pick up this project on the first real RPC and surface
-		// it to the dashboard. The v0.4.x async registration ping is
-		// gone; the proxy's first tool call now does the work the ping
-		// used to do.
-		cl, cerr := client.NewClient(proj)
-		if cerr != nil {
-			// Daemon unreachable / spawn failed. Log to stderr (visible
-			// in the agent's MCP log) and leave backend nil; tool calls
-			// return -32603. The agent surfaces the error message in
-			// chat so the user sees what happened.
-			fmt.Fprintf(os.Stderr, "dfmt mcp: cannot reach daemon: %v\n", cerr)
-		} else {
-			backend = client.NewBackend(cl)
+		backend, ownedDaemon = acquireBackend(proj)
+		if backend == nil {
+			fmt.Fprintln(os.Stderr,
+				"dfmt mcp: cannot reach or promote daemon — tool calls will return -32603.")
 		}
 	} else {
 		fmt.Fprintln(os.Stderr,
@@ -4087,6 +4179,13 @@ func runMCP(_ []string) int {
 		_ = writer.Flush()
 	}
 
+	// Stdin EOF (Claude Code closed the MCP transport). When this
+	// process owns the daemon, keep it running so other dfmt CLI
+	// invocations on the same host stay served — exit only on
+	// SIGINT/SIGTERM or when the daemon idle-exits.
+	if ownedDaemon != nil {
+		waitForDaemonShutdown(ownedDaemon)
+	}
 	return 0
 }
 

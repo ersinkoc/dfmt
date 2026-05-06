@@ -495,6 +495,33 @@ func NewGlobal(cfg *config.Config) (*Daemon, error) {
 	return d, nil
 }
 
+// Handlers exposes the per-RPC handler set so callers that promoted
+// the daemon in-process can use it as a transport.Backend directly,
+// bypassing the loopback / Unix-socket roundtrip. The returned pointer
+// is the live handler set the listener also serves; it is safe for
+// concurrent use the same way every other RPC handler is.
+//
+// Used by runMCP / runStats / runSearch and friends after a successful
+// PromoteInProcess: the calling subcommand gets the in-process Backend
+// for its own work, while the listener continues to forward future
+// inbound RPCs to the same handler set.
+func (d *Daemon) Handlers() *transport.Handlers {
+	return d.handlers
+}
+
+// Done returns a channel that is closed when the daemon transitions
+// out of the running state — either because Stop was called explicitly
+// or because the idle-exit monitor fired. Callers (notably runMCP and
+// other CLI subcommands that promoted the daemon in-process) block on
+// this so they keep running as long as the daemon serves, then exit
+// cleanly when shutdown completes.
+//
+// The returned channel survives multiple calls and never re-opens; a
+// daemon, once stopped, stays stopped.
+func (d *Daemon) Done() <-chan struct{} {
+	return d.shutdownCh
+}
+
 // PromoteInProcess constructs a global daemon and starts it in the
 // current process. The returned daemon owns the host-wide listener
 // (~/.dfmt/daemon.sock or ~/.dfmt/port) and the singleton lock — every
