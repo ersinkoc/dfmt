@@ -2835,16 +2835,11 @@ func configureClaudeCode(_ setup.Agent) error {
 		return err
 	}
 
-	// Write legacy ~/.claude/mcp.json. V-04: merge-aware so we don't clobber
-	// other MCP servers configured under the same key. Uses TargetOSWindows
-	// for the embedded command path — Claude Code on Windows reads this
-	// file and expects a Windows-style command — matching the prior shape.
+	// V-14 (F-Setup-3): manifest-first — record the file entry before the
+	// write so a SaveManifest failure can never leave an injected file
+	// without a matching uninstall row. See writeMCPConfig for the same
+	// pattern; same reasoning applies here.
 	mcpPath := filepath.Join(claudeDir, "mcp.json")
-	if err := setup.MergeMCPServerEntry(mcpPath, setup.TargetOSWindows); err != nil {
-		return fmt.Errorf("merge %s: %w", mcpPath, err)
-	}
-
-	// Update manifest
 	m, err := setup.LoadManifest()
 	if err != nil {
 		return fmt.Errorf("load manifest: %w", err)
@@ -2854,6 +2849,17 @@ func configureClaudeCode(_ setup.Agent) error {
 		Agent:   "claude-code",
 		Version: "1",
 	})
+	if err := setup.SaveManifest(m); err != nil {
+		return fmt.Errorf("save manifest: %w", err)
+	}
+
+	// Write legacy ~/.claude/mcp.json. V-04: merge-aware so we don't clobber
+	// other MCP servers configured under the same key. Uses TargetOSWindows
+	// for the embedded command path — Claude Code on Windows reads this
+	// file and expects a Windows-style command — matching the prior shape.
+	if err := setup.MergeMCPServerEntry(mcpPath, setup.TargetOSWindows); err != nil {
+		return fmt.Errorf("merge %s: %w", mcpPath, err)
+	}
 
 	// Also patch ~/.claude.json so the Claude Code CLI picks up the dfmt
 	// MCP server at user scope. Failure is non-fatal: the legacy mcp.json
@@ -2957,16 +2963,14 @@ func configureOpenCode(_ setup.Agent) error {
 func writeMCPConfig(dir, filename, agentID string) error {
 	mcpPath := filepath.Join(dir, filename)
 
-	// V-04: merge-aware write — splice `mcpServers.dfmt` into the existing
-	// config and preserve every other key. The previous implementation
-	// replaced the file outright, silently destroying any other MCP server
-	// (playwright, context7, github, …) the user had configured for this
-	// agent. MergeMCPServerEntry also routes through safefs (V-20) and
-	// captures a one-shot pristine .dfmt.bak (V-04 reinstall safety).
-	if err := setup.MergeMCPServerEntry(mcpPath, setup.TargetOSUnix); err != nil {
-		return fmt.Errorf("merge mcp config %s: %w", mcpPath, err)
-	}
-
+	// V-14 (F-Setup-3): record the manifest entry BEFORE writing the file.
+	// Pre-fix the order was write → SaveManifest, so a SaveManifest failure
+	// (rare — disk full, perm change mid-flight, …) left an MCP config on
+	// disk that `dfmt setup --uninstall` could not find a row for and
+	// therefore could not clean up. With manifest-first, a write failure
+	// leaves a stale-but-harmless manifest entry pointing at a non-
+	// existent path, which uninstall handles gracefully (os.Remove +
+	// IsNotExist short-circuit).
 	m, err := setup.LoadManifest()
 	if err != nil {
 		return fmt.Errorf("load manifest: %w", err)
@@ -2979,6 +2983,16 @@ func writeMCPConfig(dir, filename, agentID string) error {
 	m.RecordAgent(agentID, dir)
 	if err := setup.SaveManifest(m); err != nil {
 		return fmt.Errorf("save manifest: %w", err)
+	}
+
+	// V-04: merge-aware write — splice `mcpServers.dfmt` into the existing
+	// config and preserve every other key. The previous implementation
+	// replaced the file outright, silently destroying any other MCP server
+	// (playwright, context7, github, …) the user had configured for this
+	// agent. MergeMCPServerEntry also routes through safefs (V-20) and
+	// captures a one-shot pristine .dfmt.bak (V-04 reinstall safety).
+	if err := setup.MergeMCPServerEntry(mcpPath, setup.TargetOSUnix); err != nil {
+		return fmt.Errorf("merge mcp config %s: %w", mcpPath, err)
 	}
 
 	return nil

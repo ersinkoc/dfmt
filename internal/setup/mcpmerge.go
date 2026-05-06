@@ -32,6 +32,16 @@ import (
 // target controls the form of the embedded `command` string the same way
 // claude.go does: TargetOSWindows produces a Windows-style command path,
 // TargetOSUnix produces a Unix-style path even on Windows hosts.
+//
+// V-14 (F-Setup-2) scope note: claude.go has a Windows case-only-duplicate-
+// keys collapse for `projects.*` keys (two case variants of the same path
+// can coexist because Claude keys by whatever case the cwd had at the
+// time). That fix lives in claude.go and is intentionally NOT replicated
+// here. Other agents' MCP configs key on server names (the literal string
+// "dfmt"), not paths, so case-divergence between two of the agent's own
+// keys cannot occur. If a future agent ever introduces a path-keyed sub-
+// map of its own, the case-fold collapse from claude.go would need to be
+// hoisted into a shared helper at that time.
 func MergeMCPServerEntry(mcpPath string, target TargetOS) error {
 	cfg, raw, existed, err := readJSONObject(mcpPath)
 	if err != nil {
