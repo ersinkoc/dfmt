@@ -3319,6 +3319,22 @@ func runSetupUninstall() int {
 		return 0
 	}
 
+	// Stop the host-wide daemon before stripping configs. Without this,
+	// the global daemon keeps holding open journal/index handles for
+	// every project it had cached — uninstall finishes, but the
+	// operator sees a stray dfmt process in `tasklist` for up to the
+	// configured idle timeout. Also avoids the awkward window where
+	// agent MCP configs are gone but the daemon is still serving stale
+	// requests routed through them.
+	if globalDashboardURL() != "" {
+		fmt.Println("Stopping global daemon before uninstall...")
+		if rc := stopGlobalDaemon(); rc != 0 {
+			fmt.Fprintln(os.Stderr,
+				"warning: failed to stop the global daemon cleanly. Uninstall continues;\n"+
+					"manual cleanup may be needed: dfmt stop, then remove ~/.dfmt/.")
+		}
+	}
+
 	fmt.Printf("Removing %d files...\n", len(m.Files))
 	for _, f := range m.Files {
 		switch f.Kind {
