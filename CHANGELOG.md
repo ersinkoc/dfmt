@@ -27,6 +27,72 @@ Internal package shapes (`internal/...`) are NOT covered by SemVer.
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-05-06
+
+Phase 2: host-wide global daemon. The "tek daemon" rework — one DFMT
+process per host serving every project, one stable dashboard URL, no
+multi-process clutter in `tasklist` / `ps`. ADR-0019 (supersedes
+ADR-0001) documents the architectural reversal.
+
+### Breaking
+
+- **One daemon, not N.** A single `dfmt daemon --global` process binds
+  at `~/.dfmt/{port|daemon.sock,daemon.pid,lock}` and serves every
+  project via lazy per-project resource caching. The legacy
+  per-project daemon mode (`dfmt --project <p> daemon`) is preserved
+  through the v0.4.x series for back-compat but operators should
+  migrate via `dfmt setup --refresh`. v0.5.0 will remove it.
+- **`flock` singleton.** Two `dfmt daemon --global` invocations on the
+  same host cannot both bind. The second exits with a `LockError`
+  carrying the global directory path.
+- **Wire field.** Every JSON-RPC params struct now carries an
+  `omitempty` `project_id` field. v0.3.x clients that omit it fall
+  back to the daemon's `defaultProjectPath` (the legacy single-
+  project pin) — backward compatible. New clients stamp it from the
+  CLI's `--project` resolver or the MCP subprocess's session-bound
+  cwd.
+
+### Added
+
+- `dfmt daemon --global` flag — host-wide daemon mode.
+- `dfmt setup --refresh` migration step that stops legacy
+  per-project daemons and removes their per-project transport
+  scaffolding (port, daemon.sock, daemon.pid, lock). Project
+  state (config, journal, index, content/) is preserved.
+- `~/.dfmt/last-crash.log` — the global daemon writes a structured
+  panic record (timestamp, version, panic value, full stack) on any
+  unhandled panic via `safefs.WriteFileAtomic`. `dfmt doctor` and
+  `dfmt --json status` surface the file's age and path.
+- `internal/project/global.go` — `GlobalDir`, `GlobalSocketPath`,
+  `GlobalPortPath`, `GlobalPIDPath`, `GlobalLockPath`,
+  `GlobalCrashPath` helpers with `DFMT_GLOBAL_DIR` env override for
+  tests / sandboxed environments.
+- `daemon.NewGlobal(cfg)` constructor — daemon comes up with no
+  per-project journal/index pre-loaded; resources resolve on each
+  RPC via `Daemon.Resources(projectID)`.
+
+### Changed
+
+- `client.NewClient` connection order is now: probe global at
+  `~/.dfmt/{port|daemon.sock}` → fall back to legacy per-project
+  endpoint → auto-spawn global. The auto-spawn path uses
+  `dfmt daemon --global`, so a fresh project's first call lands
+  on the host-wide daemon.
+- ADR-0001 (Per-Project Daemon Model) marked Superseded by ADR-0019.
+
+### Migration
+
+```sh
+# v0.3.x → v0.4.0 upgrade path
+dfmt setup --refresh   # stops legacy daemons, prints summary
+dfmt status            # next call spawns the global daemon; URL stable
+```
+
+The migration is idempotent. Project journals, indexes, and
+configuration files are never touched — only daemon transport
+scaffolding (`<project>/.dfmt/{port,daemon.sock,daemon.pid,lock}`)
+is removed.
+
 ## [0.3.2] — 2026-05-06
 
 Security audit remediation cycle. The 4-phase pipeline (Recon → Hunt

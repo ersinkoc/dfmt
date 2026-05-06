@@ -2,11 +2,13 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Accepted |
+| Status | Superseded by [ADR-0019](0019-global-daemon.md) on 2026-05-06 |
 | Date | 2026-04-20 |
 | Deciders | Ersin Koç |
 | Supersedes | — |
-| Related | — |
+| Related | [ADR-0019](0019-global-daemon.md) |
+
+> **Superseded.** Phase 2 (v0.4.0) replaced the per-project daemon with one host-wide global daemon at `~/.dfmt/{port,daemon.sock,daemon.pid,lock}`. See [ADR-0019](0019-global-daemon.md) for context, decision, and migration. Legacy per-project mode remains available through v0.4.x for back-compat; v0.5.0 will remove it.
 
 ## Context
 

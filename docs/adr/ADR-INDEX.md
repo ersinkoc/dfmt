@@ -9,7 +9,7 @@ See [ADR-0000](0000-adr-process.md) for the process governing how ADRs are writt
 | # | Title | Status | Summary |
 | --- | --- | --- | --- |
 | [0000](0000-adr-process.md) | ADR Process and Lifecycle | Accepted | Light MADR-style process with explicit supersession. |
-| [0001](0001-per-project-daemon.md) | Per-Project Daemon Model | Accepted | One daemon per project, auto-start, idle-exit. |
+| [0001](0001-per-project-daemon.md) | Per-Project Daemon Model | Superseded by [0019](0019-global-daemon.md) | One daemon per project, auto-start, idle-exit. |
 | [0002](0002-mit-license.md) | MIT License | Accepted | MIT for maximum adoption; brand protects identity. |
 | [0003](0003-jsonl-and-custom-index.md) | JSONL Journal + Custom Index | Accepted | Append-only JSONL + in-memory inverted index + gob persistence. No SQLite. |
 | [0004](0004-stdlib-only-deps.md) | Stdlib-First Dependency Policy | Accepted | Only `stdlib`, `x/sys`, `x/crypto`, `yaml.v3`. Everything else bundled. |
@@ -27,10 +27,13 @@ See [ADR-0000](0000-adr-process.md) for the process governing how ADRs are writt
 | [0016](0016-metrics-endpoint.md) | Prometheus `/metrics` Endpoint | Accepted | In-tree Prometheus text-format emitter on `/metrics`. v0.3 publishes daemon-level gauges (uptime, MemStats, goroutines), scrape counter, per-tool counters (`dfmt_tool_calls_total{tool,status}`), dedup-hit counter, and index / wire-dedup / content-dedup size gauges. Duration histograms deferred to v0.4. No new dependency. |
 | [0017](0017-journal-size-method.md) | Journal `Size()` Interface Extension | Accepted | Adds `Size() (int64, error)` to `core.Journal`. Surfaces `dfmt_journal_bytes` gauge for active-file size; rotated archives explicitly out of scope for this metric. Mock journals updated; non-nil error encodes as `-1` at the gauge layer. |
 | [0018](0018-tool-call-duration-histograms.md) | Tool-Call Duration Histograms | Accepted | `dfmt_tool_call_duration_seconds` histogram per tool, Prometheus default bucket set. Migration contract: append-only — finer buckets may be inserted, existing boundaries never mutated. Cancellation excluded from observations. |
+| [0019](0019-global-daemon.md) | Host-Wide Global Daemon | Accepted | Supersedes ADR-0001. One daemon per host (~/.dfmt/{port,sock,pid,lock}), lazy per-project resource cache, wire-level `project_id` routing. Legacy per-project mode preserved through v0.4.x; removed in v0.5.0. |
 
 ## Superseded Decisions
 
-_None yet. When an ADR is superseded, it moves here with a note explaining what replaced it._
+| # | Title | Superseded By | Note |
+| --- | --- | --- | --- |
+| [0001](0001-per-project-daemon.md) | Per-Project Daemon Model | [0019](0019-global-daemon.md) | Operational pain (multiple daemons in `tasklist`, fragmented dashboard URLs, stacked cold-start cost) reversed the original decision. v0.4.0 ships the global model with a one-command migration. |
 
 ## Writing a New ADR
 

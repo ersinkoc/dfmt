@@ -36,7 +36,9 @@ This repository is DFMT itself. When working on it, you are dogfooding the daemo
 
 ### Two-process model
 
-`internal/cli/dispatch.go` routes subcommands. Local-only commands (`init`, `setup`, `doctor`, `daemon`) run in-process; everything else talks to a **per-project daemon** via `internal/client` over a Unix socket (Linux/macOS) or loopback TCP (Windows). The daemon auto-starts on first call and idle-exits after a timeout. It owns the journal and index lifecycle.
+`internal/cli/dispatch.go` routes subcommands. Local-only commands (`init`, `setup`, `doctor`, `daemon`) run in-process; everything else talks to a **host-wide global daemon** via `internal/client` over a Unix socket (`~/.dfmt/daemon.sock` on Linux/macOS) or loopback TCP (`~/.dfmt/port` on Windows). One daemon process serves every initialized project — first RPC for a project lazy-loads its `config.yaml` / `journal.jsonl` / `index.gob` / `permissions.yaml` / `redact.yaml` into a per-project resource cache; subsequent RPCs reuse the cached handles. The daemon auto-starts on first call (`dfmt daemon --global` under the hood) and idle-exits after the configured timeout. See [ADR-0019](docs/adr/0019-global-daemon.md) for the supersession trail; ADR-0001 is the original per-project model.
+
+Legacy per-project daemons from v0.3.x are stopped during `dfmt setup --refresh`. The daemon-side wire carries a `project_id` field on every RPC so one process can disambiguate calls coming from different projects.
 
 ### Core domain (`internal/core/`)
 
