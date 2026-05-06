@@ -101,7 +101,7 @@ func TestHandlersStashContentPutChunkSetError(t *testing.T) {
 	// path we'd need to mock the store. For now just exercise the normal path.
 	// Store is nil so stashContent returns "" — that's the expected nil-store
 	// path; the assertion is just "no panic".
-	_ = h.stashContent("exec-stdout", "sandbox.exec", "test", "hello world")
+	_ = h.stashContent(nil, "/proj", "exec-stdout", "sandbox.exec", "test", "hello world")
 }
 
 // TestHandlersStashContentDedupWithRealStore tests that stashContent correctly
@@ -125,9 +125,9 @@ func TestHandlersStashContentDedupWithRealStore(t *testing.T) {
 		t.Error("seenBefore should return false when no session is attached")
 	}
 
-	// But stashContent should still work - dedupCache stores by (kind,source,body)
-	id1 := h.stashContent("exec-stdout", "sandbox.exec", "alpha", "body1")
-	id2 := h.stashContent("exec-stdout", "sandbox.exec", "beta", "body1")
+	// But stashContent should still work - dedupCache stores by (project,kind,source,body)
+	id1 := h.stashContent(store, "/proj", "exec-stdout", "sandbox.exec", "alpha", "body1")
+	id2 := h.stashContent(store, "/proj", "exec-stdout", "sandbox.exec", "beta", "body1")
 	if id1 != id2 {
 		t.Errorf("dedup: id1=%q id2=%q, want equal", id1, id2)
 	}
@@ -2781,7 +2781,7 @@ func TestHandlersStashContentEmptyBody(t *testing.T) {
 	h := NewHandlers(core.NewIndex(), &mockJournal{}, nil)
 	h.SetContentStore(store)
 	// Empty body should return ""
-	result := h.stashContent("exec-stdout", "sandbox.exec", "test", "")
+	result := h.stashContent(store, "/proj", "exec-stdout", "sandbox.exec", "test", "")
 	if result != "" {
 		t.Errorf("stashContent with empty body returned %q, want \"\"", result)
 	}
@@ -2791,7 +2791,7 @@ func TestHandlersStashContentEmptyBody(t *testing.T) {
 func TestHandlersStashContentNilStore(t *testing.T) {
 	h := NewHandlers(core.NewIndex(), &mockJournal{}, nil)
 	// No store set — should return ""
-	result := h.stashContent("exec-stdout", "sandbox.exec", "test", "hello")
+	result := h.stashContent(nil, "/proj", "exec-stdout", "sandbox.exec", "test", "hello")
 	if result != "" {
 		t.Errorf("stashContent with nil store returned %q, want \"\"", result)
 	}

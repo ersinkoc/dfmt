@@ -487,20 +487,30 @@ func (h *Handlers) touch() {
 // the body is empty. Errors are logged to stderr and swallowed — content
 // stashing must never fail a sandbox call.
 //
-// Dedup: identical (kind, source, body) tuples seen within dedupTTL return
-// the chunk-set ID of the original stash instead of writing a fresh copy.
-// Re-running the same command, opening a generated file twice, or hitting
-// the same URL during an agent loop all collapse to one entry. The
-// agent-visible content_id stays stable across the dedup window, which lets
-// downstream tooling key off it without churn. Body bytes are hashed
+// Dedup: identical (project, kind, source, body) tuples seen within
+// dedupTTL return the chunk-set ID of the original stash instead of
+// writing a fresh copy. Project ID is part of the key so that two
+// projects served by the same global daemon do not return a content_id
+// pointing into the *other* project's content store — the receiver
+// would 404 when fetching the bytes back.
+//
+// Re-running the same command in one project, opening a generated file
+// twice, or hitting the same URL during an agent loop all collapse to
+// one entry within that project's scope. The agent-visible content_id
+// stays stable across the dedup window. Body bytes are hashed
 // post-redaction (caller already redacts) so a redacted secret can't be
 // recovered by checking which key the cache picked.
-func (h *Handlers) stashContent(kind, source, intent, body string) string {
-	store := h.getStore()
+//
+// store is the per-project content store resolved via the bundle. The
+// previous implementation read h.getStore() directly, which is the
+// default-project store — nil in global daemon mode → every Exec /
+// Read / Fetch returned content_id="" and the dashboard's "show
+// content" links broke for every project the global daemon served.
+func (h *Handlers) stashContent(store *content.Store, projectID, kind, source, intent, body string) string {
 	if store == nil || body == "" {
 		return ""
 	}
-	dedupKey := stashDedupKey(kind, source, body)
+	dedupKey := stashDedupKey(projectID, kind, source, body)
 	if cached := h.dedupLookup(dedupKey); cached != "" {
 		return cached
 	}
@@ -532,13 +542,19 @@ func (h *Handlers) stashContent(kind, source, intent, body string) string {
 	return setID
 }
 
-// stashDedupKey returns a stable hex digest over (kind, source, body) so two
-// stashes of the same bytes from the same source compare equal even when
-// the intent string differs. NUL separators block the trivial "concat
-// collision" where a kind ending in "x" and source starting with "x" hash
-// identically to kind ending in "" and source "xx".
-func stashDedupKey(kind, source, body string) string {
+// stashDedupKey returns a stable hex digest over (projectID, kind,
+// source, body) so two stashes of the same bytes from the same source
+// in the same project compare equal even when the intent string
+// differs. projectID prefix isolates two projects served by the same
+// global daemon — without it project A and project B fetching the
+// same URL collapse to one entry pointing at A's store, and B's
+// follow-up by-content_id read 404s. NUL separators block the trivial
+// "concat collision" where a kind ending in "x" and source starting
+// with "x" hash identically to kind ending in "" and source "xx".
+func stashDedupKey(projectID, kind, source, body string) string {
 	h := sha256.New()
+	h.Write([]byte(projectID))
+	h.Write([]byte{0})
 	h.Write([]byte(kind))
 	h.Write([]byte{0})
 	h.Write([]byte(source))
@@ -1556,7 +1572,7 @@ func (h *Handlers) Exec(ctx context.Context, params ExecParams) (_ *ExecResponse
 	// (capped at MaxRawBytes) output.
 	stderr := h.redactString(resp.Stderr)
 	rawStash := h.redactString(resp.RawStdout) + stderr
-	contentID := h.stashContent("exec-stdout", "sandbox.exec", params.Intent, rawStash)
+	contentID := h.stashContent(bundle.ContentStore, bundle.ProjectPath, "exec-stdout", "sandbox.exec", params.Intent, rawStash)
 
 	// Wire dedup (ADR-0009): if the same content_id was emitted earlier in
 	// this daemon's lifetime, the agent already has these bytes. Strip the
@@ -1683,7 +1699,7 @@ func (h *Handlers) Read(ctx context.Context, params ReadParams) (_ *ReadResponse
 	// a real pointer to the bytes. resp.Content carries the filtered view
 	// for the client and may be empty when the policy excluded inline body.
 	rawStash := h.redactString(resp.RawContent)
-	contentID := h.stashContent("file-read", params.Path, params.Intent, rawStash)
+	contentID := h.stashContent(bundle.ContentStore, bundle.ProjectPath, "file-read", params.Path, params.Intent, rawStash)
 
 	// Wire dedup short-circuit. See ADR-0009 and the matching block in Exec
 	// for the full rationale.
@@ -1840,7 +1856,7 @@ func (h *Handlers) Fetch(ctx context.Context, params FetchParams) (_ *FetchRespo
 
 	// Stash full pre-filter body (RawBody); see Exec/Read rationale.
 	rawStash := h.redactString(resp.RawBody)
-	contentID := h.stashContent("fetch", params.URL, params.Intent, rawStash)
+	contentID := h.stashContent(bundle.ContentStore, bundle.ProjectPath, "fetch", params.URL, params.Intent, rawStash)
 
 	// Wire dedup short-circuit. See ADR-0009. Status + Headers are kept
 	// because they carry HTTP-level metadata (e.g. caching headers, redirect
