@@ -801,6 +801,51 @@ func lookupDashboardURL(projectPath string) string {
 	return ""
 }
 
+// registerProjectWithGlobalDaemon fires one Stats RPC at the host-
+// wide daemon, with the project_id stamped, so the daemon's
+// Resources(projectID) loads this project into extraProjects. The
+// dashboard's cross-project switcher reads /api/all-daemons which
+// surfaces every cached project, so this ping is what makes an
+// MCP-only project (one that no `dfmt <cmd>` ever touched) visible
+// in the picker.
+//
+// Best-effort:
+//   - Never spawns a daemon. Ping is gated on globalDashboardURL
+//     returning non-empty (a dial-checked liveness signal).
+//   - Never blocks MCP startup. Caller invokes via `go`.
+//   - Errors are silently dropped — a failed registration only
+//     means the dashboard won't show this project until something
+//     else (CLI command, second MCP call) loads it. The MCP
+//     subprocess's own journal/index keep working regardless.
+//
+// This is the v0.4.x interim fix for the deeper architectural issue
+// (MCP subprocesses bypass the daemon entirely for journal writes).
+// v0.5.0 will turn `dfmt mcp` into a thin proxy that forwards every
+// tool call to the daemon over HTTP/socket, eliminating the
+// duplicate journal handle and the registration dance both.
+func registerProjectWithGlobalDaemon(projectPath string) {
+	defer func() { _ = recover() }()
+	if globalDashboardURL() == "" {
+		return // no daemon up; skip
+	}
+	prev := os.Getenv("DFMT_DISABLE_AUTOSTART")
+	_ = os.Setenv("DFMT_DISABLE_AUTOSTART", "1")
+	defer func() {
+		if prev == "" {
+			_ = os.Unsetenv("DFMT_DISABLE_AUTOSTART")
+		} else {
+			_ = os.Setenv("DFMT_DISABLE_AUTOSTART", prev)
+		}
+	}()
+	cl, err := client.NewClient(projectPath)
+	if err != nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_, _ = cl.Stats(ctx, transport.StatsParams{NoCache: true})
+}
+
 // readGlobalDaemonPID reads ~/.dfmt/daemon.pid and returns the
 // daemon's PID, or 0 on any read / parse error. Best-effort —
 // callers display the value to the operator but don't depend on it
@@ -3757,6 +3802,15 @@ func runMCP(_ []string) int {
 		if ierr := setup.EnsureProjectInitialized(proj); ierr != nil {
 			logging.Warnf("auto-init %s: %v", proj, ierr)
 		}
+
+		// Phase 2 dashboard visibility: ping the host-wide daemon so
+		// it loads this project into its in-process resource cache.
+		// Without the ping, an MCP-only project (one that no other
+		// `dfmt <command>` has touched yet) is invisible to the
+		// dashboard's project switcher even though events are being
+		// recorded to its journal. Async + best-effort: never spawns
+		// a daemon, never blocks MCP startup if the daemon is down.
+		go registerProjectWithGlobalDaemon(proj)
 		dfmtDir := filepath.Join(proj, ".dfmt")
 
 		journalPath := filepath.Join(dfmtDir, "journal.jsonl")
