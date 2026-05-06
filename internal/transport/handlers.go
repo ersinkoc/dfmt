@@ -45,6 +45,14 @@ type Handlers struct {
 	store    *content.Store
 	activity func()
 
+	// fetchResources, when non-nil, supplies per-call project resources.
+	// The global daemon (Phase 2 commit 4c) installs this so each tool
+	// call routes to the project named by ctx project_id. Legacy
+	// single-project daemons leave it nil; resolveBundle synthesizes a
+	// bundle from the direct fields above. Guarded by h.mu — written
+	// once at startup via SetResourceFetcher.
+	fetchResources ResourceFetcher
+
 	// dedupMu guards the short-lived stash dedup cache. Kept separate from
 	// h.mu because stashContent runs on the hot path of every Exec/Read/
 	// Fetch and must not contend with project/redactor setters.
@@ -324,6 +332,89 @@ func (h *Handlers) getProjectFor(ctx context.Context) string {
 		return pid
 	}
 	return h.getProject()
+}
+
+// Bundle groups the per-project resources a handler needs to serve a
+// single tool call. It is the routing seam introduced for Phase 2: the
+// global daemon's ResourceFetcher returns one of these per call (per
+// project_id); the legacy single-project daemon synthesizes one from
+// Handlers' direct fields. Either way, handler code reads from the
+// bundle instead of h.journal / h.index / etc., so a future refactor
+// can swap the source without touching every method body again.
+//
+// Fields are pointer / interface types so Bundle stays cheap to copy
+// (one struct of pointer-sized fields). A zero-value Bundle (Journal
+// nil, Index nil, ProjectPath "") is the legitimate "no project /
+// degraded mode" signal — handler methods that touch the journal
+// must still nil-guard before append.
+type Bundle struct {
+	Journal      core.Journal
+	Index        *core.Index
+	Redactor     *redact.Redactor
+	ContentStore *content.Store
+	Sandbox      sandbox.Sandbox
+	ProjectPath  string
+}
+
+// ResourceFetcher is the lookup function shape Handlers calls to find
+// per-project resources for an inbound RPC. The fetcher receives the
+// project_id resolved from ProjectIDFrom(ctx); an empty value is the
+// fetcher's signal to fall back to its own notion of a default project
+// (the global daemon returns errProjectIDRequired in that case).
+//
+// Returning an error short-circuits the handler with a -32603 RPC
+// error reflecting the project lookup failure (e.g. unknown project,
+// permissions overlay parse error).
+type ResourceFetcher func(projectID string) (Bundle, error)
+
+// SetResourceFetcher installs a fetcher that handler methods call to
+// resolve per-call project resources. The global daemon (Phase 2 commit
+// 4c) wires this to its lazy resource cache; the legacy single-project
+// daemon leaves it nil so handlers fall back to direct fields and the
+// pre-Phase-2 contract holds.
+//
+// Safe to set once at construction; later mutations are guarded by h.mu
+// so an in-flight RPC either sees the old or new fetcher, never a torn
+// pointer. There is intentionally no UnsetResourceFetcher — the lifecycle
+// is "set once at daemon startup, never cleared".
+func (h *Handlers) SetResourceFetcher(f ResourceFetcher) {
+	h.mu.Lock()
+	h.fetchResources = f
+	h.mu.Unlock()
+}
+
+// resolveBundle returns the resource Bundle a handler method should
+// read from for the in-flight RPC. Resolution:
+//
+//  1. If a fetcher is installed, call it with the ctx project_id. The
+//     fetcher's error is propagated; no fallback to direct fields when
+//     a fetcher is present (the global daemon explicitly wants to fail
+//     unknown-project requests rather than masking them with stale
+//     default-project state).
+//  2. Otherwise, synthesize a Bundle from direct fields (legacy mode).
+//     Direct-field reads are guarded by h.mu — same locking the
+//     existing accessors use.
+//
+// Handlers that touch the journal must still nil-guard Bundle.Journal:
+// in degraded MCP mode the legacy daemon may have a nil journal, and
+// a misconfigured fetcher could return a Bundle without one.
+func (h *Handlers) resolveBundle(ctx context.Context) (Bundle, error) {
+	h.mu.RLock()
+	f := h.fetchResources
+	h.mu.RUnlock()
+	if f != nil {
+		return f(ProjectIDFrom(ctx))
+	}
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return Bundle{
+		Journal:      h.journal,
+		Index:        h.index,
+		Redactor:     h.redactor,
+		ContentStore: h.store,
+		Sandbox:      h.sandbox,
+		ProjectPath:  h.project,
+	}, nil
 }
 
 // SetActivityFn registers a callback invoked on every inbound RPC. The daemon
