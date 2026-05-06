@@ -90,7 +90,12 @@ func FuzzCheckNoReservedNames_NoFalseNegative(f *testing.F) {
 		// canonical strip the function performs internally), we MUST
 		// flag it. We re-run the canonical detection here on each
 		// non-empty component to assert the guard didn't miss it.
-		s := filepath.ToSlash(path)
+		// Mirror the function's separator normalization: ToSlash is a
+		// no-op on non-Windows hosts, so explicitly replace backslashes
+		// too — the production code does the same so paths copied from
+		// a Windows tool to a Linux host (NTFS share, drvfs) get
+		// component-split correctly.
+		s := strings.ReplaceAll(filepath.ToSlash(path), "\\", "/")
 		// Strip leading drive-letter prefix to match the function's
 		// behavior; otherwise "C:" would itself be inspected.
 		if len(s) >= 2 && s[1] == ':' {
