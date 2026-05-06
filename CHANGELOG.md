@@ -27,6 +27,48 @@ Internal package shapes (`internal/...`) are NOT covered by SemVer.
 
 ## [Unreleased]
 
+## [0.6.1] — 2026-05-06
+
+The cleanup release that closes v0.6.0's "Notes / known limitations".
+Every dfmt subcommand now self-promotes the daemon in-process when
+none is running, and the legacy auto-spawn path inside
+`client.NewClient` is gone for good.
+
+### Changed
+
+- **Tool-call wrappers self-promote.** `dfmt exec`, `dfmt read`,
+  `dfmt fetch`, `dfmt glob`, `dfmt grep`, `dfmt edit`, `dfmt write`
+  use `acquireBackend` instead of `client.NewClient` directly. Same
+  pattern as the read/write commands shipped in v0.6.0: connect to
+  existing daemon, or become it. `dfmt exec` and `dfmt read` keep
+  their direct-sandbox fallback for the truly-degraded case.
+- **`client.NewClient` no longer spawns.** `ensureDaemon`,
+  `startDaemon`, and the test-binary guard `isTestBinary` retired
+  from `internal/client`. The legacy per-project port/socket
+  fallback remains so surviving v0.3.x daemons keep working; the
+  pre-v0.6.0 `exec.Command(self, "daemon", "--global")` is gone.
+
+### Removed
+
+- `internal/client.ensureDaemon` (unexported).
+- `internal/client.startDaemon` (unexported).
+- `internal/client.isTestBinary` (unexported; CLI side has its own
+  copy in `internal/cli/dispatch.go`).
+- The `DFMT_DISABLE_AUTOSTART` env-var opt-out is now a no-op since
+  there's nothing left to disable. Documentation references it for
+  back-compat with operator runbooks but the code path is gone.
+
+### Notes
+
+- The `exec.Command(self, ...)` count in the dfmt source is now
+  zero outside the explicit `dfmt daemon` background-mode path
+  (`startGlobalDaemonBackground` in `dispatch.go`). That one is
+  opt-in by user invocation, not implicit auto-spawn.
+- Terminal-blocking for short-lived commands (`dfmt stats`,
+  `dfmt search`, etc. when no daemon is running) is still queued
+  for v0.6.x. The detach helper (`FreeConsole` / `setsid+fork`) is
+  the next item on the v0.6.x roadmap.
+
 ## [0.6.0] — 2026-05-06
 
 The single-binary release. `dfmt mcp` and the main user-facing CLI

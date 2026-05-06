@@ -2,7 +2,7 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Accepted (partial — see "Status of follow-ups") |
+| Status | Accepted |
 | Date | 2026-05-06 |
 | Deciders | Ersin Koç |
 | Related | [ADR-0019](0019-global-daemon.md), [ADR-0020](0020-mcp-proxy-and-cleanup.md), [ADR-0001](0001-per-project-daemon.md) |
@@ -90,9 +90,9 @@ Rejected for v0.6.0 because:
 - `TestRunMCPStdin` (regression) proves the test-binary short-circuit in `waitForDaemonShutdown` keeps the existing test suite from blocking on idle-exit.
 - Manual end-to-end: build, install, open Claude Code on a project, run `tasklist | grep dfmt` (Windows) or `pgrep -af dfmt` (Unix). Expected: exactly one `dfmt.exe` PID for the duration of the session.
 
-## Status of v0.6.0 follow-ups
+## Status of follow-ups
 
+- **Tool-call wrapper migration** (`dfmt exec`, `dfmt read`, `dfmt fetch`, `dfmt glob`, `dfmt grep`, `dfmt edit`, `dfmt write` to `acquireBackend`). Done in v0.6.1.
+- **Drop `client.NewClient`'s `startDaemon` / `exec.Command`** entirely. Done in v0.6.1.
 - **Detach helper** (`FreeConsole` on Windows; `setsid+fork` on Unix) for short-lived commands. Deferred to v0.6.x; CHANGELOG documents the terminal-blocking interim behavior.
-- **Tool-call wrapper migration** (`dfmt exec`, `dfmt read`, `dfmt fetch`, `dfmt glob`, `dfmt grep`, `dfmt edit`, `dfmt write` to `acquireBackend`). Deferred to v0.6.x; until they migrate, `client.NewClient`'s auto-spawn path remains as their fallback.
-- **Drop `client.NewClient`'s `startDaemon` / `exec.Command`** entirely. Blocked on the wrapper migration above.
 - **Registry extraction** to break the `daemon → client` import cycle. Speculative cleanup; only useful if a future ADR wants `client.NewClient` itself to self-promote.
