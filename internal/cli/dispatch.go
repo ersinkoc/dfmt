@@ -720,16 +720,32 @@ func runStatus(_ []string) int {
 		dashboardURL = lookupDashboardURL(proj)
 	}
 
+	// last_crash is reported in JSON only when the file actually exists,
+	// to keep the happy-path payload from carrying empty fields. Format:
+	// { "path": "...", "modified": "<RFC3339>", "size": N }.
+	var lastCrash map[string]any
+	if fi, statErr := os.Stat(project.GlobalCrashPath()); statErr == nil {
+		lastCrash = map[string]any{
+			"path":     project.GlobalCrashPath(),
+			"modified": fi.ModTime().UTC().Format(time.RFC3339),
+			"size":     fi.Size(),
+		}
+	}
+
 	if flagJSON {
 		// fmt %q produces Go-escaped strings, not JSON — low-byte control
 		// characters and "\xHH" escapes in a Windows path would produce
 		// invalid JSON. Encode via json.Marshal instead.
-		out, _ := json.Marshal(map[string]any{
+		payload := map[string]any{
 			"project":        proj,
 			"daemon_running": running,
 			"socket":         project.SocketPath(proj),
 			"dashboard":      dashboardURL,
-		})
+		}
+		if lastCrash != nil {
+			payload["last_crash"] = lastCrash
+		}
+		out, _ := json.Marshal(payload)
 		fmt.Println(string(out))
 	} else {
 		fmt.Printf("Project: %s\n", proj)
@@ -744,6 +760,12 @@ func runStatus(_ []string) int {
 			}
 		} else {
 			fmt.Println("Daemon: not running")
+		}
+		if lastCrash != nil {
+			// Yellow-flag, not red — the daemon may have already restarted
+			// fine; we just want operators to know there's a saved trace.
+			fmt.Printf("Last crash: %s (cat %s)\n",
+				lastCrash["modified"], lastCrash["path"])
 		}
 	}
 
@@ -1330,6 +1352,23 @@ func runDoctor(args []string) int {
 				return true, "(orphan file, but flock released — next start will reclaim)"
 			}
 			return false, fmt.Sprintf("lock held by another process: %v", lerr)
+		}},
+		{"Last crash (~/.dfmt/last-crash.log)", func() (bool, string) {
+			// Phase 2: the global daemon writes here on panic via
+			// recoverAndLogCrash. Absence is the happy state. Presence
+			// is informational only — the doctor stays green so a crash
+			// from yesterday doesn't make every diagnostic look
+			// failing — but the timestamp is printed so the operator
+			// knows whether to investigate.
+			fi, err := os.Stat(project.GlobalCrashPath())
+			if os.IsNotExist(err) {
+				return true, "(none — clean run)"
+			}
+			if err != nil {
+				return false, err.Error()
+			}
+			age := time.Since(fi.ModTime()).Truncate(time.Second)
+			return true, fmt.Sprintf("present (%s old; cat %s)", age, project.GlobalCrashPath())
 		}},
 	}
 
