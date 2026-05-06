@@ -734,6 +734,20 @@ func runStatus(_ []string) int {
 		}
 	}
 
+	// Surface the actual transport endpoint a client would dial. In
+	// global daemon mode the per-project socket path is a stale
+	// artifact (legacy v0.3.x lived there); the real listener is at
+	// the host-wide path. Reporting the per-project path in global
+	// mode misled operators debugging "why won't my client connect".
+	socketPath := project.SocketPath(proj)
+	if globalDashboardURL() != "" {
+		if runtime.GOOS == "windows" {
+			socketPath = project.GlobalPortPath()
+		} else {
+			socketPath = project.GlobalSocketPath()
+		}
+	}
+
 	if flagJSON {
 		// fmt %q produces Go-escaped strings, not JSON — low-byte control
 		// characters and "\xHH" escapes in a Windows path would produce
@@ -741,7 +755,7 @@ func runStatus(_ []string) int {
 		payload := map[string]any{
 			"project":        proj,
 			"daemon_running": running,
-			"socket":         project.SocketPath(proj),
+			"socket":         socketPath,
 			"dashboard":      dashboardURL,
 		}
 		if lastCrash != nil {
