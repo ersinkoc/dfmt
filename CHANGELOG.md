@@ -27,6 +27,33 @@ Internal package shapes (`internal/...`) are NOT covered by SemVer.
 
 ## [Unreleased]
 
+## [0.4.7] — 2026-05-06
+
+The biggest pre-v0.5.0 correctness fix: the daemon's in-memory search
+index no longer drifts away from on-disk journal state when another
+process (most importantly `dfmt mcp` subprocesses) appends events.
+
+### Fixed
+
+- **MCP-subprocess index drift.** The `dfmt mcp` subprocess opens its
+  own journal handle to the same `.dfmt/journal.jsonl` file as the
+  daemon and appends events directly. The daemon's in-memory index
+  was never updated for those events — `dfmt_search` results stayed
+  stale until the next daemon restart (which on a global daemon
+  serving long sessions could be hours away). A new per-project tail
+  goroutine in `ProjectResources` polls the journal every 3 s and
+  `Add()`s new events to the index. `Index.Add` is idempotent so
+  events the daemon itself appended are safely re-processed as
+  no-ops. Wired for both the default-project (legacy daemons) and
+  extra-project (global daemon) paths. Closes drift within ~3 s.
+
+### Note
+
+This is the first piece of the v0.5.0 architectural cleanup landed
+as a v0.4.x patch — additive only, no API or wire changes. The
+larger MCP-proxy refactor (eliminating the duplicate journal handle
+entirely) remains queued for v0.5.0.
+
 ## [0.4.6] — 2026-05-06
 
 Patch release with two more global-daemon UX fixes after v0.4.5.
