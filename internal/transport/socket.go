@@ -103,6 +103,12 @@ func (s *SocketServer) Start(ctx context.Context) error {
 		logging.Warnf("chmod socket: %v", cerr)
 	}
 
+	// V-12: cap concurrent connections so a flood (slowloris-style or
+	// just rapid mass-Accept) cannot spawn unbounded handler goroutines
+	// + 1 MiB read buffers. The semaphore is per-listener so HTTP and
+	// socket transports each get their own pool.
+	ln = newLimitListener(ln, MaxConcurrentConnections)
+
 	s.listener = ln
 	s.running = true
 	s.serverCtx, s.serverCancel = context.WithCancel(ctx)

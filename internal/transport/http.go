@@ -144,6 +144,11 @@ func (s *HTTPServer) Start(ctx context.Context) error {
 			actualPort = addr.Port
 		}
 	}
+	// V-12: cap concurrent connections. The wrap is harmless on
+	// caller-supplied listeners too (test paths) — if the cap is
+	// already in place, this just nests two semaphores that share
+	// fate via Close.
+	ln = newLimitListener(ln, MaxConcurrentConnections)
 
 	// F-09: Refuse non-loopback TCP binds. The same-origin gate plus port-file
 	// 0600 perms only protect against same-host attackers; a non-loopback bind
