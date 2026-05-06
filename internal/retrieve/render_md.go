@@ -4,12 +4,33 @@ import (
 	"encoding/json"
 	"encoding/xml"
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/ersinkoc/dfmt/internal/core"
 )
+
+// refTokenForgery matches the path-reference token shape this renderer
+// emits ([r0], [r17], …). When the same shape appears in user-supplied
+// event text (event.Data["message"], tags), an agent reading the
+// snapshot can mistake the forged token for a real path reference and
+// dereference it from the legend at the top — pointing at the wrong
+// path or, with a number that doesn't exist, getting a confused "no
+// such ref" cycle. V-06 closure: backslash-escape any matching shape
+// in user-controlled text before rendering.
+var refTokenForgery = regexp.MustCompile(`\[r\d+\]`)
+
+// escapeRefTokenForgery backslash-escapes any [rN] sequence in s so
+// agent parsers don't confuse hostile event text with real ref tokens.
+// CommonMark renders `\[` as a literal `[`, so the escaped form remains
+// human-readable.
+func escapeRefTokenForgery(s string) string {
+	return refTokenForgery.ReplaceAllStringFunc(s, func(m string) string {
+		return `\` + m
+	})
+}
 
 // internThreshold is the minimum number of times a path must appear before
 // it earns a reference slot. Below this, interning costs more than it
@@ -124,7 +145,10 @@ func (r *MarkdownRenderer) renderEvent(b *strings.Builder, e core.Event, refs ma
 	fmt.Fprintf(b, " — %s\n", e.TS.Format(time.RFC3339))
 	if e.Data != nil {
 		if msg, ok := e.Data["message"].(string); ok {
-			fmt.Fprintf(b, "  - %s\n", msg)
+			// V-06: hostile message text can carry a literal [rN]-shape
+			// that mimics a path-reference token; escape so the agent
+			// parser doesn't dereference it from the legend.
+			fmt.Fprintf(b, "  - %s\n", escapeRefTokenForgery(msg))
 		}
 		if path, ok := e.Data["path"].(string); ok {
 			if tok, refed := refs[path]; refed {
@@ -135,7 +159,12 @@ func (r *MarkdownRenderer) renderEvent(b *strings.Builder, e core.Event, refs ma
 		}
 	}
 	if len(e.Tags) > 0 {
-		fmt.Fprintf(b, "  - Tags: %s\n", strings.Join(e.Tags, ", "))
+		// V-06: same forgery defense for tags.
+		escTags := make([]string, len(e.Tags))
+		for i, t := range e.Tags {
+			escTags[i] = escapeRefTokenForgery(t)
+		}
+		fmt.Fprintf(b, "  - Tags: %s\n", strings.Join(escTags, ", "))
 	}
 }
 

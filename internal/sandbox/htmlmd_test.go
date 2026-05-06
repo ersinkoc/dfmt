@@ -11,6 +11,47 @@ func convert(html string) string {
 	return ConvertHTML("<!doctype html>" + html)
 }
 
+// TestConvertHTML_V06TablePipeEscape pins the table-cell half of V-06:
+// a `<td>` whose text contains a literal `|` must escape it as `\|` so
+// the cell doesn't reshape the GFM table boundary. Pre-fix, hostile
+// content like `<td>foo|bar|baz</td>` rendered as three cells.
+func TestConvertHTML_V06TablePipeEscape(t *testing.T) {
+	in := `<table><tr><td>safe|ish</td><td>also|fine</td></tr></table>`
+	got := convert(in)
+	// Each cell's literal pipe must be backslash-escaped.
+	if !strings.Contains(got, `safe\|ish`) {
+		t.Errorf("cell pipe not escaped: %q", got)
+	}
+	if !strings.Contains(got, `also\|fine`) {
+		t.Errorf("second-cell pipe not escaped: %q", got)
+	}
+	// And the literal raw forms must NOT appear (would mean cell reshape).
+	if strings.Contains(got, "safe|ish") && !strings.Contains(got, `safe\|ish`) {
+		t.Errorf("cell pipe leaked unescaped: %q", got)
+	}
+}
+
+// TestConvertHTML_V06CodeFenceCollision pins the second half of V-06:
+// a code block body containing a triple-backtick must be wrapped in a
+// longer fence (≥4 backticks) so the body's ``` doesn't close the
+// fence early and surface trailing content as agent-context text.
+func TestConvertHTML_V06CodeFenceCollision(t *testing.T) {
+	// Body contains three backticks. Pre-fix, the wrapping fence was
+	// also three backticks and the body's ``` closed the fence,
+	// exposing whatever followed as instruction-shaped text.
+	in := "<pre><code>let x = '```'; // triple-tick literal</code></pre>"
+	got := convert(in)
+	// Expect the wrapper fence to be at least four backticks.
+	if !strings.Contains(got, "````") {
+		t.Errorf("fence did not lengthen for body containing ```: %q", got)
+	}
+	// And the body's literal ``` must survive — pre-fix it would have
+	// been the closing fence rather than content.
+	if !strings.Contains(got, "```") {
+		t.Errorf("body's ``` literal lost: %q", got)
+	}
+}
+
 // TestConvertHTML_V07DropSetExpanded pins V-07: tags added to
 // htmlDropElements (object/embed/applet/link/template/frame/frameset/
 // math/portal/meta) must have their body content suppressed entirely.

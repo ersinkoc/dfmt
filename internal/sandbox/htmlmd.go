@@ -362,14 +362,19 @@ func (w *walker) popFrame(tag string, stranded bool) {
 			body := w.codeFenceBuf.String()
 			w.codeFenceBuf.Reset()
 			w.codeFenceOpen = false
-			w.out.WriteString("```")
+			// V-06: choose fence length longer than any backtick run in
+			// the body so a fenced ``` inside the content doesn't close
+			// the fence early.
+			fence := pickCodeFence(body)
+			w.out.WriteString(fence)
 			w.out.WriteString(w.codeFenceLang)
 			w.out.WriteByte('\n')
 			w.out.WriteString(body)
 			if !strings.HasSuffix(body, "\n") {
 				w.out.WriteByte('\n')
 			}
-			w.out.WriteString("```\n\n")
+			w.out.WriteString(fence)
+			w.out.WriteString("\n\n")
 			w.codeFenceLang = ""
 		} else {
 			w.out.WriteByte('`')
@@ -382,12 +387,15 @@ func (w *walker) popFrame(tag string, stranded bool) {
 			body := w.codeFenceBuf.String()
 			w.codeFenceBuf.Reset()
 			w.codeFenceOpen = false
-			w.out.WriteString("```\n")
+			fence := pickCodeFence(body)
+			w.out.WriteString(fence)
+			w.out.WriteByte('\n')
 			w.out.WriteString(body)
 			if !strings.HasSuffix(body, "\n") {
 				w.out.WriteByte('\n')
 			}
-			w.out.WriteString("```\n\n")
+			w.out.WriteString(fence)
+			w.out.WriteString("\n\n")
 		}
 	case "ul", "ol":
 		if len(w.listStack) > 0 {
@@ -510,7 +518,61 @@ func (w *walker) writeText(s string) {
 			return
 		}
 	}
+	// V-06: escape pipe characters when emitting inside a GFM table
+	// cell. Without this, hostile content can reshape the table by
+	// closing the cell early — `<td>foo|bar|baz</td>` becomes three
+	// cells instead of one. The walker's tableStack tells us whether
+	// we're inside any table; the open-tag stack tells us whether
+	// the immediate enclosing element is a cell. Escape only inside
+	// a cell so paragraph-level pipes (rare but valid) survive.
+	if w.inTableCell() {
+		collapsed = strings.ReplaceAll(collapsed, "|", `\|`)
+	}
 	w.out.WriteString(collapsed)
+}
+
+// pickCodeFence returns a backtick-fence string at least three backticks
+// long whose run-length exceeds the longest run of consecutive backticks
+// in body. Without this, a body containing literal ``` (a triple-tick
+// code block in documentation, for example) would close the fence
+// prematurely and surface the trailing content as agent-context text —
+// a vector for instruction-injection. CommonMark §4.5 specifies the
+// "use a longer fence than the body's longest run" rule. Closes V-06.
+func pickCodeFence(body string) string {
+	maxRun, run := 3, 0
+	for i := 0; i < len(body); i++ {
+		if body[i] == '`' {
+			run++
+			if run+1 > maxRun {
+				maxRun = run + 1
+			}
+		} else {
+			run = 0
+		}
+	}
+	return strings.Repeat("`", maxRun)
+}
+
+// inTableCell reports whether the most recent open element on the
+// stack is a `<th>` or `<td>`. Walks back from the top because nested
+// inline elements (a, span, strong, em, code) sit between the cell
+// and the text node. Stops at any block boundary so a stray pipe in
+// a paragraph above the table isn't mis-classified.
+func (w *walker) inTableCell() bool {
+	for i := len(w.stack) - 1; i >= 0; i-- {
+		switch w.stack[i] {
+		case "th", "td":
+			return true
+		case "tr", "thead", "tbody", "tfoot", "table":
+			// Reached table chrome without seeing a cell — we're
+			// between cells, not inside one.
+			return false
+		case "p", "div", "section", "article", "main", "header", "footer",
+			"aside", "blockquote", "ul", "ol", "li", "dl", "dt", "dd":
+			return false
+		}
+	}
+	return false
 }
 
 // collapseInlineWhitespace replaces runs of any ASCII whitespace
