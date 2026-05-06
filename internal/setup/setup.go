@@ -61,25 +61,39 @@ const (
 // to the Windows equivalent (USERPROFILE/.dfmt/dfmt.exe) for Windows agents
 // to find it.
 func ResolveDFMTCommandForEnv(target TargetOS) string {
-	// Try LookPath first (same logic as ResolveDFMTCommand)
+	// Resolution order (post-Phase-1 reversal):
+	//  1. os.Executable() -- the currently running binary's absolute path.
+	//     This is the right answer almost always, because the binary that
+	//     wrote the agent config is the binary we want the agent to launch.
+	//     Pre-fix LookPath was first, which silently chose a different
+	//     dfmt.exe when PATH had a stale entry from an older install in a
+	//     different directory (e.g. AppData\Local\Programs\dfmt left over
+	//     after migrating to ~/.dfmt). Hooks then drifted across versions
+	//     even though the user had built and installed a fresh binary.
+	//  2. exec.LookPath("dfmt") -- fallback when os.Executable fails. This
+	//     covers `go run ./cmd/dfmt setup` from the repo (rare; mostly CI).
+	//  3. Literal "dfmt" -- last-resort relative fallback.
+	if ex, err := os.Executable(); err == nil && ex != "" {
+		if target == TargetOSWindows && IsWSL() {
+			ex = wslPathToWindowsPath(ex)
+		}
+		// Skip os.Executable when it points at a Go test binary. Under
+		// `go test` os.Executable returns the test binary path which we
+		// must NEVER write into an agent config -- the agent would then
+		// try to launch the test binary as `dfmt setup ...` and fork-bomb.
+		base := strings.ToLower(filepath.Base(ex))
+		if !strings.HasSuffix(base, ".test") && !strings.HasSuffix(base, ".test.exe") {
+			return ex
+		}
+	}
 	if path, err := exec.LookPath("dfmt"); err == nil && path != "" {
 		if target == TargetOSWindows && IsWSL() {
-			// We are on WSL but writing a Windows config.
-			// LookPath returned a WSL path like /home/user/.dfmt/dfmt.
-			// Convert to Windows path.
 			path = wslPathToWindowsPath(path)
 		}
 		if abs, aerr := filepath.Abs(path); aerr == nil {
 			return abs
 		}
 		return path
-	}
-	// Fall back to os.Executable
-	if ex, err := os.Executable(); err == nil && ex != "" {
-		if target == TargetOSWindows && IsWSL() {
-			ex = wslPathToWindowsPath(ex)
-		}
-		return ex
 	}
 	return "dfmt"
 }
@@ -114,21 +128,22 @@ func wslPathToWindowsPath(p string) string {
 // ResolveDFMTCommand returns the command string to embed in MCP `command`
 // fields written into agent configs. Resolution order:
 //
-//  1. exec.LookPath("dfmt") -- absolute path of whichever dfmt is first on PATH.
-//     This is the right answer when the user just installed via dev.ps1/install.sh
-//     because PATH includes the canonical install directory.
-//  2. os.Executable() -- absolute path of the currently running binary. Used
-//     when dfmt is invoked from a directory that isn't on PATH (rare; e.g.
-//     freshly built `./dfmt setup` from the repo root).
+//  1. os.Executable() -- the currently running binary. This is the binary
+//     that just wrote the config, so making the agent launch the same
+//     binary later is the only sane default. Skipped when it points at
+//     a Go test binary (suffix `.test` / `.test.exe`) so test runs cannot
+//     ship a fork-bomb-shaped command into an agent config.
+//  2. exec.LookPath("dfmt") -- fallback when os.Executable is unusable.
+//     Covers `go run ./cmd/dfmt setup` from the repo root (mostly CI).
 //  3. Literal "dfmt" -- last-resort relative fallback. The agent will need
 //     dfmt on its PATH at launch time for this to work.
 //
-// On WSL, exec.LookPath and os.Executable both return Linux-style paths
-// (/home/... or /proc/...). These are correct for WSL-native agents but
-// must NOT be written into configs that Windows-side agents (e.g. Windows
-// Claude Code) will read -- Windows cannot interpret Unix paths.
-// The callers in detect.go decide which config file to write and apply
-// the appropriate path format for the target environment.
+// On WSL, both probes return Linux-style paths (/home/... or /proc/...).
+// These are correct for WSL-native agents but must NOT be written into
+// configs that Windows-side agents (e.g. Windows Claude Code) will read --
+// Windows cannot interpret Unix paths. Callers in detect.go decide which
+// config file to write and apply the appropriate path format for the
+// target environment.
 func ResolveDFMTCommand() string {
 	return ResolveDFMTCommandForEnv(TargetOSLocal)
 }

@@ -375,6 +375,28 @@ func runQuickstart(args []string) int {
 	fmt.Println("===============")
 	fmt.Println()
 
+	// Pre-step: purge legacy DFMT fossils from any pre-existing Claude
+	// settings.json (project + user-global). Without this, downstream
+	// merges in EnsureProjectInitialized / configureClaudeCode preserve
+	// stale entries (old deny-triplet, dotted MCP names, drifted hook
+	// command paths). Failures are non-fatal — surface as warnings so
+	// quickstart still completes if a settings file is unreadable.
+	resolved := setup.ResolveDFMTCommand()
+	for _, p := range []string{
+		filepath.Join(dir, ".claude", "settings.json"),
+		filepath.Join(setup.HomeDir(), ".claude", "settings.json"),
+	} {
+		if _, err := os.Stat(p); err != nil {
+			continue
+		}
+		if rep, perr := setup.PurgeLegacyClaudeSettings(p, resolved); perr != nil {
+			fmt.Fprintf(os.Stderr, "      warning: purge %s: %v\n", p, perr)
+		} else if len(rep.Removed)+len(rep.Adjusted) > 0 {
+			fmt.Printf("      purged %s: removed=%d adjusted=%d\n",
+				p, len(rep.Removed), len(rep.Adjusted))
+		}
+	}
+
 	// Step 1: init.
 	fmt.Printf("[1/3] Initializing project at %s...\n", dir)
 	if err := setup.EnsureProjectInitialized(dir); err != nil {
@@ -688,6 +710,16 @@ func runStatus(_ []string) int {
 
 	running := client.DaemonRunning(proj)
 
+	// Dashboard URL is derived from the global daemon registry's Port
+	// field. Empty (Unix-socket-bound daemons without TCP opt-in) means
+	// no browser-reachable URL exists -- the dashboard is still served
+	// over the socket but agents that aren't dfmt-aware can't dial it.
+	// Listed only when a daemon for this project is alive.
+	dashboardURL := ""
+	if running {
+		dashboardURL = lookupDashboardURL(proj)
+	}
+
 	if flagJSON {
 		// fmt %q produces Go-escaped strings, not JSON — low-byte control
 		// characters and "\xHH" escapes in a Windows path would produce
@@ -696,18 +728,59 @@ func runStatus(_ []string) int {
 			"project":        proj,
 			"daemon_running": running,
 			"socket":         project.SocketPath(proj),
+			"dashboard":      dashboardURL,
 		})
 		fmt.Println(string(out))
 	} else {
 		fmt.Printf("Project: %s\n", proj)
 		if running {
 			fmt.Println("Daemon: running")
+			if dashboardURL != "" {
+				// Surfacing the dashboard URL on every `dfmt status` lets
+				// the user reach the running dashboard without invoking
+				// `dfmt dashboard` (which is now a no-spawn URL helper --
+				// same information, just a hint nobody has to memorize).
+				fmt.Printf("Dashboard: %s\n", dashboardURL)
+			}
 		} else {
 			fmt.Println("Daemon: not running")
 		}
 	}
 
 	return 0
+}
+
+// lookupDashboardURL returns the http://127.0.0.1:<port>/dashboard URL
+// of the daemon attached to projectPath, or "" if either no daemon is
+// registered for that project or the daemon is bound to a Unix socket
+// only (no Port field). Errors reading the registry are non-fatal --
+// the URL is informational, not load-bearing for anything else.
+func lookupDashboardURL(projectPath string) string {
+	reg := client.GetRegistry()
+	if reg == nil {
+		return ""
+	}
+	for _, e := range reg.List() {
+		if !samePathCLI(e.ProjectPath, projectPath) {
+			continue
+		}
+		if e.Port <= 0 {
+			return ""
+		}
+		return fmt.Sprintf("http://127.0.0.1:%d/dashboard", e.Port)
+	}
+	return ""
+}
+
+// samePathCLI compares two paths case-insensitively on Windows, exactly
+// elsewhere. Duplicated from setup.samePath to avoid importing the
+// setup package into the dispatch hot path; the constant "windows" is
+// inlined because the cli package has no goosWindows of its own.
+func samePathCLI(a, b string) bool {
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(a, b)
+	}
+	return a == b
 }
 
 func runDaemon(args []string) int {
@@ -1989,6 +2062,26 @@ func runStats(args []string) int {
 // On Unix the daemon serves HTTP over a Unix socket which browsers
 // can't dial; the command prints a friendly hint instead of a URL
 // that wouldn't load.
+// runDashboard prints the dashboard URL of the daemon attached to the
+// caller's project, or a list of all running daemons when the caller
+// is outside any initialized project. NEVER spawns a daemon -- pre-
+// Phase-1 the command auto-spawned via client.NewClient, which
+// surprised users who expected a read-only "tell me the URL" command.
+//
+// Modes:
+//
+//  1. cwd is inside a project AND that project's daemon is in the
+//     registry: print its URL.
+//  2. cwd is inside a project but that project has no running daemon:
+//     emit a hint to start one (`dfmt daemon` from the project dir),
+//     plus the list of any OTHER running daemons -- if the user just
+//     wants to look at any dashboard, they can pick from the list.
+//  3. cwd is outside any project: print every running daemon's URL.
+//  4. No daemons running anywhere: exit 1 with `dfmt quickstart` hint.
+//
+// Cross-project navigation inside the dashboard already works (the
+// rendered page fetches /api/all-daemons and lets the user switch
+// projects in-browser), so any URL on the list reaches every daemon.
 func runDashboard(args []string) int {
 	var openBrowser bool
 	fs := flag.NewFlagSet("dashboard", flag.ContinueOnError)
@@ -2000,25 +2093,23 @@ func runDashboard(args []string) int {
 		return 2
 	}
 
-	proj, err := getProject()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		return 1
+	reg := client.GetRegistry()
+	var entries []client.DaemonEntry
+	if reg != nil {
+		entries = reg.List()
 	}
 
-	if runtime.GOOS != "windows" {
-		// Unix has two modes:
-		//   1. Default: daemon binds a Unix socket — browsers cannot
-		//      dial that, so printing a 127.0.0.1 URL would mislead.
-		//      Print a friendly hint with curl --unix-socket fallback.
-		//   2. Opt-in: transport.http.enabled=true + a loopback bind.
-		//      The daemon serves HTTP over TCP and the rest of this
-		//      function (port-file read → URL print → optional open)
-		//      works the same as on Windows.
-		// We load the config to decide; a load error is treated as
-		// not-opted-in (safer default than crashing the user out of
-		// the helpful hint they'd otherwise see).
-		cfg, _ := config.Load(proj)
+	// Resolve current project (best effort -- the dashboard command runs
+	// fine outside any initialized project; we just won't have a primary
+	// URL to print).
+	curProject, projErr := getProject()
+
+	// On Unix without TCP opt-in, the daemon serves HTTP over a Unix
+	// socket which browsers can't dial. Emit the platform hint and bail
+	// before claiming we have a useful URL. (Same logic as before; only
+	// the trigger condition moved earlier in the flow.)
+	if runtime.GOOS != "windows" && projErr == nil {
+		cfg, _ := config.Load(curProject)
 		tcpOptIn := cfg != nil && cfg.Transport.HTTP.Enabled && cfg.Transport.HTTP.Bind != ""
 		if !tcpOptIn {
 			fmt.Println("Dashboard not browser-accessible on this platform: the daemon")
@@ -2026,7 +2117,7 @@ func runDashboard(args []string) int {
 			fmt.Println()
 			fmt.Println("Options:")
 			fmt.Println("  - `dfmt stats` for a CLI snapshot")
-			fmt.Printf("  - curl --unix-socket %s http://x/dashboard\n", project.SocketPath(proj))
+			fmt.Printf("  - curl --unix-socket %s http://x/dashboard\n", project.SocketPath(curProject))
 			fmt.Println()
 			fmt.Println("Or enable TCP loopback in .dfmt/config.yaml:")
 			fmt.Println("  transport:")
@@ -2037,42 +2128,75 @@ func runDashboard(args []string) int {
 		}
 	}
 
-	// Auto-start daemon if not running. NewClient performs the spawn +
-	// readiness handshake, so by the time it returns the port file is
-	// guaranteed to exist with a valid port.
-	cl, err := client.NewClient(proj)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+	// Mode 4: nothing running anywhere.
+	if len(entries) == 0 {
+		fmt.Fprintln(os.Stderr, "No DFMT daemon is running.")
+		fmt.Fprintln(os.Stderr)
+		fmt.Fprintln(os.Stderr, "Start one with:")
+		fmt.Fprintln(os.Stderr, "  dfmt daemon                # in an already-initialized project")
+		fmt.Fprintln(os.Stderr, "  dfmt quickstart            # init + agent setup if not yet done")
 		return 1
 	}
-	_ = cl // we only need the side-effect of ensuring the daemon is up
 
-	portFile := filepath.Join(proj, ".dfmt", "port")
-	data, err := os.ReadFile(portFile)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: read port file %s: %v\n", portFile, err)
-		return 1
+	// Build URL list. Entries with empty Port are Unix-socket-only --
+	// drop them silently because we already printed the platform hint
+	// above when we knew about them.
+	type dashRow struct {
+		project string
+		url     string
 	}
-	var pf transport.PortFile
-	if jerr := json.Unmarshal(data, &pf); jerr != nil || pf.Port <= 0 {
-		// Older daemons wrote a bare integer; tolerate that format too.
-		var port int
-		if _, perr := fmt.Sscanf(strings.TrimSpace(string(data)), "%d", &port); perr == nil && port > 0 {
-			pf.Port = port
-		} else {
-			fmt.Fprintf(os.Stderr, "error: parse port file %s: %v\n", portFile, jerr)
-			return 1
+	rows := make([]dashRow, 0, len(entries))
+	var primary string
+	for _, e := range entries {
+		if e.Port <= 0 {
+			continue
+		}
+		url := fmt.Sprintf("http://127.0.0.1:%d/dashboard", e.Port)
+		rows = append(rows, dashRow{project: e.ProjectPath, url: url})
+		if projErr == nil && samePathCLI(e.ProjectPath, curProject) {
+			primary = url
 		}
 	}
 
-	url := fmt.Sprintf("http://127.0.0.1:%d/dashboard", pf.Port)
-	fmt.Println(url)
+	if len(rows) == 0 {
+		fmt.Fprintln(os.Stderr, "Daemons are running but none expose an HTTP port (Unix socket only).")
+		fmt.Fprintln(os.Stderr, "Enable transport.http in .dfmt/config.yaml to make the dashboard browser-reachable.")
+		return 1
+	}
 
+	// Mode 1: caller's project has a daemon -- print just that URL so
+	// scripting (`dfmt dashboard --open`) keeps working as before.
+	if primary != "" {
+		fmt.Println(primary)
+		if openBrowser {
+			if err := openInBrowser(primary); err != nil {
+				logging.Warnf("open browser: %v", err)
+				return 1
+			}
+		}
+		return 0
+	}
+
+	// Mode 2/3: no daemon for current project (or no current project).
+	// Print every running daemon so the user can pick one. Each URL
+	// already serves the cross-project switcher, so any of them lands
+	// the user in the same dashboard UI.
+	if projErr == nil {
+		fmt.Fprintf(os.Stderr, "No daemon is running for %s.\n", curProject)
+		fmt.Fprintln(os.Stderr, "Start one with `dfmt daemon`, or pick from these running daemons:")
+	} else {
+		fmt.Fprintln(os.Stderr, "Running daemons:")
+	}
+	fmt.Fprintln(os.Stderr)
+	for _, r := range rows {
+		fmt.Printf("  %s   %s\n", r.url, r.project)
+	}
 	if openBrowser {
-		if err := openInBrowser(url); err != nil {
-			logging.Warnf("open browser: %v", err)
-			return 1
-		}
+		// --open with multiple candidates is ambiguous: don't pick for
+		// the user. They can re-run with --project to disambiguate.
+		fmt.Fprintln(os.Stderr)
+		fmt.Fprintln(os.Stderr, "--open requires a single daemon; pass --project <path> to pick one.")
+		return 1
 	}
 	return 0
 }
@@ -2615,6 +2739,7 @@ func runSetup(args []string) int {
 	var force bool
 	var uninstall bool
 	var verify bool
+	var refresh bool
 
 	fs := flag.NewFlagSet("setup", flag.ContinueOnError)
 	fs.BoolVar(&dryRun, "dry-run", false, "Show planned changes")
@@ -2622,6 +2747,7 @@ func runSetup(args []string) int {
 	fs.BoolVar(&force, "force", false, "Overwrite existing config")
 	fs.BoolVar(&uninstall, "uninstall", false, "Remove dfmt configuration")
 	fs.BoolVar(&verify, "verify", false, "Verify setup")
+	fs.BoolVar(&refresh, "refresh", false, "Purge legacy fossils from Claude settings.json files (global + per-project) and rewrite fresh DFMT entries")
 	if err := fs.Parse(args); err != nil {
 		if err == flag.ErrHelp {
 			return 0
@@ -2634,6 +2760,9 @@ func runSetup(args []string) int {
 	}
 	if verify {
 		return runSetupVerify()
+	}
+	if refresh {
+		return runSetupRefresh()
 	}
 
 	// Detect agents
@@ -2802,6 +2931,132 @@ func runSetupVerify() int {
 		return 1
 	}
 	fmt.Println("All files present")
+	return 0
+}
+
+// runSetupRefresh purges legacy DFMT fossils from every known Claude
+// settings.json file and rewrites the current template into each. The
+// candidate set is:
+//
+//   - ~/.claude/settings.json (user-global)
+//   - every <project>/.claude/settings.json tracked in the setup manifest
+//   - the cwd's .claude/settings.json (if a project lives there)
+//
+// Each file is purged via PurgeLegacyClaudeSettings (which writes a
+// one-shot .dfmt.bak) and then re-written with the current template:
+// WriteClaudeCodeSettingsHook for the global file, EnsureProjectInitialized
+// for each project (which calls writeProjectClaudeSettings under the hood).
+func runSetupRefresh() int {
+	resolved := setup.ResolveDFMTCommand()
+	home := setup.HomeDir()
+
+	type target struct {
+		path        string
+		projectRoot string // empty for global
+	}
+
+	seenPath := map[string]bool{}
+	var targets []target
+
+	// Global first.
+	globalPath := filepath.Join(home, ".claude", "settings.json")
+	targets = append(targets, target{path: globalPath})
+	seenPath[globalPath] = true
+
+	// Manifest-tracked project settings.
+	m, err := setup.LoadManifest()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "load manifest: %v\n", err)
+		return 1
+	}
+	for _, fe := range m.Files {
+		if filepath.Base(fe.Path) != "settings.json" {
+			continue
+		}
+		if filepath.Base(filepath.Dir(fe.Path)) != ".claude" {
+			continue
+		}
+		if seenPath[fe.Path] {
+			continue
+		}
+		projRoot := filepath.Dir(filepath.Dir(fe.Path))
+		// Skip the user-global file (it has no project root).
+		if samePathCLI(projRoot, home) {
+			continue
+		}
+		targets = append(targets, target{path: fe.Path, projectRoot: projRoot})
+		seenPath[fe.Path] = true
+	}
+
+	// cwd as a fallback project, if not already covered.
+	if cwd, werr := os.Getwd(); werr == nil {
+		cwdSettings := filepath.Join(cwd, ".claude", "settings.json")
+		if !seenPath[cwdSettings] && !samePathCLI(cwd, home) {
+			if _, sterr := os.Stat(cwdSettings); sterr == nil {
+				targets = append(targets, target{path: cwdSettings, projectRoot: cwd})
+				seenPath[cwdSettings] = true
+			}
+		}
+	}
+
+	fmt.Printf("Refreshing %d Claude settings file(s)...\n\n", len(targets))
+
+	totalRemoved, totalAdjusted, totalSkipped := 0, 0, 0
+	for _, t := range targets {
+		if _, err := os.Stat(t.path); os.IsNotExist(err) {
+			fmt.Printf("· %s (skipped: not present)\n", t.path)
+			continue
+		}
+		rep, perr := setup.PurgeLegacyClaudeSettings(t.path, resolved)
+		if perr != nil {
+			fmt.Fprintf(os.Stderr, "✗ %s: %v\n", t.path, perr)
+			continue
+		}
+		if len(rep.Removed) == 0 && len(rep.Adjusted) == 0 && len(rep.Skipped) == 0 {
+			fmt.Printf("✓ %s (no fossils)\n", t.path)
+		} else {
+			fmt.Printf("✓ %s: removed=%d adjusted=%d skipped=%d",
+				t.path, len(rep.Removed), len(rep.Adjusted), len(rep.Skipped))
+			if rep.Backup != "" {
+				fmt.Printf(" backup=%s", rep.Backup)
+			}
+			fmt.Println()
+		}
+		totalRemoved += len(rep.Removed)
+		totalAdjusted += len(rep.Adjusted)
+		totalSkipped += len(rep.Skipped)
+	}
+
+	// Re-write current templates so anything missing is restored.
+	fmt.Println("\nWriting fresh templates...")
+
+	// Global: PreToolUse hook only — writeProjectClaudeSettings refuses
+	// to touch ~/.claude/settings.json on purpose.
+	globalDir := filepath.Join(home, ".claude")
+	if _, err := os.Stat(globalDir); err == nil {
+		if werr := setup.WriteClaudeCodeSettingsHook(globalDir); werr != nil {
+			fmt.Fprintf(os.Stderr, "  warn: write %s: %v\n", globalPath, werr)
+		} else {
+			fmt.Printf("  ✓ %s\n", globalPath)
+		}
+	}
+
+	// Per-project.
+	refreshedProjects := map[string]bool{}
+	for _, t := range targets {
+		if t.projectRoot == "" || refreshedProjects[t.projectRoot] {
+			continue
+		}
+		if werr := setup.EnsureProjectInitialized(t.projectRoot); werr != nil {
+			fmt.Fprintf(os.Stderr, "  warn: refresh %s: %v\n", t.projectRoot, werr)
+		} else {
+			fmt.Printf("  ✓ %s\n", t.path)
+		}
+		refreshedProjects[t.projectRoot] = true
+	}
+
+	fmt.Printf("\nDone. Total: removed=%d adjusted=%d skipped=%d\n",
+		totalRemoved, totalAdjusted, totalSkipped)
 	return 0
 }
 
