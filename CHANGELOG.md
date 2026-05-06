@@ -27,6 +27,70 @@ Internal package shapes (`internal/...`) are NOT covered by SemVer.
 
 ## [Unreleased]
 
+## [0.6.0] — 2026-05-06
+
+The single-binary release. `dfmt mcp` and the main user-facing CLI
+commands no longer spawn a separate `dfmt daemon` child via
+`exec.Command`. When no daemon is running, the calling process
+self-promotes via `daemon.PromoteInProcess`, binds the host-wide
+listener, serves its own command using the in-process Handlers as
+its Backend, and (for long-lived foreground commands) keeps running
+until SIGINT or the idle-exit timer fires.
+
+Net result: one `dfmt.exe` in `tasklist` instead of the v0.5.x pair
+(MCP subprocess + spawned daemon). The user-visible promise: any
+`dfmt <command>` invocation either connects to the existing daemon
+or *becomes* the daemon, no second binary launched.
+
+### Added
+
+- **`daemon.PromoteInProcess(ctx, cfg)`** — constructs and starts a
+  global daemon in the current process. Returns `*LockError` when
+  another process already holds the host-wide lock so the caller
+  can `errors.As` it and fall back to a thin RPC client.
+- **`Daemon.Done() <-chan struct{}`** — closed on Stop / idle-exit.
+  Long-lived subcommands block on it after their primary work
+  completes.
+- **`Daemon.Handlers() *transport.Handlers`** — exposes the live
+  handler set so promoted-in-process callers can use it as a
+  `transport.Backend` directly without an IPC roundtrip.
+- **`cli.acquireBackend(projectPath)`** (internal) — single seam
+  every daemon-touching subcommand goes through. Returns either a
+  `client.ClientBackend` (existing daemon) or the in-process
+  Handlers (promoted), plus the owned `*Daemon` when this process
+  must keep it alive.
+
+### Changed
+
+- **`dfmt mcp`** no longer calls `client.NewClient`'s auto-spawn
+  path. On daemon-not-running, the MCP subprocess self-promotes;
+  when stdin EOF closes the MCP transport (Claude Code closed),
+  the daemon role keeps serving inbound RPCs from other dfmt
+  invocations on the same host until SIGINT or idle-exit.
+- **`dfmt stats`, `dfmt search`, `dfmt recall`, `dfmt remember`,
+  `dfmt tail`** apply the same self-promotion pattern. Tests that
+  previously asserted "no daemon → return 1" now accept either 0
+  (promoted + served) or 1 (legitimately degraded).
+
+### Notes / known limitations
+
+- **Terminal blocking for short-lived commands.** When `dfmt stats`
+  or `dfmt search` runs without an existing daemon, it self-promotes
+  and the daemon role keeps the process alive after the command
+  output prints. The user's terminal blocks until SIGINT or the
+  idle-exit timer (30 min default). Workarounds: shell-background
+  the invocation, or run `dfmt mcp` / `dfmt daemon` first as a
+  long-lived foreground process. A `FreeConsole` (Windows) /
+  `setsid+fork` (Unix) detach helper is queued for v0.6.x.
+- **Tool-call wrappers** (`dfmt exec`, `dfmt read`, `dfmt fetch`,
+  `dfmt glob`, `dfmt grep`, `dfmt edit`, `dfmt write`) still use
+  `client.NewClient` directly. They typically run through MCP
+  rather than the CLI; the auto-spawn path inside `NewClient`
+  remains alive until they migrate too. v0.6.x cleanup.
+- **`client.NewClient`'s `startDaemon` / `exec.Command`** is still
+  alive for the tool-call wrappers above. v0.6.x removes it once
+  every caller routes through `acquireBackend`.
+
 ## [0.5.0] — 2026-05-06
 
 The architectural cleanup release. `dfmt mcp` is now a thin proxy over
