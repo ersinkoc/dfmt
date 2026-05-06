@@ -679,12 +679,19 @@ func (m *MCPProtocol) handleToolsCall(ctx context.Context, req *MCPRequest) (*MC
 	// against future shared-handler refactors).
 	ctx = WithSessionID(ctx, m.sessionID)
 
+	// V-18: every per-tool args decode below uses decodeParams (strict —
+	// DisallowUnknownFields + trailing-token reject). The socket
+	// transport has used the strict decoder since inception; the MCP
+	// path was lax (bare json.Unmarshal), which silently swallowed
+	// agent-side typos in argument names by producing a zero-value field.
+	// A misnamed `limt: 10` argument no longer just runs with limit=0;
+	// it surfaces as -32602 so the agent learns about the typo.
 	var params struct {
 		Name string          `json:"name"`
 		Args json.RawMessage `json:"arguments,omitempty"`
 	}
 
-	if err := json.Unmarshal(req.Params, &params); err != nil {
+	if err := decodeParams(req.Params, &params); err != nil {
 		return &MCPResponse{
 			JSONRPC: jsonRPCVersion,
 			Error: &RPCError{
@@ -701,7 +708,7 @@ func (m *MCPProtocol) handleToolsCall(ctx context.Context, req *MCPRequest) (*MC
 	switch params.Name {
 	case mcpToolExec, methodExec:
 		var args ExecParams
-		if err := json.Unmarshal(params.Args, &args); err != nil {
+		if err := decodeRequiredParams(params.Args, &args); err != nil {
 			return m.errorResult(req.ID, -32602, err.Error())
 		}
 		result, err := m.handlers.Exec(ctx, args)
@@ -716,7 +723,7 @@ func (m *MCPProtocol) handleToolsCall(ctx context.Context, req *MCPRequest) (*MC
 
 	case mcpToolRead, methodRead:
 		var args ReadParams
-		if err := json.Unmarshal(params.Args, &args); err != nil {
+		if err := decodeRequiredParams(params.Args, &args); err != nil {
 			return m.errorResult(req.ID, -32602, err.Error())
 		}
 		result, err := m.handlers.Read(ctx, args)
@@ -731,7 +738,7 @@ func (m *MCPProtocol) handleToolsCall(ctx context.Context, req *MCPRequest) (*MC
 
 	case mcpToolFetch, methodFetch:
 		var args FetchParams
-		if err := json.Unmarshal(params.Args, &args); err != nil {
+		if err := decodeRequiredParams(params.Args, &args); err != nil {
 			return m.errorResult(req.ID, -32602, err.Error())
 		}
 		result, err := m.handlers.Fetch(ctx, args)
@@ -746,7 +753,7 @@ func (m *MCPProtocol) handleToolsCall(ctx context.Context, req *MCPRequest) (*MC
 
 	case mcpToolRemember, methodRemember:
 		var args RememberParams
-		if err := json.Unmarshal(params.Args, &args); err != nil {
+		if err := decodeRequiredParams(params.Args, &args); err != nil {
 			return m.errorResult(req.ID, -32602, err.Error())
 		}
 		result, err := m.handlers.Remember(ctx, args)
@@ -784,7 +791,7 @@ func (m *MCPProtocol) handleToolsCall(ctx context.Context, req *MCPRequest) (*MC
 
 	case mcpToolSearch, methodSearch:
 		var args SearchParams
-		if err := json.Unmarshal(params.Args, &args); err != nil {
+		if err := decodeRequiredParams(params.Args, &args); err != nil {
 			return m.errorResult(req.ID, -32602, err.Error())
 		}
 		result, err := m.handlers.Search(ctx, args)
@@ -799,7 +806,7 @@ func (m *MCPProtocol) handleToolsCall(ctx context.Context, req *MCPRequest) (*MC
 
 	case mcpToolRecall, methodRecall:
 		var args RecallParams
-		if err := json.Unmarshal(params.Args, &args); err != nil {
+		if err := decodeParams(params.Args, &args); err != nil {
 			return m.errorResult(req.ID, -32602, err.Error())
 		}
 		result, err := m.handlers.Recall(ctx, args)
@@ -814,7 +821,7 @@ func (m *MCPProtocol) handleToolsCall(ctx context.Context, req *MCPRequest) (*MC
 
 	case mcpToolGlob, methodGlob:
 		var args GlobParams
-		if err := json.Unmarshal(params.Args, &args); err != nil {
+		if err := decodeRequiredParams(params.Args, &args); err != nil {
 			return m.errorResult(req.ID, -32602, err.Error())
 		}
 		result, err := m.handlers.Glob(ctx, args)
@@ -829,7 +836,7 @@ func (m *MCPProtocol) handleToolsCall(ctx context.Context, req *MCPRequest) (*MC
 
 	case mcpToolGrep, methodGrep:
 		var args GrepParams
-		if err := json.Unmarshal(params.Args, &args); err != nil {
+		if err := decodeRequiredParams(params.Args, &args); err != nil {
 			return m.errorResult(req.ID, -32602, err.Error())
 		}
 		result, err := m.handlers.Grep(ctx, args)
@@ -844,7 +851,7 @@ func (m *MCPProtocol) handleToolsCall(ctx context.Context, req *MCPRequest) (*MC
 
 	case mcpToolEdit, methodEdit:
 		var args EditParams
-		if err := json.Unmarshal(params.Args, &args); err != nil {
+		if err := decodeRequiredParams(params.Args, &args); err != nil {
 			return m.errorResult(req.ID, -32602, err.Error())
 		}
 		result, err := m.handlers.Edit(ctx, args)
@@ -859,7 +866,7 @@ func (m *MCPProtocol) handleToolsCall(ctx context.Context, req *MCPRequest) (*MC
 
 	case mcpToolWrite, methodWrite:
 		var args WriteParams
-		if err := json.Unmarshal(params.Args, &args); err != nil {
+		if err := decodeRequiredParams(params.Args, &args); err != nil {
 			return m.errorResult(req.ID, -32602, err.Error())
 		}
 		result, err := m.handlers.Write(ctx, args)

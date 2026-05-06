@@ -56,3 +56,19 @@ func decodeParams(data json.RawMessage, dst any) error {
 	}
 	return nil
 }
+
+// decodeRequiredParams is decodeParams plus a non-empty check. MCP tool
+// argument decode uses this for tools whose schema has any required field
+// (everything except Stats / Recall, which are happy with all-zero params).
+// Pre-V-18 the bare json.Unmarshal(nil, &args) returned "unexpected end of
+// JSON input" and the connection loop mapped that to -32602; the strict
+// decoder accepts empty input as zero-value, so missing-required-args
+// callers now silently ran with empty fields. This restores the protocol
+// guarantee: a tool needing arguments returns -32602 when arguments is
+// absent.
+func decodeRequiredParams(data json.RawMessage, dst any) error {
+	if len(data) == 0 {
+		return &ParamsError{Err: fmt.Errorf("decode params: missing required arguments")}
+	}
+	return decodeParams(data, dst)
+}
