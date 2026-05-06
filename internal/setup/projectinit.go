@@ -32,7 +32,18 @@ import (
 // auto-init clobbered project-level .claude/settings.json with a hardcoded
 // template, dropping plugins/env/statusLine/etc.
 func EnsureProjectInitialized(dir string) error {
-	dfmtDir := filepath.Join(dir, ".dfmt")
+	// safefs.WriteFileAtomic requires an absolute baseDir (it uses absolute
+	// paths to detect symlink planting on the parent chain). Callers pass
+	// relative paths in some hot paths — most notably the client's lazy
+	// auto-init when invoked from the CLI's working directory ("" or "."),
+	// so resolve to absolute before any safefs call. os.MkdirAll itself
+	// happily accepts relative paths but we keep the absolute form for
+	// consistency in error messages.
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return fmt.Errorf("resolve %s: %w", dir, err)
+	}
+	dfmtDir := filepath.Join(abs, ".dfmt")
 	// 0700 matches journal/content dir permissions — indexed events, raw
 	// tool output, and redact patterns all live under .dfmt, and must not
 	// be world- or group-readable on shared hosts.
@@ -57,7 +68,7 @@ func EnsureProjectInitialized(dir string) error {
 	// Append `.dfmt/` to .gitignore only if a .gitignore already exists.
 	// Don't create one — that's the user's call. Idempotent: skip if our
 	// entry is already present.
-	gitignorePath := filepath.Join(dir, ".gitignore")
+	gitignorePath := filepath.Join(abs, ".gitignore")
 	if content, rerr := os.ReadFile(gitignorePath); rerr == nil {
 		if !project.IsDfmtIgnored(content) {
 			f, oerr := os.OpenFile(gitignorePath, os.O_APPEND|os.O_WRONLY, 0o644)
@@ -77,7 +88,7 @@ func EnsureProjectInitialized(dir string) error {
 	// writeProjectClaudeSettings is itself merge-safe and refuses to write
 	// to ~/.claude/settings.json. Failure is non-fatal — surface as warning
 	// so the operator can fix permissions/ACL issues.
-	if err := writeProjectClaudeSettings(dir); err != nil {
+	if err := writeProjectClaudeSettings(abs); err != nil {
 		logging.Warnf("write project Claude settings: %v", err)
 	}
 	return nil

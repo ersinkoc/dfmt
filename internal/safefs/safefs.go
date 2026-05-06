@@ -73,7 +73,12 @@ func CheckNoReservedNames(path string) error {
 	if path == "" {
 		return nil
 	}
-	s := filepath.ToSlash(path)
+	// filepath.ToSlash is a no-op on non-Windows hosts, so an explicit
+	// backslash → slash replace is needed for paths copied from a Windows
+	// agent or written by a Windows tool to a network share. Without this,
+	// "foo\\NUL\\bar" on Linux stayed a single string component and
+	// IsWindowsReservedComponent didn't fire.
+	s := strings.ReplaceAll(filepath.ToSlash(path), "\\", "/")
 	if len(s) >= 2 && s[1] == ':' {
 		// Drive letter or UNC-style prefix; strip it and the optional
 		// following slash.

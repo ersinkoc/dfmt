@@ -2594,23 +2594,24 @@ func TestEnsureDaemonStartsNewDaemon(t *testing.T) {
 	if os.PathSeparator == '\\' {
 		t.Skip("skipping Unix socket test on Windows")
 	}
-	// This test verifies the exponential backoff path works
-	// by ensuring we don't panic when no daemon exists
+	// Smoke: ensureDaemon must not panic when invoked from a test binary
+	// against a non-existent socket. With DFMT_DISABLE_AUTOSTART set (or
+	// any test binary, per isTestBinary's fork-bomb guard) the contract
+	// is "no-op return nil"; the historical "should fail" assertion was
+	// inconsistent with the function's documented opt-out behavior.
 	os.Setenv("DFMT_DISABLE_AUTOSTART", "1")
 	defer os.Unsetenv("DFMT_DISABLE_AUTOSTART")
 
 	tmpDir := t.TempDir()
 	cl := &Client{
-		network:  "unix",
-		address:  "/nonexistent/socket",
-		timeout:  50 * time.Millisecond,
+		network:   "unix",
+		address:   "/nonexistent/socket",
+		timeout:   50 * time.Millisecond,
 		sessionID: "test",
 	}
 
-	// ensureDaemon should not panic but will fail
-	err := cl.ensureDaemon(tmpDir)
-	if err == nil {
-		t.Error("ensureDaemon should fail when no daemon exists")
+	if err := cl.ensureDaemon(tmpDir); err != nil {
+		t.Errorf("ensureDaemon under DFMT_DISABLE_AUTOSTART: got err=%v, want nil (documented opt-out path)", err)
 	}
 }
 
@@ -2921,22 +2922,23 @@ func TestEnsureDaemonContextCancel(t *testing.T) {
 	if os.PathSeparator == '\\' {
 		t.Skip("skipping Unix socket test on Windows")
 	}
+	// Smoke: same opt-out contract as TestEnsureDaemonStartsNewDaemon —
+	// the original "should fail on non-routable address" assertion was
+	// unreachable because ensureDaemon short-circuits on the test binary
+	// guard before any network call. Verify the no-op return instead.
 	os.Setenv("DFMT_DISABLE_AUTOSTART", "1")
 	defer os.Unsetenv("DFMT_DISABLE_AUTOSTART")
 
 	tmpDir := t.TempDir()
 	cl := &Client{
-		network:    "tcp",
-		address:    "10.255.255.1:1", // Non-routable - will hang
-		timeout:    10 * time.Millisecond,
-		sessionID:  "test",
+		network:   "tcp",
+		address:   "10.255.255.1:1", // never reached under the opt-out
+		timeout:   10 * time.Millisecond,
+		sessionID: "test",
 	}
 
-	// ensureDaemon uses its own 2s timeout context internally
-	// so the passed context cancellation may not affect it directly
-	err := cl.ensureDaemon(tmpDir)
-	if err == nil {
-		t.Error("ensureDaemon should fail on non-routable address")
+	if err := cl.ensureDaemon(tmpDir); err != nil {
+		t.Errorf("ensureDaemon under DFMT_DISABLE_AUTOSTART: got err=%v, want nil (documented opt-out path)", err)
 	}
 }
 
