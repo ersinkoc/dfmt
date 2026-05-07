@@ -60,6 +60,24 @@ daemon, and cli packages. No behavioral changes to the public API.
   improvements.
 - `internal/setup/claude.go` — agent detection refinements.
 
+### Fixed
+
+- `runDaemon` now calls `config.Load("")` instead of `config.Default()`,
+  so `transport.http.bind` in `~/.dfmt/config.yaml` is actually honored.
+  Previously the daemon always bound an ephemeral port regardless of the
+  configured bind address.
+- `globalConfigPath` now returns `~/.dfmt/config.yaml` instead of
+  `~/.local/share/dfmt/config.yaml`, so the global config survives
+  `dev.ps1` wipes (which preserve the `~/.dfmt/` directory itself).
+- `dev.ps1` no longer deletes `~/.dfmt/config.yaml` during the wipe
+  step.
+- `config.merge` now auto-creates `~/.dfmt/config.yaml` when the file
+  is missing, so the daemon always starts with a known-good
+  configuration after a wipe.
+- Default `transport.http.enabled=true` and `transport.http.bind=127.0.0.1:3490`
+  so the daemon binds a stable port on first boot without any config
+  present.
+
 ## [0.6.3] — 2026-05-07
 
 Reverses the v0.6.2 "no detach" decision. Every `dfmt` subcommand now
