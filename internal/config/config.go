@@ -188,8 +188,8 @@ func Default() *Config {
 	c.Index.HeadingBoost = 5.0
 
 	// Transport defaults
-	c.Transport.HTTP.Enabled = false
-	c.Transport.HTTP.Bind = "127.0.0.1:8765"
+	c.Transport.HTTP.Enabled = true
+	c.Transport.HTTP.Bind = "127.0.0.1:3490"
 	c.Transport.Socket.Enabled = true
 
 	// Lifecycle defaults
@@ -261,6 +261,18 @@ func merge(cfg *Config, path string) error {
 	data, err := readConfigFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
+			// Auto-create the config file with defaults so the daemon
+			// always starts with a known-good configuration. Without
+			// this a missing config silently falls back to defaults
+			// (including transport.http.enabled=false → ephemeral
+			// port) which breaks user expectations after a wipe.
+			if dir := filepath.Dir(path); dir != "" {
+				if mkErr := os.MkdirAll(dir, 0o700); mkErr == nil {
+					if saveErr := saveConfigToFile(cfg, path); saveErr == nil {
+						return nil
+					}
+				}
+			}
 			return nil // Skip missing files
 		}
 		return err
@@ -391,6 +403,16 @@ func (c *Config) Validate() error {
 	}
 
 	return nil
+}
+
+// saveConfigToFile writes cfg to path using safefs for atomic, symlink-safe writes.
+// Called by merge when the config file is missing so the daemon auto-creates it.
+func saveConfigToFile(cfg *Config, path string) error {
+	data, err := yaml.Marshal(cfg)
+	if err != nil {
+		return fmt.Errorf("marshal: %w", err)
+	}
+	return safefs.WriteFileAtomic(filepath.Dir(path), path, data, 0600)
 }
 
 // Save writes cfg to the project config file using safefs for atomic,
