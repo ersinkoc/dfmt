@@ -11,9 +11,9 @@ import (
 // keep the dependency policy intact (stdlib + x/sys/unix only); the
 // numeric constants are stable parts of the Win32 API.
 const (
-	winDetachedProcess     = 0x00000008
-	winCreateNoWindow      = 0x08000000
-	winCreateNewProcessGrp = 0x00000200
+	winDetachedProcess     = 0x00000008 // DETACHED_PROCESS
+	winCreateNoWindow      = 0x08000000 // CREATE_NO_WINDOW
+	winCreateNewProcessGrp = 0x00000200 // CREATE_NEW_PROCESS_GROUP
 )
 
 // detachSysProcAttr configures cmd so the child survives the parent's
@@ -24,6 +24,5 @@ const (
 func detachSysProcAttr(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		CreationFlags: winDetachedProcess | winCreateNoWindow | winCreateNewProcessGrp,
-		HideWindow:    true,
 	}
 }

@@ -40,7 +40,7 @@ func pathHint(path string) string {
 
 const (
 	maxGrepPatternBytes  = 4096
-	maxGrepPatternNodes = 1024
+	maxGrepPatternNodes  = 1024
 	maxGrepRepeatNesting = 3
 )
 
@@ -98,7 +98,13 @@ func (r Rule) Match(op, text string) bool {
 	if r.re == nil {
 		return globMatch(r.Text, text, op)
 	}
-	if op != "exec" {
+	if op == "exec" {
+		// Lowercase text so deny rules written in conventional lowercase form
+		// (e.g. "deny:exec:git *") match uppercase invocations like "GIT" or "Git".
+		// This is consistent with normalizeFetchURLForPolicy which lowercases
+		// scheme/host before matching fetch deny rules.
+		text = strings.ToLower(text)
+	} else {
 		text = strings.ReplaceAll(text, `\`, "/")
 	}
 	return r.re.MatchString(text)
@@ -383,6 +389,9 @@ func globMatch(pattern, text string, op string) bool {
 	// For exec operations, use shell-style globbing where * matches anything including /
 	// For path-style ops, * doesn't match / (path segments)
 	if op == "exec" {
+		// Lowercase text so deny rules written in conventional lowercase form
+		// match uppercase invocations. Consistent with Rule.Match lowercasing.
+		text = strings.ToLower(text)
 		regex := globToRegexShell(pattern)
 		return regexMatch(regex, text)
 	}
@@ -708,11 +717,11 @@ func policyDenyHint(op string) string {
 	}
 }
 
-// stripExeSuffixFromLeadingWord strips a Windows-style `.exe` suffix from the
-// first word of cmd so a single policy rule like `go *` covers both `go test`
-// and `go.exe test`. The rest of the command (arguments, redirections,
-// chains) is returned verbatim. Mirrors extractBaseCommand's behavior for the
-// full-command policy paths in Exec.
+// stripExeSuffixFromLeadingWord strips a Windows-style `.exe` suffix and the
+// leading directory from the first word of cmd. This mirrors extractBaseCommand's
+// normalization so that a single policy rule like `deny:exec:sudo *` matches
+// all of: `sudo whoami`, `/usr/bin/sudo whoami`, `./sudo whoami`,
+// `sudo.exe whoami`. The rest of the command is returned verbatim.
 func stripExeSuffixFromLeadingWord(cmd string) string {
 	leadingSpaces := 0
 	for leadingSpaces < len(cmd) && (cmd[leadingSpaces] == ' ' || cmd[leadingSpaces] == '\t') {
@@ -735,10 +744,15 @@ func stripExeSuffixFromLeadingWord(cmd string) string {
 		}
 	}
 	leading := rest[:end]
-	if len(leading) > 4 && strings.EqualFold(leading[len(leading)-4:], ".exe") {
-		return cmd[:leadingSpaces] + leading[:len(leading)-4] + rest[end:]
+	// Strip leading directory so /usr/bin/sudo → sudo
+	if strings.ContainsAny(leading, "/\\") {
+		leading = filepath.Base(strings.ReplaceAll(leading, `\`, "/"))
 	}
-	return cmd
+	// Strip .exe suffix (case-insensitive, e.g. GO.EXE)
+	if len(leading) > 4 && strings.EqualFold(leading[len(leading)-4:], ".exe") {
+		leading = leading[:len(leading)-4]
+	}
+	return cmd[:leadingSpaces] + leading + rest[end:]
 }
 
 // extractBaseCommand extracts the base command (first word) from a shell command.
