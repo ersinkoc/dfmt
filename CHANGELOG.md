@@ -25,7 +25,7 @@ The wire surfaces under SemVer guarantees today are:
 
 Internal package shapes (`internal/...`) are NOT covered by SemVer.
 
-## [Unreleased]
+## [0.6.6] — 2026-05-07
 
 ### Security
 
