@@ -435,6 +435,16 @@ func legacyWireBytes(body, intent string) int {
 	return len(mustJSON(envelope))
 }
 
+// modernWireBytes simulates the current pipeline:
+//   - NormalizeOutput on raw bytes first
+//   - ApplyReturnPolicy with all the new gating/tail-bias/signal logic
+//   - MCP envelope: 27-byte sentinel in content[0].text, payload only in
+//     structuredContent.
+func modernWireBytes(body, intent string) int {
+	n, _ := modernWireBytesAndPayload(body, intent)
+	return n
+}
+
 // modernWireBytesAndPayload returns the wire byte count alongside the
 // raw payload string so callers can compute downstream metrics
 // (e.g. ApproxTokens for the ADR-0012 Tokens column) without re-running

@@ -887,6 +887,51 @@ func lookupDashboardURL(projectPath string) string {
 	return ""
 }
 
+// registerProjectWithGlobalDaemon fires one Stats RPC at the host-
+// wide daemon, with the project_id stamped, so the daemon's
+// Resources(projectID) loads this project into extraProjects. The
+// dashboard's cross-project switcher reads /api/all-daemons which
+// surfaces every cached project, so this ping is what makes an
+// MCP-only project (one that no `dfmt <cmd>` ever touched) visible
+// in the picker.
+//
+// Best-effort:
+//   - Never spawns a daemon. Ping is gated on globalDashboardURL
+//     returning non-empty (a dial-checked liveness signal).
+//   - Never blocks MCP startup. Caller invokes via `go`.
+//   - Errors are silently dropped — a failed registration only
+//     means the dashboard won't show this project until something
+//     else (CLI command, second MCP call) loads it. The MCP
+//     subprocess's own journal/index keep working regardless.
+//
+// This is the v0.4.x interim fix for the deeper architectural issue
+// (MCP subprocesses bypass the daemon entirely for journal writes).
+// v0.5.0 will turn `dfmt mcp` into a thin proxy that forwards every
+// tool call to the daemon over HTTP/socket, eliminating the
+// duplicate journal handle and the registration dance both.
+func registerProjectWithGlobalDaemon(projectPath string) {
+	defer func() { _ = recover() }()
+	if globalDashboardURL() == "" {
+		return // no daemon up; skip
+	}
+	prev := os.Getenv("DFMT_DISABLE_AUTOSTART")
+	_ = os.Setenv("DFMT_DISABLE_AUTOSTART", "1")
+	defer func() {
+		if prev == "" {
+			_ = os.Unsetenv("DFMT_DISABLE_AUTOSTART")
+		} else {
+			_ = os.Setenv("DFMT_DISABLE_AUTOSTART", prev)
+		}
+	}()
+	cl, err := client.NewClient(projectPath)
+	if err != nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_, _ = cl.Stats(ctx, transport.StatsParams{NoCache: true})
+}
+
 // loadedProjectsViaAPI calls /api/all-daemons against the global
 // daemon at the given port and returns the project paths it
 // reports. Used by `dfmt list` to enumerate every project the
@@ -3383,12 +3428,6 @@ func shouldRedirect(toolName string) bool {
 }
 
 // buildRedirectResponse creates a redirect spec for the given tool call.
-// NOTE: The "redirect" field is an undocumented Claude Code PreToolUse extension.
-// Official PreToolUse response format only supports hookSpecificOutput with
-// permissionDecision (allow/deny/ask/defer) and updatedInput (input modification only).
-// Claude Code may have extended the protocol to support redirect-to-MCP-tool.
-// If this stops working, fall back to hookSpecificOutput+deny with additionalContext
-// instructing the agent to use the MCP tool manually (will prompt user).
 func buildRedirectResponse(toolName string, toolInput map[string]any) map[string]any {
 	sub := toolSubcommand(toolName)
 	mcpTool := "mcp__dfmt__dfmt_" + sub
