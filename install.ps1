@@ -147,6 +147,20 @@ if (-not (Test-Path $target)) {
     exit 1
 }
 
+# --- also install to ~/.dfmt/ so ResolveDFMTCommand finds it ----------
+# This mirrors the Unix behaviour where ~/.dfmt/dfmt is the canonical
+# path ResolveDFMTCommand resolves to. Without this the doctor check
+# shows "stale" when the binary was installed elsewhere.
+$userDfmtDir = Join-Path $env:USERPROFILE '.dfmt'
+$userDfmtExe = Join-Path $userDfmtDir 'dfmt.exe'
+try {
+    New-Item -ItemType Directory -Force -Path $userDfmtDir | Out-Null
+    Copy-Item -Force -Path $target -Destination $userDfmtExe -ErrorAction Stop
+    Write-Info "also installed to $userDfmtExe"
+} catch {
+    Write-Warn "could not copy to $userDfmtExe (non-fatal): $_"
+}
+
 # --- ensure installDir is on user PATH -------------------------------------
 $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
 if (-not $userPath) { $userPath = '' }
