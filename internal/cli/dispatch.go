@@ -1048,7 +1048,11 @@ func runDaemon(args []string) int {
 	}
 	_ = globalAlias // accepted for back-compat; global is the only mode in v0.5.0.
 
-	cfg := config.Default()
+	cfg, err := config.Load("")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error loading config: %v\n", err)
+		return 1
+	}
 	if foreground {
 		return runGlobalDaemonForeground(cfg)
 	}

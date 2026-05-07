@@ -245,17 +245,15 @@ func Load(projectPath string) (*Config, error) {
 }
 
 // globalConfigPath returns the path to the global config file.
+// Uses ~/.dfmt/config.yaml (alongside the daemon's other state files)
+// so the config survives dev.ps1 wipes which preserve the ~/.dfmt/
+// directory itself — only per-artifact files within it are cleaned.
 func globalConfigPath() string {
-	// XDG_DATA_HOME/dfmt/config.yaml or ~/.local/share/dfmt/config.yaml
-	xdgDataHome := os.Getenv("XDG_DATA_HOME")
-	if xdgDataHome == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return ""
-		}
-		xdgDataHome = filepath.Join(home, ".local", "share")
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
 	}
-	return filepath.Join(xdgDataHome, "dfmt", "config.yaml")
+	return filepath.Join(home, ".dfmt", "config.yaml")
 }
 
 // merge reads a YAML file and merges its values into cfg.
