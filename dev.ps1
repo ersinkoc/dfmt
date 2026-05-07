@@ -155,11 +155,12 @@ if (-not $NoClean) {
     # project-local files into the user home. They can be deleted once
     # all developer machines have cycled through this script at least
     # once on the post-fix build.
+    # ~/.dfmt/config.yaml is the global config (survives dev.ps1 wipes).
+    # Other ~/.dfmt/ files below are project-scattered legacy artfacts
+    # from pre-fix runMCP or are daemon-managed (port, lock, pid) and
+    # should not survive a wipe.
     Remove-IfExists $TargetPath
     Remove-IfExists (Join-Path $TargetDir 'daemons.json')
-    # Legacy: pre-fix runMCP wrote these into ~/.dfmt/ when launched
-    # outside any project. Post-fix runMCP runs in degraded mode instead.
-    Remove-IfExists (Join-Path $TargetDir 'config.yaml')
     Remove-IfExists (Join-Path $TargetDir 'journal.jsonl')
     Remove-IfExists (Join-Path $TargetDir 'index.gob')
     Remove-IfExists (Join-Path $TargetDir 'index.cursor')
