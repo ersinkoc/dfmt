@@ -27,6 +27,12 @@ Internal package shapes (`internal/...`) are NOT covered by SemVer.
 
 ## [Unreleased]
 
+### Security
+
+- **AUTHZ-01**: Exec deny rules (e.g. `deny:exec:git *`) now match case-insensitively, so `GIT` or `Git` invocations are correctly blocked. Previously only lowercase `git` matched.
+- **AUTHZ-01**: Deny rules with leading directory (e.g. `/usr/bin/sudo`) are now also normalized, closing a bypass vector.
+- `detach_windows.go`: Removed redundant `HideWindow` flag that was causing terminal window flicker on Windows. `CREATE_NO_WINDOW` already prevents console window creation.
+
 ## [0.6.4] — 2026-05-07
 
 Test coverage push with targeted new tests across core, safefs, transport,
