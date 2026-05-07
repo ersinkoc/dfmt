@@ -50,7 +50,7 @@ curl -fsSL https://raw.githubusercontent.com/ersinkoc/dfmt/main/install.sh | sh
 iwr https://raw.githubusercontent.com/ersinkoc/dfmt/main/install.ps1 | iex
 ```
 
-**From source (requires Go 1.25+):**
+**From source (requires Go 1.26+):**
 
 ```sh
 go install github.com/ersinkoc/dfmt/cmd/dfmt@latest
