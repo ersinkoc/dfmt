@@ -18,6 +18,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/ersinkoc/dfmt/internal/safefs"
@@ -2179,6 +2180,10 @@ func (s *SandboxImpl) execImpl(ctx context.Context, req ExecReq, rt Runtime) (Ex
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return ExecResp{}, err
+	}
+	// Windows: hide console window for Git Bash / sh sessions
+	if runtime.GOOS == goosWindows {
+		cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 	}
 	if err := cmd.Start(); err != nil {
 		return ExecResp{}, err

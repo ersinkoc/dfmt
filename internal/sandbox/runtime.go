@@ -16,21 +16,6 @@ const (
 	goosWindows    = "windows"
 )
 
-// canonicalizePath converts path to a consistent format for error messages.
-// On Windows: converts to forward slashes and lowercases drive letter (C:\foo → c:/foo).
-// On Unix: returns path as-is.
-func canonicalizePath(path string) string {
-	if runtime.GOOS == goosWindows {
-		// Convert backslashes to forward slashes for consistency
-		path = strings.ReplaceAll(path, `\`, "/")
-		// Lowercase drive letter if present (e.g., C:/foo → c:/foo)
-		if len(path) >= 2 && path[1] == ':' {
-			return strings.ToLower(string(path[0])) + path[1:]
-		}
-	}
-	return path
-}
-
 // DetectShell returns the detected shell type on the current OS.
 // On Windows: checks for PowerShell, CMD, Git Bash, or WSL bash.
 // On Unix: checks for bash, zsh, fish, or sh.
