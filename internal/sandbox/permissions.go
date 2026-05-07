@@ -1423,12 +1423,54 @@ func isBlockedIP(ip net.IP) bool {
 	if v4 := ip.To4(); v4 != nil && v4[0] == 100 && v4[1] >= 64 && v4[1] <= 127 {
 		return true
 	}
+	// IPv6: RFC 3849 documentation prefix (2001:db8::/32). Used in
+	// documentation and examples; some internal networks use it.
+	// Block to prevent information disclosure via SSRF to documentation-only ranges.
+	if isIPv6InPrefix(ip, net.ParseIP("2001:db8::"), 32) {
+		return true
+	}
+	// IPv6: RFC 3964 Site-Local address space (deprecated, but some
+	// internal networks may still have it). fec0::/10 - deprecated by RFC 3879.
+	if isIPv6InPrefix(ip, net.ParseIP("fec0::"), 10) {
+		return true
+	}
 	return false
 }
 
 // ErrBlockedHost indicates the target host/IP falls into a blocked range
 // (loopback, private, link-local, cloud metadata, etc.) and was refused for SSRF reasons.
 var ErrBlockedHost = errors.New("host blocked by SSRF policy")
+
+// isIPv6InPrefix returns true if ip is in the IPv6 prefix specified by
+// network (the start of the prefix) and the number of significant bits.
+// Used for blocking RFC 3849 documentation prefixes (2001:db8::/32) and
+// deprecated site-local ranges (fec0::/10) that IsPrivate/IsLinkLocal don't cover.
+func isIPv6InPrefix(ip net.IP, network net.IP, bits int) bool {
+	if ip == nil || network == nil {
+		return false
+	}
+	ip6 := ip.To16()
+	net6 := network.To16()
+	if ip6 == nil || net6 == nil {
+		return false
+	}
+	// Compare the first ceil(bits/8) bytes, then compare the remaining bits.
+	wholeBytes := bits / 8
+	remainingBits := bits % 8
+	for i := 0; i < wholeBytes; i++ {
+		if ip6[i] != net6[i] {
+			return false
+		}
+	}
+	if remainingBits > 0 && wholeBytes < 16 {
+		// Mask to get the significant bits
+		mask := byte(0xFF << (8 - remainingBits))
+		if ip6[wholeBytes]&mask != net6[wholeBytes]&mask {
+			return false
+		}
+	}
+	return true
+}
 
 // ErrBatchExecNotImplemented indicates BatchExec is not yet implemented.
 var ErrBatchExecNotImplemented = errors.New("batch exec not implemented")
