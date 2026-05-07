@@ -672,6 +672,9 @@ func (m *mockJournalForRebuild) Stream(ctx context.Context, from string) (<-chan
 }
 
 func (m *mockJournalForRebuild) Append(ctx context.Context, e Event) error      { return nil }
+func (m *mockJournalForRebuild) StreamN(ctx context.Context, from string, n int) (<-chan Event, error) {
+	return m.Stream(ctx, from)
+}
 func (m *mockJournalForRebuild) Checkpoint(ctx context.Context) (string, error) { return "", nil }
 func (m *mockJournalForRebuild) Rotate(ctx context.Context) error               { return nil }
 func (m *mockJournalForRebuild) Size() (int64, error)                           { return 0, nil }

@@ -649,6 +649,11 @@ func (j *sizeReportingJournal) Checkpoint(ctx context.Context) (string, error) {
 func (j *sizeReportingJournal) Rotate(ctx context.Context) error               { return nil }
 func (j *sizeReportingJournal) Size() (int64, error)                           { return j.size, j.err }
 func (j *sizeReportingJournal) Close() error                                   { return nil }
+func (j *sizeReportingJournal) StreamN(ctx context.Context, from string, n int) (<-chan core.Event, error) {
+	ch := make(chan core.Event)
+	close(ch)
+	return ch, nil
+}
 
 func TestWireHandlerMetrics_JournalBytes_Live(t *testing.T) {
 	resetRegistryForTest()

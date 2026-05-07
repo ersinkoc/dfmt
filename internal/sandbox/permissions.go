@@ -25,9 +25,22 @@ import (
 
 const langBash = "bash"
 
+// pathHint returns a canonical path string for error messages.
+// On Windows: converts to forward slashes and lowercases drive letter.
+// On Unix: returns path as-is.
+func pathHint(path string) string {
+	if runtime.GOOS == goosWindows {
+		path = strings.ReplaceAll(path, `\`, "/")
+		if len(path) >= 2 && path[1] == ':' {
+			return strings.ToLower(string(path[0])) + path[1:]
+		}
+	}
+	return path
+}
+
 const (
 	maxGrepPatternBytes  = 4096
-	maxGrepPatternNodes  = 1024
+	maxGrepPatternNodes = 1024
 	maxGrepRepeatNesting = 3
 )
 
@@ -882,12 +895,11 @@ func isEnvAssignment(token string) bool {
 
 // Exec implements the Sandbox interface.
 func (s *SandboxImpl) Exec(ctx context.Context, req ExecReq) (ExecResp, error) {
-	// Default to bash when caller omits the language. The MCP schema documents
-	// "bash" as the default, but the JSON-RPC layer forwards an empty string
-	// when the client omits the field — without this the runtime lookup below
-	// fails with "runtime not available:" (empty after the colon).
+	// Default to auto-detected shell when caller omits the language.
+	// On Windows: detects Git Bash > PowerShell > CMD
+	// On Unix: defaults to bash
 	if req.Lang == "" {
-		req.Lang = langBash
+		req.Lang = DetectShell()
 	}
 	// Policy check - for shell commands, check each chained command
 	cmd := req.Code
@@ -1195,7 +1207,7 @@ func (s *SandboxImpl) Read(ctx context.Context, req ReadReq) (ReadResp, error) {
 		absPath = filepath.Clean(absPath)
 		rel, err := filepath.Rel(absWd, absPath)
 		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-			return ReadResp{}, fmt.Errorf("path outside working directory: %s", req.Path)
+			return ReadResp{}, fmt.Errorf("path outside working directory: %s", pathHint(req.Path))
 		}
 		// Resolve symlinks and re-check containment. A file that sits inside the
 		// wd lexically but whose target escapes (e.g. symlink pointing at
@@ -1208,7 +1220,7 @@ func (s *SandboxImpl) Read(ctx context.Context, req ReadReq) (ReadResp, error) {
 			}
 			relResolved, err := filepath.Rel(resolvedWd, resolved)
 			if err != nil || relResolved == ".." || strings.HasPrefix(relResolved, ".."+string(filepath.Separator)) {
-				return ReadResp{}, fmt.Errorf("path outside working directory after symlink resolution: %s", req.Path)
+				return ReadResp{}, fmt.Errorf("path outside working directory after symlink resolution: %s", pathHint(req.Path))
 			}
 		}
 		cleanPath = absPath
@@ -1247,7 +1259,7 @@ func (s *SandboxImpl) Read(ctx context.Context, req ReadReq) (ReadResp, error) {
 		return ReadResp{}, err
 	}
 	if fi.IsDir() {
-		return ReadResp{}, fmt.Errorf("cannot read directory: %s", req.Path)
+		return ReadResp{}, fmt.Errorf("cannot read directory: %s", pathHint(req.Path))
 	}
 	totalSize := fi.Size()
 
@@ -1735,7 +1747,7 @@ func (s *SandboxImpl) Grep(ctx context.Context, req GrepReq) (GrepResp, error) {
 		}
 		rel, rerr := filepath.Rel(absWd, p)
 		if rerr != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-			return GrepResp{}, fmt.Errorf("grep path escapes working directory: %s", req.Path)
+			return GrepResp{}, fmt.Errorf("grep path escapes working directory: %s", pathHint(req.Path))
 		}
 		if _, serr := os.Stat(p); serr != nil {
 			return GrepResp{}, fmt.Errorf("grep path: %w", serr)
@@ -1926,7 +1938,7 @@ func (s *SandboxImpl) Edit(ctx context.Context, req EditReq) (EditResp, error) {
 	// Verify path is within working directory
 	rel, err := filepath.Rel(absWd, cleanPath)
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return EditResp{}, fmt.Errorf("path outside working directory: %s", req.Path)
+		return EditResp{}, fmt.Errorf("path outside working directory: %s", pathHint(req.Path))
 	}
 
 	// Refuse if any path segment beneath wd is a symlink (closes F-04 for the
@@ -1969,7 +1981,7 @@ func (s *SandboxImpl) Edit(ctx context.Context, req EditReq) (EditResp, error) {
 
 	// Check if old string exists
 	if !strings.Contains(content, req.OldString) {
-		return EditResp{}, fmt.Errorf("old string not found in file: %s", req.Path)
+		return EditResp{}, fmt.Errorf("old string not found in file: %s", pathHint(req.Path))
 	}
 
 	// Replace
@@ -2028,7 +2040,7 @@ func (s *SandboxImpl) Write(ctx context.Context, req WriteReq) (WriteResp, error
 	// Verify path is within working directory
 	rel, err := filepath.Rel(absWd, cleanPath)
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return WriteResp{}, fmt.Errorf("path outside working directory: %s", req.Path)
+		return WriteResp{}, fmt.Errorf("path outside working directory: %s", pathHint(req.Path))
 	}
 
 	// Refuse if any path segment beneath wd is a symlink (closes F-04). The

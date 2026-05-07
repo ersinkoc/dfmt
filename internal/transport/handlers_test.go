@@ -391,6 +391,10 @@ func (m *mockJournal) Close() error {
 	return nil
 }
 
+func (m *mockJournal) StreamN(ctx context.Context, from string, n int) (<-chan core.Event, error) {
+	return m.Stream(ctx, from)
+}
+
 func TestHandlersSearch(t *testing.T) {
 	idx := core.NewIndex()
 	journal := &mockJournal{}
@@ -2294,6 +2298,10 @@ func (m *errorReturningJournal) Close() error {
 	return nil
 }
 
+func (m *errorReturningJournal) StreamN(ctx context.Context, from string, n int) (<-chan core.Event, error) {
+	return m.Stream(ctx, from)
+}
+
 func TestMCPProtocolHandleToolsCallRememberHandlerError(t *testing.T) {
 	// Test Remember handler returning an error
 	idx := core.NewIndex()
@@ -2892,6 +2900,105 @@ func TestHandlersSeenBeforeExpiredEntry(t *testing.T) {
 	seen := h.seenBefore(context.Background(), "expired-id")
 	if seen {
 		t.Error("seenBefore should return false for expired entry")
+	}
+}
+
+// TestHandlersSetProjectsLister_NilLister covers LoadedProjects when no lister is installed.
+func TestHandlersSetProjectsLister_NilLister(t *testing.T) {
+	h := NewHandlers(nil, nil, nil)
+	h.mu.RLock()
+	f := h.listProjects
+	h.mu.RUnlock()
+	if f != nil {
+		t.Error("listProjects should be nil before SetProjectsLister is called")
+	}
+	if got := h.LoadedProjects(); got != nil {
+		t.Errorf("LoadedProjects() with nil lister: got %v, want nil", got)
+	}
+}
+
+// TestHandlersSetProjectsLister_WithFunc covers LoadedProjects when a lister function is installed.
+func TestHandlersSetProjectsLister_WithFunc(t *testing.T) {
+	h := NewHandlers(nil, nil, nil)
+	h.SetProjectsLister(func() []string {
+		return []string{"/path/one", "/path/two"}
+	})
+	got := h.LoadedProjects()
+	if len(got) != 2 {
+		t.Errorf("LoadedProjects(): got %v, want 2 items", got)
+	}
+}
+
+// TestLoadedProjects_WithListerReturningNil covers the edge case where the lister returns nil.
+func TestLoadedProjects_WithListerReturningNil(t *testing.T) {
+	h := NewHandlers(nil, nil, nil)
+	h.SetProjectsLister(func() []string { return nil })
+	got := h.LoadedProjects()
+	if got != nil {
+		t.Errorf("LoadedProjects() returning nil: got %v, want nil", got)
+	}
+}
+
+// TestLoadedProjects_Concurrent calls LoadedProjects concurrently.
+func TestLoadedProjects_Concurrent(t *testing.T) {
+	h := NewHandlers(nil, nil, nil)
+	h.SetProjectsLister(func() []string {
+		return []string{"/a", "/b", "/c"}
+	})
+	var wg sync.WaitGroup
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			h.LoadedProjects()
+		}()
+	}
+	wg.Wait()
+}
+
+// TestHandlersSetProjectDropper_Basic exercises SetProjectDropper with a dropper installed.
+func TestHandlersSetProjectDropper_Basic(t *testing.T) {
+	h := NewHandlers(nil, nil, nil)
+	called := false
+	h.SetProjectDropper(func(projectID string) error {
+		called = true
+		return nil
+	})
+	resp, err := h.DropProject(context.Background(), DropProjectParams{ProjectID: "some-project"})
+	if err != nil {
+		t.Errorf("DropProject(some-project): %v", err)
+	}
+	if resp != nil && !resp.Dropped {
+		t.Error("resp.Dropped should be true")
+	}
+	if !called {
+		t.Error("dropper was not called")
+	}
+}
+
+// TestHandlersDropProject_EmptyProjectID tests that DropProject returns an error for empty projectID.
+func TestHandlersDropProject_EmptyProjectID(t *testing.T) {
+	h := NewHandlers(nil, nil, nil)
+	h.SetProjectDropper(func(projectID string) error {
+		t.Error("dropper should not be called for empty projectID")
+		return nil
+	})
+	_, err := h.DropProject(context.Background(), DropProjectParams{ProjectID: ""})
+	if err == nil {
+		t.Error("DropProject('') should return error")
+	}
+}
+
+// TestHandlersSetProjectDropper_NotSet verifies DropProject behavior when no dropper is installed.
+func TestHandlersSetProjectDropper_NotSet(t *testing.T) {
+	h := NewHandlers(nil, nil, nil)
+	// When no dropper is installed, DropProject returns Dropped: false
+	resp, err := h.DropProject(context.Background(), DropProjectParams{ProjectID: "any-project"})
+	if err != nil {
+		t.Errorf("DropProject without dropper: %v", err)
+	}
+	if resp == nil || resp.Dropped {
+		t.Error("Dropped should be false when no dropper is installed")
 	}
 }
 

@@ -3,6 +3,7 @@ package transport
 import (
 	"encoding/json"
 	"errors"
+	"os"
 	"strings"
 	"testing"
 )
@@ -46,16 +47,40 @@ func TestDecodeParams_ValidStruct(t *testing.T) {
 	}
 }
 
-// TestDecodeParams_UnknownFieldRejected — DisallowUnknownFields catches
-// caller typos. `{"limt":10}` for `{"limit":10}` used to silently leave
-// Limit=0; now the agent gets -32602 with the typo'd field name in the
-// error message.
-func TestDecodeParams_UnknownFieldRejected(t *testing.T) {
+// TestDecodeParams_UnknownFieldAcceptedByDefault — by default, unknown fields
+// are accepted (forward compat with MCP clients sending _meta, _progress, etc.).
+func TestDecodeParams_UnknownFieldAcceptedByDefault(t *testing.T) {
+	os.Unsetenv("DFMT_MCP_STRICT_PARAMS")
+
+	data := json.RawMessage(`{"type":"note","unknownField":"oops"}`)
+	var p RememberParams
+	if err := decodeParams(data, &p); err != nil {
+		t.Fatalf("expected no error by default, got: %v", err)
+	}
+	if p.Type != "note" {
+		t.Errorf("got type=%q, want note", p.Type)
+	}
+}
+
+// TestDecodeParams_UnknownFieldRejectedInStrictMode — DFMT_MCP_STRICT_PARAMS=1
+// enables DisallowUnknownFields so caller typos ("limt" vs "limit") surface
+// immediately as -32602 instead of silently zeroing out the field.
+func TestDecodeParams_UnknownFieldRejectedInStrictMode(t *testing.T) {
+	old := os.Getenv("DFMT_MCP_STRICT_PARAMS")
+	os.Setenv("DFMT_MCP_STRICT_PARAMS", "1")
+	defer func() {
+		if old == "" {
+			os.Unsetenv("DFMT_MCP_STRICT_PARAMS")
+		} else {
+			os.Setenv("DFMT_MCP_STRICT_PARAMS", old)
+		}
+	}()
+
 	data := json.RawMessage(`{"type":"note","unknownField":"oops"}`)
 	var p RememberParams
 	err := decodeParams(data, &p)
 	if err == nil {
-		t.Fatal("expected error for unknown field, got nil")
+		t.Fatal("expected error for unknown field in strict mode, got nil")
 	}
 	if !IsParamsError(err) {
 		t.Errorf("expected *ParamsError, got %T: %v", err, err)

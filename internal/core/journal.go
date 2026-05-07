@@ -99,6 +99,7 @@ type JournalOptions struct {
 type Journal interface {
 	Append(ctx context.Context, e Event) error
 	Stream(ctx context.Context, from string) (<-chan Event, error)
+	StreamN(ctx context.Context, from string, n int) (<-chan Event, error)
 	Checkpoint(ctx context.Context) (string, error)
 	Rotate(ctx context.Context) error
 	// Size returns the active journal's on-disk byte count. Excludes

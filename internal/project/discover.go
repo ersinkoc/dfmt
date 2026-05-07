@@ -10,6 +10,24 @@ import (
 // Discover finds the project root for the given path.
 // It walks up looking for .dfmt/ or .git/ directories.
 // Honors DFMT_PROJECT env var.
+//
+// The user's home directory is deliberately NOT eligible as a project
+// root, even though it usually contains `.dfmt/` (the global daemon's
+// state dir at ~/.dfmt — see GlobalDir). Treating ~ as a project would
+// make `dfmt mcp` launched from any temp dir under ~ (e.g.
+// %TEMP%\dfmt-smoke-<guid> on Windows, /tmp on Unix when /tmp is under
+// $HOME) self-promote a daemon and write its journal/index into
+// ~/.dfmt/ — silently mixing per-project state with the host-wide
+// global daemon's state. The same scenario surfaces as a 15-second
+// hang in dev.ps1's MCP smoke test (the promoted process keeps the
+// daemon role alive after stdin EOF). Stop the walk at $HOME so
+// runMCP from a non-project location lands in degraded mode (backend
+// nil, tool calls return -32603) — the architecturally correct
+// outcome — instead of pretending ~ is a project.
+//
+// $HOME itself is still walkable past — if a parent of $HOME (e.g.
+// /Users on macOS) has a .git/, the walk continues past $HOME and may
+// find it; that case stays legitimate.
 func Discover(path string) (string, error) {
 	// Honor DFMT_PROJECT env var
 	if envPath := os.Getenv("DFMT_PROJECT"); envPath != "" {
@@ -24,17 +42,35 @@ func Discover(path string) (string, error) {
 		return "", err
 	}
 
-	for {
-		// Check for .dfmt directory
-		dfmtPath := filepath.Join(absPath, ".dfmt")
-		if _, err := os.Stat(dfmtPath); err == nil {
-			return absPath, nil
+	// Resolve $HOME once. Failures are absorbed — pre-fix behavior was
+	// to never check, so a missing/unresolvable home dir simply restores
+	// that behavior (Discover may then return $HOME as a project on
+	// hosts where $HOME has a .dfmt/ directory).
+	homeDir := ""
+	if h, herr := os.UserHomeDir(); herr == nil && h != "" {
+		if abs, aerr := filepath.Abs(h); aerr == nil {
+			homeDir = filepath.Clean(abs)
 		}
+	}
 
-		// Check for .git directory
-		gitPath := filepath.Join(absPath, ".git")
-		if _, err := os.Stat(gitPath); err == nil {
-			return absPath, nil
+	for {
+		// Skip the user's home directory entirely. ~/.dfmt/ is the global
+		// daemon's state, not a project marker, and the user's bare home
+		// is essentially never a real DFMT project anyway. The walk
+		// continues to the parent so a legitimate ancestor (e.g. a
+		// .git/-containing repo above $HOME) can still match.
+		if homeDir == "" || filepath.Clean(absPath) != homeDir {
+			// Check for .dfmt directory
+			dfmtPath := filepath.Join(absPath, ".dfmt")
+			if _, err := os.Stat(dfmtPath); err == nil {
+				return absPath, nil
+			}
+
+			// Check for .git directory
+			gitPath := filepath.Join(absPath, ".git")
+			if _, err := os.Stat(gitPath); err == nil {
+				return absPath, nil
+			}
 		}
 
 		// Move to parent

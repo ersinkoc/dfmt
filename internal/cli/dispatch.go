@@ -1086,6 +1086,77 @@ const (
 	daemonReadyPoll    = 50 * time.Millisecond
 )
 
+// globalDaemonStatus classifies the on-disk state of
+// ~/.dfmt/{daemon.pid,port,daemon.sock,lock} against the actually-running
+// process. ensureGlobalDaemon uses it to decide between connect /
+// clean-and-spawn / surface-error rather than naively spawning whenever
+// the dial happens to fail. The pre-fix behavior would let a stuck old
+// daemon plus a fresh spawn coexist briefly while the old one finished
+// its tail-end shutdown — the user-visible "two dfmt.exe in tasklist"
+// case this enum exists to prevent.
+type globalDaemonStatus int
+
+const (
+	// globalDaemonDead: no live PID and no responsive listener. Spawn a
+	// new daemon after wiping any stale port/pid/lock files so the new
+	// daemon's writes don't shadow leftover bytes.
+	globalDaemonDead globalDaemonStatus = iota
+	// globalDaemonRunning: PID is alive AND the listener accepts a fast
+	// dial. Connect; do not spawn.
+	globalDaemonRunning
+	// globalDaemonStuck: PID is alive but the listener does not accept
+	// a fast dial. Probably hung in shutdown / hot loop / OS-paged-out.
+	// Refuse to spawn — the OS-level lock would reject the new daemon
+	// anyway, and silently failing-then-timing-out looks like a generic
+	// "daemon not ready" error to the operator. Surface a pointed
+	// message so they can `dfmt stop` / taskkill the stale PID.
+	globalDaemonStuck
+	// globalDaemonOrphan: listener accepts but the PID file is missing
+	// or points to a dead process. The daemon is up (just bookkeeping
+	// drift) — connect and warn rather than refuse or spawn a sibling.
+	globalDaemonOrphan
+)
+
+// inspectGlobalDaemon classifies the global daemon's on-disk state against
+// the process table. See globalDaemonStatus for the semantics. The returned
+// pid is whatever ~/.dfmt/daemon.pid claims (0 if missing/parse fail) — used
+// for diagnostic messages, not for control flow.
+func inspectGlobalDaemon() (globalDaemonStatus, int) {
+	pid := readGlobalDaemonPID()
+	listener := client.DaemonRunning("")
+	pidAlive := pid > 0 && isProcessRunning(pid)
+	switch {
+	case listener && pidAlive:
+		return globalDaemonRunning, pid
+	case listener && !pidAlive:
+		return globalDaemonOrphan, pid
+	case !listener && pidAlive:
+		return globalDaemonStuck, pid
+	default:
+		return globalDaemonDead, pid
+	}
+}
+
+// cleanupStaleGlobalDaemon removes ~/.dfmt/{daemon.pid,port,daemon.sock,lock}
+// after we've confirmed via inspectGlobalDaemon that no daemon is running and
+// no PID is alive. Safe to call only on globalDaemonDead state — Windows has
+// released the file handles by the time the process is gone, and Unix flock
+// is process-scoped and self-releases on death. Best-effort: errors (file
+// already gone, perms) are absorbed because the caller already knows the
+// daemon is dead and the spawn-and-rebind that follows will surface any
+// real permission problem with a clearer error than "remove failed".
+func cleanupStaleGlobalDaemon() {
+	dir := project.GlobalDir()
+	for _, name := range []string{
+		project.GlobalPIDFileName,
+		project.GlobalPortFileName,
+		project.GlobalSocketName,
+		project.GlobalLockFileName,
+	} {
+		_ = os.Remove(filepath.Join(dir, name))
+	}
+}
+
 // ensureGlobalDaemon makes sure a host-wide daemon is running and
 // ready to accept connections. If one is already up it returns
 // immediately; otherwise it spawns a detached child and polls until
@@ -1098,9 +1169,35 @@ const (
 // Returns nil on success (daemon up). Errors are logged on stderr
 // but also returned so callers in degraded mode (status, list) can
 // proceed without a daemon.
+//
+// State-aware: before deciding to spawn, inspectGlobalDaemon classifies
+// the on-disk + process-table state. A "stuck" daemon (PID alive,
+// listener silent) gets a pointed error rather than a silent spawn-and-
+// timeout — the OS lock would reject the spawn anyway, and the operator
+// would just see "daemon did not become ready" without knowing which
+// PID to kill. A "dead" daemon gets a stale-state cleanup pass before
+// spawn so the new daemon's port-file write isn't shadowed by leftovers.
 func ensureGlobalDaemon() error {
-	if client.DaemonRunning("") {
+	switch status, pid := inspectGlobalDaemon(); status {
+	case globalDaemonRunning:
 		return nil
+	case globalDaemonOrphan:
+		// Listener answers — connect. Bookkeeping drift is the operator's
+		// to fix at leisure; refusing the dial would block all dfmt
+		// commands over a cosmetic file-state issue. The daemon will
+		// rewrite ~/.dfmt/daemon.pid on its next Start anyway.
+		logging.Warnf(
+			"global daemon listener is up but ~/.dfmt/%s is missing or stale; continuing",
+			project.GlobalPIDFileName)
+		return nil
+	case globalDaemonStuck:
+		return fmt.Errorf(
+			"global daemon (PID %d) is alive but its listener is not responding. "+
+				"This usually means the process is hung. Recovery on Windows: "+
+				"`dfmt stop` or `taskkill /PID %d /F`; on Unix: `dfmt stop` or `kill %d`. "+
+				"Then retry the command.", pid, pid, pid)
+	case globalDaemonDead:
+		cleanupStaleGlobalDaemon()
 	}
 	if isTestBinary() {
 		// Tests must not spawn detached siblings — every test that
@@ -4329,7 +4426,22 @@ func runMCP(_ []string) int {
 	// process owns the daemon, keep it running so other dfmt CLI
 	// invocations on the same host stay served — exit only on
 	// SIGINT/SIGTERM or when the daemon idle-exits.
+	//
+	// DFMT_MCP_EXIT_ON_EOF=1 short-circuits this: the process stops the
+	// owned daemon and exits as soon as stdin closes. This exists for
+	// CI / smoke-test harnesses (dev.ps1's MCP smoke test, in-tree
+	// integration tests) that pipe a finite request stream through
+	// `dfmt mcp` and need the process to terminate before their job
+	// timeout fires. Production agents (Claude Code, Cursor, …) keep
+	// stdin open for the entire session so the env var is irrelevant
+	// to them.
 	if ownedDaemon != nil {
+		if os.Getenv("DFMT_MCP_EXIT_ON_EOF") == "1" {
+			stopCtx, cancel := context.WithTimeout(context.Background(), ownedDaemon.ShutdownGrace())
+			defer cancel()
+			_ = ownedDaemon.Stop(stopCtx)
+			return 0
+		}
 		waitForDaemonShutdown(ownedDaemon)
 	}
 	return 0

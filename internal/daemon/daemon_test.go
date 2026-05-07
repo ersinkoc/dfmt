@@ -461,7 +461,7 @@ func TestUnregister(t *testing.T) {
 	})
 }
 
-func TestDaemonStartAlreadyRunning(t *testing.T) {
+func TestDaemonStartIdempotency(t *testing.T) {
 	tmpDir := t.TempDir()
 	dfmtDir := filepath.Join(tmpDir, ".dfmt")
 	os.MkdirAll(dfmtDir, 0755)
@@ -859,6 +859,10 @@ func (m *mockJournal) Close() error {
 	return m.closeError
 }
 
+func (m *mockJournal) StreamN(ctx context.Context, from string, n int) (<-chan core.Event, error) {
+	return m.Stream(ctx, from)
+}
+
 // =============================================================================
 // startIdleMonitor error path tests (50.0% coverage)
 // =============================================================================
@@ -1128,5 +1132,88 @@ func TestStartIdleMonitorContextCancel(t *testing.T) {
 	// Clean up daemon resources
 	if d.journal != nil {
 		d.journal.Close()
+	}
+}
+
+func TestDaemonHandlers(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg := newTestConfig()
+	d, err := New(tmpDir, cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() {
+		if d.journal != nil {
+			d.journal.Close()
+		}
+	}()
+
+	h := d.Handlers()
+	if h == nil {
+		t.Error("Handlers returned nil")
+	}
+}
+
+func TestDaemonDone(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg := newTestConfig()
+	cfg.Lifecycle.ShutdownTimeout = "1s"
+	d, err := New(tmpDir, cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() {
+		if d.journal != nil {
+			d.journal.Close()
+		}
+	}()
+
+	done := d.Done()
+	if done == nil {
+		t.Error("Done returned nil channel")
+	}
+
+	select {
+	case <-done:
+		t.Error("Done channel should not be closed before Stop")
+	default:
+	}
+
+	ctx := context.Background()
+	if err := d.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	stopCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if err := d.Stop(stopCtx); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	select {
+	case <-done:
+	default:
+		t.Error("Done channel should be closed after Stop")
+	}
+}
+
+func TestDaemonDoneMultipleCalls(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg := newTestConfig()
+	cfg.Lifecycle.ShutdownTimeout = "1s"
+	d, err := New(tmpDir, cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() {
+		if d.journal != nil {
+			d.journal.Close()
+		}
+	}()
+
+	ch1 := d.Done()
+	ch2 := d.Done()
+	if ch1 != ch2 {
+		t.Error("Done() should return the same channel on multiple calls")
 	}
 }

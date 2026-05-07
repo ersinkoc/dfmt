@@ -602,3 +602,537 @@ func TestHandleEmptyParamsAccepted(t *testing.T) {
 		})
 	}
 }
+
+// TestHandleDropProject tests the dfmt.drop_project HTTP handler.
+// Requires a non-nil journal for the underlying handler.
+func TestHandleDropProject(t *testing.T) {
+	tmp := t.TempDir()
+	journal, err := core.OpenJournal(tmp+"/journal.jsonl", core.JournalOptions{Durable: true})
+	if err != nil {
+		t.Fatalf("OpenJournal: %v", err)
+	}
+	defer journal.Close()
+
+	idx := core.NewIndex()
+	handlers := NewHandlers(idx, journal, nil)
+	hs := NewHTTPServer("127.0.0.1:0", handlers)
+
+	params := mustMarshalParams(map[string]any{"project_id": tmp})
+	reqBody := Request{
+		JSONRPC: "2.0",
+		Method:  "dfmt.drop_project",
+		Params:  params,
+		ID:      10,
+	}
+	body, _ := json.Marshal(reqBody)
+
+	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	hs.handle(rec, req)
+
+	var resp Response
+	json.Unmarshal(rec.Body.Bytes(), &resp)
+	// dropProject is nil (not set on test handlers), so Dropped=false is expected
+	if resp.Error != nil {
+		t.Errorf("unexpected error: %s", resp.Error.Message)
+	}
+}
+
+// TestHandleDropProjectError tests handleDropProject when params fail to decode.
+func TestHandleDropProjectParamsError(t *testing.T) {
+	idx := core.NewIndex()
+	handlers := NewHandlers(idx, nil, nil)
+	hs := NewHTTPServer("127.0.0.1:0", handlers)
+
+	// Send malformed params that will fail to decode
+	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader([]byte(`{"jsonrpc":"2.0","method":"dfmt.drop_project","params":{"project_id":},"id":1}`)))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	hs.handle(rec, req)
+
+	var resp Response
+	json.Unmarshal(rec.Body.Bytes(), &resp)
+	// Should get a parse/marshal error
+	if resp.Error == nil {
+		t.Error("expected error for malformed params")
+	}
+}
+
+// TestHTTPServerBindGetter tests that Bind() returns the set bind address.
+func TestHTTPServerBindGetter(t *testing.T) {
+	idx := core.NewIndex()
+	handlers := NewHandlers(idx, nil, nil)
+	hs := NewHTTPServer("127.0.0.1:0", handlers)
+
+	bind := hs.Bind()
+	if bind == "" {
+		t.Error("Bind() should not return empty string for a TCP server")
+	}
+}
+
+// TestHTTPServerPortFileGetter tests that PortFile() returns the configured path.
+func TestHTTPServerPortFileGetter(t *testing.T) {
+	idx := core.NewIndex()
+	handlers := NewHandlers(idx, nil, nil)
+	hs := NewHTTPServer("127.0.0.1:0", handlers)
+
+	// Initially empty
+	if hs.PortFile() != "" {
+		t.Error("PortFile() should be empty before SetPortFile is called")
+	}
+
+	// After SetPortFile
+	hs.SetPortFile("/test/portfile")
+	if hs.PortFile() != "/test/portfile" {
+		t.Errorf("PortFile() = %q, want /test/portfile", hs.PortFile())
+	}
+}
+
+// TestHTTPServerSocketPathGetter tests SocketPath() returns the socket path when set.
+func TestHTTPServerSocketPathGetter(t *testing.T) {
+	idx := core.NewIndex()
+	handlers := NewHandlers(idx, nil, nil)
+	hs := NewHTTPServer("127.0.0.1:0", handlers)
+
+	// For a TCP server, socket path should be empty
+	if hs.SocketPath() != "" {
+		t.Error("SocketPath() should be empty for TCP server")
+	}
+}
+
+// TestHandleFavicon_GET covers handleFavicon for GET requests.
+func TestHandleFaviconGET(t *testing.T) {
+	idx := core.NewIndex()
+	handlers := NewHandlers(idx, nil, nil)
+	hs := NewHTTPServer("127.0.0.1:0", handlers)
+
+	req := httptest.NewRequest(http.MethodGet, "/favicon.ico", nil)
+	rec := httptest.NewRecorder()
+
+	// Route is registered on mux during Start; call handler directly.
+	hs.handleFavicon(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Errorf("favicon GET: got %d, want 204", rec.Code)
+	}
+}
+
+// TestHandleFavicon_POST rejects POST to favicon.
+func TestHandleFaviconPOST(t *testing.T) {
+	idx := core.NewIndex()
+	handlers := NewHandlers(idx, nil, nil)
+	hs := NewHTTPServer("127.0.0.1:0", handlers)
+
+	req := httptest.NewRequest(http.MethodPost, "/favicon.ico", nil)
+	rec := httptest.NewRecorder()
+
+	hs.handleFavicon(rec, req)
+
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Errorf("favicon POST: got %d, want 405", rec.Code)
+	}
+}
+
+// TestHandleDashboardCSS verifies the CSS handler serves content.
+func TestHandleDashboardCSS(t *testing.T) {
+	idx := core.NewIndex()
+	handlers := NewHandlers(idx, nil, nil)
+	hs := NewHTTPServer("127.0.0.1:0", handlers)
+
+	req := httptest.NewRequest(http.MethodGet, "/dashboard.css", nil)
+	rec := httptest.NewRecorder()
+
+	hs.handleDashboardCSS(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("dashboard.css: got %d, want 200", rec.Code)
+	}
+	if !strings.Contains(rec.Header().Get("Content-Type"), "text/css") {
+		t.Errorf("Content-Type: got %s", rec.Header().Get("Content-Type"))
+	}
+}
+
+// TestHandleUnknownRoute covers the catch-all for unregistered paths.
+func TestHandleUnknownRoute(t *testing.T) {
+	idx := core.NewIndex()
+	handlers := NewHandlers(idx, nil, nil)
+	hs := NewHTTPServer("127.0.0.1:0", handlers)
+
+	req := httptest.NewRequest(http.MethodGet, "/unknown/path", nil)
+	rec := httptest.NewRecorder()
+
+	hs.handle(rec, req)
+
+	// Unknown routes return 404 or similar
+	if rec.Code == http.StatusOK {
+		t.Error("unknown route should not return 200")
+	}
+}
+
+// TestHandleHealth covers the health endpoint.
+func TestHandleHealth(t *testing.T) {
+	idx := core.NewIndex()
+	handlers := NewHandlers(idx, nil, nil)
+	hs := NewHTTPServer("127.0.0.1:0", handlers)
+
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	rec := httptest.NewRecorder()
+
+	hs.handleHealth(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("health: got %d, want 200", rec.Code)
+	}
+}
+
+func TestHandleMetricsGET(t *testing.T) {
+	idx := core.NewIndex()
+	handlers := NewHandlers(idx, nil, nil)
+	hs := NewHTTPServer("127.0.0.1:0", handlers)
+
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	rec := httptest.NewRecorder()
+
+	hs.handleMetrics(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("metrics GET: got %d, want 200", rec.Code)
+	}
+	if !strings.Contains(rec.Header().Get("Content-Type"), "text/plain") {
+		t.Errorf("Content-Type: got %s", rec.Header().Get("Content-Type"))
+	}
+}
+
+func TestHandleMetricsHEAD(t *testing.T) {
+	idx := core.NewIndex()
+	handlers := NewHandlers(idx, nil, nil)
+	hs := NewHTTPServer("127.0.0.1:0", handlers)
+
+	req := httptest.NewRequest(http.MethodHead, "/metrics", nil)
+	rec := httptest.NewRecorder()
+
+	hs.handleMetrics(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("metrics HEAD: got %d, want 200", rec.Code)
+	}
+}
+
+func TestHandleMetricsPostRejectsPOST(t *testing.T) {
+	idx := core.NewIndex()
+	handlers := NewHandlers(idx, nil, nil)
+	hs := NewHTTPServer("127.0.0.1:0", handlers)
+
+	req := httptest.NewRequest(http.MethodPost, "/metrics", nil)
+	rec := httptest.NewRecorder()
+
+	hs.handleMetrics(rec, req)
+
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Errorf("metrics POST: got %d, want 405", rec.Code)
+	}
+}
+
+func TestHandleAPIDaemonsGET(t *testing.T) {
+	idx := core.NewIndex()
+	handlers := NewHandlers(idx, nil, nil)
+	hs := NewHTTPServer("127.0.0.1:0", handlers)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/daemons", nil)
+	rec := httptest.NewRecorder()
+
+	hs.handleAPIDaemons(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("api/daemons GET: got %d, want 200", rec.Code)
+	}
+}
+
+func TestHandleAPIDaemonsPostRejectsPOST(t *testing.T) {
+	idx := core.NewIndex()
+	handlers := NewHandlers(idx, nil, nil)
+	hs := NewHTTPServer("127.0.0.1:0", handlers)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/daemons", nil)
+	rec := httptest.NewRecorder()
+
+	hs.handleAPIDaemons(rec, req)
+
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Errorf("api/daemons POST: got %d, want 405", rec.Code)
+	}
+}
+
+func TestHandleAPIAllDaemonsGET(t *testing.T) {
+	idx := core.NewIndex()
+	handlers := NewHandlers(idx, nil, nil)
+	hs := NewHTTPServer("127.0.0.1:0", handlers)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/all-daemons", nil)
+	rec := httptest.NewRecorder()
+
+	hs.handleAPIAllDaemons(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("api/all-daemons GET: got %d, want 200", rec.Code)
+	}
+}
+
+func TestHandleAPIAllDaemonsPostRejectsPOST(t *testing.T) {
+	idx := core.NewIndex()
+	handlers := NewHandlers(idx, nil, nil)
+	hs := NewHTTPServer("127.0.0.1:0", handlers)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/all-daemons", nil)
+	rec := httptest.NewRecorder()
+
+	hs.handleAPIAllDaemons(rec, req)
+
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Errorf("api/all-daemons POST: got %d, want 405", rec.Code)
+	}
+}
+
+func TestHandleAPIStreamGET(t *testing.T) {
+	idx := core.NewIndex()
+	handlers := NewHandlers(idx, nil, nil)
+	hs := NewHTTPServer("127.0.0.1:0", handlers)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/stream", nil)
+	rec := httptest.NewRecorder()
+
+	hs.handleAPIStream(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("api/stream GET: got %d, want 200", rec.Code)
+	}
+	if rec.Header().Get("Content-Type") != "text/event-stream" {
+		t.Errorf("Content-Type: got %s", rec.Header().Get("Content-Type"))
+	}
+}
+
+func TestHandleAPIStreamPostRejectsPOST(t *testing.T) {
+	idx := core.NewIndex()
+	handlers := NewHandlers(idx, nil, nil)
+	hs := NewHTTPServer("127.0.0.1:0", handlers)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/stream", nil)
+	rec := httptest.NewRecorder()
+
+	hs.handleAPIStream(rec, req)
+
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Errorf("api/stream POST: got %d, want 405", rec.Code)
+	}
+}
+
+func TestHandleAPIProxyPostRequiresTarget(t *testing.T) {
+	idx := core.NewIndex()
+	handlers := NewHandlers(idx, nil, nil)
+	hs := NewHTTPServer("127.0.0.1:0", handlers)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/proxy", bytes.NewReader([]byte(`{}`)))
+	rec := httptest.NewRecorder()
+
+	hs.handleAPIProxy(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("api/proxy POST no target: got %d, want 200", rec.Code)
+	}
+}
+
+func TestHandleAPIProxyPostWithEmptyTarget(t *testing.T) {
+	idx := core.NewIndex()
+	handlers := NewHandlers(idx, nil, nil)
+	hs := NewHTTPServer("127.0.0.1:0", handlers)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/proxy", bytes.NewReader([]byte(`{"target_project_path":""}`)))
+	rec := httptest.NewRecorder()
+
+	hs.handleAPIProxy(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("api/proxy POST empty target: got %d, want 200", rec.Code)
+	}
+}
+
+func TestHandleAPIProxyGetRejectsGET(t *testing.T) {
+	idx := core.NewIndex()
+	handlers := NewHandlers(idx, nil, nil)
+	hs := NewHTTPServer("127.0.0.1:0", handlers)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/proxy", nil)
+	rec := httptest.NewRecorder()
+
+	hs.handleAPIProxy(rec, req)
+
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Errorf("api/proxy GET: got %d, want 405", rec.Code)
+	}
+}
+
+func TestHandleAPIProxyWithMalformedBody(t *testing.T) {
+	idx := core.NewIndex()
+	handlers := NewHandlers(idx, nil, nil)
+	hs := NewHTTPServer("127.0.0.1:0", handlers)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/proxy", bytes.NewReader([]byte(`{invalid json`)))
+	rec := httptest.NewRecorder()
+
+	hs.handleAPIProxy(rec, req)
+
+	// Should encode an error response, not crash
+	if rec.Code == http.StatusInternalServerError {
+		t.Errorf("api/proxy malformed: got %d (internal error indicates panic)", rec.Code)
+	}
+}
+
+func TestHandleAPIStatsPostWithNilHandlers(t *testing.T) {
+	hs := NewHTTPServer("127.0.0.1:0", nil)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/stats", bytes.NewReader([]byte(`{}`)))
+	rec := httptest.NewRecorder()
+
+	hs.handleAPIStats(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Errorf("api/stats nil handlers: got %d, want 503", rec.Code)
+	}
+}
+
+func TestHandleAPIStatsPostWithEmptyBody(t *testing.T) {
+	idx := core.NewIndex()
+	handlers := NewHandlers(idx, nil, nil)
+	hs := NewHTTPServer("127.0.0.1:0", handlers)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/stats", bytes.NewReader([]byte(``)))
+	rec := httptest.NewRecorder()
+
+	hs.handleAPIStats(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("api/stats empty body: got %d, want 400", rec.Code)
+	}
+}
+
+func TestHandleAPIStatsGetRejectsGET(t *testing.T) {
+	idx := core.NewIndex()
+	handlers := NewHandlers(idx, nil, nil)
+	hs := NewHTTPServer("127.0.0.1:0", handlers)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/stats", nil)
+	rec := httptest.NewRecorder()
+
+	hs.handleAPIStats(rec, req)
+
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Errorf("api/stats GET: got %d, want 405", rec.Code)
+	}
+}
+
+func TestHandleAPIStatsPostWithValidBody(t *testing.T) {
+	idx := core.NewIndex()
+	handlers := NewHandlers(idx, nil, nil)
+	hs := NewHTTPServer("127.0.0.1:0", handlers)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/stats", bytes.NewReader([]byte(`{"jsonrpc":"2.0","id":1,"params":{}}`)))
+	rec := httptest.NewRecorder()
+
+	hs.handleAPIStats(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("api/stats valid body: got %d, want 200", rec.Code)
+	}
+}
+
+func TestHandleAPIStatsPostWithInvalidParams(t *testing.T) {
+	idx := core.NewIndex()
+	handlers := NewHandlers(idx, nil, nil)
+	hs := NewHTTPServer("127.0.0.1:0", handlers)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/stats", bytes.NewReader([]byte(`{"jsonrpc":"2.0","id":1,"params":{"invalid":"\x00"}}`)))
+	rec := httptest.NewRecorder()
+
+	hs.handleAPIStats(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("api/stats invalid params: got %d, want 400", rec.Code)
+	}
+}
+
+func TestWritePortFileWithReservedName(t *testing.T) {
+	idx := core.NewIndex()
+	handlers := NewHandlers(idx, nil, nil)
+	hs := NewHTTPServer("127.0.0.1:0", handlers)
+
+	// Try to write a port file with a reserved name - should fail at safefs.CheckNoReservedNames
+	err := hs.writePortFile("NUL", 12345, "token")
+	if err == nil {
+		t.Error("writePortFile with NUL: expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "reserved") {
+		t.Errorf("writePortFile with NUL: got %v, want reserved-name error", err)
+	}
+}
+
+func TestWrapSecurityWithHealthzPath(t *testing.T) {
+	idx := core.NewIndex()
+	handlers := NewHandlers(idx, nil, nil)
+	hs := NewHTTPServer("127.0.0.1:0", handlers)
+
+	// Start server to get listener
+	ctx := context.Background()
+	if err := hs.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer hs.Stop(ctx)
+
+	// healthz bypasses security checks (no origin/host validation)
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	rec := httptest.NewRecorder()
+
+	hs.wrapSecurity(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Errorf("healthz: got %d, want 200", rec.Code)
+	}
+}
+
+func TestIsAllowedOriginWithNilListener(t *testing.T) {
+	hs := NewHTTPServer("127.0.0.1:0", nil)
+
+	// nil listener -> fail closed
+	if hs.isAllowedOrigin("http://127.0.0.1:12345") {
+		t.Error("isAllowedOrigin with nil listener: expected false")
+	}
+}
+
+func TestIsAllowedHostWithNilListener(t *testing.T) {
+	hs := NewHTTPServer("127.0.0.1:0", nil)
+
+	// nil listener -> fail closed
+	if hs.isAllowedHost("127.0.0.1:12345") {
+		t.Error("isAllowedHost with nil listener: expected false")
+	}
+}
+
+func TestIsAllowedHostWithNonTCPListener(t *testing.T) {
+	ln, err := net.Listen("unix", t.TempDir()+"/sock")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+
+	hs := NewHTTPServerWithListener(ln, nil, "")
+
+	// Non-TCP listener -> always true (fail open for Unix sockets)
+	if !hs.isAllowedHost("anything") {
+		t.Error("isAllowedHost with non-TCP listener: expected true")
+	}
+}
+

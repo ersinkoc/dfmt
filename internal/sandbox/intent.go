@@ -421,6 +421,21 @@ func ApplyReturnPolicy(content, intent, returnMode string) FilteredOutput {
 	}
 }
 
+// normalizeLineEndings converts CRLF line endings to LF for consistent
+// processing. Windows tools (especially PowerShell) often output CRLF,
+// which can cause issues when the output is processed as LF-separated
+// lines. This function normalizes the output for the sandbox pipeline.
+func normalizeLineEndings(s string) string {
+	if !strings.Contains(s, "\r\n") {
+		return s
+	}
+	// Replace CRLF with LF
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	// Also handle standalone CR (old Mac style, rare but possible)
+	s = strings.ReplaceAll(s, "\r", "\n")
+	return s
+}
+
 // NormalizeOutput strips ANSI escape sequences, collapses carriage-return-
 // rewritten lines down to their final state, and run-length-encodes
 // long stretches of identical consecutive lines. It runs before the
@@ -449,6 +464,10 @@ func NormalizeOutput(s string) string {
 	if compacted := CompactBinary(s); compacted != s {
 		return compacted
 	}
+	// Windows line endings: CRLF → LF. PowerShell and some CMD commands
+	// output CRLF, which causes issues when we split by \n. Also handle
+	// standalone CR (old Mac style, rare but possible).
+	s = normalizeLineEndings(s)
 	s = stripANSI(s)
 	s = collapseCarriageReturns(s)
 	s = runLengthEncode(s)

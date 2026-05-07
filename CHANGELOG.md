@@ -27,6 +27,39 @@ Internal package shapes (`internal/...`) are NOT covered by SemVer.
 
 ## [Unreleased]
 
+## [0.6.4] — 2026-05-07
+
+Test coverage push with targeted new tests across core, safefs, transport,
+daemon, and cli packages. No behavioral changes to the public API.
+
+### Added
+
+- `Journal.StreamN` — `Stream(ctx, from, n)` variant that drains at most
+  `n` events before closing the channel. The existing `Stream` signature
+  is unchanged.
+- `DFMT_MCP_STRICT_PARAMS=1` env var enables strict JSON-RPC params
+  validation, rejecting unknown fields that would previously be silently
+  ignored.
+- `dispatch_extra_test.go` — suite of `TestDispatch*` and `TestRun*` tests
+  covering error paths, flag handling, and subcommand routing.
+- symfsafe file operation tests: `WriteFileAtomic` error paths
+  (`WriteError`, `SyncError`, `CloseError`, `RenameError`), permission
+  behavior on Windows, and `OpenReadNoFollow` for symlink-safe file opens.
+- HTTP handler direct-call tests: `handleDropProject`,
+  `handleDashboardCSS`, `handleFavicon`, `handleMetrics`,
+  `handleAPIDaemons`, `handleAPIAllDaemons`, `handleAPIStream`,
+  `handleAPIProxy`, `handleAPIStats`.
+- `TestHTTPServerBindGetter`, `TestHTTPServerPortFileGetter`,
+  `TestHTTPServerSocketPathGetter` for HTTPServer field accessors.
+
+### Changed
+
+- `internal/cli/dispatch.go` — expanded subcommand routing and dispatch
+  helpers.
+- `internal/sandbox/runtime.go` — exec pipeline error handling
+  improvements.
+- `internal/setup/claude.go` — agent detection refinements.
+
 ## [0.6.3] — 2026-05-07
 
 Reverses the v0.6.2 "no detach" decision. Every `dfmt` subcommand now

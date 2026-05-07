@@ -368,3 +368,209 @@ func jsonString(s string) string {
 
 // Ensure os import stays valid even if tests above don't use it directly.
 var _ = os.Getenv
+
+// =============================================================================
+// runSetup tests
+// =============================================================================
+
+func TestDispatchSetupNoProject(t *testing.T) {
+	prev := flagProject
+	flagProject = ""
+	defer func() { flagProject = prev }()
+
+	// setup may require interactive confirmation so exit code varies
+	code := Dispatch([]string{"setup"})
+	// Accept 0 (no agents) or 1 (aborted/requires project context)
+	if code != 0 && code != 1 {
+		t.Errorf("setup with no project returned %d, want 0 or 1", code)
+	}
+}
+
+func TestDispatchSetupWithRefresh(t *testing.T) {
+	tmp := t.TempDir()
+	prev := flagProject
+	flagProject = tmp
+	defer func() { flagProject = prev }()
+
+	code := Dispatch([]string{"setup", "--refresh"})
+	if code != 0 {
+		t.Errorf("setup --refresh returned %d, want 0", code)
+	}
+}
+
+func TestDispatchSetupWithUninstall(t *testing.T) {
+	tmp := t.TempDir()
+	prev := flagProject
+	flagProject = tmp
+	defer func() { flagProject = prev }()
+
+	code := Dispatch([]string{"setup", "--uninstall"})
+	if code != 0 {
+		t.Errorf("setup --uninstall returned %d, want 0", code)
+	}
+}
+
+func TestDispatchSetupWithVerify(t *testing.T) {
+	tmp := t.TempDir()
+	prev := flagProject
+	flagProject = tmp
+	defer func() { flagProject = prev }()
+
+	code := Dispatch([]string{"setup", "--verify"})
+	if code != 0 {
+		t.Errorf("setup --verify returned %d, want 0", code)
+	}
+}
+
+// =============================================================================
+// runInstallHooks tests
+// =============================================================================
+
+// TestDispatchInstallHooksNoProject intentionally removed:
+// runInstallHooks does not require a project — any directory works.
+// The "no project" error path is not triggered for this command.
+
+func TestDispatchInstallHooksSuccess(t *testing.T) {
+	tmp := t.TempDir()
+	prev := flagProject
+	flagProject = tmp
+	defer func() { flagProject = prev }()
+
+	hooksDir := filepath.Join(tmp, ".git", "hooks")
+	if err := os.MkdirAll(hooksDir, 0755); err != nil {
+		t.Fatalf("mkdir hooks: %v", err)
+	}
+
+	code := Dispatch([]string{"install-hooks"})
+	if code != 0 {
+		t.Errorf("install-hooks returned %d, want 0", code)
+	}
+
+	for _, hook := range []string{"post-commit", "post-checkout", "pre-push"} {
+		hookPath := filepath.Join(hooksDir, hook)
+		if _, err := os.Stat(hookPath); os.IsNotExist(err) {
+			t.Errorf("hook %s not created", hook)
+		}
+	}
+}
+
+func TestDispatchInstallHooksAlreadyExists(t *testing.T) {
+	tmp := t.TempDir()
+	prev := flagProject
+	flagProject = tmp
+	defer func() { flagProject = prev }()
+
+	hooksDir := filepath.Join(tmp, ".git", "hooks")
+	if err := os.MkdirAll(hooksDir, 0755); err != nil {
+		t.Fatalf("mkdir hooks: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(hooksDir, "post-commit"), []byte("# existing\n"), 0644); err != nil {
+		t.Fatalf("write hook: %v", err)
+	}
+
+	code := Dispatch([]string{"install-hooks"})
+	if code != 0 {
+		t.Errorf("install-hooks with existing hooks returned %d, want 0", code)
+	}
+}
+
+// =============================================================================
+// runHook tests
+// =============================================================================
+
+func TestDispatchHookGitCommit(t *testing.T) {
+	tmp := t.TempDir()
+	prev := flagProject
+	flagProject = tmp
+	defer func() { flagProject = prev }()
+
+	code := Dispatch([]string{"hook", "git-commit"})
+	if code != 0 {
+		t.Errorf("hook git-commit returned %d, want 0", code)
+	}
+}
+
+func TestDispatchHookGitPush(t *testing.T) {
+	tmp := t.TempDir()
+	prev := flagProject
+	flagProject = tmp
+	defer func() { flagProject = prev }()
+
+	code := Dispatch([]string{"hook", "git-push"})
+	if code != 0 {
+		t.Errorf("hook git-push returned %d, want 0", code)
+	}
+}
+
+func TestDispatchHookGitCheckout(t *testing.T) {
+	tmp := t.TempDir()
+	prev := flagProject
+	flagProject = tmp
+	defer func() { flagProject = prev }()
+
+	code := Dispatch([]string{"hook", "git-checkout"})
+	if code != 0 {
+		t.Errorf("hook git-checkout returned %d, want 0", code)
+	}
+}
+
+func TestDispatchHookUnknown(t *testing.T) {
+	tmp := t.TempDir()
+	prev := flagProject
+	flagProject = tmp
+	defer func() { flagProject = prev }()
+
+	// runHook returns 0 for all unknown hooks (it just prints {"block":false})
+	code := Dispatch([]string{"hook", "unknown-hook"})
+	if code != 0 {
+		t.Errorf("hook unknown-hook returned %d, want 0", code)
+	}
+}
+
+// =============================================================================
+// runShellInit tests
+// =============================================================================
+
+func TestDispatchShellInitBash(t *testing.T) {
+	prev := flagProject
+	flagProject = t.TempDir()
+	defer func() { flagProject = prev }()
+
+	code := Dispatch([]string{"shell-init", "bash"})
+	if code != 0 {
+		t.Errorf("shell-init bash returned %d, want 0", code)
+	}
+}
+
+func TestDispatchShellInitZsh(t *testing.T) {
+	prev := flagProject
+	flagProject = t.TempDir()
+	defer func() { flagProject = prev }()
+
+	code := Dispatch([]string{"shell-init", "zsh"})
+	if code != 0 {
+		t.Errorf("shell-init zsh returned %d, want 0", code)
+	}
+}
+
+func TestDispatchShellInitFish(t *testing.T) {
+	prev := flagProject
+	flagProject = t.TempDir()
+	defer func() { flagProject = prev }()
+
+	code := Dispatch([]string{"shell-init", "fish"})
+	if code != 0 {
+		t.Errorf("shell-init fish returned %d, want 0", code)
+	}
+}
+
+func TestDispatchShellInitUnknown(t *testing.T) {
+	prev := flagProject
+	flagProject = t.TempDir()
+	defer func() { flagProject = prev }()
+
+	code := Dispatch([]string{"shell-init", "unknown-shell"})
+	if code != 1 {
+		t.Errorf("shell-init unknown-shell returned %d, want 1", code)
+	}
+}

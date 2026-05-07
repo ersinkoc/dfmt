@@ -578,11 +578,33 @@ if (-not $SkipSetup) {
         # Run in a throwaway temp dir so dfmt mcp's auto-init drops its
         # .dfmt/ scratch state into a place we delete afterwards — keeps
         # the smoke test from touching $RepoRoot or $env:USERPROFILE.
+        #
+        # Two env vars pin the smoke test's contract precisely:
+        #   - DFMT_PROJECT=$smokeWd: bypasses the walk-up project search
+        #     in project.Discover. Without this, getProject would return
+        #     ErrNoProjectFound (post-fix Discover skips $HOME, and a
+        #     fresh empty $smokeWd has no .dfmt/.git marker), runMCP
+        #     would land in degraded mode (backend nil), and tools/call
+        #     would return -32603 "daemon not connected" — failing
+        #     gate (2). Pinning the project to $smokeWd makes
+        #     EnsureProjectInitialized create $smokeWd/.dfmt/ and
+        #     PromoteInProcess wire a real backend.
+        #   - DFMT_MCP_EXIT_ON_EOF=1: when dfmt mcp owns the daemon
+        #     (which it does here — no global daemon was running before
+        #     the smoke test), the default behavior on stdin EOF is to
+        #     keep the daemon role alive until SIGINT or idle-exit, so
+        #     other dfmt CLI invocations on the same host stay served.
+        #     For the smoke test this would translate into a 15-second
+        #     Wait-Job timeout; the env var tells runMCP to Stop the
+        #     owned daemon and exit as soon as the finite payload
+        #     drains, so the job completes well under the timeout.
         $smokeWd = Join-Path $env:TEMP ("dfmt-smoke-" + [guid]::NewGuid().ToString("N"))
         New-Item -ItemType Directory -Force -Path $smokeWd | Out-Null
         $smokeJob = Start-Job -ScriptBlock {
             param($exe, $payload, $wd)
             Set-Location -LiteralPath $wd
+            $env:DFMT_PROJECT = $wd
+            $env:DFMT_MCP_EXIT_ON_EOF = '1'
             $payload | & $exe mcp 2>&1
         } -ArgumentList $TargetPath, $smokeReq, $smokeWd
         $finished = Wait-Job -Job $smokeJob -Timeout 15

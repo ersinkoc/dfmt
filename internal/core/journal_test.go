@@ -1766,3 +1766,112 @@ func TestFlushPendingOnClose(t *testing.T) {
 		t.Errorf("expected at least 5 lines after close, got %d", lines)
 	}
 }
+
+func TestStreamN(t *testing.T) {
+	tmpDir := t.TempDir()
+	journalPath := filepath.Join(tmpDir, "streamn.journal")
+
+	j, err := OpenJournal(journalPath, JournalOptions{Durable: true})
+	if err != nil {
+		t.Fatalf("OpenJournal failed: %v", err)
+	}
+	defer j.Close()
+
+	// Append 10 events
+	events := make([]Event, 10)
+	for i := range 10 {
+		events[i] = Event{
+			ID:      fmt.Sprintf("01ARZ3NDEKTSV4RRFFQ69G5F%02d", i),
+			Type:    EvtNote,
+			Project: "test",
+		}
+		if err := j.Append(context.Background(), events[i]); err != nil {
+			t.Fatalf("Append failed: %v", err)
+		}
+	}
+
+	t.Run("limits to n events", func(t *testing.T) {
+		ch, err := j.StreamN(context.Background(), "", 3)
+		if err != nil {
+			t.Fatalf("StreamN failed: %v", err)
+		}
+
+		count := 0
+		for range ch {
+			count++
+		}
+		if count != 3 {
+			t.Errorf("expected 3 events, got %d", count)
+		}
+	})
+
+	t.Run("n <= 0 delegates to Stream", func(t *testing.T) {
+		ch, err := j.StreamN(context.Background(), "", 0)
+		if err != nil {
+			t.Fatalf("StreamN(0) failed: %v", err)
+		}
+		count := 0
+		for range ch {
+			count++
+		}
+		if count != 10 {
+			t.Errorf("expected 10 events for n=0, got %d", count)
+		}
+
+		ch2, err := j.StreamN(context.Background(), "", -1)
+		if err != nil {
+			t.Fatalf("StreamN(-1) failed: %v", err)
+		}
+		count2 := 0
+		for range ch2 {
+			count2++
+		}
+		if count2 != 10 {
+			t.Errorf("expected 10 events for n=-1, got %d", count2)
+		}
+	})
+
+	t.Run("with from cursor", func(t *testing.T) {
+		ch, err := j.StreamN(context.Background(), "01ARZ3NDEKTSV4RRFFQ69G5F03", 2)
+		if err != nil {
+			t.Fatalf("StreamN with cursor failed: %v", err)
+		}
+		count := 0
+		for range ch {
+			count++
+		}
+		// Events after ID 03 are 04-09 = 6 events, but we limit to 2
+		if count != 2 {
+			t.Errorf("expected 2 events, got %d", count)
+		}
+	})
+
+	t.Run("context cancellation", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel() // Cancel immediately
+
+		ch, err := j.StreamN(ctx, "", 100)
+		if err != nil {
+			t.Fatalf("StreamN failed: %v", err)
+		}
+		count := 0
+		for range ch {
+			count++
+		}
+		t.Logf("Got %d events before cancelled", count)
+	})
+
+	t.Run("n larger than available events", func(t *testing.T) {
+		ch, err := j.StreamN(context.Background(), "", 100)
+		if err != nil {
+			t.Fatalf("StreamN failed: %v", err)
+		}
+		count := 0
+		for range ch {
+			count++
+		}
+		if count != 10 {
+			t.Errorf("expected 10 events (all), got %d", count)
+		}
+	})
+}

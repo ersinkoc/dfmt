@@ -75,14 +75,15 @@ func TestPatchClaudeCodeUserJSON_MissingFile_ProjectScope(t *testing.T) {
 			t.Errorf("flag %s = %v, want true", flag, proj[flag])
 		}
 	}
-	servers := getMap(t, proj, "mcpServers")
-	dfmt, ok := servers["dfmt"].(map[string]any)
-	if !ok {
-		t.Fatalf("projects[%s].mcpServers.dfmt missing", key)
-	}
-	wantCmd := ResolveDFMTCommand()
-	if dfmt["command"] != wantCmd || dfmt["type"] != "stdio" {
-		t.Errorf("mcp entry wrong: %#v (want command=%q type=stdio)", dfmt, wantCmd)
+	// Single-source-of-truth invariant: projects[*].mcpServers must NOT be
+	// created by Patch. The dfmt MCP server lives only at top-level
+	// mcpServers.dfmt (and only when setUserScopeMCP=true). A per-project
+	// override is what made stale install paths silently shadow the global
+	// entry and surface as "The system cannot find the path specified"
+	// failures on /mcp reconnect.
+	if _, ok := proj["mcpServers"]; ok {
+		t.Errorf("projects[%s].mcpServers must not be written by Patch; got %#v",
+			key, proj["mcpServers"])
 	}
 }
 
@@ -176,12 +177,139 @@ func TestPatchClaudeCodeUserJSON_BothScopes(t *testing.T) {
 		t.Fatalf("patch: %v", err)
 	}
 	cfg := readClaudeJSON(t, home)
+	// Top-level mcpServers.dfmt is the single source of truth and MUST be
+	// written when setUserScopeMCP=true.
 	_ = getMap(t, cfg, "mcpServers", "dfmt")
 	proj := getMap(t, cfg, "projects", normalizeProjectKey(projectPath))
 	if v, _ := proj["hasTrustDialogAccepted"].(bool); !v {
 		t.Errorf("trust flag not set")
 	}
-	_ = getMap(t, proj, "mcpServers", "dfmt")
+	// Per-project mcpServers must NOT be written even when setUserScopeMCP
+	// is also true. Trust flags belong to the project; the MCP server entry
+	// belongs to the global table.
+	if _, ok := proj["mcpServers"]; ok {
+		t.Errorf("per-project mcpServers must not be written; got %#v", proj["mcpServers"])
+	}
+}
+
+// TestPatchClaudeCodeUserJSON_StripsLegacyPerProjectMCP exercises the
+// migration path: an older dfmt setup wrote
+// projects[<key>].mcpServers.dfmt, often pointing at a stale install
+// path. On every patch we now strip that entry so `dfmt setup --refresh`
+// converges to the single-source-of-truth shape automatically. Unrelated
+// per-project MCP servers (e.g. the user's own `customMCP` entry) must
+// survive untouched, and an empty mcpServers map should be pruned.
+func TestPatchClaudeCodeUserJSON_StripsLegacyPerProjectMCP(t *testing.T) {
+	home := t.TempDir()
+	setHome(t, home)
+
+	projectPath := "/work/legacy"
+	key := normalizeProjectKey(projectPath)
+
+	initial := map[string]any{
+		"mcpServers": map[string]any{
+			"dfmt": map[string]any{
+				"type":    "stdio",
+				"command": ResolveDFMTCommand(),
+				"args":    []any{"mcp"},
+			},
+		},
+		"projects": map[string]any{
+			key: map[string]any{
+				"hasTrustDialogAccepted": false,
+				"mcpServers": map[string]any{
+					"dfmt": map[string]any{
+						"type":    "stdio",
+						"command": `C:\stale\install\dfmt.exe`, // legacy path
+						"args":    []any{"mcp"},
+					},
+					"customMCP": map[string]any{
+						"command": "user-tool",
+					},
+				},
+			},
+		},
+	}
+	raw, err := json.MarshalIndent(initial, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal seed: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".claude.json"), raw, 0o600); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	if err := PatchClaudeCodeUserJSON(projectPath, true); err != nil {
+		t.Fatalf("patch: %v", err)
+	}
+
+	cfg := readClaudeJSON(t, home)
+	proj := getMap(t, cfg, "projects", key)
+
+	// dfmt entry must be gone from the project.
+	servers, ok := proj["mcpServers"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected per-project mcpServers map preserved (customMCP must survive); got %#v", proj["mcpServers"])
+	}
+	if _, present := servers["dfmt"]; present {
+		t.Errorf("legacy projects[%s].mcpServers.dfmt was not stripped: %#v", key, servers["dfmt"])
+	}
+	// User's own MCP entry must survive.
+	if _, present := servers["customMCP"]; !present {
+		t.Errorf("unrelated projects[%s].mcpServers.customMCP was incorrectly removed", key)
+	}
+
+	// Trust flags must have been flipped to true (Patch's normal job).
+	if v, _ := proj["hasTrustDialogAccepted"].(bool); !v {
+		t.Errorf("hasTrustDialogAccepted not flipped to true after migration")
+	}
+
+	// Top-level mcpServers.dfmt must be present and pointing at the live
+	// install path (not the stale one we seeded).
+	top := getMap(t, cfg, "mcpServers", "dfmt")
+	wantCmd := ResolveDFMTCommand()
+	if top["command"] != wantCmd {
+		t.Errorf("top-level command = %v, want %q", top["command"], wantCmd)
+	}
+}
+
+// TestPatchClaudeCodeUserJSON_StripsLegacyPerProjectMCP_PrunesEmptyMap
+// asserts that when the legacy projects[*].mcpServers.dfmt was the ONLY
+// entry in that project's mcpServers map, the empty map is pruned —
+// matching UnpatchClaudeCodeUserJSON's pruning behavior so the file
+// doesn't accumulate empty `"mcpServers": {}` stubs across versions.
+func TestPatchClaudeCodeUserJSON_StripsLegacyPerProjectMCP_PrunesEmptyMap(t *testing.T) {
+	home := t.TempDir()
+	setHome(t, home)
+
+	projectPath := "/work/legacy-only"
+	key := normalizeProjectKey(projectPath)
+
+	initial := map[string]any{
+		"projects": map[string]any{
+			key: map[string]any{
+				"mcpServers": map[string]any{
+					"dfmt": map[string]any{
+						"type":    "stdio",
+						"command": `C:\stale\dfmt.exe`,
+						"args":    []any{"mcp"},
+					},
+				},
+			},
+		},
+	}
+	raw, _ := json.MarshalIndent(initial, "", "  ")
+	if err := os.WriteFile(filepath.Join(home, ".claude.json"), raw, 0o600); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	if err := PatchClaudeCodeUserJSON(projectPath, false); err != nil {
+		t.Fatalf("patch: %v", err)
+	}
+	cfg := readClaudeJSON(t, home)
+	proj := getMap(t, cfg, "projects", key)
+	if _, present := proj["mcpServers"]; present {
+		t.Errorf("expected mcpServers map pruned after dfmt-only stripping; got %#v", proj["mcpServers"])
+	}
 }
 
 func TestPatchClaudeCodeUserJSON_BackupBehavior(t *testing.T) {

@@ -16,6 +16,86 @@ const (
 	goosWindows    = "windows"
 )
 
+// canonicalizePath converts path to a consistent format for error messages.
+// On Windows: converts to forward slashes and lowercases drive letter (C:\foo → c:/foo).
+// On Unix: returns path as-is.
+func canonicalizePath(path string) string {
+	if runtime.GOOS == goosWindows {
+		// Convert backslashes to forward slashes for consistency
+		path = strings.ReplaceAll(path, `\`, "/")
+		// Lowercase drive letter if present (e.g., C:/foo → c:/foo)
+		if len(path) >= 2 && path[1] == ':' {
+			return strings.ToLower(string(path[0])) + path[1:]
+		}
+	}
+	return path
+}
+
+// DetectShell returns the detected shell type on the current OS.
+// On Windows: checks for PowerShell, CMD, Git Bash, or WSL bash.
+// On Unix: checks for bash, zsh, fish, or sh.
+func DetectShell() string {
+	if runtime.GOOS == goosWindows {
+		return detectShellWindows()
+	}
+	return detectShellUnix()
+}
+
+// detectShellWindows detects the shell on Windows.
+// Priority: Git Bash > PowerShell > CMD
+func detectShellWindows() string {
+	// Prefer Git Bash if available (common on Windows dev machines)
+	if p, err := lookPath("bash"); err == nil && p != "" {
+		return "bash"
+	}
+	// Check MSYSTEM (Git Bash, MSYS2, MinGW environments)
+	if msys := os.Getenv("MSYSTEM"); msys != "" {
+		return "bash"
+	}
+	// PowerShell Core (pwsh) takes priority over Windows PowerShell
+	if p, err := lookPath("pwsh"); err == nil && p != "" {
+		return "pwsh"
+	}
+	// Check for PowerShell via PSModulePath
+	if psPath := os.Getenv("PSModulePath"); psPath != "" {
+		if p, err := lookPath("powershell"); err == nil && p != "" {
+			return "powershell"
+		}
+	}
+	// Check COMSPEC for CMD
+	if comspec := os.Getenv("COMSPEC"); comspec != "" {
+		if strings.Contains(strings.ToLower(comspec), "cmd.exe") {
+			return "cmd"
+		}
+	}
+	// Fallback: try powershell.exe
+	if p, err := lookPath("powershell"); err == nil && p != "" {
+		return "powershell"
+	}
+	return "bash" // Default to bash
+}
+
+// detectShellUnix detects the shell on Unix-like systems.
+func detectShellUnix() string {
+	// Check SHELL environment variable
+	if shellEnv := os.Getenv("SHELL"); shellEnv != "" {
+		lower := strings.ToLower(shellEnv)
+		if strings.Contains(lower, "zsh") {
+			return "zsh"
+		}
+		if strings.Contains(lower, "fish") {
+			return "fish"
+		}
+		if strings.Contains(lower, "bash") {
+			return "bash"
+		}
+		if strings.Contains(lower, "sh") {
+			return "sh"
+		}
+	}
+	return "bash" // Default to bash
+}
+
 // Runtime represents a detected language runtime.
 type Runtime struct {
 	Lang       string // Language name (bash, node, python, etc.)
@@ -108,15 +188,40 @@ func (r *Runtimes) getVersion(ctx context.Context, path string) string {
 // invocation. Git Bash uses Windows-PATH semantics and resolves the
 // .exe form transparently.
 //
+// On Windows, lookPath also tries .exe/.cmd/.bat extensions since
+// exec.LookPath doesn't always handle these on all Windows configs.
+//
 // Each call to lookPath performs a fresh exec.LookPath (no internal
 // caching). The Runtimes cache stores results of lookPath calls during
 // Probe, but if PATH may have changed (e.g., after a permitted exec
 // modified .bashrc), call Runtimes.Reload to re-probe with a fresh env.
 var lookPath = func(name string) (string, error) {
-	if runtime.GOOS == goosWindows && strings.EqualFold(name, "bash") {
-		if p, ok := findGitBashWindows(); ok {
-			return p, nil
+	if runtime.GOOS == goosWindows {
+		// Special case: bash → Git Bash (WSL bash has different PATH semantics)
+		if strings.EqualFold(name, "bash") {
+			if p, ok := findGitBashWindows(); ok {
+				return p, nil
+			}
 		}
+		// Try the raw name first
+		if path, err := exec.LookPath(name); err == nil {
+			return filepath.Clean(path), nil
+		}
+		// Windows-specific: try with common extensions
+		for _, ext := range []string{".exe", ".cmd", ".bat"} {
+			// Skip if name is shorter than extension
+			if len(name) < len(ext) {
+				continue
+			}
+			// Already has extension? Skip
+			if strings.EqualFold(name[len(name)-len(ext):], ext) {
+				continue
+			}
+			if path, err := exec.LookPath(name + ext); err == nil {
+				return filepath.Clean(path), nil
+			}
+		}
+		return "", os.ErrNotExist
 	}
 	path, err := exec.LookPath(name)
 	if err != nil {

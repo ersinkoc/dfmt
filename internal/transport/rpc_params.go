@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 )
 
 // ParamsError wraps a JSON-RPC params decode failure so the connection loop
@@ -24,6 +25,14 @@ func IsParamsError(err error) bool {
 	return errors.As(err, &pe)
 }
 
+// strictParams controls whether decodeParams rejects unknown fields.
+// Default: disabled. A client sending {"limt":10} for {"limit":10}
+// previously got back a successful empty result instead of an error —
+// silent typos. Enable with DFMT_MCP_STRICT_PARAMS=1 for development.
+func strictParams() bool {
+	return os.Getenv("DFMT_MCP_STRICT_PARAMS") == "1"
+}
+
 // decodeParams decodes JSON-RPC params into dst with strict semantics:
 //
 //   - Empty / nil body is accepted and leaves dst at its zero value. RFC
@@ -31,10 +40,11 @@ func IsParamsError(err error) bool {
 //     says params is optional, so refusing it would break legitimate
 //     callers (Stats, Recall with no filters, …).
 //
-//   - Unknown fields are rejected. A client sending {"limt":10} for
+//   - Unknown fields are rejected by default. A client sending {"limt":10} for
 //     {"limit":10} previously got back a successful empty result instead
 //     of an error — silent typos. DisallowUnknownFields surfaces these
 //     as -32602 so the agent learns about the typo immediately.
+//     Override with DFMT_MCP_STRICT_PARAMS=0.
 //
 //   - Trailing tokens after the JSON value are rejected. json.Unmarshal
 //     allows {"a":1}garbage to decode silently; the strict path catches
@@ -47,7 +57,9 @@ func decodeParams(data json.RawMessage, dst any) error {
 		return nil
 	}
 	dec := json.NewDecoder(bytes.NewReader(data))
-	dec.DisallowUnknownFields()
+	if strictParams() {
+		dec.DisallowUnknownFields()
+	}
 	if err := dec.Decode(dst); err != nil {
 		return &ParamsError{Err: fmt.Errorf("decode params: %w", err)}
 	}

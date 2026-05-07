@@ -73,11 +73,27 @@ func claudeUserJSONPath() (string, error) {
 // and preserves all unrelated keys. The previous file is saved as
 // ~/.claude.json.dfmt.bak before the first successful write.
 //
+// Single-source-of-truth contract: the dfmt MCP server entry lives ONLY
+// at top-level `mcpServers.dfmt`. We deliberately do NOT write a per-
+// project `projects[<key>].mcpServers.dfmt` mirror, even though Claude
+// Code allows per-project overrides — every per-project copy of the
+// command path is another place that can drift out of sync with the
+// installed binary location, and a stale override silently shadows the
+// global entry, surfacing as "The system cannot find the path
+// specified" CreateProcess failures on stdio MCP launch.
+//
 // If setUserScopeMCP is true, top-level mcpServers.dfmt is set.
-// If projectPath is non-empty, projects[<normalized>].mcpServers.dfmt and
-// the three trust flags (hasTrustDialogAccepted,
-// hasClaudeMdExternalIncludesApproved,
-// hasClaudeMdExternalIncludesWarningShown) are set to true.
+// If projectPath is non-empty, the three trust flags
+// (hasTrustDialogAccepted, hasClaudeMdExternalIncludesApproved,
+// hasClaudeMdExternalIncludesWarningShown) are set to true on the
+// project's entry. Trust is legitimately per-project; the MCP server
+// command is not.
+//
+// Migration: a pre-existing `projects[<key>].mcpServers.dfmt` from an
+// older dfmt setup is stripped on every patch so `dfmt setup --refresh`
+// converges the file to the single-source-of-truth shape. The empty
+// `projects[<key>].mcpServers` map is pruned if dfmt was the only
+// entry, mirroring UnpatchClaudeCodeUserJSON's pruning.
 func PatchClaudeCodeUserJSON(projectPath string, setUserScopeMCP bool) error {
 	path, err := claudeUserJSONPath()
 	if err != nil {
@@ -175,12 +191,25 @@ func PatchClaudeCodeUserJSON(projectPath string, setUserScopeMCP bool) error {
 		entry["hasClaudeMdExternalIncludesApproved"] = true
 		entry["hasClaudeMdExternalIncludesWarningShown"] = true
 
-		projectServers, _ := entry["mcpServers"].(map[string]any)
-		if projectServers == nil {
-			projectServers = map[string]any{}
+		// Migration: strip any legacy per-project mcpServers.dfmt left over
+		// from older dfmt versions. The single-source-of-truth contract
+		// (see function docstring) puts the dfmt MCP entry ONLY at top
+		// level. A stale per-project entry whose `command` points at a no-
+		// longer-existing install path silently shadows the global one and
+		// surfaces as a Windows ERROR_PATH_NOT_FOUND on `/mcp` reconnect.
+		// This block runs on every patch so `dfmt setup --refresh`
+		// converges existing files to the new shape without operator
+		// intervention.
+		if projectServers, ok := entry["mcpServers"].(map[string]any); ok {
+			if _, present := projectServers["dfmt"]; present {
+				delete(projectServers, "dfmt")
+				if len(projectServers) == 0 {
+					delete(entry, "mcpServers")
+				} else {
+					entry["mcpServers"] = projectServers
+				}
+			}
 		}
-		projectServers["dfmt"] = dfmtMCPServerEntry()
-		entry["mcpServers"] = projectServers
 
 		projects[key] = entry
 		cfg["projects"] = projects

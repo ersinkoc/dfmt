@@ -873,9 +873,9 @@ func TestRunSetupVerifyMissingFilesOps(t *testing.T) {
 	setup.SaveManifest(manifest)
 
 	code := Dispatch([]string{"setup", "--verify"})
-	// verify returns 0 even with missing files (allOk=false but exits 0)
-	if code != 0 {
-		t.Errorf("setup --verify returned %d, want 0", code)
+	// verify returns 1 when any file is missing
+	if code != 1 {
+		t.Errorf("setup --verify returned %d, want 1", code)
 	}
 }
 

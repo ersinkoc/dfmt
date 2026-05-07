@@ -104,6 +104,76 @@ func TestDiscoverEnvOverride(t *testing.T) {
 	}
 }
 
+// TestDiscoverSkipsUserHome regresses the dev.ps1 smoke-test 15-second
+// hang and the runMCP-from-temp-dir scattered-state bug. The walk-up MUST
+// NOT treat $HOME as a project root when $HOME contains .dfmt/ (the
+// global daemon's state dir at ~/.dfmt — see GlobalDir). Pre-fix, a
+// fresh temp dir under $HOME (Windows %TEMP% lives at
+// $HOME\AppData\Local\Temp; Unix has $TMPDIR or $HOME/tmp on some
+// distros) made Discover walk up, hit $HOME's .dfmt/, and return $HOME
+// as the project root — silently routing every "no project here" call
+// into the global daemon's state files.
+func TestDiscoverSkipsUserHome(t *testing.T) {
+	home := t.TempDir()
+	// Plant a .dfmt/ at $HOME so the pre-fix walk-up would have matched.
+	// HomeDir resolves via os.UserHomeDir which honors HOME / USERPROFILE.
+	dfmtAtHome := filepath.Join(home, ".dfmt")
+	if err := os.MkdirAll(dfmtAtHome, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	// Force DFMT_PROJECT off so the env-var short-circuit in Discover does
+	// not bypass the walk-up code we want to exercise.
+	t.Setenv("DFMT_PROJECT", "")
+
+	// Mimic %TEMP%\dfmt-smoke-<guid>: a child of $HOME with no project
+	// markers in itself or any ancestor below $HOME. Pre-fix: walk would
+	// reach $HOME, see .dfmt/, return $HOME. Post-fix: walk skips $HOME.
+	subdir := filepath.Join(home, "tmp", "smoke-fixture")
+	if err := os.MkdirAll(subdir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := Discover(subdir)
+	if err == nil {
+		// If a parent of $HOME (e.g. /Users on macOS) has its own .git/,
+		// Discover may legitimately match there. Tolerate that environment.
+		// What we MUST never see is got == $HOME, which is the bug.
+		if filepath.Clean(got) == filepath.Clean(home) {
+			t.Fatalf("Discover returned $HOME (%q) — must skip user home dir", got)
+		}
+		t.Logf("matched ancestor of $HOME (%q); test environment-dependent but not the regressed bug", got)
+		return
+	}
+	if err != ErrNoProjectFound {
+		t.Errorf("err = %v, want ErrNoProjectFound", err)
+	}
+}
+
+// TestDiscoverFromUserHomeItself: passing $HOME directly to Discover
+// must also refuse to treat it as a project. Otherwise an explicit
+// `dfmt mcp` invocation cd'd to $HOME (the user's "open shell here")
+// would land in the same scattered-state failure mode as the smoke
+// test path.
+func TestDiscoverFromUserHomeItself(t *testing.T) {
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, ".dfmt"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("DFMT_PROJECT", "")
+
+	got, err := Discover(home)
+	if err == nil && filepath.Clean(got) == filepath.Clean(home) {
+		t.Fatalf("Discover(home) returned home itself (%q) — must refuse", got)
+	}
+	// err == nil with a different match is allowed (some ancestor).
+	// err == ErrNoProjectFound is the expected outcome on hosts where
+	// no ancestor of $HOME has .dfmt/ or .git/.
+}
+
 func TestID(t *testing.T) {
 	id1 := ID("/some/path")
 	if len(id1) != 8 {
