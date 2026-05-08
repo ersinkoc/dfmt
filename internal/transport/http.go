@@ -102,6 +102,20 @@ type PortFile struct {
 	Token string `json:"token,omitempty"` // Bearer token for HTTP auth
 }
 
+// ephemeralBind rewrites a "host:port" bind string to "host:0" so the
+// kernel picks a free port. Used by the Start fallback when the
+// configured port is unavailable. Falls back to a hardcoded loopback
+// address on parse failure rather than refusing to start — a daemon
+// bound to a random ephemeral port is strictly better than no daemon
+// at all, and the port is written to ~/.dfmt/port for clients anyway.
+func ephemeralBind(bind string) string {
+	host, _, err := net.SplitHostPort(bind)
+	if err != nil || host == "" {
+		return "127.0.0.1:0"
+	}
+	return net.JoinHostPort(host, "0")
+}
+
 // NewHTTPServer creates a new HTTP server with TCP listener.
 func NewHTTPServer(bind string, handlers *Handlers) *HTTPServer {
 	return &HTTPServer{
@@ -138,7 +152,32 @@ func (s *HTTPServer) Start(ctx context.Context) error {
 	} else {
 		l, err := net.Listen("tcp", s.bind)
 		if err != nil {
-			return fmt.Errorf("listen: %w", err)
+			// Port unavailable (Windows excluded range from Hyper-V/WSL/Docker,
+			// or another listener already holds the port). Falling back to an
+			// ephemeral port keeps the daemon up — the actual port is written
+			// to ~/.dfmt/port via writePortFile below, and every client
+			// (CLI, MCP, dashboard) reads from there. The configured port is
+			// a hint, not a hard contract; making it a hard contract is what
+			// caused the "Spawned daemon but it did not become ready"
+			// failure on Windows boxes where a fresh Hyper-V boot reserves
+			// a different 100-port block than yesterday's boot.
+			if !isPortUnavailable(err) {
+				return fmt.Errorf("listen: %w", err)
+			}
+			fallback := ephemeralBind(s.bind)
+			l2, err2 := net.Listen("tcp", fallback)
+			if err2 != nil {
+				return fmt.Errorf(
+					"listen on %s failed (%v) and ephemeral fallback %s also failed: %w",
+					s.bind, err, fallback, err2)
+			}
+			logging.Warnf(
+				"configured HTTP bind %s unavailable (%v); fell back to %s. "+
+					"On Windows this usually means Hyper-V/WSL/Docker reserved the port "+
+					"range -- run `netsh int ipv4 show excludedportrange protocol=tcp` "+
+					"and pick a free port for transport.http.bind in ~/.dfmt/config.yaml.",
+				s.bind, err, l2.Addr())
+			l = l2
 		}
 		ln = l
 		ownListener = true
