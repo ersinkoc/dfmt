@@ -25,6 +25,21 @@ The wire surfaces under SemVer guarantees today are:
 
 Internal package shapes (`internal/...`) are NOT covered by SemVer.
 
+## [0.6.7] — 2026-05-08
+
+### Fixed
+
+- **`globalConfigPath()` now respects `XDG_DATA_HOME`**: The function
+  was ignoring the environment variable and always returning
+  `~/.dfmt/config.yaml` on all platforms. Tests and production
+  behavior now agree.
+- **Stale test defaults corrected**: `transport.http.enabled` default
+  (`true`), `transport.http.bind` default (`127.0.0.1:3490`), and
+  `newTestConfig()` HTTP enabled flag all corrected to match `Default()`.
+- **`TestRunSetupVerifyMissingFilesOps` isolation**: Test now sets
+  `XDG_DATA_HOME` to its temp dir so the global manifest doesn't leak
+  between test cases.
+
 ## [0.6.6] — 2026-05-07
 
 ### Security

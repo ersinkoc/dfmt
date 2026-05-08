@@ -489,8 +489,8 @@ func TestConfigFields(t *testing.T) {
 		t.Errorf("Index.HeadingBoost = %f, want 5.0", cfg.Index.HeadingBoost)
 	}
 
-	if cfg.Transport.HTTP.Bind != "127.0.0.1:8765" {
-		t.Errorf("Transport.HTTP.Bind = %s, want '127.0.0.1:8765'", cfg.Transport.HTTP.Bind)
+	if cfg.Transport.HTTP.Bind != "127.0.0.1:3490" {
+		t.Errorf("Transport.HTTP.Bind = %s, want '127.0.0.1:3490'", cfg.Transport.HTTP.Bind)
 	}
 
 	// ADR-0015 (2026-05-02 amendment): default level moved from "info"

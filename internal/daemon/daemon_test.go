@@ -260,6 +260,7 @@ func newTestConfig() *config.Config {
 	cfg.Storage.MaxBatchMS = 100
 	cfg.Storage.CompressRotated = false
 	cfg.Lifecycle.IdleTimeout = "30m"
+	cfg.Transport.HTTP.Enabled = false
 	return cfg
 }
 

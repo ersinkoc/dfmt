@@ -2,6 +2,7 @@ package cli
 
 import (
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/ersinkoc/dfmt/internal/setup"
@@ -862,6 +863,14 @@ func TestRunSetupVerifyMissingFilesOps(t *testing.T) {
 	prevProject := flagProject
 	flagProject = tmpDir
 	defer func() { flagProject = prevProject }()
+
+	// Isolate manifest to this test's temp dir so previous tests' manifests
+	// don't pollute the global ~/.dfmt/setup-manifest.json
+	os.Setenv("XDG_DATA_HOME", tmpDir)
+	defer os.Unsetenv("XDG_DATA_HOME")
+
+	manifestDir := filepath.Join(tmpDir, "dfmt")
+	os.MkdirAll(manifestDir, 0755)
 
 	// Write a manifest with a missing file
 	manifest := &setup.Manifest{Version: 1}
