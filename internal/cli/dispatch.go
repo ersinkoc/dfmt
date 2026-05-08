@@ -1056,27 +1056,75 @@ func runDaemon(args []string) int {
 	if foreground {
 		return runGlobalDaemonForeground(cfg)
 	}
-	// Short-circuit: if a global daemon is already up, say so and
-	// exit successfully. Without this the spawn would bind-fail
-	// against the singleton lock and the user would see a confusing
-	// "Global daemon started (PID N)" line for a child that died
-	// milliseconds later.
-	if globalURL := globalDashboardURL(); globalURL != "" {
-		pid := readGlobalDaemonPID()
-		if pid > 0 {
-			fmt.Printf("Global daemon already running (PID %d). Dashboard: %s\n", pid, globalURL)
+	// State-aware short-circuit. The pre-fix path keyed off
+	// globalDashboardURL() alone — port file present meant "running",
+	// absent meant "spawn". That misclassified two real-world states:
+	//
+	//   * a stuck pre-existing dfmt.exe that holds the OS lock but
+	//     never finished writing the port file (we'd spawn a sibling
+	//     that immediately dies on the lock, then print the dead PID
+	//     as a success line),
+	//   * an orphan listener whose pid file is missing (we'd spawn a
+	//     sibling against a healthy daemon).
+	//
+	// inspectGlobalDaemon classifies all four states; reuse it so this
+	// command and ensureGlobalDaemon agree on what "running" means.
+	switch status, existingPID := inspectGlobalDaemon(); status {
+	case globalDaemonRunning, globalDaemonOrphan:
+		if globalURL := globalDashboardURL(); globalURL != "" {
+			if existingPID > 0 {
+				fmt.Printf("Global daemon already running (PID %d). Dashboard: %s\n", existingPID, globalURL)
+			} else {
+				fmt.Printf("Global daemon already running. Dashboard: %s\n", globalURL)
+			}
+		} else if existingPID > 0 {
+			fmt.Printf("Global daemon already running (PID %d).\n", existingPID)
 		} else {
-			fmt.Printf("Global daemon already running. Dashboard: %s\n", globalURL)
+			fmt.Println("Global daemon already running.")
 		}
 		return 0
+	case globalDaemonStuck:
+		fmt.Fprintf(os.Stderr,
+			"Global daemon (PID %d) is alive but its listener is not responding.\n"+
+				"Recovery: `dfmt stop`, or on Windows `taskkill /PID %d /F` / on Unix `kill %d`.\n"+
+				"Then retry `dfmt daemon`.\n",
+			existingPID, existingPID, existingPID)
+		return 1
+	case globalDaemonDead:
+		cleanupStaleGlobalDaemon()
 	}
+
 	pid, err := startGlobalDaemonBackground()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error starting global daemon: %v\n", err)
 		return 1
 	}
-	fmt.Printf("Global daemon started (PID %d)\n", pid)
-	return 0
+
+	// Wait for the spawned child to actually bind its listener before
+	// declaring success. Without this the command prints "started
+	// (PID N)" milliseconds before the child dies (typical cause:
+	// lock contention from a wedged dfmt.exe whose pid file we never
+	// wrote, so inspectGlobalDaemon classified it as Dead), and the
+	// next `dfmt dashboard` reports "no daemon running" — the exact
+	// "şaka mı bu" complaint that prompted this fix.
+	deadline := time.Now().Add(daemonReadyTimeout)
+	for time.Now().Before(deadline) {
+		if client.DaemonRunning("") {
+			if globalURL := globalDashboardURL(); globalURL != "" {
+				fmt.Printf("Global daemon started (PID %d). Dashboard: %s\n", pid, globalURL)
+			} else {
+				fmt.Printf("Global daemon started (PID %d)\n", pid)
+			}
+			return 0
+		}
+		time.Sleep(daemonReadyPoll)
+	}
+	fmt.Fprintf(os.Stderr,
+		"Spawned global daemon (PID %d) but it did not become ready within %v.\n"+
+			"Likely causes: lock contention from a wedged dfmt.exe, port-bind failure, or permissions.\n"+
+			"Run `dfmt doctor` for details; on Windows `tasklist | findstr dfmt` will show stuck processes.\n",
+		pid, daemonReadyTimeout)
+	return 1
 }
 
 // daemonReadyTimeout caps how long ensureGlobalDaemon waits for a
