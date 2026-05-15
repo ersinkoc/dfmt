@@ -282,7 +282,7 @@ linters:
       # MCP wire-format string constants: agent-facing tool descriptions
       # consumed by Claude/Cursor/etc. as a single MCP `description` field.
       # Splitting them inserts whitespace into the wire protocol output.
-      - path: internal/transport/mcp\.go$
+      - path: internal/transport/(mcp|mcp_schemas)\.go$
         linters:
           - lll
       # Doctor / dispatch human-readable output: full-sentence printf
