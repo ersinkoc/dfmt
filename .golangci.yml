@@ -310,7 +310,7 @@ linters:
           - lll
       # Long error prose with embedded URLs and identifiers. Each is the
       # primary user-facing error message for that path.
-      - path: internal/transport/(handlers|http)\.go$
+      - path: internal/transport/(handlers|handlers_search|handlers_recall|handlers_stats|handlers_exec|handlers_io|handlers_edit_write|http)\.go$
         linters:
           - lll
       # `streamFile` signature carries five parameters with descriptive
@@ -361,7 +361,7 @@ linters:
       # `bm25` / `trigram` / `raw` are wire-protocol values returned in
       # search responses; extracting them as constants would require
       # exporting the alphabet. The repetition is intentional API surface.
-      - path: internal/transport/handlers\.go$
+      - path: internal/transport/(handlers|handlers_search|handlers_recall|handlers_stats|handlers_exec|handlers_io|handlers_edit_write)\.go$
         linters:
           - goconst
       # ─── goconst: config.go log-level literals ─────────────────────────
