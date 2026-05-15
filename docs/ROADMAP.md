@@ -10,124 +10,113 @@ the next one with a one-line explanation. If you want the full
 
 The release identities:
 
-- **v0.2.3** — *Patch + hardening* (current shipped cut).
-- **v0.3.0** — *Operator UX*.
+- **v0.6.7** — *Current shipped cut* (single-binary,
+  self-promoting daemon; see ADR-0019, ADR-0020, ADR-0021).
+- **v0.7.0** — *Navigability & test-floor* (the next
+  milestone).
 - **v1.0.0** — *Stability commitment* (SemVer guarantees on
   the wire surfaces enumerated in `CHANGELOG.md`).
 
-## v0.2.3 — Patch + hardening (shipped 2026-05-02)
+For everything that already shipped on the v0.2 → v0.6 line,
+see `CHANGELOG.md` — this file no longer maintains a release
+ledger.
 
-- [x] Post-v0.2.3 security fixes: panic recovery in
-  `consumeFSWatch`/`journal.Append`/`idleMonitor`, doctor
-  log-close error surfacing, stdlib CVEs (GO-2026-4866/
-  4870/4946/4947), RWMutex write-skew in stats cache,
-  `safefs.WriteFile` TOCTOU closure.
-- [x] `ARCHITECTURE.md` §13 wired/unwired table corrected:
-  `lifecycle.shutdown_timeout`, `index.bm25_k1/bm25_b`,
-  `retrieval.default_budget/default_format`,
-  `logging.level` (env-override precedence) all now match
-  implementation.
-- [x] Redactor pattern count corrected: 24 → 27
-  (`gcp_client_email`, `azure_storage_key`, `password_field`).
+## v0.6.x — Single-binary self-promoting daemon (shipped)
 
-## v0.2.0 — Hardening release (shipped 2026-04-29)
+The v0.6 line landed the architectural cleanup tracked through
+ADR-0019/0020/0021: one host-wide global daemon, lazy-loaded
+per-project resources, self-promotion of short-lived `dfmt`
+invocations into a detached daemon child. See `CLAUDE.md` and
+`AGENTS.md` for the steady-state behavior contract. The line
+closed with **v0.6.7** (2026-05-08) fixing `--help` mutating
+state on `task` / `install-hooks` (CHANGELOG `[Unreleased]`
+moved into v0.6.7 at tag time).
 
-The cut that brought the code and the docs back into agreement
-and added the missing release artifacts. Everything in this
-section is **done**; the entries below are the punch-list
-references that link `CHANGELOG.md` back to the work.
+The v0.3 punch-list ("stop shipping placeholders" — wire
+`.dfmt/permissions.yaml`, `.dfmt/redact.yaml`, `dfmt tail`,
+`dfmt config get/set`, `SnapshotBuilder` recall) is **all
+shipped**. Detailed entries live in `CHANGELOG.md`.
 
-- [x] `docs/ARCHITECTURE.md` synchronised with the post-V-20
-  codebase: 10-stage NormalizeOutput pipeline, ApproxTokens
-  tier gating, cross-call wire dedup, search excerpts,
-  expanded default exec allow-list, journal event signing +
-  verify-on-read, V-20 trailing-space contract, ADR
-  0009–0012 added to the index.
-- [x] `CHANGELOG.md` started, `SECURITY.md` published,
-  `docs/ROADMAP.md` (this file) written.
-- [x] Three version strings consolidated into
-  `internal/version.Current` (driven by ldflags). MCP
-  `serverInfo.version` and `dfmt --version` now agree.
-- [x] CI: `golangci-lint` version pinned in
-  `.github/workflows/ci.yml` (was `latest`).
+## v0.7.0 — Navigability & test-floor
 
-## v0.3.0 — Operator UX
+The theme: **reduce the surface area for future bugs**. The
+codebase is now ~32 KLOC across 96 source files; three files
+hold 30 % of the total (dispatch / permissions / handlers).
+v0.7 is a refactor-and-coverage cut — no new user-facing
+features, but the package layout, test floor, and CI gates
+land in a state we can stand behind at v1.0.
 
-The theme: **stop shipping placeholders**. Every documented stub
-or unwired knob in v0.2.0 either lands a real implementation, or
-gets a removal ADR if we conclude the feature was a mistake.
-Users should be able to act on the hints DFMT prints today.
+See `refactor.md` (repo root) for the detailed audit and
+file-split proposals. The check-boxes below summarise the
+deliverables.
 
-### Sandbox & permissions
+### Refactor (split god-files, no behavior change)
 
-- [x] **Wire `.dfmt/permissions.yaml`** into daemon start.
-  `sandbox.LoadPolicyMerged` (ADR-0014) adds custom allow/deny
-  rules on top of `DefaultPolicy()`; the hint on denial now
-  works as a true escape hatch.
-- [x] **Wire `.dfmt/redact.yaml`** into the redactor at
-  daemon start. `LoadRedactMerged` (ADR-0014) adds custom
-  patterns on top of the built-in set; operators no longer
-  need to fork the binary.
+- [ ] **`internal/cli/dispatch.go` (5 087 LOC) → 10 files**.
+  Group by responsibility — `daemon.go`, `project.go`,
+  `recall.go`, `tools.go`, `setup.go`, `doctor.go`, `mcp.go`,
+  `dashboard.go`, `config.go` — with `dispatch.go` shrinking
+  to ~150 LOC (Dispatch + global flag handling). One PR per
+  file to keep diffs reviewable. Carries over from the v0.3
+  "stretch" item, now load-bearing.
+- [ ] **`internal/sandbox/permissions.go` (2 542 LOC) → 8
+  files**. Separate policy types, glob compiler, shell
+  parser, and the seven tool primitives (`Exec`, `Read`,
+  `Fetch`, `Glob`, `Grep`, `Edit`, `Write`).
+- [ ] **`internal/transport/handlers.go` (2 208 LOC) → 7
+  files**. One file per tool handler; shared plumbing
+  (dedup, redact, store) stays in the root handlers.go.
+- [ ] **`internal/daemon/daemon.go::New` (261 LOC)** —
+  extract `loadIndexJournal`, `startFSWatcher`,
+  `bindListener` private helpers so the constructor reads
+  as a 4-step recipe.
+- [ ] **`internal/transport/mcp.go::handleToolsList` (302
+  LOC)** — move per-tool schemas to `mcp_schemas.go` as
+  `var toolSchemaXxx = json.RawMessage(...)`.
 
-### CLI command stubs → real implementations
+### Test-floor
 
-- [x] **`dfmt tail`** — real journal tail with `--follow`.
-  Implemented via `StreamEvents` RPC; supports `--follow`,
-  `--from`, and `--limit`.
-- [x] **`dfmt config get/set`** — mutate `.dfmt/config.yaml`
-  through the CLI. `set` validates against
-  `Config.Validate()` before writing; `capture.fs.ignore`
-  accepts JSON arrays. `get` prints full config as YAML.
-- [x] **`dfmt task done <id>`** — journals a `task.done`
-  event via `runRemember` using `EvtTaskDone`.
+The CLAUDE.md / AGENTS.md targets drifted out of compliance:
 
-### Recall / retrieval
+| Package | Current | Target | Gap |
+|---|---|---|---|
+| `internal/core` | 91.5 % | ≥ 90 % | ✅ |
+| `internal/transport` | 82.4 % | ≥ 85 % | −2.6 pp |
+| `internal/daemon` | 75.2 % | ≥ 80 % | −4.8 pp |
+| `internal/cli` | 63.5 % | ≥ 75 % | **−11.5 pp** |
 
-- [x] **Wire `internal/retrieve/SnapshotBuilder` into
-  `handlers.Recall`**, replacing the inline tier-bucket fill.
-  Path interning (Refs table + `[rN]` references) is now
-  active on all three formats.
-- [x] **Honor `RecallParams.Format`** — `json` and `xml`
-  formats now use `JSONRenderer` / `XMLRenderer` with the
-  `SnapshotBuilder` pipeline; `md` remains the default.
+- [ ] **`internal/cli` ≥ 75 %**. The `dispatch.go` split
+  enables targeted unit tests per subcommand. Existing
+  integration tests stay; new tests go after the split.
+- [ ] **`internal/daemon` ≥ 80 %**. `daemon.New` decomposition
+  makes the constructor branches reachable.
+- [ ] **`internal/transport` ≥ 85 %**. Mostly a matter of
+  HTTP-handler coverage (`handleAPIProxy`, `handleAPIStream`).
 
-### Config-schema hygiene
+### CI hardening
 
-- [x] **Decision on `index.bm25_k1` / `index.bm25_b`**:
-  wired via `IndexParams` — operator can override in YAML.
-- [x] **Decision on `retrieval.default_budget` /
-  `retrieval.default_format`**: wired via
-  `SetRecallDefaults()` — `Recall` uses config when caller
-  passes zero/empty.
-- [x] **Decision on `lifecycle.shutdown_timeout`**: wired
-  via `ShutdownGrace()` — reads YAML, falls back to 10 s.
-- [x] **Decision on `logging.level`**: wired with precedence
-  `DFMT_LOG` env > YAML > default `warn`.
+- [ ] **Re-enable PR-time CI**. Today the workflow is
+  release-only (commit 3cab1f9). A 90-second
+  `go vet + golangci-lint + go test -short` gate on PRs
+  would catch the kind of `gofmt` drift the v0.7.0 cleanup
+  commit erased (13 files at audit time).
+- [ ] **Race detector on Linux + macOS** in the CI matrix.
+  Carry-over from the v1.0 list — promoted here because
+  the v0.7 refactors will touch concurrency-sensitive code.
+- [ ] **Coverage gate** enforcing the targets above.
 
-### Config-schema hygiene (remaining)
+### Config-schema hygiene (carry-over from v0.3)
 
-- [ ] **Decision on `storage.compress_rotated`**: accepted in
-  schema; `journal.Rotate()` renames files but never invokes
-  gzip. Either wire it or drop with an ADR.
-- [ ] **Decision on `index.heading_boost`**: stored on the
-  `Index` struct; no scoring path reads it today. Reserved
-  (v0.4) pending a heading-event-type ADR.
-- [ ] **Decision on `privacy.telemetry`,
-  `privacy.remote_sync`, `privacy.allow_nonlocal_http`**:
-  all Reserved (v0.4). Defaults are safe (telemetry off, no
-  remote sync, nonlocal HTTP denied); no consumer reads them.
-- [ ] **`logging.format`**: validated to only "text" (JSON
-  output on v0.4 roadmap). The check is wired; the actual
-  JSON output path is not.
-
-### Stretch (only if v0.3 has runway)
-
-- [ ] **Refactor `internal/cli/dispatch.go`** — the file is
-  ~3 300 lines today. Group subcommands into per-command
-  files (`dispatch_setup.go`, `dispatch_exec.go`, …) and
-  retire the giant switch. No behavior change; pure
-  readability work. Skip if the v0.3 surface is already
-  stuffed.
+- [ ] **`storage.compress_rotated`**: accepted in schema;
+  `journal.Rotate()` renames files but never invokes gzip.
+  Either wire it or drop with an ADR.
+- [ ] **`index.heading_boost`**: stored on the `Index`
+  struct; no scoring path reads it. ADR-or-remove.
+- [ ] **`privacy.telemetry` / `privacy.remote_sync` /
+  `privacy.allow_nonlocal_http`**: all Reserved. Defaults
+  are safe; no consumer reads them. ADR-or-remove.
+- [ ] **`logging.format`**: validated to only "text"; the
+  JSON output path doesn't exist. ADR-or-implement.
 
 ## v1.0.0 — Stability commitment
 
@@ -143,8 +132,8 @@ full test coverage but no production caller. Each row is a
 v1.0 decision point — either wire it (with an ADR) or remove
 it (with a removal ADR):
 
-- [ ] `internal/retrieve/` — wired in v0.3? If yes, keep; if
-  no, removal ADR.
+- [x] `internal/retrieve/` — **wired in v0.3** via the
+  `SnapshotBuilder` integration into `handlers.Recall`. Keep.
 - [ ] `content.Summarizer` (`internal/content/summarize.go`)
   — replace `sandbox.GenerateSummary` for kind-aware
   summaries, or remove.
@@ -159,18 +148,6 @@ it (with a removal ADR):
   — collapse `internal/cli/dispatch.go::buildCaptureParams`
   onto these helpers (deduplicates the inline construction)
   or remove the helpers.
-
-### CI hardening
-
-- [ ] **Race detector** in CI on Linux + macOS
-  (`go test -race`). Windows opt-in via `CGO_ENABLED=1`.
-  Currently developer-side only; flaky concurrency bugs
-  would land before being caught.
-- [ ] **Coverage gate** in CI matching the AGENTS.md /
-  CLAUDE.md targets — `internal/core` ≥ 90 %,
-  `internal/transport` ≥ 85 %, `internal/daemon` ≥ 80 %,
-  `internal/cli` ≥ 75 %. Either enforce or write an ADR
-  documenting why we chose to keep them aspirational.
 
 ### Wire compat freeze
 
@@ -209,6 +186,10 @@ it (with a removal ADR):
   `internal/version.Current`, the MCP wire shapes, and the
   CLI surface. Today the godoc is uneven; v1.0 should ship
   a coherent reference the operators can lean on.
+- [ ] **`docs/ARCHITECTURE.md` is 3 394 lines** — consider
+  splitting by subsystem under `docs/arch/` and keeping
+  `ARCHITECTURE.md` as a 2-page index. Same pattern as the
+  ADR layout.
 
 ---
 
