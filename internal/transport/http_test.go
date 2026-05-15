@@ -1135,4 +1135,3 @@ func TestIsAllowedHostWithNonTCPListener(t *testing.T) {
 		t.Error("isAllowedHost with non-TCP listener: expected true")
 	}
 }
-

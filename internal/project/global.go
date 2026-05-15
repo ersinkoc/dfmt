@@ -14,6 +14,10 @@ import (
 // look — there is no per-project equivalent of port/sock/pid/lock for
 // a global daemon.
 
+// goosWindows is the runtime.GOOS value for Windows. Hoisted to a constant
+// to silence goconst across the package's platform-branch helpers.
+const goosWindows = "windows"
+
 const (
 	// GlobalSocketName is the Unix socket file inside ~/.dfmt/.
 	GlobalSocketName = "daemon.sock"
@@ -68,7 +72,7 @@ func GlobalDir() string {
 // that the fallback is rare.
 func GlobalSocketPath() string {
 	full := filepath.Join(GlobalDir(), GlobalSocketName)
-	if runtime.GOOS == "windows" || len(full) <= 100 {
+	if runtime.GOOS == goosWindows || len(full) <= 100 {
 		return full
 	}
 	h := sha256.Sum256([]byte(GlobalDir()))

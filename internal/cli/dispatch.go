@@ -1323,10 +1323,10 @@ func ensureGlobalDaemon() error {
 		return nil
 	case globalDaemonStuck:
 		return fmt.Errorf(
-			"global daemon (PID %d) is alive but its listener is not responding. "+
-				"This usually means the process is hung. Recovery on Windows: "+
-				"`dfmt stop` or `taskkill /PID %d /F`; on Unix: `dfmt stop` or `kill %d`. "+
-				"Then retry the command.", pid, pid, pid)
+			"global daemon (PID %d) is alive but its listener is not responding; "+
+				"this usually means the process is hung; recovery on Windows: "+
+				"`dfmt stop` or `taskkill /PID %d /F`; on Unix: `dfmt stop` or `kill %d`; "+
+				"then retry the command", pid, pid, pid)
 	case globalDaemonDead:
 		cleanupStaleGlobalDaemon()
 	}

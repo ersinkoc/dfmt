@@ -1858,7 +1858,7 @@ func TestStreamN(t *testing.T) {
 		for range ch {
 			count++
 		}
-		t.Logf("Got %d events before cancelled", count)
+		t.Logf("Got %d events before canceled", count)
 	})
 
 	t.Run("n larger than available events", func(t *testing.T) {
