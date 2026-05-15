@@ -16,21 +16,6 @@ const (
 	goosWindows    = "windows"
 )
 
-// canonicalizePath converts path to a consistent format for error messages.
-// On Windows: converts to forward slashes and lowercases drive letter (C:\foo → c:/foo).
-// On Unix: returns path as-is.
-func canonicalizePath(path string) string {
-	if runtime.GOOS == goosWindows {
-		// Convert backslashes to forward slashes for consistency
-		path = strings.ReplaceAll(path, `\`, "/")
-		// Lowercase drive letter if present (e.g., C:/foo → c:/foo)
-		if len(path) >= 2 && path[1] == ':' {
-			return strings.ToLower(string(path[0])) + path[1:]
-		}
-	}
-	return path
-}
-
 // DetectShell returns the detected shell type on the current OS.
 // On Windows: checks for PowerShell, CMD, Git Bash, or WSL bash.
 // On Unix: checks for bash, zsh, fish, or sh.
@@ -45,12 +30,12 @@ func DetectShell() string {
 // Priority: Git Bash > PowerShell > CMD
 func detectShellWindows() string {
 	// Prefer Git Bash if available (common on Windows dev machines)
-	if p, err := lookPath("bash"); err == nil && p != "" {
-		return "bash"
+	if p, err := lookPath(langBash); err == nil && p != "" {
+		return langBash
 	}
 	// Check MSYSTEM (Git Bash, MSYS2, MinGW environments)
 	if msys := os.Getenv("MSYSTEM"); msys != "" {
-		return "bash"
+		return langBash
 	}
 	// PowerShell Core (pwsh) takes priority over Windows PowerShell
 	if p, err := lookPath("pwsh"); err == nil && p != "" {
@@ -72,7 +57,7 @@ func detectShellWindows() string {
 	if p, err := lookPath("powershell"); err == nil && p != "" {
 		return "powershell"
 	}
-	return "bash" // Default to bash
+	return langBash // Default to bash
 }
 
 // detectShellUnix detects the shell on Unix-like systems.
@@ -86,14 +71,14 @@ func detectShellUnix() string {
 		if strings.Contains(lower, "fish") {
 			return "fish"
 		}
-		if strings.Contains(lower, "bash") {
-			return "bash"
+		if strings.Contains(lower, langBash) {
+			return langBash
 		}
 		if strings.Contains(lower, "sh") {
 			return "sh"
 		}
 	}
-	return "bash" // Default to bash
+	return langBash // Default to bash
 }
 
 // Runtime represents a detected language runtime.
@@ -120,7 +105,7 @@ func NewRuntimes() *Runtimes {
 // Probe searches for available runtimes.
 func (r *Runtimes) Probe(ctx context.Context) error {
 	langs := []string{
-		"bash", "sh", "node", "python", "python3", "go",
+		langBash, "sh", "node", "python", "python3", "go",
 		"ruby", "perl", "php", "R", "elixir",
 	}
 
@@ -198,7 +183,7 @@ func (r *Runtimes) getVersion(ctx context.Context, path string) string {
 var lookPath = func(name string) (string, error) {
 	if runtime.GOOS == goosWindows {
 		// Special case: bash → Git Bash (WSL bash has different PATH semantics)
-		if strings.EqualFold(name, "bash") {
+		if strings.EqualFold(name, langBash) {
 			if p, ok := findGitBashWindows(); ok {
 				return p, nil
 			}

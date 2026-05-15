@@ -1199,7 +1199,7 @@ func TestMCPProtocolToolsList(t *testing.T) {
 		t.Errorf("tools/list returned error: %s", resp.Error.Message)
 	}
 
-	result, ok := resp.Result.(map[string]interface{})
+	result, ok := resp.Result.(map[string]any)
 	if !ok {
 		t.Fatalf("Result type %T, want map", resp.Result)
 	}
@@ -1210,11 +1210,11 @@ func TestMCPProtocolToolsList(t *testing.T) {
 	// Tools is []MCPTool which when unmarshaled into interface{} becomes []interface{}
 	// but can also be typed []MCPTool depending on JSON unmarshal behavior
 	switch v := toolsVal.(type) {
-	case []interface{}:
+	case []any:
 		if len(v) < 3 {
 			t.Errorf("tools count = %d, want at least 3", len(v))
 		}
-	case []map[string]interface{}:
+	case []map[string]any:
 		if len(v) < 3 {
 			t.Errorf("tools count = %d, want at least 3", len(v))
 		}

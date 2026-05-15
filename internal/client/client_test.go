@@ -80,7 +80,7 @@ func TestRememberWithMockSocket(t *testing.T) {
 		resp := transport.Response{
 			JSONRPC: "2.0",
 			ID:      req.ID,
-			Result: map[string]interface{}{
+			Result: map[string]any{
 				"id": "mock-id",
 				"ts": time.Now().Format(time.RFC3339Nano),
 			},
@@ -128,8 +128,8 @@ func TestSearchWithMockSocket(t *testing.T) {
 		resp := transport.Response{
 			JSONRPC: "2.0",
 			ID:      req.ID,
-			Result: map[string]interface{}{
-				"results": []map[string]interface{}{
+			Result: map[string]any{
+				"results": []map[string]any{
 					{"id": "doc1", "score": 0.95, "layer": 1},
 					{"id": "doc2", "score": 0.85, "layer": 1},
 				},
@@ -176,7 +176,7 @@ func TestRecallWithMockSocket(t *testing.T) {
 		resp := transport.Response{
 			JSONRPC: "2.0",
 			ID:      req.ID,
-			Result: map[string]interface{}{
+			Result: map[string]any{
 				"snapshot": "# Session\n- test event",
 				"format":   "md",
 			},
@@ -809,7 +809,7 @@ func TestMustMarshalWithComplexTypes(t *testing.T) {
 	// Test with various types that could cause issues
 	tests := []struct {
 		name  string
-		input interface{}
+		input any
 	}{
 		{"nil", nil},
 		{"bool", true},
@@ -2108,7 +2108,7 @@ func TestClientStatsMock(t *testing.T) {
 		resp := transport.Response{
 			JSONRPC: "2.0",
 			ID:      req.ID,
-			Result: map[string]interface{}{
+			Result: map[string]any{
 				"total_events":   100,
 				"session_events": 10,
 			},
@@ -2146,7 +2146,7 @@ func TestClientExecMock(t *testing.T) {
 		resp := transport.Response{
 			JSONRPC: "2.0",
 			ID:      req.ID,
-			Result: map[string]interface{}{
+			Result: map[string]any{
 				"stdout":    "hello world",
 				"exit_code": 0,
 			},
@@ -2184,7 +2184,7 @@ func TestClientReadMock(t *testing.T) {
 		resp := transport.Response{
 			JSONRPC: "2.0",
 			ID:      req.ID,
-			Result: map[string]interface{}{
+			Result: map[string]any{
 				"content":   "file contents here",
 				"truncated": false,
 			},
@@ -2222,7 +2222,7 @@ func TestClientFetchMock(t *testing.T) {
 		resp := transport.Response{
 			JSONRPC: "2.0",
 			ID:      req.ID,
-			Result: map[string]interface{}{
+			Result: map[string]any{
 				"body":        "response body",
 				"status_code": 200,
 			},
@@ -2260,7 +2260,7 @@ func TestClientGlobMock(t *testing.T) {
 		resp := transport.Response{
 			JSONRPC: "2.0",
 			ID:      req.ID,
-			Result: map[string]interface{}{
+			Result: map[string]any{
 				"paths": []string{"a.go", "b.go"},
 			},
 		}
@@ -2297,8 +2297,8 @@ func TestClientGrepMock(t *testing.T) {
 		resp := transport.Response{
 			JSONRPC: "2.0",
 			ID:      req.ID,
-			Result: map[string]interface{}{
-				"matches": []map[string]interface{}{
+			Result: map[string]any{
+				"matches": []map[string]any{
 					{"path": "a.go", "line": 10, "content": "func main()"},
 				},
 			},
@@ -2336,7 +2336,7 @@ func TestClientEditMock(t *testing.T) {
 		resp := transport.Response{
 			JSONRPC: "2.0",
 			ID:      req.ID,
-			Result: map[string]interface{}{
+			Result: map[string]any{
 				"diff": "--- a.go\n+++ a.go\n@@ +1 @@\n+line added",
 			},
 		}
@@ -2373,7 +2373,7 @@ func TestClientWriteMock(t *testing.T) {
 		resp := transport.Response{
 			JSONRPC: "2.0",
 			ID:      req.ID,
-			Result: map[string]interface{}{
+			Result: map[string]any{
 				"bytes_written": 12,
 			},
 		}

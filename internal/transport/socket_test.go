@@ -98,7 +98,7 @@ func TestSocketServer_Start_DoubleStart(t *testing.T) {
 }
 
 func TestDecodeParams_Empty(t *testing.T) {
-	var v map[string]interface{}
+	var v map[string]any
 	err := decodeParams(nil, &v)
 	if err != nil {
 		t.Errorf("decodeParams with nil failed: %v", err)
@@ -112,7 +112,7 @@ func TestDecodeParams_Empty(t *testing.T) {
 
 func TestDecodeParams_ValidJSON(t *testing.T) {
 	data := []byte(`{"key": "value", "num": 123}`)
-	var v map[string]interface{}
+	var v map[string]any
 	err := decodeParams(data, &v)
 	if err != nil {
 		t.Errorf("decodeParams failed: %v", err)
@@ -128,7 +128,7 @@ func TestDecodeParams_ValidJSON(t *testing.T) {
 
 func TestDecodeParams_InvalidJSON(t *testing.T) {
 	data := []byte(`invalid json`)
-	var v map[string]interface{}
+	var v map[string]any
 	err := decodeParams(data, &v)
 	if err == nil {
 		t.Error("expected error for invalid JSON, got nil")
@@ -477,7 +477,7 @@ func TestSocketServer_Start_ChmodError(t *testing.T) {
 }
 
 func TestDecodeParams_EmptyBytes(t *testing.T) {
-	var v map[string]interface{}
+	var v map[string]any
 	err := decodeParams([]byte{}, &v)
 	if err != nil {
 		t.Errorf("decodeParams with empty slice failed: %v", err)
@@ -499,7 +499,7 @@ func TestDecodeParams_ValidJSONTypes(t *testing.T) {
 	}
 
 	for _, tc := range testCases {
-		var v map[string]interface{}
+		var v map[string]any
 		err := decodeParams([]byte(tc.json), &v)
 		if err != nil {
 			t.Errorf("decodeParams(%s) failed: %v", tc.json, err)
