@@ -1141,8 +1141,80 @@ func TestRunInstallHooksUnknownShell(t *testing.T) {
 	defer func() { flagProject = prevProject }()
 
 	code := Dispatch([]string{"install-hooks", "-shell", "unknown-shell"})
-	// -shell unknown-shell is silently ignored; git hooks still install
-	_ = code
+	// Post-fix: unknown flag rejected by FlagSet -> exit 2. Pre-fix the
+	// function ignored its args and silently installed hooks.
+	if code != 2 {
+		t.Errorf("install-hooks -shell unknown-shell returned %d, want 2", code)
+	}
+}
+
+// HelpFlagSideEffects covers the audit-surfaced bug class: subcommands
+// that mutated state when invoked with --help/-h instead of printing usage.
+// Pre-fix `dfmt task --help` recorded a journal event with subject
+// "--help"; `dfmt install-hooks --help` rewrote .git/hooks unconditionally.
+func TestHelpFlagDoesNotMutateState_Task(t *testing.T) {
+	tmpDir := t.TempDir()
+	os.MkdirAll(tmpDir+"/.dfmt", 0755)
+	journal := tmpDir + "/.dfmt/journal.jsonl"
+	prevProject := flagProject
+	flagProject = tmpDir
+	defer func() { flagProject = prevProject }()
+
+	// Pre-existing journal byte count snapshot — if --help mutates state
+	// the journal will grow.
+	startSize := int64(0)
+	if st, err := os.Stat(journal); err == nil {
+		startSize = st.Size()
+	}
+
+	code := Dispatch([]string{"task", "--help"})
+	if code != 0 {
+		t.Errorf("task --help returned %d, want 0", code)
+	}
+	endSize := int64(0)
+	if st, err := os.Stat(journal); err == nil {
+		endSize = st.Size()
+	}
+	if endSize != startSize {
+		t.Errorf("task --help mutated journal: %d -> %d bytes", startSize, endSize)
+	}
+}
+
+func TestHelpFlagDoesNotMutateState_InstallHooks(t *testing.T) {
+	tmpDir := t.TempDir()
+	os.MkdirAll(tmpDir+"/.dfmt", 0755)
+	os.MkdirAll(tmpDir+"/.git/hooks", 0755)
+	prevProject := flagProject
+	flagProject = tmpDir
+	defer func() { flagProject = prevProject }()
+
+	code := Dispatch([]string{"install-hooks", "--help"})
+	if code != 0 {
+		t.Errorf("install-hooks --help returned %d, want 0", code)
+	}
+	for _, name := range []string{"post-commit", "post-checkout", "pre-push"} {
+		if _, err := os.Stat(tmpDir + "/.git/hooks/" + name); err == nil {
+			t.Errorf("install-hooks --help wrote .git/hooks/%s", name)
+		}
+	}
+}
+
+func TestHelpFlagPrintsRightUsage_Note(t *testing.T) {
+	// `dfmt note --help` historically showed "Usage of remember:" because
+	// runRemember pinned its FlagSet name. After the verb fix, callers see
+	// the matching invocation name back.
+	prev := flagProject
+	flagProject = t.TempDir()
+	os.MkdirAll(flagProject+"/.dfmt", 0755)
+	defer func() { flagProject = prev }()
+
+	// We can't capture stderr from Dispatch directly without rewiring
+	// os.Stderr, but the return code path is the same — `note --help`
+	// should exit 0 instead of returning 1 with "no body" or similar.
+	code := Dispatch([]string{"note", "--help"})
+	if code != 0 {
+		t.Errorf("note --help returned %d, want 0", code)
+	}
 }
 
 // =============================================================================
@@ -1259,7 +1331,13 @@ func TestRunShellInitNoArgs(t *testing.T) {
 // runInstallHooks — cover -shell flag and multiple shell types
 // =============================================================================
 
-func TestRunInstallHooksBashShell(t *testing.T) {
+// install-hooks never accepted a -shell flag; the pre-fix runInstallHooks
+// ignored its args entirely so any garbage returned 0. Now the FlagSet
+// rejects unknown flags with exit 2, which is the contract these tests
+// pin going forward. The trio is kept (rather than collapsed into a
+// table) so each invocation appears in test output for grep-based audits.
+
+func TestRunInstallHooksRejectsBogusShellFlag(t *testing.T) {
 	tmpDir := t.TempDir()
 	os.MkdirAll(tmpDir+"/.dfmt", 0755)
 
@@ -1268,12 +1346,12 @@ func TestRunInstallHooksBashShell(t *testing.T) {
 	defer func() { flagProject = prevProject }()
 
 	code := Dispatch([]string{"install-hooks", "-shell", "bash"})
-	if code != 0 {
-		t.Errorf("install-hooks -shell bash returned %d, want 0", code)
+	if code != 2 {
+		t.Errorf("install-hooks -shell bash returned %d, want 2", code)
 	}
 }
 
-func TestRunInstallHooksZshShell(t *testing.T) {
+func TestRunInstallHooksRejectsBogusShellFlagZsh(t *testing.T) {
 	tmpDir := t.TempDir()
 	os.MkdirAll(tmpDir+"/.dfmt", 0755)
 
@@ -1282,12 +1360,12 @@ func TestRunInstallHooksZshShell(t *testing.T) {
 	defer func() { flagProject = prevProject }()
 
 	code := Dispatch([]string{"install-hooks", "-shell", "zsh"})
-	if code != 0 {
-		t.Errorf("install-hooks -shell zsh returned %d, want 0", code)
+	if code != 2 {
+		t.Errorf("install-hooks -shell zsh returned %d, want 2", code)
 	}
 }
 
-func TestRunInstallHooksFishShell(t *testing.T) {
+func TestRunInstallHooksRejectsBogusShellFlagFish(t *testing.T) {
 	tmpDir := t.TempDir()
 	os.MkdirAll(tmpDir+"/.dfmt", 0755)
 
@@ -1296,8 +1374,8 @@ func TestRunInstallHooksFishShell(t *testing.T) {
 	defer func() { flagProject = prevProject }()
 
 	code := Dispatch([]string{"install-hooks", "-shell", "fish"})
-	if code != 0 {
-		t.Errorf("install-hooks -shell fish returned %d, want 0", code)
+	if code != 2 {
+		t.Errorf("install-hooks -shell fish returned %d, want 2", code)
 	}
 }
 

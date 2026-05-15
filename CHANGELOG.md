@@ -25,6 +25,49 @@ The wire surfaces under SemVer guarantees today are:
 
 Internal package shapes (`internal/...`) are NOT covered by SemVer.
 
+## [Unreleased]
+
+### Fixed
+
+- **`--help` / `-h` no longer mutates state on `dfmt task` and
+  `dfmt install-hooks`**. Pre-fix `dfmt task --help` journaled an
+  event whose subject was the literal string "--help", and
+  `dfmt install-hooks --help` rewrote `.git/hooks/{post-commit,
+  post-checkout,pre-push}` unconditionally because `runInstallHooks`
+  ignored its argv. Both subcommands now route through a FlagSet
+  (install-hooks) or an explicit `helpRequested` check (task) so
+  help requests short-circuit before any side effect runs.
+- **`dfmt note --help` prints "Usage of note:"** rather than the
+  misleading "Usage of remember:". The shared `runRemember` now takes
+  the invocation verb and names its FlagSet accordingly.
+- **`dfmt stats|status|list|stop --help` print usage** instead of
+  silently running the underlying command. Each function now parses
+  args through a `flag.NewFlagSet(name, ContinueOnError)` so unknown
+  flags and stray positionals exit 2 the same way every other
+  subcommand does.
+- **`dfmt shell-init --help` / `dfmt capture --help` / `dfmt config
+  get --help`** print usage rather than the previous confusing errors
+  ("unknown shell: --help", "unknown capture type: --help",
+  "unknown config key '--help'").
+- **Global `-json` / `--json` / `--project` flags survive direct
+  `Dispatch` calls**. `cmd/dfmt/main.go` already stripped them before
+  dispatch, but external callers (and the test suite) that imported
+  `internal/cli` and called `Dispatch` directly had their globals
+  treated as subcommand flags. A new `stripGlobalFlags` helper runs at
+  the top of `Dispatch` so every caller behaves the same way.
+
+### Tests
+
+- New `TestHelpFlagDoesNotMutateState_{Task,InstallHooks}` regression
+  guards for the state-mutating-help bug class.
+- New `TestHelpFlagPrintsRightUsage_Note` pins the `note --help`
+  exit-zero contract.
+- `TestRunInstallHooks{Bash,Zsh,Fish}Shell` renamed to
+  `TestRunInstallHooksRejectsBogusShellFlag*` and updated to assert
+  exit 2 (FlagSet rejecting an undefined flag) — the previous
+  assertion `want 0` only passed because the function silently
+  ignored its argv.
+
 ## [0.6.7] — 2026-05-08
 
 ### Fixed

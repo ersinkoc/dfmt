@@ -40,7 +40,7 @@ func Dispatch(args []string) int {
 	}
 
 	cmd := args[0]
-	remaining := args[1:]
+	remaining := stripGlobalFlags(args[1:])
 
 	switch cmd {
 	case "init":
@@ -49,8 +49,10 @@ func Dispatch(args []string) int {
 		return runRemove(remaining)
 	case "quickstart":
 		return runQuickstart(remaining)
-	case "remember", "note":
-		return runRemember(remaining)
+	case "remember":
+		return runRemember("remember", remaining)
+	case "note":
+		return runRemember("note", remaining)
 	case "search":
 		return runSearch(remaining)
 	case "recall":
@@ -143,6 +145,65 @@ Usage:
 Flags:
   --json    JSON output
   --project <path>    Project path (default: auto-detect)`)
+}
+
+// stripGlobalFlags removes top-level dfmt flags (--json/-json and
+// --project <value>) from a subcommand arg slice. Production callers
+// go through cmd/dfmt/main.go which already strips these, but tests
+// (and external callers that import internal/cli) invoke Dispatch
+// directly and rely on the historical behavior where subcommands
+// silently ignored unknown args. Now that several subcommands enforce
+// FlagSet parsing we strip them here so `Dispatch([]string{"status",
+// "-json"})` keeps working without each FlagSet redeclaring -json.
+//
+// Per-subcommand flags (anything not in the global set) are passed
+// through untouched. The function is allocation-free when no global
+// flag is present.
+func stripGlobalFlags(args []string) []string {
+	for _, a := range args {
+		if a == "--json" || a == "-json" || a == "--project" {
+			goto strip
+		}
+	}
+	return args
+strip:
+	out := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--json", "-json":
+			flagJSON = true
+		case "--project":
+			if i+1 < len(args) {
+				_ = os.Setenv("DFMT_PROJECT", args[i+1])
+				flagProject = args[i+1]
+				i++
+			}
+		default:
+			out = append(out, args[i])
+		}
+	}
+	return out
+}
+
+// helpRequested reports whether the caller passed a help flag.
+//
+// Several subcommands historically treated their first positional arg
+// as the operation's input without inspecting it — `dfmt task --help`
+// recorded "--help" as the task subject; `dfmt install-hooks --help`
+// installed hooks because runInstallHooks ignored args entirely. This
+// helper lets the affected commands short-circuit before mutating
+// state.
+//
+// Accepts the three conventional spellings; runs in O(len(args)) since
+// the args list is always tiny.
+func helpRequested(args []string) bool {
+	for _, a := range args {
+		switch a {
+		case "--help", "-h", "-help", "help":
+			return true
+		}
+	}
+	return false
 }
 
 var (
@@ -530,14 +591,19 @@ func runQuickstart(args []string) int {
 	return 0
 }
 
-func runRemember(args []string) int {
+func runRemember(verb string, args []string) int {
 	var typ, source string
 	var actor string
 	var dataJSON string
 	var inputTokens, outputTokens, cachedTokens int
 	var model string
 
-	fs := flag.NewFlagSet("remember", flag.ContinueOnError)
+	// Use the invocation verb ("remember" or "note") so `dfmt note --help`
+	// prints "Usage of note:" rather than the misleading "Usage of remember:".
+	if verb == "" {
+		verb = "remember"
+	}
+	fs := flag.NewFlagSet(verb, flag.ContinueOnError)
 	fs.StringVar(&typ, "type", "note", "Event type")
 	fs.StringVar(&source, "source", "cli", "Event source")
 	fs.StringVar(&actor, "actor", "", "Actor")
@@ -743,7 +809,20 @@ func runRecall(args []string) int {
 	return 0
 }
 
-func runStatus(_ []string) int {
+func runStatus(args []string) int {
+	// FlagSet up front so `dfmt status --help` prints usage rather than
+	// silently running the diagnostic side-effects.
+	fs := flag.NewFlagSet("status", flag.ContinueOnError)
+	if err := fs.Parse(args); err != nil {
+		if err == flag.ErrHelp {
+			return 0
+		}
+		return 2
+	}
+	if fs.NArg() > 0 {
+		fmt.Fprintf(os.Stderr, "error: status takes no positional arguments\n")
+		return 2
+	}
 	// v0.6.3: every command brings the daemon up if it isn't already.
 	// Errors here are non-fatal — runStatus must still report the
 	// "not running" state cleanly when spawning is disallowed (test
@@ -1557,7 +1636,20 @@ func startDaemonBackground(proj string) (int, error) {
 	return cmd.Process.Pid, nil
 }
 
-func runStop(_ []string) int {
+func runStop(args []string) int {
+	// FlagSet up front so `dfmt stop --help` prints usage rather than
+	// silently issuing kill signals.
+	fs := flag.NewFlagSet("stop", flag.ContinueOnError)
+	if err := fs.Parse(args); err != nil {
+		if err == flag.ErrHelp {
+			return 0
+		}
+		return 2
+	}
+	if fs.NArg() > 0 {
+		fmt.Fprintf(os.Stderr, "error: stop takes no positional arguments\n")
+		return 2
+	}
 	// Phase 2: prefer the host-wide global daemon when one is up.
 	// `dfmt stop` previously read only the per-project PID file; in
 	// global mode that file lives at ~/.dfmt/daemon.pid, so the
@@ -1728,7 +1820,20 @@ func signalStopProcess(pid int, force bool) {
 	_ = process.Signal(sig)
 }
 
-func runList(_ []string) int {
+func runList(args []string) int {
+	// FlagSet up front so `dfmt list --help` prints usage rather than
+	// silently spawning the daemon and listing rows.
+	fs := flag.NewFlagSet("list", flag.ContinueOnError)
+	if err := fs.Parse(args); err != nil {
+		if err == flag.ErrHelp {
+			return 0
+		}
+		return 2
+	}
+	if fs.NArg() > 0 {
+		fmt.Fprintf(os.Stderr, "error: list takes no positional arguments\n")
+		return 2
+	}
 	// v0.6.3: bring the daemon up before listing — without this, the
 	// first `dfmt list` after a fresh login showed "No running daemons"
 	// even though the user explicitly invoked dfmt to find out.
@@ -2526,8 +2631,16 @@ func pathsEqual(a, b string) bool {
 
 func runTask(args []string) int {
 	if len(args) == 0 {
-		fmt.Fprintf(os.Stderr, "usage: dfmt task <subject> | task done <id>\n")
+		fmt.Fprintf(os.Stderr, "usage: dfmt task <subject> | dfmt task done <id>\n")
 		return 1
+	}
+	// Help short-circuit BEFORE we treat args[0] as the task subject. Pre-fix
+	// `dfmt task --help` happily journaled a task whose subject was the
+	// literal string "--help" — exactly the state-mutating UX bug the audit
+	// surfaced. Same defense covers `dfmt task done --help`.
+	if helpRequested(args) {
+		fmt.Println("usage: dfmt task <subject> | dfmt task done <id>")
+		return 0
 	}
 
 	if args[0] == "done" {
@@ -2535,19 +2648,26 @@ func runTask(args []string) int {
 			fmt.Fprintf(os.Stderr, "usage: dfmt task done <id>\n")
 			return 1
 		}
-		return runRemember([]string{"-type", string(core.EvtTaskDone), "-data", fmt.Sprintf(`{"id":%q}`, args[1])})
+		return runRemember("remember", []string{"-type", string(core.EvtTaskDone), "-data", fmt.Sprintf(`{"id":%q}`, args[1])})
 	}
 
 	// Flags must precede the trailing positional arg; otherwise flag.Parse
 	// stops at the first non-flag and -type is dropped, silently journaling
 	// the task as type "note".
-	return runRemember([]string{"-type", string(core.EvtTaskCreate), "-data", fmt.Sprintf(`{"subject":%q}`, args[0])})
+	return runRemember("remember", []string{"-type", string(core.EvtTaskCreate), "-data", fmt.Sprintf(`{"subject":%q}`, args[0])})
 }
 
 func runConfig(args []string) int {
 	if len(args) == 0 {
 		fmt.Fprintf(os.Stderr, "usage: dfmt config [get <key> | set <key> <value>]\n")
 		return 1
+	}
+	// Help anywhere in the args list prints usage instead of treating
+	// "--help" as a config key — pre-fix, `dfmt config get --help` errored
+	// with "unknown config key '--help'".
+	if helpRequested(args) {
+		fmt.Println("usage: dfmt config [get <key> | set <key> <value>]")
+		return 0
 	}
 	proj, _ := getProject()
 	cfg, err := config.Load(proj)
@@ -2746,7 +2866,20 @@ func setConfigField(cfg *config.Config, key, value string) error {
 }
 
 func runStats(args []string) int {
-	_ = args
+	// Reject unknown flags and route --help to FlagSet's usage output.
+	// Pre-fix the function silently ignored args, so `dfmt stats --help`
+	// printed stats instead of help.
+	fs := flag.NewFlagSet("stats", flag.ContinueOnError)
+	if err := fs.Parse(args); err != nil {
+		if err == flag.ErrHelp {
+			return 0
+		}
+		return 2
+	}
+	if fs.NArg() > 0 {
+		fmt.Fprintf(os.Stderr, "error: stats takes no positional arguments\n")
+		return 2
+	}
 	proj, err := getProject()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
@@ -3167,6 +3300,13 @@ func runTail(args []string) int {
 }
 
 func runShellInit(args []string) int {
+	// Help short-circuit before the "unknown shell" diagnostic — pre-fix,
+	// `dfmt shell-init --help` printed a misleading "unknown shell: --help"
+	// error instead of the supported-shells list.
+	if helpRequested(args) {
+		fmt.Println("usage: dfmt shell-init <bash|zsh|fish>")
+		return 0
+	}
 	shell := "bash"
 	if len(args) > 0 {
 		shell = args[0]
@@ -3203,7 +3343,23 @@ func runShellInit(args []string) int {
 	return 0
 }
 
-func runInstallHooks(_ []string) int {
+func runInstallHooks(args []string) int {
+	// Pre-fix `dfmt install-hooks --help` installed the hooks because the
+	// function ignored args entirely. Route through FlagSet so --help prints
+	// usage and unknown flags surface as parse errors instead of silent
+	// state mutation.
+	fs := flag.NewFlagSet("install-hooks", flag.ContinueOnError)
+	if err := fs.Parse(args); err != nil {
+		if err == flag.ErrHelp {
+			return 0
+		}
+		return 2
+	}
+	if fs.NArg() > 0 {
+		fmt.Fprintf(os.Stderr, "error: install-hooks takes no positional arguments\n")
+		return 2
+	}
+
 	proj, err := getProject()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
@@ -3380,6 +3536,13 @@ func buildCaptureParams(args []string) (transport.RememberParams, error) {
 }
 
 func runCapture(args []string) int {
+	// Help short-circuit before buildCaptureParams emits "unknown capture
+	// type: --help". The accepted inputs are documented in printUsage; we
+	// echo a one-liner here so `dfmt capture --help` is self-sufficient.
+	if helpRequested(args) {
+		fmt.Println("usage: dfmt capture <git|shell> ...")
+		return 0
+	}
 	params, err := buildCaptureParams(args)
 	if err != nil {
 		if err == errSkipCapture {
