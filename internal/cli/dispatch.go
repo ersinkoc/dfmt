@@ -218,7 +218,6 @@ func getProject() (string, error) {
 	return proj, nil
 }
 
-
 // samePathCLI compares two paths case-insensitively on Windows, exactly
 // elsewhere. Duplicated from setup.samePath to avoid importing the
 // setup package into the dispatch hot path; the constant "windows" is
@@ -234,4 +233,3 @@ func mustMarshalJSON(v any) string {
 	data, _ := json.MarshalIndent(v, "", "  ")
 	return string(data)
 }
-

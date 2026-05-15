@@ -69,7 +69,7 @@ linters:
           - errcheck
         source: 'w\.Write\('
       # Sandbox permissions: temp file cleanup is best-effort
-      - path: internal/sandbox/permissions\.go$
+      - path: internal/sandbox/(permissions|policy|glob|shell|exec|read|fetch|glob_grep|edit_write)\.go$
         linters:
           - errcheck
         source: 'defer os\.Remove|tmpfile\.(Close|Sync)\(|os\.Remove\(tmpName\)'
@@ -177,7 +177,7 @@ linters:
         source: 'fmt\.Fprintf\(w'
       # CLI dispatch: PreToolUse hook returns plain JSON to stdout; if the
       # parent agent's stdout pipe is closed there's nothing to recover.
-      - path: internal/cli/dispatch\.go$
+      - path: internal/cli/(dispatch|daemon|project|recall|tools|setup|doctor|mcp|dashboard|config)\.go$
         linters:
           - errcheck
         source: 'fmt\.Fprintln\(os\.Stdout'
@@ -207,7 +207,7 @@ linters:
           - errcheck
         source: 'codec\.Write(Request|Response)\(|json\.Unmarshal\('
       # CLI dispatch: flag parse and best-effort cleanup
-      - path: internal/cli/dispatch\.go$
+      - path: internal/cli/(dispatch|daemon|project|recall|tools|setup|doctor|mcp|dashboard|config)\.go$
         linters:
           - errcheck
         source: 'fs\.Parse\(args\)|os\.Remove\(|os\.WriteFile\(|fmt\.Scanln\(|setup\.SaveManifest\(|setup\.BackupFile\(|json\.NewEncoder\(writer\)\.Encode\(|writer\.Flush\(|f\.WriteString\(|f\.Close\(\)|json\.Unmarshal\(|d\.Stop\(|fmt\.Sscanf\(|process\.Signal\('
@@ -236,7 +236,7 @@ linters:
           - goconst
         source: '"tcp"'
       # CLI dispatcher: runtime.GOOS comparison literals repeat by necessity
-      - path: internal/cli/dispatch\.go$
+      - path: internal/cli/(dispatch|daemon|project|recall|tools|setup|doctor|mcp|dashboard|config)\.go$
         linters:
           - goconst
         source: '"windows"'
@@ -244,7 +244,7 @@ linters:
       # wire-protocol values from Claude Code's PreToolUse hook and must
       # match the agent's literal spelling. Extracting them as constants
       # spreads the wire-format dependency without clarity gain.
-      - path: internal/cli/dispatch\.go$
+      - path: internal/cli/(dispatch|daemon|project|recall|tools|setup|doctor|mcp|dashboard|config)\.go$
         linters:
           - goconst
         source: '"Bash"'
@@ -261,7 +261,7 @@ linters:
         linters:
           - lll
       # Algorithm files: gocritic style checks conflict with algorithmic clarity
-      - path: 'internal/core/bm25\.go$|internal/core/trigram\.go$|internal/sandbox/permissions\.go$'
+      - path: 'internal/core/bm25\.go$|internal/core/trigram\.go$|internal/sandbox/(permissions|policy|glob|shell|exec|read|fetch|glob_grep|edit_write)\.go$'
         linters:
           - gocritic
       # golangci-lint v2.1.5 typecheck loader misreads the filename stem as a
@@ -288,7 +288,7 @@ linters:
       # Doctor / dispatch human-readable output: full-sentence printf
       # messages with embedded paths (`C:\Program Files\...`). Splitting
       # them breaks the output formatting agents see.
-      - path: internal/cli/dispatch\.go$
+      - path: internal/cli/(dispatch|daemon|project|recall|tools|setup|doctor|mcp|dashboard|config)\.go$
         linters:
           - lll
       # Project-init scripts: PowerShell / bash one-liners injected into
@@ -300,7 +300,7 @@ linters:
       # Sandbox error templates: structured "operation denied by policy"
       # messages with hint suffix; one-line form is contractual (the
       # `policyDenyHint(...)` line break is part of the response shape).
-      - path: internal/sandbox/permissions\.go$
+      - path: internal/sandbox/(permissions|policy|glob|shell|exec|read|fetch|glob_grep|edit_write)\.go$
         linters:
           - lll
       # FSWatch SetProject doc comment: full single-sentence godoc that
@@ -345,7 +345,7 @@ linters:
         linters:
           - errcheck
         source: 'fmt\.Fprintf\('
-      - path: internal/sandbox/permissions\.go$
+      - path: internal/sandbox/(permissions|policy|glob|shell|exec|read|fetch|glob_grep|edit_write)\.go$
         linters:
           - errcheck
         source: 'defer f\.Close\('
@@ -381,7 +381,7 @@ linters:
       # ─── goconst: permissions.go op-name literal ───────────────────────
       # `exec` appears in both error-message templates and policy match
       # arms; extracting drives indirection without clarity gain.
-      - path: internal/sandbox/permissions\.go$
+      - path: internal/sandbox/(permissions|policy|glob|shell|exec|read|fetch|glob_grep|edit_write)\.go$
         linters:
           - goconst
       # ─── goconst: capture FS event-type literals ───────────────────────

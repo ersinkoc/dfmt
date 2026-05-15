@@ -1076,12 +1076,3 @@ func writeMCPConfig(dir, filename, agentID string) error {
 
 	return nil
 }
-
-
-
-
-
-
-
-
-
