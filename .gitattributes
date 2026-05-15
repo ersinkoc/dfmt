@@ -1,0 +1,52 @@
+# DFMT line-ending policy.
+#
+# The repository is LF in BOTH the index and the working tree, on every
+# OS. This attributes file makes that contract explicit and overrides
+# any host `core.autocrlf=true` (the Windows-default) that would
+# otherwise silently rewrite working-tree files to CRLF on checkout.
+#
+# Direction of repair if drift appears: CRLF -> LF.
+
+# Default: auto-detect text, normalize to LF.
+* text=auto eol=lf
+
+# Source code — LF everywhere.
+*.go        text eol=lf
+*.mod       text eol=lf
+*.sum       text eol=lf
+
+# Docs and config — LF.
+*.md        text eol=lf
+*.yml       text eol=lf
+*.yaml      text eol=lf
+*.json      text eol=lf
+*.toml      text eol=lf
+*.html      text eol=lf
+*.css       text eol=lf
+
+# Unix scripts — LF.
+*.sh        text eol=lf
+*.fish      text eol=lf
+Makefile    text eol=lf
+LICENSE     text eol=lf
+.gitignore  text eol=lf
+.gitattributes text eol=lf
+
+# Windows-only scripts — also LF. PowerShell 5.1+ and a modern
+# cmd.exe handle LF files; the project-wide LF invariant wins
+# over the Windows convention.
+*.ps1       text eol=lf
+*.bat       text eol=lf
+*.cmd       text eol=lf
+
+# Binary assets — no normalization, no diff.
+*.png       binary
+*.jpg       binary
+*.jpeg      binary
+*.gif       binary
+*.ico       binary
+*.gob       binary
+*.exe       binary
+*.dll       binary
+*.so        binary
+*.dylib     binary
