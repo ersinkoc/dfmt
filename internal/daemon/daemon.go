@@ -160,84 +160,15 @@ func New(projectPath string, cfg *config.Config) (*Daemon, error) {
 		return nil, fmt.Errorf("create .dfmt: %w", err)
 	}
 
-	// Create journal
-	journalPath := filepath.Join(dfmtDir, "journal.jsonl")
-	journalOpts := core.JournalOptions{
-		Path:     journalPath,
-		MaxBytes: cfg.Storage.JournalMaxBytes,
-		Durable:  cfg.Storage.Durability == "durable",
-		BatchMS:  cfg.Storage.MaxBatchMS,
-		Compress: cfg.Storage.CompressRotated,
-	}
-
-	journal, err := core.OpenJournal(journalPath, journalOpts)
+	journal, index, indexPath, needsRebuild, err := loadJournalAndIndex(dfmtDir, cfg)
 	if err != nil {
-		return nil, fmt.Errorf("open journal: %w", err)
+		return nil, err
 	}
 
-	// Create or load index. When LoadIndexWithCursor signals needsRebuild
-	// (missing/corrupt cursor, tokenizer version bump, or unreadable index),
-	// stream the journal into a fresh index so historical events stay
-	// searchable. Without this, any rebuild signal silently empties search
-	// and recall until new events arrive.
-	indexPath := filepath.Join(dfmtDir, "index.gob")
-	cursorPath := filepath.Join(dfmtDir, "index.cursor")
-
-	// Load whatever's on disk; rebuild (when required) is deferred to Start()
-	// so the listener can come up immediately. The previous synchronous
-	// rebuild here blocked daemon.New() for seconds on large journals — long
-	// enough that the auto-start retry budget (~3.9s) ran out and the agent's
-	// first MCP call failed with "daemon not responding" while the daemon
-	// was actually still in the middle of rebuilding.
-	index, _, needsRebuild, err := core.LoadIndexWithCursor(indexPath, cursorPath)
+	sb, err := loadSandbox(projectPath, cfg)
 	if err != nil {
-		logging.Warnf("load index: %v", err)
-		needsRebuild = true
+		return nil, err
 	}
-	// BM25 / heading params from operator config (ADR-0015 v0.4 wire-up).
-	// Validate has already gated ranges; fields default to zero if the
-	// operator never touched them, in which case NewBM25OkapiWithParams's
-	// fallback restores the package defaults.
-	indexParams := core.IndexParams{
-		K1:           cfg.Index.BM25K1,
-		B:            cfg.Index.BM25B,
-		HeadingBoost: cfg.Index.HeadingBoost,
-	}
-	if index == nil || needsRebuild {
-		// Tokenizer-version bump or corrupt index: start fresh so we don't
-		// mix differently-tokenized postings, and let Start() fill it.
-		index = core.NewIndexWithParams(indexParams)
-	} else {
-		// Loaded an existing index — apply operator params so a config
-		// change since the last persist takes effect immediately.
-		index.SetParams(indexParams)
-	}
-
-	// Create sandbox; cfg.Exec.PathPrepend is the project's escape hatch
-	// when the daemon's inherited PATH does not see the user's toolchains
-	// (Go, Node, Python). dirs are prepended for every exec call.
-	//
-	// V-11: surface configuration smells (missing dirs, world-writable
-	// entries) so the operator notices a planted-binary risk at start
-	// instead of after compromise. We do not refuse the daemon — the
-	// PathPrepend semantics are operator-trusted by design.
-	if err := sandbox.ValidatePathPrepend(cfg.Exec.PathPrepend); err != nil {
-		return nil, fmt.Errorf("invalid path_prepend: %w", err)
-	}
-	// ADR-0014: load .dfmt/permissions.yaml on top of DefaultPolicy. A
-	// missing file is normal (most projects don't override). A parse error
-	// surfaces as a warning; the daemon still starts so a typo in the
-	// override doesn't lock the operator out of the running system.
-	// `dfmt doctor` echoes the same state for verification.
-	polRes, polErr := sandbox.LoadPolicyMerged(projectPath)
-	if polErr != nil {
-		logging.Warnf("permissions: %v", polErr)
-	}
-	for _, w := range polRes.Warnings {
-		logging.Warnf("permissions: %s", w)
-	}
-	sb := sandbox.NewSandboxWithPolicy(projectPath, polRes.Policy).
-		WithPathPrepend(cfg.Exec.PathPrepend)
 
 	// Create handlers
 	handlers := transport.NewHandlers(index, journal, sb)
@@ -261,74 +192,10 @@ func New(projectPath string, cfg *config.Config) (*Daemon, error) {
 		logging.Warnf("create content store: %v", cerr)
 	}
 
-	// Create server based on platform - use HTTPServer for HTTP support (dashboard, API)
-	var server Server
-	var httpServer *transport.HTTPServer
-	// cfg is non-nil here — the New() entry replaces nil with &config.Config{}.
-	tcpOptIn := cfg.Transport.HTTP.Enabled && cfg.Transport.HTTP.Bind != ""
-	switch {
-	case runtime.GOOS == goosWindows:
-		// On Windows, use TCP with HTTPServer for full HTTP support.
-		// Bind to the IPv4 loopback explicitly so we don't race between
-		// ::1 and 127.0.0.1 — the client also dials 127.0.0.1 to avoid
-		// slow IPv6-first fallbacks through "localhost" resolution.
-		//
-		// Default is 127.0.0.1:0 (ephemeral; CLI clients read the actual
-		// port from .dfmt/port). When the operator opts into a fixed bind
-		// via transport.http.enabled=true + transport.http.bind=…:8765,
-		// honor it so the dashboard URL is stable. Port file is still
-		// written either way — CLI clients always read it so they don't
-		// need to know whether the bind is fixed or ephemeral.
-		bind := ephemeralLoopback
-		if tcpOptIn {
-			bind = cfg.Transport.HTTP.Bind
-		}
-		httpServer = transport.NewHTTPServer(bind, handlers)
-		portFile := filepath.Join(dfmtDir, "port")
-		httpServer.SetPortFile(portFile)
-		httpServer.SetProjectPath(projectPath)
-	case tcpOptIn:
-		// Unix opt-in TCP loopback. Required for the dashboard, which is
-		// HTTP over a routable address — a browser cannot dial a Unix
-		// socket. Loopback validation lives in transport (NewHTTPServer's
-		// listener phase), so a public bind would fail there. We refuse
-		// to run both a socket AND a TCP listener: the CLI client picks
-		// its dial target via the presence of .dfmt/port (TCP) vs the
-		// socket file, and exposing both would make that choice ambiguous.
-		httpServer = transport.NewHTTPServer(cfg.Transport.HTTP.Bind, handlers)
-		portFile := filepath.Join(dfmtDir, "port")
-		httpServer.SetPortFile(portFile)
-		httpServer.SetProjectPath(projectPath)
-	default:
-		// Unix path with no TCP opt-in: use the Unix socket — unless the
-		// operator explicitly disabled it (ADR-0015 wire-up of
-		// transport.socket.enabled). Disabling the socket without
-		// enabling TCP leaves the daemon with no listener; refuse to
-		// start with a hint pointing at the two viable configurations.
-		if !cfg.Transport.Socket.Enabled {
-			return nil, fmt.Errorf("transport: no listener configured — transport.socket.enabled is false and transport.http.enabled is also false. " +
-				"Set one of them to true (HTTP requires transport.http.bind to also be non-empty)")
-		}
-		// transport.ListenUnixSocket applies a 0o077 umask for the duration
-		// of bind(2) so the socket file is never world-readable in the
-		// window before chmod (closes F-05). Surface chmod errors to the
-		// operator — silently allowing 0666 perms on the socket would let
-		// any local user dial the daemon.
-		socketPath := project.SocketPath(projectPath)
-		ln, err := transport.ListenUnixSocket(socketPath)
-		if err != nil {
-			return nil, fmt.Errorf("create socket listener: %w", err)
-		}
-		if cerr := os.Chmod(socketPath, 0o700); cerr != nil {
-			logging.Warnf("chmod socket: %v", cerr)
-		}
-		httpServer = transport.NewHTTPServerWithListener(ln, handlers, socketPath)
-		httpServer.SetProjectPath(projectPath)
+	server, err := buildServer(projectPath, dfmtDir, cfg, handlers)
+	if err != nil {
+		return nil, err
 	}
-	// Single assignment site — previously the Unix branch fell through with
-	// server still nil, which would panic at d.server.Start(ctx). Tests
-	// run on Windows so the nil-server bug went unnoticed in CI.
-	server = httpServer
 
 	// Optionally construct the filesystem watcher. Start() wires its event channel into the journal.
 	var fswatcher *capture.FSWatcher
@@ -1041,4 +908,149 @@ func (d *Daemon) unregister() {
 		return
 	}
 	client.GetRegistry().Unregister(d.projectPath)
+}
+
+// loadJournalAndIndex opens the project journal and either loads or
+// freshly constructs the BM25 index. Returns indexPath so the caller can
+// stash it on Daemon for the async persist that runs after rebuild. The
+// previous synchronous rebuild lived inline here — that path now happens
+// in Start() so daemon.New returns immediately and the auto-start retry
+// budget can't run out while the index is still warming.
+func loadJournalAndIndex(dfmtDir string, cfg *config.Config) (core.Journal, *core.Index, string, bool, error) {
+	journalPath := filepath.Join(dfmtDir, "journal.jsonl")
+	journalOpts := core.JournalOptions{
+		Path:     journalPath,
+		MaxBytes: cfg.Storage.JournalMaxBytes,
+		Durable:  cfg.Storage.Durability == "durable",
+		BatchMS:  cfg.Storage.MaxBatchMS,
+		Compress: cfg.Storage.CompressRotated,
+	}
+	journal, err := core.OpenJournal(journalPath, journalOpts)
+	if err != nil {
+		return nil, nil, "", false, fmt.Errorf("open journal: %w", err)
+	}
+
+	// Load whatever's on disk; rebuild (when required) is deferred to
+	// Start() so the listener can come up immediately. LoadIndexWithCursor
+	// signals needsRebuild when the cursor is missing/corrupt, the tokenizer
+	// version bumped, or the index file itself is unreadable — without
+	// honoring that signal historical events would silently disappear from
+	// search and recall until new ones arrived.
+	indexPath := filepath.Join(dfmtDir, "index.gob")
+	cursorPath := filepath.Join(dfmtDir, "index.cursor")
+	index, _, needsRebuild, err := core.LoadIndexWithCursor(indexPath, cursorPath)
+	if err != nil {
+		logging.Warnf("load index: %v", err)
+		needsRebuild = true
+	}
+	// BM25 / heading params from operator config (ADR-0015 v0.4 wire-up).
+	// Validate has already gated ranges; fields default to zero when the
+	// operator never touched them, in which case NewBM25OkapiWithParams's
+	// fallback restores the package defaults.
+	indexParams := core.IndexParams{
+		K1:           cfg.Index.BM25K1,
+		B:            cfg.Index.BM25B,
+		HeadingBoost: cfg.Index.HeadingBoost,
+	}
+	if index == nil || needsRebuild {
+		// Tokenizer-version bump or corrupt index: start fresh so we don't
+		// mix differently-tokenized postings, and let Start() fill it.
+		index = core.NewIndexWithParams(indexParams)
+	} else {
+		// Loaded an existing index — apply operator params so a config
+		// change since the last persist takes effect immediately.
+		index.SetParams(indexParams)
+	}
+	return journal, index, indexPath, needsRebuild, nil
+}
+
+// loadSandbox validates the operator-configured PATH prepend, layers the
+// project's permissions.yaml on top of DefaultPolicy (ADR-0014), and
+// returns a sandbox ready to serve handlers. Policy parse errors surface
+// as warnings — the daemon still starts so a typo in the override
+// doesn't lock the operator out. `dfmt doctor` echoes the same state.
+func loadSandbox(projectPath string, cfg *config.Config) (*sandbox.SandboxImpl, error) {
+	// V-11: surface configuration smells (missing dirs, world-writable
+	// entries) so the operator notices a planted-binary risk at start
+	// instead of after compromise. We do not refuse the daemon — the
+	// PathPrepend semantics are operator-trusted by design.
+	if err := sandbox.ValidatePathPrepend(cfg.Exec.PathPrepend); err != nil {
+		return nil, fmt.Errorf("invalid path_prepend: %w", err)
+	}
+	polRes, polErr := sandbox.LoadPolicyMerged(projectPath)
+	if polErr != nil {
+		logging.Warnf("permissions: %v", polErr)
+	}
+	for _, w := range polRes.Warnings {
+		logging.Warnf("permissions: %s", w)
+	}
+	return sandbox.NewSandboxWithPolicy(projectPath, polRes.Policy).
+		WithPathPrepend(cfg.Exec.PathPrepend), nil
+}
+
+// buildServer picks between Unix socket and TCP listeners based on
+// platform + config. Windows always uses TCP for full HTTP support
+// (dashboard, API). Unix uses the Unix socket by default; operator
+// opt-in via transport.http.enabled+bind switches to TCP loopback. The
+// dashboard requires TCP because browsers can't dial Unix sockets — a
+// public bind is refused by NewHTTPServer's listener phase.
+func buildServer(projectPath, dfmtDir string, cfg *config.Config, handlers *transport.Handlers) (Server, error) {
+	tcpOptIn := cfg.Transport.HTTP.Enabled && cfg.Transport.HTTP.Bind != ""
+	var httpServer *transport.HTTPServer
+	switch {
+	case runtime.GOOS == goosWindows:
+		// Bind to IPv4 loopback explicitly so we don't race between ::1 and
+		// 127.0.0.1 — the client also dials 127.0.0.1 to avoid slow IPv6-first
+		// fallbacks through "localhost" resolution.
+		//
+		// Default is 127.0.0.1:0 (ephemeral; CLI clients read the actual port
+		// from .dfmt/port). When the operator opts into a fixed bind via
+		// transport.http.enabled=true + transport.http.bind=…:8765, honor it
+		// so the dashboard URL is stable. Port file is still written either
+		// way — CLI clients always read it so they don't need to know whether
+		// the bind is fixed or ephemeral.
+		bind := ephemeralLoopback
+		if tcpOptIn {
+			bind = cfg.Transport.HTTP.Bind
+		}
+		httpServer = transport.NewHTTPServer(bind, handlers)
+		portFile := filepath.Join(dfmtDir, "port")
+		httpServer.SetPortFile(portFile)
+		httpServer.SetProjectPath(projectPath)
+	case tcpOptIn:
+		// Unix opt-in TCP loopback. Required for the dashboard. We refuse
+		// to run both a socket AND a TCP listener: the CLI client picks
+		// its dial target via the presence of .dfmt/port (TCP) vs the
+		// socket file, and exposing both would make that choice ambiguous.
+		httpServer = transport.NewHTTPServer(cfg.Transport.HTTP.Bind, handlers)
+		portFile := filepath.Join(dfmtDir, "port")
+		httpServer.SetPortFile(portFile)
+		httpServer.SetProjectPath(projectPath)
+	default:
+		// Unix path with no TCP opt-in: use the Unix socket — unless the
+		// operator explicitly disabled it (ADR-0015 wire-up of
+		// transport.socket.enabled). Disabling the socket without enabling
+		// TCP leaves the daemon with no listener; refuse to start with a
+		// hint pointing at the two viable configurations.
+		if !cfg.Transport.Socket.Enabled {
+			return nil, fmt.Errorf("transport: no listener configured — transport.socket.enabled is false and transport.http.enabled is also false. " +
+				"Set one of them to true (HTTP requires transport.http.bind to also be non-empty)")
+		}
+		// transport.ListenUnixSocket applies a 0o077 umask for the duration
+		// of bind(2) so the socket file is never world-readable in the
+		// window before chmod (closes F-05). Surface chmod errors to the
+		// operator — silently allowing 0666 perms on the socket would let
+		// any local user dial the daemon.
+		socketPath := project.SocketPath(projectPath)
+		ln, err := transport.ListenUnixSocket(socketPath)
+		if err != nil {
+			return nil, fmt.Errorf("create socket listener: %w", err)
+		}
+		if cerr := os.Chmod(socketPath, 0o700); cerr != nil {
+			logging.Warnf("chmod socket: %v", cerr)
+		}
+		httpServer = transport.NewHTTPServerWithListener(ln, handlers, socketPath)
+		httpServer.SetProjectPath(projectPath)
+	}
+	return httpServer, nil
 }
