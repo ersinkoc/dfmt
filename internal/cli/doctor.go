@@ -22,6 +22,30 @@ import (
 	"github.com/ersinkoc/dfmt/internal/transport"
 )
 
+// doctorCheck is one row of the `dfmt doctor` health report. The fn
+// closure does the inspection; doctor's main loop is just iterate +
+// render. Keeping this at file scope (instead of inline inside
+// runDoctor) lets coreChecks be a pure data builder we can extend.
+type doctorCheck struct {
+	name string
+	fn   func() (ok bool, detail string)
+}
+
+// doctorPaths bundles the project-relative paths runDoctor's checks
+// close over. Computing them once up-front and passing them through a
+// struct avoids re-deriving them per-check and avoids 8-parameter helper
+// signatures.
+type doctorPaths struct {
+	dir         string
+	dfmtDir     string
+	pid         string
+	port        string
+	journal     string
+	index       string
+	lock        string
+	daemonAlive bool // pre-computed liveness — see runDoctor
+}
+
 func runDoctor(args []string) int {
 	var dir string
 	fs := flag.NewFlagSet("doctor", flag.ContinueOnError)
@@ -43,230 +67,21 @@ func runDoctor(args []string) int {
 	_ = ensureGlobalDaemon()
 
 	dfmtDir := filepath.Join(dir, ".dfmt")
-	pidPath := filepath.Join(dfmtDir, "daemon.pid")
-	portPath := filepath.Join(dfmtDir, "port")
-	journalPath := filepath.Join(dfmtDir, "journal.jsonl")
-	indexPath := filepath.Join(dfmtDir, "index.gob")
-	lockPath := filepath.Join(dfmtDir, "lock")
-
-	// Pre-compute liveness once so all checks see a consistent view —
-	// otherwise a daemon that exits mid-doctor would produce contradictory
-	// "running but stale lock" output.
-	daemonAlive := client.DaemonRunning(dir)
-
-	type check struct {
-		name string
-		fn   func() (ok bool, detail string)
+	paths := doctorPaths{
+		dir:     dir,
+		dfmtDir: dfmtDir,
+		pid:     filepath.Join(dfmtDir, "daemon.pid"),
+		port:    filepath.Join(dfmtDir, "port"),
+		journal: filepath.Join(dfmtDir, "journal.jsonl"),
+		index:   filepath.Join(dfmtDir, "index.gob"),
+		lock:    filepath.Join(dfmtDir, "lock"),
+		// Pre-compute liveness once so all checks see a consistent view —
+		// otherwise a daemon that exits mid-doctor would produce
+		// contradictory "running but stale lock" output.
+		daemonAlive: client.DaemonRunning(dir),
 	}
 
-	checks := []check{
-		{"Project exists", func() (bool, string) {
-			p, err := project.Discover(dir)
-			if err != nil {
-				return false, err.Error()
-			}
-			return true, p
-		}},
-		{"Config valid", func() (bool, string) {
-			cfg, err := config.Load(dir)
-			if err != nil {
-				return false, err.Error()
-			}
-			if cfg == nil {
-				return false, "config nil"
-			}
-			return true, fmt.Sprintf("durability=%s", cfg.Storage.Durability)
-		}},
-		{".dfmt directory", func() (bool, string) {
-			fi, err := os.Stat(dfmtDir)
-			if err != nil {
-				return false, err.Error()
-			}
-			if !fi.IsDir() {
-				return false, ".dfmt is not a directory"
-			}
-			return true, ""
-		}},
-		{"Go toolchain (build)", func() (bool, string) {
-			// runtime.Version() reports the toolchain that built THIS
-			// binary — operators rebuilding from source see whether the
-			// embedded stdlib carries the 1.26.2 patches for the
-			// crypto/x509 + crypto/tls CVEs (GO-2026-4866 / 4870 /
-			// 4946 / 4947). Doctor downgrades to a non-failing warning
-			// when older — the binary still works, but dashboard TLS
-			// (if anyone enables it) would inherit unpatched code.
-			v := runtime.Version()
-			if !goToolchainAtLeast(v, 1, 26, 2) {
-				return true, fmt.Sprintf("%s (older than go1.26.2 — stdlib CVEs unpatched; rebuild with newer toolchain)", v)
-			}
-			return true, v
-		}},
-		{"Journal openable", func() (bool, string) {
-			if _, err := os.Stat(journalPath); os.IsNotExist(err) {
-				return true, "(none yet — created on first event)"
-			}
-			f, err := os.Open(journalPath)
-			if err != nil {
-				return false, err.Error()
-			}
-			if err := f.Close(); err != nil {
-				return false, fmt.Sprintf("journal exists but could not close: %v", err)
-			}
-			return true, ""
-		}},
-		{"Index file readable", func() (bool, string) {
-			fi, err := os.Stat(indexPath)
-			if os.IsNotExist(err) {
-				return true, "(none yet — built on first daemon start)"
-			}
-			if err != nil {
-				return false, err.Error()
-			}
-			f, err := os.Open(indexPath)
-			if err != nil {
-				return false, err.Error()
-			}
-			if err := f.Close(); err != nil {
-				return false, fmt.Sprintf("index exists but could not close: %v", err)
-			}
-			return true, fmt.Sprintf("%d bytes", fi.Size())
-		}},
-		{"Port file consistent with daemon liveness", func() (bool, string) {
-			// Phase 2: prefer the global port file when a host-wide
-			// daemon is up. The legacy per-project file is still
-			// checked as a fallback so v0.3.x straddle setups don't
-			// flip the row red just because they're running both.
-			if globalDashboardURL() != "" {
-				if _, err := os.Stat(project.GlobalPortPath()); err == nil {
-					return true, "(global daemon)"
-				}
-			}
-			if _, err := os.Stat(portPath); os.IsNotExist(err) {
-				if daemonAlive {
-					return false, "daemon is alive but port file missing"
-				}
-				return true, "(no daemon, no port file — OK)"
-			}
-			if !daemonAlive {
-				return false, "stale port file from crashed daemon (will be overwritten on next start)"
-			}
-			return true, ""
-		}},
-		{"PID file consistent with daemon liveness", func() (bool, string) {
-			// Same global-first ordering as the port-file check.
-			if globalDashboardURL() != "" {
-				if pid := readGlobalDaemonPID(); pid > 0 {
-					return true, fmt.Sprintf("global daemon PID %d", pid)
-				}
-				if daemonAlive {
-					return false, "global daemon is alive but ~/.dfmt/daemon.pid is missing"
-				}
-			}
-			data, err := os.ReadFile(pidPath)
-			if os.IsNotExist(err) {
-				if daemonAlive {
-					return false, "daemon is alive but PID file missing"
-				}
-				return true, "(no daemon, no PID file — OK)"
-			}
-			if err != nil {
-				return false, err.Error()
-			}
-			var pid int
-			fmt.Sscanf(string(data), "%d", &pid)
-			if pid <= 0 {
-				return false, "PID file is malformed"
-			}
-			if !daemonAlive {
-				return false, fmt.Sprintf("stale PID %d (process not running; auto-cleaned on next start)", pid)
-			}
-			return true, fmt.Sprintf("PID %d", pid)
-		}},
-		{"Redact override (.dfmt/redact.yaml)", func() (bool, string) {
-			// ADR-0014. Same shape as the permissions row below.
-			_, res, err := redact.LoadProjectRedactor(dir)
-			if err != nil {
-				return false, err.Error()
-			}
-			if !res.OverrideFound {
-				return true, "(none — using default patterns)"
-			}
-			detail := fmt.Sprintf("loaded %d pattern(s)", res.PatternsLoaded)
-			if len(res.Warnings) > 0 {
-				detail += fmt.Sprintf("; %d warning(s): %s",
-					len(res.Warnings), strings.Join(res.Warnings, "; "))
-			}
-			return true, detail
-		}},
-		{"Permissions override (.dfmt/permissions.yaml)", func() (bool, string) {
-			// ADR-0014. The override file is optional; report what state
-			// the daemon will see at startup.
-			res, err := sandbox.LoadPolicyMerged(dir)
-			if err != nil {
-				return false, err.Error()
-			}
-			if !res.OverrideFound {
-				return true, "(none — using DefaultPolicy)"
-			}
-			detail := fmt.Sprintf("loaded %d rule(s)", res.OverrideRules)
-			if len(res.Warnings) > 0 {
-				detail += fmt.Sprintf("; %d hard-deny mask(s): %s",
-					len(res.Warnings), strings.Join(res.Warnings, "; "))
-			}
-			return true, detail
-		}},
-		{"Lock file consistent with daemon liveness", func() (bool, string) {
-			if _, err := os.Stat(lockPath); os.IsNotExist(err) {
-				return true, "(no lock — OK)"
-			}
-			if daemonAlive {
-				return true, "(held by running daemon)"
-			}
-			// Lock file present, daemon dead: try to acquire it. If we
-			// can, the OS released the flock when the daemon died — the
-			// file is benign and a fresh daemon will reuse it. If we can
-			// NOT acquire, something else is holding it; the next Start
-			// will fail.
-			lock, lerr := daemon.AcquireLock(dir)
-			if lerr == nil {
-				_ = lock.Release()
-				return true, "(orphan file, but flock released — next start will reclaim)"
-			}
-			return false, fmt.Sprintf("lock held by another process: %v", lerr)
-		}},
-		{"Last crash (~/.dfmt/last-crash.log)", func() (bool, string) {
-			// Phase 2: the global daemon writes here on panic via
-			// recoverAndLogCrash. Absence is the happy state. Presence
-			// is informational only — the doctor stays green so a crash
-			// from yesterday doesn't make every diagnostic look
-			// failing — but the timestamp is printed so the operator
-			// knows whether to investigate.
-			fi, err := os.Stat(project.GlobalCrashPath())
-			if os.IsNotExist(err) {
-				return true, "(none — clean run)"
-			}
-			if err != nil {
-				return false, err.Error()
-			}
-			age := time.Since(fi.ModTime()).Truncate(time.Second)
-			return true, fmt.Sprintf("present (%s old; cat %s)", age, project.GlobalCrashPath())
-		}},
-	}
-
-	allOk := true
-	for _, c := range checks {
-		ok, detail := c.fn()
-		marker := "✓"
-		if !ok {
-			marker = "✗"
-			allOk = false
-		}
-		if detail != "" {
-			fmt.Printf("%s %s — %s\n", marker, c.name, detail)
-		} else {
-			fmt.Printf("%s %s\n", marker, c.name)
-		}
-	}
+	allOk := runChecks(coreChecks(paths))
 
 	// Per-agent verification — the previous doctor only inspected project
 	// state (.dfmt/, journal, lock). The MCP wire-up is the part that
@@ -296,7 +111,7 @@ func runDoctor(args []string) int {
 	// that don't run subprocesses are unaffected.
 	checkSandboxToolchains(dir)
 
-	if daemonAlive {
+	if paths.daemonAlive {
 		fmt.Println("[i] Daemon running")
 	} else {
 		fmt.Println("[i] Daemon stopped (auto-starts on next command)")
@@ -306,6 +121,228 @@ func runDoctor(args []string) int {
 		return 1
 	}
 	return 0
+}
+
+// runChecks executes the project-state row of the doctor report and
+// prints a ✓/✗ line per check. Returns false if any check failed so the
+// caller can flip the overall exit code.
+func runChecks(checks []doctorCheck) bool {
+	allOk := true
+	for _, c := range checks {
+		ok, detail := c.fn()
+		marker := "✓"
+		if !ok {
+			marker = "✗"
+			allOk = false
+		}
+		if detail != "" {
+			fmt.Printf("%s %s — %s\n", marker, c.name, detail)
+		} else {
+			fmt.Printf("%s %s\n", marker, c.name)
+		}
+	}
+	return allOk
+}
+
+// coreChecks returns the project-state rows runDoctor prints first —
+// project discovery, config loading, .dfmt directory, Go toolchain age,
+// journal/index file health, port/PID/lock consistency, and the two
+// optional override files (redact, permissions). Each closure captures
+// `p` so paths are resolved once at the call site.
+func coreChecks(p doctorPaths) []doctorCheck {
+	return []doctorCheck{
+		{"Project exists", func() (bool, string) {
+			proj, err := project.Discover(p.dir)
+			if err != nil {
+				return false, err.Error()
+			}
+			return true, proj
+		}},
+		{"Config valid", func() (bool, string) {
+			cfg, err := config.Load(p.dir)
+			if err != nil {
+				return false, err.Error()
+			}
+			if cfg == nil {
+				return false, "config nil"
+			}
+			return true, fmt.Sprintf("durability=%s", cfg.Storage.Durability)
+		}},
+		{".dfmt directory", func() (bool, string) {
+			fi, err := os.Stat(p.dfmtDir)
+			if err != nil {
+				return false, err.Error()
+			}
+			if !fi.IsDir() {
+				return false, ".dfmt is not a directory"
+			}
+			return true, ""
+		}},
+		{"Go toolchain (build)", func() (bool, string) {
+			// runtime.Version() reports the toolchain that built THIS
+			// binary — operators rebuilding from source see whether the
+			// embedded stdlib carries the 1.26.2 patches for the
+			// crypto/x509 + crypto/tls CVEs (GO-2026-4866 / 4870 /
+			// 4946 / 4947). Doctor downgrades to a non-failing warning
+			// when older — the binary still works, but dashboard TLS
+			// (if anyone enables it) would inherit unpatched code.
+			v := runtime.Version()
+			if !goToolchainAtLeast(v, 1, 26, 2) {
+				return true, fmt.Sprintf("%s (older than go1.26.2 — stdlib CVEs unpatched; rebuild with newer toolchain)", v)
+			}
+			return true, v
+		}},
+		{"Journal openable", func() (bool, string) {
+			if _, err := os.Stat(p.journal); os.IsNotExist(err) {
+				return true, "(none yet — created on first event)"
+			}
+			f, err := os.Open(p.journal)
+			if err != nil {
+				return false, err.Error()
+			}
+			if err := f.Close(); err != nil {
+				return false, fmt.Sprintf("journal exists but could not close: %v", err)
+			}
+			return true, ""
+		}},
+		{"Index file readable", func() (bool, string) {
+			fi, err := os.Stat(p.index)
+			if os.IsNotExist(err) {
+				return true, "(none yet — built on first daemon start)"
+			}
+			if err != nil {
+				return false, err.Error()
+			}
+			f, err := os.Open(p.index)
+			if err != nil {
+				return false, err.Error()
+			}
+			if err := f.Close(); err != nil {
+				return false, fmt.Sprintf("index exists but could not close: %v", err)
+			}
+			return true, fmt.Sprintf("%d bytes", fi.Size())
+		}},
+		{"Port file consistent with daemon liveness", func() (bool, string) {
+			// Phase 2: prefer the global port file when a host-wide
+			// daemon is up. The legacy per-project file is still
+			// checked as a fallback so v0.3.x straddle setups don't
+			// flip the row red just because they're running both.
+			if globalDashboardURL() != "" {
+				if _, err := os.Stat(project.GlobalPortPath()); err == nil {
+					return true, "(global daemon)"
+				}
+			}
+			if _, err := os.Stat(p.port); os.IsNotExist(err) {
+				if p.daemonAlive {
+					return false, "daemon is alive but port file missing"
+				}
+				return true, "(no daemon, no port file — OK)"
+			}
+			if !p.daemonAlive {
+				return false, "stale port file from crashed daemon (will be overwritten on next start)"
+			}
+			return true, ""
+		}},
+		{"PID file consistent with daemon liveness", func() (bool, string) {
+			// Same global-first ordering as the port-file check.
+			if globalDashboardURL() != "" {
+				if pid := readGlobalDaemonPID(); pid > 0 {
+					return true, fmt.Sprintf("global daemon PID %d", pid)
+				}
+				if p.daemonAlive {
+					return false, "global daemon is alive but ~/.dfmt/daemon.pid is missing"
+				}
+			}
+			data, err := os.ReadFile(p.pid)
+			if os.IsNotExist(err) {
+				if p.daemonAlive {
+					return false, "daemon is alive but PID file missing"
+				}
+				return true, "(no daemon, no PID file — OK)"
+			}
+			if err != nil {
+				return false, err.Error()
+			}
+			var pid int
+			fmt.Sscanf(string(data), "%d", &pid)
+			if pid <= 0 {
+				return false, "PID file is malformed"
+			}
+			if !p.daemonAlive {
+				return false, fmt.Sprintf("stale PID %d (process not running; auto-cleaned on next start)", pid)
+			}
+			return true, fmt.Sprintf("PID %d", pid)
+		}},
+		{"Redact override (.dfmt/redact.yaml)", func() (bool, string) {
+			// ADR-0014. Same shape as the permissions row below.
+			_, res, err := redact.LoadProjectRedactor(p.dir)
+			if err != nil {
+				return false, err.Error()
+			}
+			if !res.OverrideFound {
+				return true, "(none — using default patterns)"
+			}
+			detail := fmt.Sprintf("loaded %d pattern(s)", res.PatternsLoaded)
+			if len(res.Warnings) > 0 {
+				detail += fmt.Sprintf("; %d warning(s): %s",
+					len(res.Warnings), strings.Join(res.Warnings, "; "))
+			}
+			return true, detail
+		}},
+		{"Permissions override (.dfmt/permissions.yaml)", func() (bool, string) {
+			// ADR-0014. The override file is optional; report what state
+			// the daemon will see at startup.
+			res, err := sandbox.LoadPolicyMerged(p.dir)
+			if err != nil {
+				return false, err.Error()
+			}
+			if !res.OverrideFound {
+				return true, "(none — using DefaultPolicy)"
+			}
+			detail := fmt.Sprintf("loaded %d rule(s)", res.OverrideRules)
+			if len(res.Warnings) > 0 {
+				detail += fmt.Sprintf("; %d hard-deny mask(s): %s",
+					len(res.Warnings), strings.Join(res.Warnings, "; "))
+			}
+			return true, detail
+		}},
+		{"Lock file consistent with daemon liveness", func() (bool, string) {
+			if _, err := os.Stat(p.lock); os.IsNotExist(err) {
+				return true, "(no lock — OK)"
+			}
+			if p.daemonAlive {
+				return true, "(held by running daemon)"
+			}
+			// Lock file present, daemon dead: try to acquire it. If we
+			// can, the OS released the flock when the daemon died — the
+			// file is benign and a fresh daemon will reuse it. If we can
+			// NOT acquire, something else is holding it; the next Start
+			// will fail.
+			lock, lerr := daemon.AcquireLock(p.dir)
+			if lerr == nil {
+				_ = lock.Release()
+				return true, "(orphan file, but flock released — next start will reclaim)"
+			}
+			return false, fmt.Sprintf("lock held by another process: %v", lerr)
+		}},
+		{"Last crash (~/.dfmt/last-crash.log)", func() (bool, string) {
+			// Phase 2: the global daemon writes here on panic via
+			// recoverAndLogCrash. Absence is the happy state. Presence
+			// is informational only — the doctor stays green so a crash
+			// from yesterday doesn't make every diagnostic look
+			// failing — but the timestamp is printed so the operator
+			// knows whether to investigate.
+			fi, err := os.Stat(project.GlobalCrashPath())
+			if os.IsNotExist(err) {
+				return true, "(none — clean run)"
+			}
+			if err != nil {
+				return false, err.Error()
+			}
+			age := time.Since(fi.ModTime()).Truncate(time.Second)
+			return true, fmt.Sprintf("present (%s old; cat %s)", age, project.GlobalCrashPath())
+		}},
+	}
 }
 
 // checkSandboxToolchains probes the *running daemon* — not the doctor
