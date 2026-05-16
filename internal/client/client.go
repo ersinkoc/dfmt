@@ -13,12 +13,12 @@ import (
 	neturl "net/url"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/ersinkoc/dfmt/internal/core"
+	"github.com/ersinkoc/dfmt/internal/osutil"
 	"github.com/ersinkoc/dfmt/internal/project"
 	"github.com/ersinkoc/dfmt/internal/setup"
 	"github.com/ersinkoc/dfmt/internal/transport"
@@ -98,7 +98,6 @@ func readPortFile(path string) (int, string, error) {
 }
 
 const (
-	goosWindows    = "windows"
 	netUnix        = "unix"
 	addrLocalhost0 = "127.0.0.1:0"
 )
@@ -174,7 +173,7 @@ func NewClient(projectPath string) (*Client, error) {
 	portFile := filepath.Join(projectPath, ".dfmt", "port")
 
 	var network, address string
-	if runtime.GOOS == goosWindows {
+	if osutil.IsWindows() {
 		network = "tcp"
 		address = addrLocalhost0
 		if port, _, err := readPortFile(portFile); err == nil && port > 0 {
@@ -194,7 +193,7 @@ func NewClient(projectPath string) (*Client, error) {
 		projectID:  resolvedProj,
 	}
 
-	if runtime.GOOS == goosWindows {
+	if osutil.IsWindows() {
 		if _, token, err := readPortFile(portFile); err == nil {
 			c.authToken = token
 		}
@@ -209,7 +208,7 @@ func NewClient(projectPath string) (*Client, error) {
 // caller decides whether to spawn a global daemon or fall back to
 // legacy. The token is empty on Unix (Unix socket has no bearer token).
 func globalDaemonTarget() (address, token, network, socketPath string) {
-	if runtime.GOOS == goosWindows {
+	if osutil.IsWindows() {
 		network = "tcp"
 		socketPath = ""
 		port, t, err := readPortFile(project.GlobalPortPath())
@@ -452,7 +451,7 @@ func DaemonRunning(projectPath string) bool {
 
 	var network, address string
 
-	if runtime.GOOS == goosWindows {
+	if osutil.IsWindows() {
 		network = "tcp"
 		if port, _, err := readPortFile(portFile); err == nil && port > 0 {
 			address = fmt.Sprintf("127.0.0.1:%d", port)
@@ -462,7 +461,7 @@ func DaemonRunning(projectPath string) bool {
 		address = socketPath
 	}
 
-	if address == "" || (runtime.GOOS == goosWindows && address == addrLocalhost0) {
+	if address == "" || (osutil.IsWindows() && address == addrLocalhost0) {
 		return false
 	}
 

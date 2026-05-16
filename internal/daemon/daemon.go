@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -17,6 +16,7 @@ import (
 	"github.com/ersinkoc/dfmt/internal/content"
 	"github.com/ersinkoc/dfmt/internal/core"
 	"github.com/ersinkoc/dfmt/internal/logging"
+	"github.com/ersinkoc/dfmt/internal/osutil"
 	"github.com/ersinkoc/dfmt/internal/project"
 	"github.com/ersinkoc/dfmt/internal/redact"
 	"github.com/ersinkoc/dfmt/internal/safefs"
@@ -30,7 +30,6 @@ const (
 	// from .dfmt/port). Held as a constant so the test cross-checks share
 	// the literal.
 	ephemeralLoopback = "127.0.0.1:0"
-	goosWindows       = "windows"
 )
 
 // Server is the interface for network servers (Unix socket or TCP).
@@ -290,7 +289,7 @@ func NewGlobal(cfg *config.Config) (*Daemon, error) {
 	var httpServer *transport.HTTPServer
 	tcpOptIn := cfg.Transport.HTTP.Enabled && cfg.Transport.HTTP.Bind != ""
 	switch {
-	case runtime.GOOS == goosWindows:
+	case osutil.IsWindows():
 		bind := ephemeralLoopback
 		if tcpOptIn {
 			bind = cfg.Transport.HTTP.Bind
@@ -998,7 +997,7 @@ func buildServer(projectPath, dfmtDir string, cfg *config.Config, handlers *tran
 	tcpOptIn := cfg.Transport.HTTP.Enabled && cfg.Transport.HTTP.Bind != ""
 	var httpServer *transport.HTTPServer
 	switch {
-	case runtime.GOOS == goosWindows:
+	case osutil.IsWindows():
 		// Bind to IPv4 loopback explicitly so we don't race between ::1 and
 		// 127.0.0.1 — the client also dials 127.0.0.1 to avoid slow IPv6-first
 		// fallbacks through "localhost" resolution.

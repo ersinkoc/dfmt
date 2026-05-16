@@ -4,9 +4,10 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/ersinkoc/dfmt/internal/osutil"
 )
 
 func TestEnsureProjectInitializedIdempotentAndPreservesConfig(t *testing.T) {
@@ -296,7 +297,7 @@ func TestWriteProjectClaudeSettingsIdempotent(t *testing.T) {
 func TestWriteProjectClaudeSettingsRefusesUserHome(t *testing.T) {
 	fakeHome := t.TempDir()
 	t.Setenv("HOME", fakeHome)
-	if runtime.GOOS == "windows" {
+	if osutil.IsWindows() {
 		t.Setenv("USERPROFILE", fakeHome)
 	}
 

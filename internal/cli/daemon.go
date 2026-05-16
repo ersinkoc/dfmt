@@ -13,7 +13,6 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -23,6 +22,7 @@ import (
 	"github.com/ersinkoc/dfmt/internal/config"
 	"github.com/ersinkoc/dfmt/internal/daemon"
 	"github.com/ersinkoc/dfmt/internal/logging"
+	"github.com/ersinkoc/dfmt/internal/osutil"
 	"github.com/ersinkoc/dfmt/internal/project"
 	"github.com/ersinkoc/dfmt/internal/transport"
 )
@@ -102,7 +102,7 @@ func runStatus(args []string) int {
 		socketPath = project.SocketPath(proj)
 	}
 	if globalDashboardURL() != "" {
-		if runtime.GOOS == "windows" {
+		if osutil.IsWindows() {
 			socketPath = project.GlobalPortPath()
 		} else {
 			socketPath = project.GlobalSocketPath()
@@ -1003,7 +1003,7 @@ func waitForGlobalExit(pid int, timeout time.Duration) {
 // index, releasing the lock cleanly. Force is only invoked after a graceful
 // attempt has timed out.
 func signalStopProcess(pid int, force bool) {
-	if runtime.GOOS == "windows" {
+	if osutil.IsWindows() {
 		args := []string{"/PID", fmt.Sprintf("%d", pid), "/T"}
 		if force {
 			args = append(args, "/F")
@@ -1100,7 +1100,7 @@ func runList(args []string) int {
 			if i == len(daemons)-1 {
 				comma = ""
 			}
-			if runtime.GOOS == "windows" {
+			if osutil.IsWindows() {
 				fmt.Printf(`  {"project": %q, "pid": %d, "port": %d}%s`+"\n",
 					d.ProjectPath, d.PID, d.Port, comma)
 			} else {
@@ -1114,7 +1114,7 @@ func runList(args []string) int {
 		fmt.Println("")
 		for _, d := range daemons {
 			uptime := time.Since(d.StartedAt).Round(time.Second)
-			if runtime.GOOS == "windows" {
+			if osutil.IsWindows() {
 				fmt.Printf("  [%d] %s (port %d, uptime %s)\n", d.PID, d.ProjectPath, d.Port, uptime)
 			} else {
 				fmt.Printf("  [%d] %s (socket, uptime %s)\n", d.PID, d.ProjectPath, uptime)

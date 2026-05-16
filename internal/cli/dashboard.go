@@ -10,6 +10,7 @@ import (
 	"github.com/ersinkoc/dfmt/internal/client"
 	"github.com/ersinkoc/dfmt/internal/config"
 	"github.com/ersinkoc/dfmt/internal/logging"
+	"github.com/ersinkoc/dfmt/internal/osutil"
 	"github.com/ersinkoc/dfmt/internal/project"
 )
 
@@ -56,7 +57,7 @@ func runDashboard(args []string) int {
 	// socket which browsers can't dial. Emit the platform hint and bail
 	// before claiming we have a useful URL. (Same logic as before; only
 	// the trigger condition moved earlier in the flow.)
-	if runtime.GOOS != "windows" && projErr == nil {
+	if !osutil.IsWindows() && projErr == nil {
 		cfg, _ := config.Load(curProject)
 		tcpOptIn := cfg != nil && cfg.Transport.HTTP.Enabled && cfg.Transport.HTTP.Bind != ""
 		if !tcpOptIn {

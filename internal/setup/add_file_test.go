@@ -2,8 +2,9 @@ package setup
 
 import (
 	"path/filepath"
-	"runtime"
 	"testing"
+
+	"github.com/ersinkoc/dfmt/internal/osutil"
 )
 
 func TestManifestAddFileInsertsNewEntry(t *testing.T) {
@@ -49,7 +50,7 @@ func TestManifestAddFileAppendsDistinctPaths(t *testing.T) {
 }
 
 func TestManifestAddFileWindowsCaseInsensitive(t *testing.T) {
-	if runtime.GOOS != "windows" {
+	if !osutil.IsWindows() {
 		t.Skip("case-insensitive path collision is Windows-only")
 	}
 	m := &Manifest{
@@ -71,7 +72,7 @@ func TestManifestAddFileWindowsCaseInsensitive(t *testing.T) {
 func TestLoadManifestDedupsLegacyDuplicates(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("XDG_DATA_HOME", tmp)
-	if runtime.GOOS == "windows" {
+	if osutil.IsWindows() {
 		t.Setenv("USERPROFILE", tmp)
 	} else {
 		t.Setenv("HOME", tmp)

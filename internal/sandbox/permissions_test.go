@@ -5,10 +5,11 @@ import (
 	"errors"
 	"os"
 	"os/exec"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/ersinkoc/dfmt/internal/osutil"
 )
 
 // TestFetchWithPolicyCheck tests the Fetch method policy enforcement.
@@ -329,7 +330,7 @@ func TestExecImplTempFilePath(t *testing.T) {
 
 // TestExecImplExitCodeCapture tests that exit codes are captured correctly.
 func TestExecImplExitCodeCapture(t *testing.T) {
-	if runtime.GOOS == "windows" {
+	if osutil.IsWindows() {
 		t.Skip("sh/bash not available on Windows by default")
 	}
 	rt, ok := runtimes.Get("sh")
@@ -407,7 +408,7 @@ func TestExecImplMaxRawBytesTruncation(t *testing.T) {
 
 // TestExecImplDFMTExecEnvPrefix tests that DFMT_EXEC_* env vars are passed through.
 func TestExecImplDFMTExecEnvPrefix(t *testing.T) {
-	if runtime.GOOS == "windows" {
+	if osutil.IsWindows() {
 		t.Skip("sh/bash not available on Windows by default")
 	}
 	rt, ok := runtimes.Get("sh")
@@ -446,7 +447,7 @@ func TestExecImplDFMTExecEnvPrefix(t *testing.T) {
 
 // TestExecImplExtraEnv tests that extra env vars are passed through.
 func TestExecImplExtraEnv(t *testing.T) {
-	if runtime.GOOS == "windows" {
+	if osutil.IsWindows() {
 		t.Skip("sh/bash not available on Windows by default")
 	}
 	rt, ok := runtimes.Get("sh")
@@ -482,7 +483,7 @@ func TestExecImplExtraEnv(t *testing.T) {
 
 // TestExecImplWorkingDir tests that working directory is set correctly.
 func TestExecImplWorkingDir(t *testing.T) {
-	if runtime.GOOS == "windows" {
+	if osutil.IsWindows() {
 		t.Skip("sh/bash not available on Windows by default")
 	}
 	rt, ok := runtimes.Get("sh")
@@ -521,7 +522,7 @@ func TestExecImplWorkingDir(t *testing.T) {
 
 // TestExecImplDefaultTimeout tests that default timeout is applied.
 func TestExecImplDefaultTimeout(t *testing.T) {
-	if runtime.GOOS == "windows" {
+	if osutil.IsWindows() {
 		t.Skip("sh/bash not available on Windows by default")
 	}
 	rt, ok := runtimes.Get("sh")
@@ -560,7 +561,7 @@ func TestExecImplDefaultTimeout(t *testing.T) {
 
 // TestExecImplMaxTimeout tests that timeout is capped at MaxExecTimeout.
 func TestExecImplMaxTimeout(t *testing.T) {
-	if runtime.GOOS == "windows" {
+	if osutil.IsWindows() {
 		t.Skip("sh/bash not available on Windows by default")
 	}
 	rt, ok := runtimes.Get("sh")
@@ -888,7 +889,7 @@ func TestPrependPATHAddsWhenAbsent(t *testing.T) {
 // runtime so we can echo the env back without depending on the host's
 // language toolchains.
 func TestWithPathPrependOnExec(t *testing.T) {
-	if runtime.GOOS == "windows" {
+	if osutil.IsWindows() {
 		t.Skip("bash echo behavior differs on Windows; covered by the prependPATH unit tests")
 	}
 	bash, err := exec.LookPath("bash")

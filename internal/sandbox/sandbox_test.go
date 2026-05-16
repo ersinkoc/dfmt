@@ -5,10 +5,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/ersinkoc/dfmt/internal/osutil"
 )
 
 func TestNewSandbox(t *testing.T) {
@@ -211,7 +212,7 @@ func TestRuntimesGet(t *testing.T) {
 // path verbatim, not whatever exec.LookPath surfaced. Closes the WSL-
 // bash mismatch where unsuffixed Windows binaries silently 127'd.
 func TestLookPathBashPrefersGitBashOnWindows(t *testing.T) {
-	if runtime.GOOS != "windows" {
+	if !osutil.IsWindows() {
 		t.Skip("Windows-only behavior")
 	}
 	pinned := `C:\fake\git\bash.exe`
@@ -234,7 +235,7 @@ func TestLookPathBashPrefersGitBashOnWindows(t *testing.T) {
 // because what's on PATH varies by host; we only assert the function
 // doesn't crash and the special-case isn't sticky after stubbing.
 func TestLookPathBashFallsBackWhenNoGitBash(t *testing.T) {
-	if runtime.GOOS != "windows" {
+	if !osutil.IsWindows() {
 		t.Skip("Windows-only behavior")
 	}
 	orig := findGitBashWindows
@@ -253,7 +254,7 @@ func TestLookPathBashFallsBackWhenNoGitBash(t *testing.T) {
 // — Git Bash is a Windows concept; touching it elsewhere would just
 // add overhead.
 func TestLookPathOnNonWindowsSkipsGitBash(t *testing.T) {
-	if runtime.GOOS == "windows" {
+	if osutil.IsWindows() {
 		t.Skip("non-Windows behavior")
 	}
 	orig := findGitBashWindows
@@ -1282,7 +1283,7 @@ func TestRuntimesSetRuntime(t *testing.T) {
 }
 
 func TestDetectRuntimesReturnsResult(t *testing.T) {
-	if runtime.GOOS == "windows" {
+	if osutil.IsWindows() {
 		t.Skip("sh/bash not available on Windows by default")
 	}
 	r, err := DetectRuntimes(context.Background())
@@ -2324,7 +2325,7 @@ func TestSandboxWriteAtomicReplaces(t *testing.T) {
 
 	// Mode must remain 0o600. On Windows the .Mode() bits may not match
 	// exactly; only assert on Unix.
-	if runtime.GOOS != "windows" {
+	if !osutil.IsWindows() {
 		fi, err := os.Stat(path)
 		if err != nil {
 			t.Fatalf("stat: %v", err)

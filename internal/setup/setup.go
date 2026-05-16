@@ -9,12 +9,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/ersinkoc/dfmt/internal/osutil"
 	"github.com/ersinkoc/dfmt/internal/safefs"
 )
 
@@ -24,7 +24,7 @@ const maxManifestBytes = 256 << 10
 // Detection checks for the "microsoft" or "WSL" signature in /proc/version,
 // which is the canonical indicator used by WSL itself and tools like VS Code.
 func IsWSL() bool {
-	if runtime.GOOS == goosWindows {
+	if osutil.IsWindows() {
 		return false
 	}
 	data, err := os.ReadFile("/proc/version")
@@ -153,7 +153,7 @@ func ResolveDFMTCommand() string {
 // set it to Unix-style forms like "/c/Users/foo" which filepath.Join cannot use.
 func HomeDir() string {
 	if home := os.Getenv("HOME"); home != "" {
-		if runtime.GOOS != goosWindows || filepath.IsAbs(home) {
+		if !osutil.IsWindows() || filepath.IsAbs(home) {
 			return home
 		}
 	}
@@ -236,7 +236,7 @@ type FileEntry struct {
 // underlying filesystem is case-insensitive, so the comparison is too;
 // on Unix-like systems it is exact.
 func samePath(a, b string) bool {
-	if runtime.GOOS == goosWindows {
+	if osutil.IsWindows() {
 		return strings.EqualFold(a, b)
 	}
 	return a == b

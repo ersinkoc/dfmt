@@ -4,10 +4,11 @@ import (
 	"context"
 	"net"
 	"path/filepath"
-	"runtime"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/ersinkoc/dfmt/internal/osutil"
 )
 
 // TestSocketServerStopWaitsForInflightConn pins finding #6: Stop() must
@@ -23,7 +24,7 @@ import (
 // behavior from listener/Read interactions, which on Unix do not unblock
 // each other (closing a listener does not interrupt existing reads).
 func TestSocketServerStopWaitsForInflightConn(t *testing.T) {
-	if runtime.GOOS == "windows" {
+	if osutil.IsWindows() {
 		t.Skip("Unix sockets unavailable on Windows")
 	}
 
@@ -70,7 +71,7 @@ func TestSocketServerStopWaitsForInflightConn(t *testing.T) {
 // within stopDrainTimeout + epsilon. We set stopDrainTimeout very short
 // for this test to avoid sleeping the full default 5s.
 func TestSocketServerStopDrainTimeoutFires(t *testing.T) {
-	if runtime.GOOS == "windows" {
+	if osutil.IsWindows() {
 		t.Skip("Unix sockets unavailable on Windows")
 	}
 
@@ -121,7 +122,7 @@ func TestSocketServerStopDrainTimeoutFires(t *testing.T) {
 // connection idle, and assert the conn is closed by the server within
 // the cap window.
 func TestSocketConnLifetimeCapFires(t *testing.T) {
-	if runtime.GOOS == "windows" {
+	if osutil.IsWindows() {
 		t.Skip("Unix sockets unavailable on Windows")
 	}
 

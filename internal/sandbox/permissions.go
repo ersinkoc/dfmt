@@ -4,8 +4,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"runtime"
 	"strings"
+
+	"github.com/ersinkoc/dfmt/internal/osutil"
 )
 
 const langBash = "bash"
@@ -14,7 +15,7 @@ const langBash = "bash"
 // On Windows: converts to forward slashes and lowercases drive letter.
 // On Unix: returns path as-is.
 func pathHint(path string) string {
-	if runtime.GOOS == goosWindows {
+	if osutil.IsWindows() {
 		path = strings.ReplaceAll(path, `\`, "/")
 		if len(path) >= 2 && path[1] == ':' {
 			return strings.ToLower(string(path[0])) + path[1:]

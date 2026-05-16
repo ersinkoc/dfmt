@@ -3,10 +3,10 @@ package cli
 import (
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 
+	"github.com/ersinkoc/dfmt/internal/osutil"
 	"github.com/ersinkoc/dfmt/internal/project"
 )
 
@@ -40,7 +40,7 @@ func TestRunDashboard_UnknownFlagReturnsTwo(t *testing.T) {
 // command's happy path requires a running daemon (covered by manual
 // smoke test, not unit).
 func TestRunDashboard_UnixReportsBrowserUnreachable(t *testing.T) {
-	if runtime.GOOS == "windows" {
+	if osutil.IsWindows() {
 		t.Skip("Windows path requires a live daemon; manual smoke only")
 	}
 	tmpDir := t.TempDir()

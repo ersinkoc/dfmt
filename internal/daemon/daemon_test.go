@@ -5,11 +5,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/ersinkoc/dfmt/internal/osutil"
 
 	"github.com/ersinkoc/dfmt/internal/client"
 	"github.com/ersinkoc/dfmt/internal/config"
@@ -200,7 +201,7 @@ func TestLockFileFields(t *testing.T) {
 // the two viable configurations. On Windows the test is skipped: the
 // platform always uses TCP loopback so Socket.Enabled is a no-op.
 func TestNew_RefusesWhenNoTransportEnabled(t *testing.T) {
-	if runtime.GOOS == "windows" {
+	if osutil.IsWindows() {
 		t.Skip("Windows path always uses TCP; Socket.Enabled is a no-op")
 	}
 	tmpDir := t.TempDir()
@@ -229,7 +230,7 @@ func TestNew_RefusesWhenNoTransportEnabled(t *testing.T) {
 // still construct a TCP listener. The Socket.Enabled gate only fires
 // on the default (Unix-socket) branch.
 func TestNew_TCPPathIgnoresSocketDisabled(t *testing.T) {
-	if runtime.GOOS == "windows" {
+	if osutil.IsWindows() {
 		t.Skip("Windows always uses TCP; this tests the Unix branch coexistence")
 	}
 	tmpDir := t.TempDir()

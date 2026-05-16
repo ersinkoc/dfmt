@@ -3,8 +3,9 @@ package daemon
 import (
 	"os"
 	"path/filepath"
-	"runtime"
 	"testing"
+
+	"github.com/ersinkoc/dfmt/internal/osutil"
 
 	"github.com/ersinkoc/dfmt/internal/transport"
 )
@@ -14,7 +15,7 @@ import (
 // hardcoded 127.0.0.1:0 and silently ignored the configured bind, so the
 // dashboard URL was never stable.
 func TestNew_HTTPBindFromConfig_Windows(t *testing.T) {
-	if runtime.GOOS != "windows" {
+	if !osutil.IsWindows() {
 		t.Skip("Windows-only: Unix daemon uses a Unix socket listener, not TCP bind")
 	}
 	tmpDir := t.TempDir()
@@ -50,7 +51,7 @@ func TestNew_HTTPBindFromConfig_Windows(t *testing.T) {
 // bind kicks in when HTTP is not opted in — preserves the pre-existing
 // behavior (and avoids two daemons fighting for the same fixed port).
 func TestNew_HTTPBindEphemeralWhenDisabled(t *testing.T) {
-	if runtime.GOOS != "windows" {
+	if !osutil.IsWindows() {
 		t.Skip("Windows-only: Unix daemon uses a Unix socket listener, not TCP bind")
 	}
 	tmpDir := t.TempDir()
@@ -89,7 +90,7 @@ func TestNew_HTTPBindEphemeralWhenDisabled(t *testing.T) {
 // operator setting enabled=true without supplying a bind. Without the
 // nil-guard the daemon would try to net.Listen("") and crash at Start.
 func TestNew_HTTPBindEnabledButEmptyFallsBackToEphemeral(t *testing.T) {
-	if runtime.GOOS != "windows" {
+	if !osutil.IsWindows() {
 		t.Skip("Windows-only: Unix daemon uses a Unix socket listener, not TCP bind")
 	}
 	tmpDir := t.TempDir()

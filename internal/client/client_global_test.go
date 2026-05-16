@@ -7,12 +7,12 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/ersinkoc/dfmt/internal/osutil"
 	"github.com/ersinkoc/dfmt/internal/transport"
 )
 
@@ -24,7 +24,7 @@ func TestGlobalDaemonTargetReadsGlobalPaths(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("DFMT_GLOBAL_DIR", tmp)
 
-	if runtime.GOOS == goosWindows {
+	if osutil.IsWindows() {
 		// Seed a port file in the override dir.
 		pf := transport.PortFile{Port: 54321, Token: "test-token"}
 		data, err := json.Marshal(pf)
@@ -72,7 +72,7 @@ func TestGlobalDaemonTargetEmptyWhenNoFile(t *testing.T) {
 	address, token, network, _ := globalDaemonTarget()
 	_ = token
 	_ = network
-	if runtime.GOOS == goosWindows {
+	if osutil.IsWindows() {
 		if address != "" {
 			t.Errorf("Windows address with no port file = %q, want empty", address)
 		}
@@ -104,7 +104,7 @@ func TestFastDialOKRejectsMissingTarget(t *testing.T) {
 // The test uses an HTTP-server-on-loopback as the stand-in for the
 // daemon so we don't need to bring up the real one.
 func TestNewClientPrefersRunningGlobalDaemon(t *testing.T) {
-	if runtime.GOOS != goosWindows {
+	if !osutil.IsWindows() {
 		// On Unix the global socket path lives at ~/.dfmt/daemon.sock and
 		// is constructed by net.Listen on a real Unix socket. Building
 		// that fake here would duplicate transport plumbing; the

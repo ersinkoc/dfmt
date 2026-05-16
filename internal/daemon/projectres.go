@@ -7,7 +7,6 @@ import (
 	"math"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -18,6 +17,7 @@ import (
 	"github.com/ersinkoc/dfmt/internal/content"
 	"github.com/ersinkoc/dfmt/internal/core"
 	"github.com/ersinkoc/dfmt/internal/logging"
+	"github.com/ersinkoc/dfmt/internal/osutil"
 	"github.com/ersinkoc/dfmt/internal/redact"
 	"github.com/ersinkoc/dfmt/internal/sandbox"
 )
@@ -128,7 +128,7 @@ func resolveProjectID(projectID string) string {
 	if err != nil {
 		abs = projectID
 	}
-	if runtime.GOOS == goosWindows {
+	if osutil.IsWindows() {
 		return strings.ToLower(abs)
 	}
 	return abs

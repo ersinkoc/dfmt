@@ -8,10 +8,11 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/ersinkoc/dfmt/internal/osutil"
 
 	"github.com/ersinkoc/dfmt/internal/config"
 	"github.com/ersinkoc/dfmt/internal/core"
@@ -1767,7 +1768,7 @@ func TestStartDaemonBackgroundAlreadyRunning(t *testing.T) {
 }
 
 func TestStartDaemonBackgroundNewDaemon(t *testing.T) {
-	if runtime.GOOS == "windows" {
+	if osutil.IsWindows() {
 		t.Skip("skipping on Windows - file locking issues with daemon process")
 	}
 	tmpDir := t.TempDir()

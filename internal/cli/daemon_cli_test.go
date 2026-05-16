@@ -4,10 +4,11 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/ersinkoc/dfmt/internal/osutil"
 
 	"github.com/ersinkoc/dfmt/internal/project"
 )
@@ -265,10 +266,10 @@ func TestSamePathCLI_PlatformAwareCompare(t *testing.T) {
 	// Case sensitivity is platform-specific; the helper inherits
 	// runtime.GOOS.
 	gotMixed := samePathCLI("/A/B/c", "/a/b/c")
-	if runtime.GOOS == "windows" && !gotMixed {
+	if osutil.IsWindows() && !gotMixed {
 		t.Error("windows: mixed case should match")
 	}
-	if runtime.GOOS != "windows" && gotMixed {
+	if !osutil.IsWindows() && gotMixed {
 		t.Error("posix: mixed case should not match")
 	}
 }

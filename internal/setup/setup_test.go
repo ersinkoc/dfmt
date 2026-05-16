@@ -3,9 +3,10 @@ package setup
 import (
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/ersinkoc/dfmt/internal/osutil"
 )
 
 func TestAgent(t *testing.T) {
@@ -217,7 +218,7 @@ func TestDetectCodex(t *testing.T) {
 func TestDetectClaudeCode_NotFound(t *testing.T) {
 	// On Windows, os.UserHomeDir() uses USERPROFILE, not HOME env var.
 	// Skip on Windows as we can't easily test the "not found" path.
-	if runtime.GOOS == goosWindows {
+	if osutil.IsWindows() {
 		t.Skip("Cannot easily test detectClaudeCode not found on Windows (os.UserHomeDir ignores HOME)")
 	}
 
@@ -322,7 +323,7 @@ func TestLoadManifest_FileNotFound(t *testing.T) {
 }
 
 func TestLoadManifest_FilePermissionDenied(t *testing.T) {
-	if runtime.GOOS == goosWindows {
+	if osutil.IsWindows() {
 		t.Skip("Cannot test file permission denied on Windows")
 	}
 
@@ -791,7 +792,7 @@ func TestManifestPath_WithXDGDataHome(t *testing.T) {
 }
 
 func TestManifestPath_HomeFallback(t *testing.T) {
-	if runtime.GOOS == goosWindows {
+	if osutil.IsWindows() {
 		t.Skip("Cannot test HOME fallback on Windows (os.UserHomeDir uses USERPROFILE)")
 	}
 
@@ -942,7 +943,7 @@ func TestDetectClaudeCode_DirectoryAtHomePath(t *testing.T) {
 	// This test exercises the code path where .claude directory exists at HOME
 	// but no binary is found at standard paths.
 	// We skip on Windows due to path complexity.
-	if runtime.GOOS == goosWindows {
+	if osutil.IsWindows() {
 		t.Skip("Skipping on Windows due to path handling differences")
 	}
 

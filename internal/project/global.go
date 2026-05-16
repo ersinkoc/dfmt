@@ -5,7 +5,8 @@ import (
 	"encoding/hex"
 	"os"
 	"path/filepath"
-	"runtime"
+
+	"github.com/ersinkoc/dfmt/internal/osutil"
 )
 
 // Phase 2: the global daemon listens at host-scoped paths under
@@ -13,10 +14,6 @@ import (
 // the path layout so daemon, client, and doctor agree on where to
 // look — there is no per-project equivalent of port/sock/pid/lock for
 // a global daemon.
-
-// goosWindows is the runtime.GOOS value for Windows. Hoisted to a constant
-// to silence goconst across the package's platform-branch helpers.
-const goosWindows = "windows"
 
 const (
 	// GlobalSocketName is the Unix socket file inside ~/.dfmt/.
@@ -72,7 +69,7 @@ func GlobalDir() string {
 // that the fallback is rare.
 func GlobalSocketPath() string {
 	full := filepath.Join(GlobalDir(), GlobalSocketName)
-	if runtime.GOOS == goosWindows || len(full) <= 100 {
+	if osutil.IsWindows() || len(full) <= 100 {
 		return full
 	}
 	h := sha256.Sum256([]byte(GlobalDir()))

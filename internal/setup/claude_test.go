@@ -4,9 +4,10 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/ersinkoc/dfmt/internal/osutil"
 )
 
 // setHome overrides both HOME and USERPROFILE so os.UserHomeDir() resolves
@@ -394,7 +395,7 @@ func TestPatchClaudeCodeUserJSON_EmptyFileTreatedAsEmptyObject(t *testing.T) {
 // them into the canonical key so PowerShell's case-insensitive JSON parser
 // stops choking on the file.
 func TestPatchClaudeCodeUserJSON_CollapsesWindowsCaseVariants(t *testing.T) {
-	if runtime.GOOS != "windows" {
+	if !osutil.IsWindows() {
 		t.Skip("case-variant collapsing is Windows-only")
 	}
 	home := t.TempDir()
@@ -479,7 +480,7 @@ func TestNormalizeProjectKey(t *testing.T) {
 		if strings.Contains(got, "\\") {
 			t.Errorf("%q -> %q contains backslash", tc.in, got)
 		}
-		if runtime.GOOS == "windows" {
+		if osutil.IsWindows() {
 			if got != tc.want {
 				t.Errorf("windows: normalizeProjectKey(%q) = %q, want %q", tc.in, got, tc.want)
 			}

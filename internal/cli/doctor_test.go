@@ -6,6 +6,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/ersinkoc/dfmt/internal/osutil"
 )
 
 // TestSuggestToolchainDirsIn_Empty: with no candidates, no missing tools, or
@@ -28,7 +30,7 @@ func TestSuggestToolchainDirsIn_Empty(t *testing.T) {
 func TestSuggestToolchainDirsIn_HitsOneCandidate(t *testing.T) {
 	dir := t.TempDir()
 	binName := "go"
-	if runtime.GOOS == "windows" {
+	if osutil.IsWindows() {
 		binName = "go.exe"
 	}
 	if err := os.WriteFile(filepath.Join(dir, binName), []byte("#!fake\n"), 0o755); err != nil {
@@ -46,7 +48,7 @@ func TestSuggestToolchainDirsIn_HitsOneCandidate(t *testing.T) {
 func TestSuggestToolchainDirsIn_DedupsRepeatedCandidates(t *testing.T) {
 	dir := t.TempDir()
 	binName := "node"
-	if runtime.GOOS == "windows" {
+	if osutil.IsWindows() {
 		binName = "node.exe"
 	}
 	if err := os.WriteFile(filepath.Join(dir, binName), []byte("#!fake\n"), 0o755); err != nil {
@@ -64,7 +66,7 @@ func TestSuggestToolchainDirsIn_DedupsRepeatedCandidates(t *testing.T) {
 func TestSuggestToolchainDirsIn_DirectoryNotFile(t *testing.T) {
 	dir := t.TempDir()
 	binName := "python"
-	if runtime.GOOS == "windows" {
+	if osutil.IsWindows() {
 		binName = "python.exe"
 	}
 	// Make the "binary" a directory.
@@ -85,7 +87,7 @@ func TestSuggestToolchainDirsIn_MultipleCandidatesOrderPreserved(t *testing.T) {
 	dirB := t.TempDir()
 	dirEmpty := t.TempDir()
 	binName := "go"
-	if runtime.GOOS == "windows" {
+	if osutil.IsWindows() {
 		binName = "go.exe"
 	}
 	for _, d := range []string{dirA, dirB} {
@@ -108,7 +110,7 @@ func TestSuggestToolchainDirsIn_MultipleToolsOneDirCountsOnce(t *testing.T) {
 	dir := t.TempDir()
 	for _, tool := range []string{"go", "node", "python"} {
 		bin := tool
-		if runtime.GOOS == "windows" {
+		if osutil.IsWindows() {
 			bin += ".exe"
 		}
 		if err := os.WriteFile(filepath.Join(dir, bin), []byte("#!fake\n"), 0o755); err != nil {
@@ -130,7 +132,7 @@ func TestToolchainCandidateDirs_PlatformAppropriate(t *testing.T) {
 	if len(dirs) == 0 {
 		t.Fatalf("toolchainCandidateDirs returned empty on %s", runtime.GOOS)
 	}
-	if runtime.GOOS == "windows" {
+	if osutil.IsWindows() {
 		// Every base entry must look like a Windows absolute path.
 		// LOCALAPPDATA-derived entries may not match this if the test
 		// environment sets LOCALAPPDATA to a tempdir; check just the
@@ -154,7 +156,7 @@ func TestToolchainCandidateDirs_PlatformAppropriate(t *testing.T) {
 // directories appear in the returned list. Skipped on non-Windows where
 // the LOCALAPPDATA branch is not reached.
 func TestToolchainCandidateDirs_WindowsLocalAppDataPython(t *testing.T) {
-	if runtime.GOOS != "windows" {
+	if !osutil.IsWindows() {
 		t.Skip("LOCALAPPDATA python probe is Windows-only")
 	}
 	tmp := t.TempDir()
@@ -195,7 +197,7 @@ func TestToolchainCandidateDirs_WindowsLocalAppDataPython(t *testing.T) {
 // LOCALAPPDATA is unset, the baseline three entries are still returned
 // and the function does not panic on the missing env var.
 func TestToolchainCandidateDirs_WindowsMissingLocalAppData(t *testing.T) {
-	if runtime.GOOS != "windows" {
+	if !osutil.IsWindows() {
 		t.Skip("LOCALAPPDATA branch is Windows-only")
 	}
 	t.Setenv("LOCALAPPDATA", "")

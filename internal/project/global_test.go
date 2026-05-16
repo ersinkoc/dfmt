@@ -3,9 +3,10 @@ package project
 import (
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/ersinkoc/dfmt/internal/osutil"
 )
 
 // TestGlobalDirRespectsEnvOverride verifies DFMT_GLOBAL_DIR redirects
@@ -86,7 +87,7 @@ func TestGlobalSocketPathConsistency(t *testing.T) {
 // by injecting a long directory name via DFMT_GLOBAL_DIR. On Windows
 // the fallback branch is never hit so we skip it.
 func TestGlobalSocketPathFallbackOnLongHome(t *testing.T) {
-	if runtime.GOOS == goosWindows {
+	if osutil.IsWindows() {
 		t.Skip("Windows does not use Unix socket fallback")
 	}
 	// Create a path > 100 chars by padding the dir name
@@ -105,7 +106,7 @@ func TestGlobalSocketPathFallbackOnLongHome(t *testing.T) {
 // returns the direct join even when the path is short (no Unix socket
 // semantics needed on Windows).
 func TestGlobalSocketPathOnWindows(t *testing.T) {
-	if runtime.GOOS != goosWindows {
+	if !osutil.IsWindows() {
 		t.Skip("Windows-only test")
 	}
 	tmp := t.TempDir()
@@ -120,7 +121,7 @@ func TestGlobalSocketPathOnWindows(t *testing.T) {
 // TestGlobalSocketPathOnUnix verifies Unix behavior: should use direct path
 // when under 100 chars, fallback otherwise.
 func TestGlobalSocketPathOnUnix(t *testing.T) {
-	if runtime.GOOS == goosWindows {
+	if osutil.IsWindows() {
 		t.Skip("Unix-only test")
 	}
 	tmp := t.TempDir()

@@ -7,12 +7,12 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/ersinkoc/dfmt/internal/osutil"
 	"github.com/ersinkoc/dfmt/internal/project"
 	"github.com/ersinkoc/dfmt/internal/transport"
 )
@@ -597,7 +597,7 @@ func TestNewClientNetworkAddress(t *testing.T) {
 		t.Fatalf("NewClient failed: %v", err)
 	}
 	// Verify network and address are set based on OS
-	if runtime.GOOS == goosWindows {
+	if osutil.IsWindows() {
 		if cl.network != "tcp" {
 			t.Errorf("network = %s, want tcp on Windows", cl.network)
 		}
@@ -1200,7 +1200,7 @@ func TestNewClientNonExistentPath(t *testing.T) {
 }
 
 func TestNewClientWindowsPortFile(t *testing.T) {
-	if runtime.GOOS != goosWindows {
+	if !osutil.IsWindows() {
 		t.Skip("Windows-only test")
 	}
 	tmpDir := t.TempDir()
@@ -1223,7 +1223,7 @@ func TestNewClientWindowsPortFile(t *testing.T) {
 }
 
 func TestNewClientWindowsInvalidPort(t *testing.T) {
-	if runtime.GOOS != goosWindows {
+	if !osutil.IsWindows() {
 		t.Skip("Windows-only test")
 	}
 	tmpDir := t.TempDir()
@@ -1248,7 +1248,7 @@ func TestNewClientWindowsInvalidPort(t *testing.T) {
 }
 
 func TestNewClientWindowsMissingPortFile(t *testing.T) {
-	if runtime.GOOS != goosWindows {
+	if !osutil.IsWindows() {
 		t.Skip("Windows-only test")
 	}
 	tmpDir := t.TempDir()
@@ -1265,7 +1265,7 @@ func TestNewClientWindowsMissingPortFile(t *testing.T) {
 }
 
 func TestNewClientWindowsEmptyPortFile(t *testing.T) {
-	if runtime.GOOS != goosWindows {
+	if !osutil.IsWindows() {
 		t.Skip("Windows-only test")
 	}
 	tmpDir := t.TempDir()
@@ -1290,7 +1290,7 @@ func TestNewClientWindowsEmptyPortFile(t *testing.T) {
 }
 
 func TestNewClientUnixSocketPath(t *testing.T) {
-	if runtime.GOOS == goosWindows {
+	if osutil.IsWindows() {
 		t.Skip("Unix-only test")
 	}
 	tmpDir := t.TempDir()
@@ -1996,7 +1996,7 @@ func TestClientDoHTTPUnixSocket(t *testing.T) {
 }
 
 func TestClientDoHTTPPortFileUpdate(t *testing.T) {
-	if runtime.GOOS != goosWindows {
+	if !osutil.IsWindows() {
 		t.Skip("Windows-specific test")
 	}
 	tmpDir := t.TempDir()
@@ -2077,7 +2077,7 @@ func TestIsProcessRunningNegativePID(t *testing.T) {
 }
 
 func TestNewClientUnixNetwork(t *testing.T) {
-	if runtime.GOOS == goosWindows {
+	if osutil.IsWindows() {
 		t.Skip("Unix-only test")
 	}
 	tmpDir := t.TempDir()
@@ -2720,7 +2720,7 @@ func TestIsProcessRunningPlatform(t *testing.T) {
 }
 
 func TestNewClientAddressUpdateOnRetry(t *testing.T) {
-	if runtime.GOOS != goosWindows {
+	if !osutil.IsWindows() {
 		t.Skip("Windows-specific test")
 	}
 	// Test that address gets updated from port file between retries

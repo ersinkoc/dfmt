@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ersinkoc/dfmt/internal/osutil"
 	"github.com/ersinkoc/dfmt/internal/transport"
 )
 
@@ -295,7 +296,7 @@ func TestLoadedProjectsReflectsCacheState(t *testing.T) {
 // equality comparison; cli.samePathCLI does the same job in
 // production but lives in a different import graph.
 func samePathTest(a, b string) bool {
-	if runtime.GOOS == "windows" {
+	if osutil.IsWindows() {
 		return strings.EqualFold(a, b)
 	}
 	return a == b

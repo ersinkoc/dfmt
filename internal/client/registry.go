@@ -4,10 +4,10 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"runtime"
 	"sync"
 	"time"
 
+	"github.com/ersinkoc/dfmt/internal/osutil"
 	"github.com/ersinkoc/dfmt/internal/project"
 	"github.com/ersinkoc/dfmt/internal/safefs"
 )
@@ -229,7 +229,7 @@ func NewDaemonEntry(projectPath string, pid int) DaemonEntry {
 		LastSeen:    time.Now(),
 	}
 
-	if runtime.GOOS == "windows" {
+	if osutil.IsWindows() {
 		// Port file is now JSON ({"port":N,"token":"..."}); Sscanf("%d") against
 		// JSON always matched zero fields, so every Windows daemon registered
 		// with port 0 in the global registry. Reuse the dual-path reader so

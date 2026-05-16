@@ -5,9 +5,10 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/ersinkoc/dfmt/internal/osutil"
 )
 
 // requireSymlinks skips the test on platforms / privilege contexts where
@@ -123,7 +124,7 @@ func TestWriteFile_WritesRegularFile(t *testing.T) {
 	if string(got) != "hello" {
 		t.Errorf("content = %q; want %q", got, "hello")
 	}
-	if runtime.GOOS != "windows" {
+	if !osutil.IsWindows() {
 		fi, err := os.Stat(target)
 		if err != nil {
 			t.Fatal(err)
@@ -336,7 +337,7 @@ func mustAbs(t *testing.T, p string) string {
 // =============================================================================
 
 func TestWriteFileAtomic_CleanupOnWriteError(t *testing.T) {
-	if runtime.GOOS == "windows" {
+	if osutil.IsWindows() {
 		t.Skip("Windows permission behavior differs from Unix")
 	}
 	tmp := t.TempDir()
@@ -392,7 +393,7 @@ func TestWriteFileAtomic_CleanupOnCloseError(t *testing.T) {
 }
 
 func TestWriteFileAtomic_CleanupOnRenameError(t *testing.T) {
-	if runtime.GOOS == "windows" {
+	if osutil.IsWindows() {
 		t.Skip("Windows rename into directory succeeds, unlike Unix EXDEV")
 	}
 	// When rename fails (e.g. target is a directory), temp file must be removed
@@ -504,7 +505,7 @@ func TestOpenReadNoFollow_Symlink(t *testing.T) {
 }
 
 func TestOpenReadNoFollow_Directory(t *testing.T) {
-	if runtime.GOOS == "windows" {
+	if osutil.IsWindows() {
 		t.Skip("Windows os.Open succeeds on directories")
 	}
 	tmp := t.TempDir()

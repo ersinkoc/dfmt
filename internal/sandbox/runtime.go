@@ -5,22 +5,20 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/ersinkoc/dfmt/internal/osutil"
 )
 
-const (
-	versionUnknown = "unknown"
-	goosWindows    = "windows"
-)
+const versionUnknown = "unknown"
 
 // DetectShell returns the detected shell type on the current OS.
 // On Windows: checks for PowerShell, CMD, Git Bash, or WSL bash.
 // On Unix: checks for bash, zsh, fish, or sh.
 func DetectShell() string {
-	if runtime.GOOS == goosWindows {
+	if osutil.IsWindows() {
 		return detectShellWindows()
 	}
 	return detectShellUnix()
@@ -181,7 +179,7 @@ func (r *Runtimes) getVersion(ctx context.Context, path string) string {
 // Probe, but if PATH may have changed (e.g., after a permitted exec
 // modified .bashrc), call Runtimes.Reload to re-probe with a fresh env.
 var lookPath = func(name string) (string, error) {
-	if runtime.GOOS == goosWindows {
+	if osutil.IsWindows() {
 		// Special case: bash → Git Bash (WSL bash has different PATH semantics)
 		if strings.EqualFold(name, langBash) {
 			if p, ok := findGitBashWindows(); ok {

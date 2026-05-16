@@ -4,7 +4,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
+
+	"github.com/ersinkoc/dfmt/internal/osutil"
 )
 
 // Agent IDs used across the codebase.
@@ -20,13 +21,11 @@ const (
 	AgentOpenCode   = "opencode"
 )
 
-const goosWindows = "windows"
-
 func lookPath(name string) string {
 	if path, err := exec.LookPath(name); err == nil {
 		return path
 	}
-	if runtime.GOOS != goosWindows {
+	if !osutil.IsWindows() {
 		return ""
 	}
 	for _, ext := range []string{".exe", ".cmd", ".bat"} {
@@ -61,7 +60,7 @@ func detectAgent(spec agentSpec) *Agent {
 		}
 	}
 
-	if spec.skipOnWindows && runtime.GOOS == goosWindows {
+	if spec.skipOnWindows && osutil.IsWindows() {
 		return nil
 	}
 

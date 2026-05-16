@@ -8,10 +8,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 
 	"github.com/ersinkoc/dfmt/internal/logging"
+	"github.com/ersinkoc/dfmt/internal/osutil"
 	"github.com/ersinkoc/dfmt/internal/safefs"
 )
 
@@ -144,7 +144,7 @@ func PatchClaudeCodeUserJSON(projectPath string, setUserScopeMCP bool) error {
 		// and "D:/CODEBOX") even though they refer to the same project. PS
 		// JSON parsers refuse such files outright, so collapse the variants
 		// into the canonical key before patching.
-		if runtime.GOOS == goosWindows {
+		if osutil.IsWindows() {
 			canonical, _ := projects[key].(map[string]any)
 			if canonical == nil {
 				canonical = map[string]any{}

@@ -15,6 +15,7 @@ import (
 	"github.com/ersinkoc/dfmt/internal/client"
 	"github.com/ersinkoc/dfmt/internal/config"
 	"github.com/ersinkoc/dfmt/internal/daemon"
+	"github.com/ersinkoc/dfmt/internal/osutil"
 	"github.com/ersinkoc/dfmt/internal/project"
 	"github.com/ersinkoc/dfmt/internal/redact"
 	"github.com/ersinkoc/dfmt/internal/sandbox"
@@ -382,7 +383,7 @@ func checkSandboxToolchains(dir string) {
 	}
 
 	tools := []string{"go", "node", "python"}
-	if runtime.GOOS != "windows" {
+	if !osutil.IsWindows() {
 		tools = append(tools, "python3")
 	}
 
@@ -406,7 +407,7 @@ func checkSandboxToolchains(dir string) {
 			// Only check .exe variant when the bare name failed and we're
 			// on a host where Windows binaries are reachable (Windows host
 			// or any host whose daemon may be WSL-bashing into /mnt/c).
-			if runtime.GOOS == "windows" {
+			if osutil.IsWindows() {
 				p.exeStdout, p.exeOK = probeSandboxTool(cl, t+".exe")
 			}
 		}
@@ -494,7 +495,7 @@ func suggestToolchainDirsIn(missing, candidates []string) []string {
 		}
 		for tool := range want {
 			bin := tool
-			if runtime.GOOS == "windows" {
+			if osutil.IsWindows() {
 				bin = tool + ".exe"
 			}
 			full := filepath.Join(d, bin)
@@ -513,7 +514,7 @@ func suggestToolchainDirsIn(missing, candidates []string) []string {
 // Kept short on purpose: a hit-rate of 80% across common installers is
 // the bar; exotic setups can configure path_prepend manually.
 func toolchainCandidateDirs() []string {
-	if runtime.GOOS == "windows" {
+	if osutil.IsWindows() {
 		dirs := []string{
 			`C:\Program Files\Go\bin`,
 			`C:\Go\bin`,
@@ -737,7 +738,7 @@ func verifyMCPCommandPath(path, expectedCmd string) (bool, string) {
 func pathsEqual(a, b string) bool {
 	a = filepath.Clean(a)
 	b = filepath.Clean(b)
-	if runtime.GOOS == "windows" {
+	if osutil.IsWindows() {
 		return strings.EqualFold(a, b)
 	}
 	return a == b

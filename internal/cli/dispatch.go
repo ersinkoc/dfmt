@@ -4,9 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"runtime"
 	"strings"
 
+	"github.com/ersinkoc/dfmt/internal/osutil"
 	"github.com/ersinkoc/dfmt/internal/project"
 )
 
@@ -220,10 +220,10 @@ func getProject() (string, error) {
 
 // samePathCLI compares two paths case-insensitively on Windows, exactly
 // elsewhere. Duplicated from setup.samePath to avoid importing the
-// setup package into the dispatch hot path; the constant "windows" is
-// inlined because the cli package has no goosWindows of its own.
+// setup package into the dispatch hot path; uses internal/osutil for
+// the platform check so the GOOS literal lives in exactly one file.
 func samePathCLI(a, b string) bool {
-	if runtime.GOOS == "windows" {
+	if osutil.IsWindows() {
 		return strings.EqualFold(a, b)
 	}
 	return a == b

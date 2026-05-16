@@ -7,9 +7,10 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"runtime"
 	"strings"
 	"time"
+
+	"github.com/ersinkoc/dfmt/internal/osutil"
 )
 
 func (s *SandboxImpl) Exec(ctx context.Context, req ExecReq) (ExecResp, error) {
@@ -298,7 +299,7 @@ func prependPATH(env []string, dirs []string) []string {
 func buildEnv(extra map[string]string) []string {
 	var env []string
 
-	if runtime.GOOS == goosWindows {
+	if osutil.IsWindows() {
 		// Windows: use system PATH so cmd, powershell, git, go, node etc. are found
 		env = []string{
 			"PATH=" + os.Getenv("PATH"),

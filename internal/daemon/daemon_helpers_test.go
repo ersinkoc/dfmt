@@ -3,8 +3,9 @@ package daemon
 import (
 	"os"
 	"path/filepath"
-	"runtime"
 	"testing"
+
+	"github.com/ersinkoc/dfmt/internal/osutil"
 
 	"github.com/ersinkoc/dfmt/internal/config"
 	"github.com/ersinkoc/dfmt/internal/transport"
@@ -122,7 +123,7 @@ func TestLoadSandbox_InvalidPathPrepend(t *testing.T) {
 // 127.0.0.1:0 — Unix sockets aren't viable so TCP is mandatory.
 // Skipped on non-Windows where the default branch picks Unix socket.
 func TestBuildServer_WindowsDefault(t *testing.T) {
-	if runtime.GOOS != "windows" {
+	if !osutil.IsWindows() {
 		t.Skip("default Windows branch is OS-gated")
 	}
 	dir := t.TempDir()
@@ -172,7 +173,7 @@ func TestBuildServer_TCPOptIn(t *testing.T) {
 // — the previous implementation silently fell through and panicked at
 // d.server.Start(ctx).
 func TestBuildServer_UnixNoListener(t *testing.T) {
-	if runtime.GOOS == "windows" {
+	if osutil.IsWindows() {
 		t.Skip("the no-listener guard is Unix-specific")
 	}
 	dir := t.TempDir()

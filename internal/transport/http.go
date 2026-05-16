@@ -13,19 +13,18 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/ersinkoc/dfmt/internal/core"
 	"github.com/ersinkoc/dfmt/internal/logging"
+	"github.com/ersinkoc/dfmt/internal/osutil"
 	"github.com/ersinkoc/dfmt/internal/safefs"
 	"github.com/ersinkoc/dfmt/internal/safejson"
 )
 
 const (
-	goosWindows    = "windows"
 	jsonRPCVersion = "2.0"
 	// methodXxx are the JSON-RPC method names accepted on the HTTP and socket
 	// transports. They use dot namespacing for historical reasons and remain
@@ -1132,7 +1131,7 @@ func (s *HTTPServer) handleAPIProxy(w http.ResponseWriter, r *http.Request) {
 
 	// Determine target URL
 	var targetURL string
-	if runtime.GOOS == goosWindows {
+	if osutil.IsWindows() {
 		if port, ok := targetDaemon["port"].(float64); ok && port > 0 {
 			targetURL = fmt.Sprintf("http://127.0.0.1:%d/api/stats", int(port))
 		} else {
@@ -1182,7 +1181,7 @@ func (s *HTTPServer) handleAPIProxy(w http.ResponseWriter, r *http.Request) {
 	httpClient := &http.Client{Timeout: 5 * time.Second}
 	var httpReq *http.Request
 
-	if runtime.GOOS == goosWindows {
+	if osutil.IsWindows() {
 		httpReq, err = http.NewRequest("POST", targetURL, bytes.NewReader(body))
 	} else {
 		// Unix socket - use DialContext
@@ -1457,7 +1456,7 @@ func pathsEqualForRuntime(a, b string) bool {
 	if a == b {
 		return true
 	}
-	if runtime.GOOS == goosWindows {
+	if osutil.IsWindows() {
 		return strings.EqualFold(a, b)
 	}
 	return false

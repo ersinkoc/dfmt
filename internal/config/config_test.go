@@ -3,10 +3,11 @@ package config
 import (
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/ersinkoc/dfmt/internal/osutil"
 )
 
 const durabilityInvalid = "invalid"
@@ -129,7 +130,7 @@ func TestValidateRejectsEmptyPathPrependEntry(t *testing.T) {
 
 func absPathForTest(t *testing.T) string {
 	t.Helper()
-	if runtime.GOOS == "windows" {
+	if osutil.IsWindows() {
 		return `C:\opt\go\bin`
 	}
 	return "/opt/go/bin"
@@ -298,7 +299,7 @@ func TestGlobalConfigPath(t *testing.T) {
 
 	// Without XDG_DATA_HOME, uses os.UserHomeDir() which on Windows
 	// doesn't respect HOME env var. Skip this part on Windows.
-	if runtime.GOOS != "windows" {
+	if !osutil.IsWindows() {
 		os.Setenv("HOME", tmpDir)
 		defer os.Unsetenv("HOME")
 
@@ -630,7 +631,7 @@ func TestLoadWithProjectConfigMergeError(t *testing.T) {
 }
 
 func TestGlobalConfigPathEmptyXDGHomeOnWindows(t *testing.T) {
-	if runtime.GOOS != "windows" {
+	if !osutil.IsWindows() {
 		t.Skip("Windows-specific test")
 	}
 	// On Windows, os.UserHomeDir() doesn't use HOME env var,
