@@ -195,6 +195,55 @@ func isEnvAssignment(token string) bool {
 	return false
 }
 
+// scanParensClose returns the index of the ')' that matches the '(' at
+// openPos. Nesting is tracked so callers can slice cmd[openPos+1:j] to
+// extract a balanced inner segment. Returns len(cmd) on unbalanced
+// input; callers compare against openPos+1 (bare subshell) or openPos+2
+// (the '$' in $(…) is one position earlier than openPos's caller-supplied
+// '(') before slicing.
+func scanParensClose(cmd string, openPos int) int {
+	depth := 1
+	j := openPos + 1
+	for j < len(cmd) && depth > 0 {
+		switch cmd[j] {
+		case '(':
+			depth++
+		case ')':
+			depth--
+		}
+		if depth == 0 {
+			break
+		}
+		j++
+	}
+	return j
+}
+
+// scanBacktickClose returns the index of the '`' that pairs with the
+// opening '`' at openPos. Bash backticks do not nest, so this is a
+// straight forward scan. Returns len(cmd) on unbalanced input.
+func scanBacktickClose(cmd string, openPos int) int {
+	j := openPos + 1
+	for j < len(cmd) && cmd[j] != '`' {
+		j++
+	}
+	return j
+}
+
+// appendInnerSplits is the "recursively split this substitution body and
+// fold the segments into the outer parts list" idiom that appeared five
+// times in splitByShellOperators (one for each of unquoted $(...),
+// unquoted (…), unquoted `…`, double-quoted $(...), double-quoted `…`).
+// Pre-extraction each callsite spelled out the inner-bounds check + the
+// recursive call + the append — bugs in any one of the five copies were
+// straightforward to introduce.
+func appendInnerSplits(parts []string, cmd string, innerStart, innerEnd int) []string {
+	if innerEnd <= innerStart || innerEnd > len(cmd) {
+		return parts
+	}
+	return append(parts, splitByShellOperators(cmd[innerStart:innerEnd])...)
+}
+
 // splitByShellOperators splits a command string by shell operators.
 // Command substitutions `$(...)` and backtick `...` are also split so their
 // inner commands are subject to policy evaluation as independent parts.
@@ -229,43 +278,16 @@ func splitByShellOperators(cmd string) []string {
 			// is not permitted.
 			if c == '$' && i+1 < len(cmd) && cmd[i+1] == '(' {
 				flush()
-				depth := 1
-				j := i + 2
-				for j < len(cmd) && depth > 0 {
-					switch cmd[j] {
-					case '(':
-						depth++
-					case ')':
-						depth--
-					}
-					if depth == 0 {
-						break
-					}
-					j++
-				}
-				if j <= len(cmd) && j > i+2 {
-					inner := cmd[i+2 : j]
-					// Recursively split the substitution content so inner operators
-					// (|, &&, ||, ;, etc.) are also checked by the policy.
-					innerParts := splitByShellOperators(inner)
-					parts = append(parts, innerParts...)
-				}
+				j := scanParensClose(cmd, i+1)
+				parts = appendInnerSplits(parts, cmd, i+2, j)
 				i = j
 				continue
 			}
 			// Backtick command substitution.
 			if c == '`' {
 				flush()
-				j := i + 1
-				for j < len(cmd) && cmd[j] != '`' {
-					j++
-				}
-				if j > i+1 {
-					inner := cmd[i+1 : j]
-					// Recursively split backtick content so inner operators are also checked.
-					innerParts := splitByShellOperators(inner)
-					parts = append(parts, innerParts...)
-				}
+				j := scanBacktickClose(cmd, i)
+				parts = appendInnerSplits(parts, cmd, i+1, j)
 				i = j
 				continue
 			}
@@ -275,25 +297,8 @@ func splitByShellOperators(cmd string) []string {
 			// `(sudo` base. Depth-tracked so nested parens parse correctly.
 			if c == '(' {
 				flush()
-				depth := 1
-				j := i + 1
-				for j < len(cmd) && depth > 0 {
-					switch cmd[j] {
-					case '(':
-						depth++
-					case ')':
-						depth--
-					}
-					if depth == 0 {
-						break
-					}
-					j++
-				}
-				if j <= len(cmd) && j > i+1 {
-					inner := cmd[i+1 : j]
-					innerParts := splitByShellOperators(inner)
-					parts = append(parts, innerParts...)
-				}
+				j := scanParensClose(cmd, i)
+				parts = appendInnerSplits(parts, cmd, i+1, j)
 				i = j
 				continue
 			}
@@ -340,39 +345,15 @@ func splitByShellOperators(cmd string) []string {
 			if quoteChar == '"' {
 				if c == '$' && i+1 < len(cmd) && cmd[i+1] == '(' {
 					flush()
-					depth := 1
-					j := i + 2
-					for j < len(cmd) && depth > 0 {
-						switch cmd[j] {
-						case '(':
-							depth++
-						case ')':
-							depth--
-						}
-						if depth == 0 {
-							break
-						}
-						j++
-					}
-					if j <= len(cmd) && j > i+2 {
-						inner := cmd[i+2 : j]
-						innerParts := splitByShellOperators(inner)
-						parts = append(parts, innerParts...)
-					}
+					j := scanParensClose(cmd, i+1)
+					parts = appendInnerSplits(parts, cmd, i+2, j)
 					i = j
 					continue
 				}
 				if c == '`' {
 					flush()
-					j := i + 1
-					for j < len(cmd) && cmd[j] != '`' {
-						j++
-					}
-					if j > i+1 {
-						inner := cmd[i+1 : j]
-						innerParts := splitByShellOperators(inner)
-						parts = append(parts, innerParts...)
-					}
+					j := scanBacktickClose(cmd, i)
+					parts = appendInnerSplits(parts, cmd, i+1, j)
 					i = j
 					continue
 				}
