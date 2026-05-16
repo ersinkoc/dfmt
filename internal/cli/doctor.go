@@ -475,7 +475,13 @@ func probeSandboxTool(cl *client.Client, name string) (path string, ok bool) {
 // binary. Order is deterministic so doctor output is reproducible
 // across runs.
 func suggestToolchainDirs(missing []string) []string {
-	candidates := toolchainCandidateDirs()
+	return suggestToolchainDirsIn(missing, toolchainCandidateDirs())
+}
+
+// suggestToolchainDirsIn is suggestToolchainDirs with the candidate
+// list lifted out so tests can drive it against a synthesized tempdir
+// layout instead of the host's real /usr/local/go/bin etc.
+func suggestToolchainDirsIn(missing, candidates []string) []string {
 	want := make(map[string]struct{}, len(missing))
 	for _, m := range missing {
 		want[m] = struct{}{}
