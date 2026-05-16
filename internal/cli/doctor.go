@@ -731,18 +731,11 @@ func verifyMCPCommandPath(path, expectedCmd string) (bool, string) {
 	return false, gotCmd
 }
 
-// pathsEqual normalises two filesystem paths and compares them. Windows
-// NTFS is case-insensitive; on POSIX paths must match byte-for-byte.
-// We Clean both sides so trailing-slash and "/." quirks don't trigger
-// a false stale report.
-func pathsEqual(a, b string) bool {
-	a = filepath.Clean(a)
-	b = filepath.Clean(b)
-	if osutil.IsWindows() {
-		return strings.EqualFold(a, b)
-	}
-	return a == b
-}
+// pathsEqual is a doctor-local alias over osutil.SameCleanPath. The
+// previous inline implementation Cleaned both sides so trailing-slash
+// and "/." quirks don't trigger false stale reports; that behavior is
+// preserved by delegating to SameCleanPath rather than SamePath.
+func pathsEqual(a, b string) bool { return osutil.SameCleanPath(a, b) }
 
 // goToolchainAtLeast parses a Go version string ("go1.26.1",
 // "go1.27.0-rc1", "devel go1.27") and reports whether it is at least

@@ -1446,21 +1446,13 @@ func (s *HTTPServer) handleExec(ctx context.Context, req Request) Response {
 	return Response{JSONRPC: jsonRPCVersion, ID: req.ID, Result: resp}
 }
 
-// pathsEqualForRuntime compares two filesystem paths using the host OS's
-// case-sensitivity rules. NTFS / ReFS treat paths case-insensitively
-// (V-19); ext4 / APFS-default / etc. are case-sensitive. The /api/daemons
-// filter uses this so a registry entry written by the daemon at
-// `C:\Users\Foo\Proj` still matches a request whose s.projectPath was
-// resolved as `c:\users\foo\proj`.
-func pathsEqualForRuntime(a, b string) bool {
-	if a == b {
-		return true
-	}
-	if osutil.IsWindows() {
-		return strings.EqualFold(a, b)
-	}
-	return false
-}
+// pathsEqualForRuntime is a transport-local alias over osutil.SamePath.
+// Pre-osutil this lived as an inline duplicate of cli.samePathCLI and
+// setup.samePath; the /api/daemons filter still uses it under this
+// name so registry entries written at `C:\Users\Foo\Proj` match
+// requests whose s.projectPath resolved as `c:\users\foo\proj`
+// (V-19).
+func pathsEqualForRuntime(a, b string) bool { return osutil.SamePath(a, b) }
 
 func (s *HTTPServer) handleRead(ctx context.Context, req Request) Response {
 	var params ReadParams

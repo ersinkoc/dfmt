@@ -232,15 +232,11 @@ type FileEntry struct {
 	Kind string `yaml:"kind,omitempty" json:",omitempty"`
 }
 
-// samePath compares two filesystem paths for equality. On Windows the
-// underlying filesystem is case-insensitive, so the comparison is too;
-// on Unix-like systems it is exact.
-func samePath(a, b string) bool {
-	if osutil.IsWindows() {
-		return strings.EqualFold(a, b)
-	}
-	return a == b
-}
+// samePath is a setup-local alias over osutil.SamePath kept for the
+// internal call-site clarity. Pre-osutil this was an inline duplicate
+// of cli.samePathCLI and transport.pathsEqualForRuntime; all three
+// now delegate to a single implementation.
+func samePath(a, b string) bool { return osutil.SamePath(a, b) }
 
 // AddFile upserts a FileEntry into the manifest, replacing any existing
 // entry that targets the same Path. Without this, every `dfmt setup`

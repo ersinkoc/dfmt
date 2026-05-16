@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"strings"
 
 	"github.com/ersinkoc/dfmt/internal/osutil"
 	"github.com/ersinkoc/dfmt/internal/project"
@@ -218,16 +217,11 @@ func getProject() (string, error) {
 	return proj, nil
 }
 
-// samePathCLI compares two paths case-insensitively on Windows, exactly
-// elsewhere. Duplicated from setup.samePath to avoid importing the
-// setup package into the dispatch hot path; uses internal/osutil for
-// the platform check so the GOOS literal lives in exactly one file.
-func samePathCLI(a, b string) bool {
-	if osutil.IsWindows() {
-		return strings.EqualFold(a, b)
-	}
-	return a == b
-}
+// samePathCLI is a thin alias over osutil.SamePath kept for the
+// readable call-site naming inside the cli package. Pre-osutil this
+// was an inline duplicate of setup.samePath; now both delegate to a
+// single implementation that lives outside both packages.
+func samePathCLI(a, b string) bool { return osutil.SamePath(a, b) }
 
 func mustMarshalJSON(v any) string {
 	data, _ := json.MarshalIndent(v, "", "  ")
