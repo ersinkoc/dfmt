@@ -160,6 +160,35 @@ func TestAcquireBackendForLongRunner_PromotesNewDaemon(t *testing.T) {
 	waitForDaemonShutdown(d)
 }
 
+// TestRunDoctor_Integration drives the doctor command end-to-end
+// against an in-process daemon. Covers checkSandboxToolchains's
+// daemon-up branch (which probes go/node/python via the sandbox),
+// checkInstructionBlockStaleness, and checkAgentWireUp. Output
+// shape isn't asserted — we just confirm the command returns
+// either 0 (all checks green) or 1 (some warnings) and doesn't
+// panic.
+func TestRunDoctor_Integration(t *testing.T) {
+	_ = setupInProcessDaemon(t)
+	out := captureStdout(t, func() {
+		code := runDoctor(nil)
+		if code != 0 && code != 1 {
+			t.Errorf("runDoctor: want 0 or 1, got %d", code)
+		}
+	})
+	// Doctor always prints at least the "Daemon running" / "Daemon
+	// stopped" footer.
+	if !strings.Contains(out, "aemon") {
+		t.Errorf("doctor output missing daemon line: %q", out)
+	}
+}
+
+// TestRunStop_Integration is NOT safe to add as an in-process test:
+// runStop's global path reads ~/.dfmt/daemon.pid, which the
+// in-process daemon populates with THIS test process's PID. The
+// follow-up signalStopProcess(pid) would then terminate the test
+// runner. The global stop flow can only be covered with a real
+// subprocess daemon — out of scope for unit tests.
+
 // TestEnsureGlobalDaemon_DisableAutostart pins the env-var short-circuit:
 // when DFMT_DISABLE_AUTOSTART=1 is set (TestMain default) and the
 // inspection lands on Dead, the spawn branch returns the sentinel error
