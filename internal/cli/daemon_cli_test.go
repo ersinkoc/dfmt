@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ersinkoc/dfmt/internal/project"
 )
@@ -269,6 +270,186 @@ func TestSamePathCLI_PlatformAwareCompare(t *testing.T) {
 	}
 	if runtime.GOOS != "windows" && gotMixed {
 		t.Error("posix: mixed case should not match")
+	}
+}
+
+// TestReadPIDFile_NotExist: a missing path returns 0 — callers treat
+// "no file" and "bad PID" identically (both mean "no actionable PID").
+func TestReadPIDFile_NotExist(t *testing.T) {
+	dir := t.TempDir()
+	if pid := readPIDFile(filepath.Join(dir, "no-such-pid")); pid != 0 {
+		t.Errorf("missing file: want 0, got %d", pid)
+	}
+}
+
+// TestReadPIDFile_Valid: a well-formed PID file returns the integer.
+func TestReadPIDFile_Valid(t *testing.T) {
+	dir := t.TempDir()
+	pidPath := filepath.Join(dir, "pid")
+	if err := os.WriteFile(pidPath, []byte("12345\n"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if pid := readPIDFile(pidPath); pid != 12345 {
+		t.Errorf("want 12345, got %d", pid)
+	}
+}
+
+// TestReadPIDFile_Malformed: Sscanf returns zero on a non-numeric body
+// — same shape as the no-file path, callers can't distinguish.
+func TestReadPIDFile_Malformed(t *testing.T) {
+	dir := t.TempDir()
+	pidPath := filepath.Join(dir, "pid")
+	if err := os.WriteFile(pidPath, []byte("not-a-pid"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if pid := readPIDFile(pidPath); pid != 0 {
+		t.Errorf("want 0 for malformed, got %d", pid)
+	}
+}
+
+// TestReadPIDFile_Empty: an empty file also yields 0.
+func TestReadPIDFile_Empty(t *testing.T) {
+	dir := t.TempDir()
+	pidPath := filepath.Join(dir, "pid")
+	if err := os.WriteFile(pidPath, []byte(""), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if pid := readPIDFile(pidPath); pid != 0 {
+		t.Errorf("want 0 for empty, got %d", pid)
+	}
+}
+
+// TestWaitForExit_TimeoutOnLiveDaemonStub: when client.DaemonRunning
+// keeps returning true (our isolated dir has no daemon but a real
+// daemon may be reachable through some other channel), the function
+// must return on timeout rather than hang. We use a short timeout so
+// the test stays fast; the actual elapsed time is bounded by the poll
+// cadence (100ms) and the timeout value.
+func TestWaitForExit_TimeoutOnLiveDaemonStub(t *testing.T) {
+	dir := withIsolatedGlobalDir(t)
+	start := time.Now()
+	waitForExit(0, 200*time.Millisecond, dir)
+	elapsed := time.Since(start)
+	// Either the daemon was never running (returns immediately) or the
+	// timeout caps the wait. Both are valid; just confirm we didn't
+	// hang forever.
+	if elapsed > 2*time.Second {
+		t.Errorf("waitForExit took too long: %v", elapsed)
+	}
+}
+
+// TestWaitForGlobalExit_TimeoutOnLivePID: passes this test process's
+// PID — which IS alive — so the function polls until the deadline. A
+// 200ms timeout caps the wait so the test stays fast.
+func TestWaitForGlobalExit_TimeoutOnLivePID(t *testing.T) {
+	start := time.Now()
+	waitForGlobalExit(os.Getpid(), 200*time.Millisecond)
+	elapsed := time.Since(start)
+	if elapsed < 150*time.Millisecond {
+		t.Errorf("waitForGlobalExit returned too early: %v (live PID should poll)", elapsed)
+	}
+	if elapsed > 2*time.Second {
+		t.Errorf("waitForGlobalExit hung: %v", elapsed)
+	}
+}
+
+// TestWaitForGlobalExit_ImmediateOnDeadPID: a PID that's already
+// unreachable (we use a deliberately invalid PID) returns immediately
+// without waiting the full timeout.
+func TestWaitForGlobalExit_ImmediateOnDeadPID(t *testing.T) {
+	start := time.Now()
+	// PID 0 is reserved on every supported OS — isProcessRunning treats
+	// it as "not running" rather than racing against an actual process.
+	waitForGlobalExit(0, 5*time.Second)
+	elapsed := time.Since(start)
+	if elapsed > 500*time.Millisecond {
+		t.Errorf("waitForGlobalExit on PID 0: want immediate, took %v", elapsed)
+	}
+}
+
+// TestStripGlobalFlags_NoOpWhenAbsent: input without any global flag
+// returns the slice unchanged — the function short-circuits on the
+// first pass to avoid an unnecessary allocation.
+func TestStripGlobalFlags_NoOpWhenAbsent(t *testing.T) {
+	in := []string{"sub", "--other", "value", "arg"}
+	out := stripGlobalFlags(in)
+	if len(out) != len(in) {
+		t.Errorf("len differs: want %d, got %d", len(in), len(out))
+	}
+	for i := range in {
+		if out[i] != in[i] {
+			t.Errorf("out[%d]: want %q, got %q", i, in[i], out[i])
+		}
+	}
+}
+
+// TestStripGlobalFlags_RemovesJSON: --json (and -json) are pulled out
+// and flagJSON is set. The remaining args go to the subcommand.
+func TestStripGlobalFlags_RemovesJSON(t *testing.T) {
+	prevJSON := flagJSON
+	t.Cleanup(func() { flagJSON = prevJSON })
+	flagJSON = false
+
+	out := stripGlobalFlags([]string{"--json", "sub", "arg"})
+	if !flagJSON {
+		t.Error("flagJSON should be set")
+	}
+	want := []string{"sub", "arg"}
+	if len(out) != len(want) || out[0] != want[0] || out[1] != want[1] {
+		t.Errorf("out: want %v, got %v", want, out)
+	}
+}
+
+// TestStripGlobalFlags_RemovesProjectWithValue: --project takes the
+// next positional and stores it on flagProject + DFMT_PROJECT.
+func TestStripGlobalFlags_RemovesProjectWithValue(t *testing.T) {
+	prevProject := flagProject
+	prevEnv, hadEnv := os.LookupEnv("DFMT_PROJECT")
+	t.Cleanup(func() {
+		flagProject = prevProject
+		if hadEnv {
+			os.Setenv("DFMT_PROJECT", prevEnv)
+		} else {
+			os.Unsetenv("DFMT_PROJECT")
+		}
+	})
+	flagProject = ""
+	os.Unsetenv("DFMT_PROJECT")
+
+	out := stripGlobalFlags([]string{"--project", "/tmp/foo", "sub"})
+	if flagProject != "/tmp/foo" {
+		t.Errorf("flagProject: want /tmp/foo, got %q", flagProject)
+	}
+	if env := os.Getenv("DFMT_PROJECT"); env != "/tmp/foo" {
+		t.Errorf("DFMT_PROJECT env: want /tmp/foo, got %q", env)
+	}
+	if len(out) != 1 || out[0] != "sub" {
+		t.Errorf("out: want [sub], got %v", out)
+	}
+}
+
+// TestStripGlobalFlags_ProjectDanglingNoValue: when --project is the
+// last token (no value to consume), the function leaves flagProject
+// unchanged and silently drops the flag. This is a defensive case
+// for malformed argv — we'd rather lose the flag than crash.
+func TestStripGlobalFlags_ProjectDanglingNoValue(t *testing.T) {
+	prevProject := flagProject
+	t.Cleanup(func() { flagProject = prevProject })
+	flagProject = "before"
+
+	_ = stripGlobalFlags([]string{"--project"})
+	if flagProject != "before" {
+		t.Errorf("flagProject mutated: want 'before', got %q", flagProject)
+	}
+}
+
+// TestIsTestBinary_ReturnsTrue confirms the test binary detection
+// works in this test context — the function is used by acquireBackend
+// to gate the in-process promotion fallback, and if it ever returns
+// false from tests we'd start spawning sibling daemons.
+func TestIsTestBinary_ReturnsTrue(t *testing.T) {
+	if !isTestBinary() {
+		t.Error("isTestBinary should be true under go test")
 	}
 }
 
