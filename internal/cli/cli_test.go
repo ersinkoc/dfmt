@@ -660,26 +660,88 @@ func TestRunExec(t *testing.T) {
 	}
 }
 
-func TestSetGlobalJSON(t *testing.T) {
-	SetGlobalJSON(true)
-	if !flagJSON {
-		t.Error("SetGlobalJSON(true) did not set flagJSON to true")
+// TestParseGlobalsJSON: --json (long form) and -json (short form) both
+// flip flagJSON to true and are stripped from the returned slice.
+func TestParseGlobalsJSON(t *testing.T) {
+	flagJSON = false
+	defer func() { flagJSON = false }()
+
+	cleaned, err := ParseGlobals([]string{"--json", "sub", "arg"})
+	if err != nil {
+		t.Fatalf("ParseGlobals: %v", err)
 	}
-	SetGlobalJSON(false)
-	if flagJSON {
-		t.Error("SetGlobalJSON(false) did not set flagJSON to false")
+	if !flagJSON {
+		t.Error("--json did not set flagJSON")
+	}
+	if got, want := cleaned, []string{"sub", "arg"}; !equalStringSlice(got, want) {
+		t.Errorf("cleaned = %v, want %v", got, want)
+	}
+
+	flagJSON = false
+	cleaned, err = ParseGlobals([]string{"-json", "sub"})
+	if err != nil {
+		t.Fatalf("ParseGlobals(-json): %v", err)
+	}
+	if !flagJSON {
+		t.Error("-json did not set flagJSON")
+	}
+	if got, want := cleaned, []string{"sub"}; !equalStringSlice(got, want) {
+		t.Errorf("cleaned = %v, want %v", got, want)
 	}
 }
 
-func TestSetGlobalProject(t *testing.T) {
-	SetGlobalProject("/test/path")
+// TestParseGlobalsProject: --project <val> writes flagProject and
+// DFMT_PROJECT, and the pair is stripped from the cleaned slice.
+func TestParseGlobalsProject(t *testing.T) {
+	flagProject = ""
+	defer func() { flagProject = ""; _ = os.Unsetenv("DFMT_PROJECT") }()
+
+	cleaned, err := ParseGlobals([]string{"--project", "/test/path", "sub"})
+	if err != nil {
+		t.Fatalf("ParseGlobals: %v", err)
+	}
 	if flagProject != "/test/path" {
-		t.Errorf("SetGlobalProject(/test/path): got %q, want /test/path", flagProject)
+		t.Errorf("flagProject = %q, want /test/path", flagProject)
 	}
-	SetGlobalProject("")
-	if flagProject != "" {
-		t.Error("SetGlobalProject() did not clear flagProject")
+	if got := os.Getenv("DFMT_PROJECT"); got != "/test/path" {
+		t.Errorf("DFMT_PROJECT = %q, want /test/path", got)
 	}
+	if got, want := cleaned, []string{"sub"}; !equalStringSlice(got, want) {
+		t.Errorf("cleaned = %v, want %v", got, want)
+	}
+}
+
+// TestParseGlobalsProjectMissingValue: bare --project at end of args is
+// the operator typing a flag with no argument; strict mode surfaces an
+// error so cmd/dfmt can exit 1 with a clear message.
+func TestParseGlobalsProjectMissingValue(t *testing.T) {
+	flagProject = ""
+	defer func() { flagProject = "" }()
+	if _, err := ParseGlobals([]string{"--project"}); err == nil {
+		t.Error("ParseGlobals(--project) returned nil error; want missing-value error")
+	}
+}
+
+// TestParseGlobalsProjectFlagShapedValue: --project --json is almost
+// certainly a typo, not a project path. Strict mode refuses it.
+func TestParseGlobalsProjectFlagShapedValue(t *testing.T) {
+	flagProject = ""
+	defer func() { flagProject = "" }()
+	if _, err := ParseGlobals([]string{"--project", "--json"}); err == nil {
+		t.Error("ParseGlobals(--project --json) returned nil error; want invalid-value error")
+	}
+}
+
+func equalStringSlice(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func TestRunMCPStdin(t *testing.T) {

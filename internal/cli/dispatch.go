@@ -124,42 +124,54 @@ Flags:
   --project <path>    Project path (default: auto-detect)`)
 }
 
-// stripGlobalFlags removes top-level dfmt flags (--json/-json and
-// --project <value>) from a subcommand arg slice. Production callers
-// go through cmd/dfmt/main.go which already strips these, but tests
-// (and external callers that import internal/cli) invoke Dispatch
-// directly and rely on the historical behavior where subcommands
-// silently ignored unknown args. Now that several subcommands enforce
-// FlagSet parsing we strip them here so `Dispatch([]string{"status",
-// "-json"})` keeps working without each FlagSet redeclaring -json.
+// ParseGlobals walks args once, extracting top-level dfmt flags
+// (--json/-json and --project <value>) and applying them to the
+// package-level globals (flagJSON / flagProject). It returns the
+// cleaned arg slice with those tokens removed.
 //
-// Per-subcommand flags (anything not in the global set) are passed
-// through untouched. The function is allocation-free when no global
-// flag is present.
-func stripGlobalFlags(args []string) []string {
-	for _, a := range args {
-		if a == "--json" || a == "-json" || a == "--project" {
-			goto strip
-		}
-	}
-	return args
-strip:
+// Strict mode: an absent value after --project, or a value that
+// itself looks like a flag (leading "-"), returns an error so that
+// cmd/dfmt/main.go can exit 1 with a clear message instead of
+// silently proceeding with a misparsed command line. Callers that
+// prefer historical leniency (Dispatch, when invoked directly by
+// tests) use the stripGlobalFlags wrapper below, which discards the
+// error and returns the partial cleaned list.
+//
+// Per-subcommand flags pass through untouched. Single-pass; the
+// caller pays one allocation for the cleaned slice.
+func ParseGlobals(args []string) ([]string, error) {
 	out := make([]string, 0, len(args))
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--json", "-json":
 			flagJSON = true
 		case "--project":
-			if i+1 < len(args) {
-				_ = os.Setenv("DFMT_PROJECT", args[i+1])
-				flagProject = args[i+1]
-				i++
+			if i+1 >= len(args) {
+				return out, fmt.Errorf("--project requires a value")
 			}
+			val := args[i+1]
+			if len(val) > 0 && val[0] == '-' {
+				return out, fmt.Errorf("invalid --project value: %q", val)
+			}
+			_ = os.Setenv("DFMT_PROJECT", val)
+			flagProject = val
+			i++
 		default:
 			out = append(out, args[i])
 		}
 	}
-	return out
+	return out, nil
+}
+
+// stripGlobalFlags is the lenient wrapper around ParseGlobals used by
+// Dispatch — it discards the strict-mode error so test callers that
+// invoke `Dispatch([]string{"status", "--project"})` (no value) keep
+// the pre-consolidation behavior of silently dropping the malformed
+// flag rather than surfacing it. cmd/dfmt/main.go uses ParseGlobals
+// directly so the operator sees the error.
+func stripGlobalFlags(args []string) []string {
+	cleaned, _ := ParseGlobals(args)
+	return cleaned
 }
 
 // helpRequested reports whether the caller passed a help flag.
@@ -183,19 +195,15 @@ func helpRequested(args []string) bool {
 	return false
 }
 
+// flagJSON and flagProject hold the parsed global-flag state for the
+// session. cmd/dfmt and Dispatch both reach this state through
+// ParseGlobals; we avoid package-level flag.BoolVar because flag.Parse
+// is never called in this binary — all subcommands use their own
+// FlagSet, so a package-level flag would never be parsed.
 var (
 	flagJSON    bool
 	flagProject string
 )
-
-// SetGlobalJSON is called from cmd/dfmt once --json has been stripped off
-// os.Args. We avoid package-level flag.BoolVar because flag.Parse is never
-// called in this binary — all subcommands use their own flagset.
-func SetGlobalJSON(v bool) { flagJSON = v }
-
-// SetGlobalProject is called from cmd/dfmt once --project has been stripped
-// off os.Args.
-func SetGlobalProject(p string) { flagProject = p }
 
 func getProject() (string, error) {
 	if flagProject != "" {
