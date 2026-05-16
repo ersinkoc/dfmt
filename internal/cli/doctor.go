@@ -401,7 +401,6 @@ func checkSandboxToolchains(dir string) {
 
 	for _, t := range tools {
 		var p probe
-		p.tool = t
 		p.bareStdout, p.bareOK = probeSandboxTool(cl, t)
 		if !p.bareOK {
 			// Only check .exe variant when the bare name failed and we're

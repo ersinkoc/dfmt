@@ -30,6 +30,10 @@ const (
 	// from .dfmt/port). Held as a constant so the test cross-checks share
 	// the literal.
 	ephemeralLoopback = "127.0.0.1:0"
+	// defaultIdleTimeout is the fallback when config parsing fails or yields
+	// a non-positive value. Kept as a named constant so the magic number lives
+	// in one place.
+	defaultIdleTimeout = 30 * time.Minute
 )
 
 // Server is the interface for network servers (Unix socket or TCP).
@@ -835,7 +839,7 @@ func (d *Daemon) consumeFSWatch(ctx context.Context) {
 func (d *Daemon) startIdleMonitor(_ context.Context) {
 	idleTimeout, err := time.ParseDuration(d.config.Lifecycle.IdleTimeout)
 	if err != nil || idleTimeout <= 0 {
-		idleTimeout = 30 * time.Minute
+		idleTimeout = defaultIdleTimeout
 	}
 
 	d.idleCh = make(chan struct{}, 1)
@@ -845,8 +849,7 @@ func (d *Daemon) startIdleMonitor(_ context.Context) {
 	tick := idleTimeout / 10
 	if tick < time.Second {
 		tick = time.Second
-	}
-	if tick > time.Minute {
+	} else if tick > time.Minute {
 		tick = time.Minute
 	}
 

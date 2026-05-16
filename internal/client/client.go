@@ -352,7 +352,7 @@ func (c *Client) Recall(ctx context.Context, params transport.RecallParams) (*tr
 // Callers must range over the channel or drain it completely.
 func (c *Client) StreamEvents(ctx context.Context, from string) (<-chan core.Event, error) {
 	var url string
-	client := &http.Client{Timeout: 0} // No timeout for streaming.
+	client := &http.Client{Timeout: 60 * time.Second} // Reasonable timeout for streaming.
 	// Phase 2: append project_id so the global daemon (which has no
 	// default project) can route the stream to the right per-project
 	// journal. Empty when c.projectID isn't set; daemon-side falls

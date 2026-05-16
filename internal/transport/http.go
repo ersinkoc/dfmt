@@ -1104,13 +1104,17 @@ func resolveProxyTarget(registry []map[string]any, targetProjectPath string) (ta
 	return "", "", -32603, "daemon not running for project: " + targetProjectPath
 }
 
+// maxResponseBytes is the hard limit for proxy responses. 16 MiB is well above
+// any legitimate response and well below sizes that would crash clients.
+const maxResponseBytes = 16 << 20
+
 // forwardProxyOverUnix writes the proxy request to socketPath, reads
 // back the reply (capped at 16 MiB per V-21), and streams it to w. The
 // response body is committed before the read completes, so a late write
 // failure can only be logged — there is no way to switch to a JSON-RPC
 // error envelope after w.Write has flushed bytes.
 func forwardProxyOverUnix(ctx context.Context, w http.ResponseWriter, socketPath string, body []byte) {
-	dialer := net.Dialer{Timeout: 5 * time.Second}
+	dialer := net.Dialer{Timeout: 15 * time.Second}
 	conn, err := dialer.DialContext(ctx, "unix", socketPath)
 	if err != nil {
 		writeProxyError(w, -32603, "could not connect to daemon: "+err.Error())
@@ -1123,7 +1127,7 @@ func forwardProxyOverUnix(ctx context.Context, w http.ResponseWriter, socketPath
 		return
 	}
 
-	respBytes, rerr := io.ReadAll(io.LimitReader(conn, 16<<20))
+	respBytes, rerr := io.ReadAll(io.LimitReader(conn, maxResponseBytes))
 	if rerr != nil && rerr != io.EOF {
 		writeProxyError(w, -32603, "could not read response: "+rerr.Error())
 		return

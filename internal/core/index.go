@@ -36,6 +36,13 @@ type Index struct {
 	// (Index.Add is called during journal load anyway).
 	excerpts map[string]string
 
+	// oldestHeap is a min-heap of document IDs by ULID timestamp.
+	// Provides O(log N) eviction instead of O(N) scan of docLen.
+	// Entries are removed lazily (on eviction) so the heap may
+	// contain stale IDs — this is safe because removeLocked ignores
+	// missing IDs and the heap grows back to correct size on next Add.
+	oldestHeap docIDHeap
+
 	// BM25 / scoring parameters (ADR-0015 v0.4 wire-up).
 	//
 	// k1 controls term-frequency saturation; b controls length
@@ -70,6 +77,23 @@ type IndexParams struct {
 // enough signal for the agent to decide whether to drill in. Not a
 // rune-aligned value because truncate() handles the alignment.
 const excerptMaxBytes = 80
+
+// docIDHeap is a min-heap of document IDs (ULID strings). ULIDs encode
+// time as their prefix, so the lexicographically smallest ID is the oldest.
+// heap.Interface requires a concrete type, not a pointer receiver.
+type docIDHeap []string
+
+func (h docIDHeap) Len() int           { return len(h) }
+func (h docIDHeap) Less(i, j int) bool { return h[i] < h[j] } // min-heap: smallest = oldest
+func (h docIDHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
+func (h *docIDHeap) Push(x any)        { *h = append(*h, x.(string)) }
+func (h *docIDHeap) Pop() any {
+	old := *h
+	n := len(old)
+	item := old[n-1]
+	*h = old[:n-1]
+	return item
+}
 
 // NewIndex creates a new Index with package-default BM25 parameters
 // (k1=DefaultBM25K1, b=DefaultBM25B, headingBoost=DefaultHeadingBoost).
@@ -283,6 +307,11 @@ func (ix *Index) Add(e Event) {
 		}
 		pl.IDs = append(pl.IDs, ids...)
 	}
+
+	// Push to min-heap for O(log N) eviction. The heap may contain stale
+	// IDs (deleted docs) — this is safe because removeLocked ignores them
+	// and evicted stale entries are simply skipped on Pop.
+	heap.Push(&ix.oldestHeap, id)
 }
 
 // Excerpt returns the short text snippet attached to docID at index
@@ -599,27 +628,37 @@ func (ix *Index) removeLocked(id string) {
 	}
 }
 
-// evictOldestLocked removes the document with the smallest ID. The caller
-// MUST hold ix.mu (write lock). Used by Add when totalDocs >= MaxIndexDocs.
+// evictOldestLocked removes the oldest document (smallest ULID) from the
+// index using the min-heap for O(log N) lookup. Stale heap entries (from
+// already-deleted docs) are skipped until they surface at the top. The
+// caller MUST hold ix.mu (write lock). Used by Add when at MaxIndexDocs.
 //
 // Smallest ULID == earliest timestamp because ULIDs encode time in their
 // lexicographically-comparable prefix (Crockford base32 of the milliseconds
 // since epoch). String comparison is therefore equivalent to time
 // comparison without parsing.
-//
-// Walks docLen once (O(N)) to find the min; then removeLocked walks every
-// posting list (O(unique_terms × max_posting_size)) to prune. Eviction
-// fires only when at cap so amortized cost per Add is bounded by the
-// cap, not by the index size.
 func (ix *Index) evictOldestLocked() {
 	if len(ix.docLen) == 0 {
 		return
 	}
+	// Pop stale entries until we find one that's still in docLen.
 	var oldest string
-	for id := range ix.docLen {
-		if oldest == "" || id < oldest {
-			oldest = id
+	for oldest == "" {
+		if len(ix.oldestHeap) == 0 {
+			// Heap exhausted but docLen non-empty — fall back to scan
+			// (should only happen on corrupt/edge case; defensive).
+			for id := range ix.docLen {
+				if oldest == "" || id < oldest {
+					oldest = id
+				}
+			}
+			break
 		}
+		candidate := heap.Pop(&ix.oldestHeap).(string)
+		if _, ok := ix.docLen[candidate]; ok {
+			oldest = candidate
+		}
+		// else: stale entry, skip
 	}
 	if oldest != "" {
 		ix.removeLocked(oldest)

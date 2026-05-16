@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/ersinkoc/dfmt/internal/core"
+	"github.com/ersinkoc/dfmt/internal/osutil"
 )
 
 func TestHTTPServerStopNotRunning(t *testing.T) {
@@ -407,6 +408,109 @@ func TestHTTPServerWritePortFileInvalidDir(t *testing.T) {
 	if err == nil {
 		t.Log("writePortFile succeeded (may be allowed on some systems)")
 	}
+}
+
+func TestResolveProxyTarget_EmptyRegistry(t *testing.T) {
+	//nolint:dogsled // testing error code only
+	_, _, code, _ := resolveProxyTarget(nil, "/tmp/test")
+	if code == 0 {
+		t.Error("expected non-zero code for empty registry")
+	}
+}
+
+func TestResolveProxyTarget_WindowsNoPort(t *testing.T) {
+	if !osutil.IsWindows() {
+		t.Skip("Windows-only branch")
+	}
+	registry := []map[string]any{
+		{"project_path": "/tmp/test"},
+	}
+	//nolint:dogsled // testing error code only
+	_, _, code, _ := resolveProxyTarget(registry, "/tmp/test")
+	if code == 0 {
+		t.Error("expected non-zero code for Windows without port")
+	}
+}
+
+func TestResolveProxyTarget_UnixNoSocket(t *testing.T) {
+	if osutil.IsWindows() {
+		t.Skip("Unix-only branch")
+	}
+	registry := []map[string]any{
+		{"project_path": "/tmp/test"},
+	}
+	//nolint:dogsled // testing error code only
+	_, _, code, _ := resolveProxyTarget(registry, "/tmp/test")
+	if code == 0 {
+		t.Error("expected non-zero code for Unix without socket")
+	}
+}
+
+func TestResolveProxyTarget_ProjectNotFound(t *testing.T) {
+	registry := []map[string]any{
+		{"project_path": "/other/project"},
+	}
+	//nolint:dogsled // testing error code only
+	_, _, code, _ := resolveProxyTarget(registry, "/tmp/test")
+	if code == 0 {
+		t.Error("expected non-zero code for project not in registry")
+	}
+}
+
+func TestResolveProxyTarget_ValidWindows(t *testing.T) {
+	if !osutil.IsWindows() {
+		t.Skip("Windows-only branch")
+	}
+	registry := []map[string]any{
+		{"project_path": "/tmp/test", "port": float64(54321)},
+	}
+	url, _, code, _ := resolveProxyTarget(registry, "/tmp/test")
+	if code != 0 {
+		t.Errorf("expected code=0, got code=%d", code)
+	}
+	if !strings.Contains(url, "127.0.0.1:54321") {
+		t.Errorf("expected url with port 54321, got %s", url)
+	}
+}
+
+func TestResolveProxyTarget_ValidUnix(t *testing.T) {
+	if osutil.IsWindows() {
+		t.Skip("Unix socket path not relevant on Windows")
+	}
+	registry := []map[string]any{
+		{"project_path": "/tmp/test", "socket_path": "/tmp/daemon.sock"},
+	}
+	_, sock, code, _ := resolveProxyTarget(registry, "/tmp/test")
+	if code != 0 {
+		t.Errorf("expected code=0, got code=%d", code)
+	}
+	if sock != "/tmp/daemon.sock" {
+		t.Errorf("expected sock=/tmp/daemon.sock, got %s", sock)
+	}
+}
+
+func TestResolveProxyTarget_MultipleProjects(t *testing.T) {
+	if osutil.IsWindows() {
+		t.Skip("port-based lookup on Windows only")
+	}
+	registry := []map[string]any{
+		{"project_path": "/project1"},
+		{"project_path": "/project2", "port": float64(12345)},
+	}
+	url, _, code, _ := resolveProxyTarget(registry, "/project2")
+	if code != 0 {
+		t.Errorf("expected code=0, got code=%d", code)
+	}
+	if !strings.Contains(url, "12345") {
+		t.Errorf("expected url with port 12345, got %s", url)
+	}
+}
+
+func TestReadDaemonRegistry_FileNotFound(t *testing.T) {
+	entries, code, msg := readDaemonRegistry()
+	_ = entries
+	_ = code
+	_ = msg
 }
 
 func TestHTTPServerWritePortFileEmptyDir(t *testing.T) {

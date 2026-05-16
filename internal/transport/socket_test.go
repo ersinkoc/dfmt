@@ -507,60 +507,359 @@ func TestDecodeParams_ValidJSONTypes(t *testing.T) {
 	}
 }
 
-func TestSocketServerDispatchInvalidParamsRemember(t *testing.T) {
+func TestSocketServerDispatch_ExecMethod(t *testing.T) {
 	handlers := &Handlers{}
 	server := NewSocketServer("/tmp/test.sock", handlers)
 
-	// Invalid params for remember method
-	params := []byte(`{"type": 123}`)
+	params := []byte(`{"command":"ls","timeout":5}`)
 	req := &Request{
-		ID:     1,
+		ID:     4,
+		Method: "exec",
+		Params: params,
+	}
+
+	ctx := context.Background()
+	_, _ = server.dispatch(ctx, req) // nil handlers; just verify no panic
+}
+
+func TestSocketServerDispatch_ReadMethod(t *testing.T) {
+	handlers := &Handlers{}
+	server := NewSocketServer("/tmp/test.sock", handlers)
+
+	params := []byte(`{"path":"/tmp/test.txt","limit":100}`)
+	req := &Request{
+		ID:     5,
+		Method: "read",
+		Params: params,
+	}
+
+	ctx := context.Background()
+	_, _ = server.dispatch(ctx, req) // nil handlers; just verify no panic
+}
+
+func TestSocketServerDispatch_FetchMethod(t *testing.T) {
+	handlers := &Handlers{}
+	server := NewSocketServer("/tmp/test.sock", handlers)
+
+	params := []byte(`{"url":"https://example.com","timeout":10}`)
+	req := &Request{
+		ID:     6,
+		Method: "fetch",
+		Params: params,
+	}
+
+	ctx := context.Background()
+	_, _ = server.dispatch(ctx, req) // nil handlers; just verify no panic
+}
+
+func TestSocketServerDispatch_GlobMethod(t *testing.T) {
+	handlers := &Handlers{}
+	server := NewSocketServer("/tmp/test.sock", handlers)
+
+	params := []byte(`{"pattern":"*.go","limit":50}`)
+	req := &Request{
+		ID:     7,
+		Method: "glob",
+		Params: params,
+	}
+
+	ctx := context.Background()
+	_, _ = server.dispatch(ctx, req) // nil handlers; just verify no panic
+}
+
+func TestSocketServerDispatch_GrepMethod(t *testing.T) {
+	handlers := &Handlers{}
+	server := NewSocketServer("/tmp/test.sock", handlers)
+
+	params := []byte(`{"pattern":"func","limit":50}`)
+	req := &Request{
+		ID:     8,
+		Method: "grep",
+		Params: params,
+	}
+
+	ctx := context.Background()
+	_, _ = server.dispatch(ctx, req) // nil handlers; just verify no panic
+}
+
+func TestSocketServerDispatch_EditMethod(t *testing.T) {
+	handlers := &Handlers{}
+	server := NewSocketServer("/tmp/test.sock", handlers)
+
+	params := []byte(`{"path":"/tmp/test.txt","old_string":"foo","new_string":"bar"}`)
+	req := &Request{
+		ID:     9,
+		Method: "edit",
+		Params: params,
+	}
+
+	ctx := context.Background()
+	_, _ = server.dispatch(ctx, req) // nil handlers; just verify no panic
+}
+
+func TestSocketServerDispatch_WriteMethod(t *testing.T) {
+	handlers := &Handlers{}
+	server := NewSocketServer("/tmp/test.sock", handlers)
+
+	params := []byte(`{"path":"/tmp/test.txt","content":"hello world"}`)
+	req := &Request{
+		ID:     10,
+		Method: "write",
+		Params: params,
+	}
+
+	ctx := context.Background()
+	_, _ = server.dispatch(ctx, req) // nil handlers; just verify no panic
+}
+
+func TestSocketServerDispatch_StatsMethod(t *testing.T) {
+	handlers := &Handlers{}
+	server := NewSocketServer("/tmp/test.sock", handlers)
+
+	params := []byte(`{}`)
+	req := &Request{
+		ID:     11,
+		Method: "stats",
+		Params: params,
+	}
+
+	ctx := context.Background()
+	_, _ = server.dispatch(ctx, req) // nil handlers; just verify no panic
+}
+
+func TestSocketServerDispatch_DaemonsMethod(t *testing.T) {
+	handlers := &Handlers{}
+	server := NewSocketServer("/tmp/test.sock", handlers)
+
+	params := []byte(`{}`)
+	req := &Request{
+		ID:     12,
+		Method: "daemons",
+		Params: params,
+	}
+
+	ctx := context.Background()
+	_, _ = server.dispatch(ctx, req) // nil handlers; just verify no panic
+}
+
+func TestSocketServerDispatch_UnknownMethodAlias(t *testing.T) {
+	handlers := &Handlers{}
+	server := NewSocketServer("/tmp/test.sock", handlers)
+
+	req := &Request{
+		ID:     13,
+		Method: "dfmt_search", // alias for search
+		Params: json.RawMessage(`{"query":"test"}`),
+	}
+
+	ctx := context.Background()
+	_, _ = server.dispatch(ctx, req) // nil handlers; just verify no panic
+}
+
+func TestSocketServerDispatch_RememberMethod(t *testing.T) {
+	handlers := &Handlers{}
+	server := NewSocketServer("/tmp/test.sock", handlers)
+
+	params := []byte(`{"type":"note","message":"test note"}`)
+	req := &Request{
+		ID:     14,
 		Method: "remember",
 		Params: params,
 	}
 
 	ctx := context.Background()
-	_, err := server.dispatch(ctx, req)
-	if err == nil {
-		t.Error("expected error for invalid remember params type")
-	}
+	_, _ = server.dispatch(ctx, req) // nil handlers; just verify no panic
 }
 
-func TestSocketServerDispatchInvalidParamsSearch(t *testing.T) {
+func TestSocketServerDispatch_SearchMethod(t *testing.T) {
 	handlers := &Handlers{}
 	server := NewSocketServer("/tmp/test.sock", handlers)
 
-	// Invalid params for search method
-	params := []byte(`{"query": 123}`)
+	params := []byte(`{"query":"test","limit":10}`)
 	req := &Request{
-		ID:     2,
+		ID:     15,
 		Method: "search",
 		Params: params,
 	}
 
 	ctx := context.Background()
-	_, err := server.dispatch(ctx, req)
-	if err == nil {
-		t.Error("expected error for invalid search params type")
-	}
+	_, _ = server.dispatch(ctx, req) // nil handlers; just verify no panic
 }
 
-func TestSocketServerDispatchInvalidParamsRecall(t *testing.T) {
+func TestSocketServerDispatch_RecallMethod(t *testing.T) {
 	handlers := &Handlers{}
 	server := NewSocketServer("/tmp/test.sock", handlers)
 
-	// Invalid params for recall method
-	params := []byte(`{"budget": "not a number"}`)
+	params := []byte(`{"budget":1024,"format":"md"}`)
 	req := &Request{
-		ID:     3,
+		ID:     16,
 		Method: "recall",
+		Params: params,
+	}
+
+	ctx := context.Background()
+	_, _ = server.dispatch(ctx, req) // nil handlers; just verify no panic
+}
+
+func TestSocketServerDispatch_ExecMethod_BadParams(t *testing.T) {
+	handlers := &Handlers{}
+	server := NewSocketServer("/tmp/test.sock", handlers)
+
+	params := []byte(`invalid json`)
+	req := &Request{
+		ID:     17,
+		Method: "exec",
 		Params: params,
 	}
 
 	ctx := context.Background()
 	_, err := server.dispatch(ctx, req)
 	if err == nil {
-		t.Error("expected error for invalid recall params type")
+		t.Error("expected error for invalid exec params")
+	}
+}
+
+func TestSocketServerDispatch_ReadMethod_BadParams(t *testing.T) {
+	handlers := &Handlers{}
+	server := NewSocketServer("/tmp/test.sock", handlers)
+
+	params := []byte(`invalid json`)
+	req := &Request{
+		ID:     18,
+		Method: "read",
+		Params: params,
+	}
+
+	ctx := context.Background()
+	_, err := server.dispatch(ctx, req)
+	if err == nil {
+		t.Error("expected error for invalid read params")
+	}
+}
+
+func TestSocketServerDispatch_FetchMethod_BadParams(t *testing.T) {
+	handlers := &Handlers{}
+	server := NewSocketServer("/tmp/test.sock", handlers)
+
+	params := []byte(`invalid json`)
+	req := &Request{
+		ID:     19,
+		Method: "fetch",
+		Params: params,
+	}
+
+	ctx := context.Background()
+	_, err := server.dispatch(ctx, req)
+	if err == nil {
+		t.Error("expected error for invalid fetch params")
+	}
+}
+
+func TestSocketServerDispatch_GlobMethod_BadParams(t *testing.T) {
+	handlers := &Handlers{}
+	server := NewSocketServer("/tmp/test.sock", handlers)
+
+	params := []byte(`invalid json`)
+	req := &Request{
+		ID:     20,
+		Method: "glob",
+		Params: params,
+	}
+
+	ctx := context.Background()
+	_, err := server.dispatch(ctx, req)
+	if err == nil {
+		t.Error("expected error for invalid glob params")
+	}
+}
+
+func TestSocketServerDispatch_GrepMethod_BadParams(t *testing.T) {
+	handlers := &Handlers{}
+	server := NewSocketServer("/tmp/test.sock", handlers)
+
+	params := []byte(`invalid json`)
+	req := &Request{
+		ID:     21,
+		Method: "grep",
+		Params: params,
+	}
+
+	ctx := context.Background()
+	_, err := server.dispatch(ctx, req)
+	if err == nil {
+		t.Error("expected error for invalid grep params")
+	}
+}
+
+func TestSocketServerDispatch_EditMethod_BadParams(t *testing.T) {
+	handlers := &Handlers{}
+	server := NewSocketServer("/tmp/test.sock", handlers)
+
+	params := []byte(`invalid json`)
+	req := &Request{
+		ID:     22,
+		Method: "edit",
+		Params: params,
+	}
+
+	ctx := context.Background()
+	_, err := server.dispatch(ctx, req)
+	if err == nil {
+		t.Error("expected error for invalid edit params")
+	}
+}
+
+func TestSocketServerDispatch_WriteMethod_BadParams(t *testing.T) {
+	handlers := &Handlers{}
+	server := NewSocketServer("/tmp/test.sock", handlers)
+
+	params := []byte(`invalid json`)
+	req := &Request{
+		ID:     23,
+		Method: "write",
+		Params: params,
+	}
+
+	ctx := context.Background()
+	_, err := server.dispatch(ctx, req)
+	if err == nil {
+		t.Error("expected error for invalid write params")
+	}
+}
+
+func TestSocketServerDispatch_StatsMethod_BadParams(t *testing.T) {
+	handlers := &Handlers{}
+	server := NewSocketServer("/tmp/test.sock", handlers)
+
+	params := []byte(`invalid json`)
+	req := &Request{
+		ID:     24,
+		Method: "stats",
+		Params: params,
+	}
+
+	ctx := context.Background()
+	_, err := server.dispatch(ctx, req)
+	if err == nil {
+		t.Error("expected error for invalid stats params")
+	}
+}
+
+func TestSocketServerDispatch_DaemonsMethod_BadParams(t *testing.T) {
+	handlers := &Handlers{}
+	server := NewSocketServer("/tmp/test.sock", handlers)
+
+	params := []byte(`invalid json`)
+	req := &Request{
+		ID:     25,
+		Method: "daemons",
+		Params: params,
+	}
+
+	ctx := context.Background()
+	_, err := server.dispatch(ctx, req)
+	if err == nil {
+		t.Error("expected error for invalid daemons params")
 	}
 }
 

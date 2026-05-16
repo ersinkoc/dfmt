@@ -985,6 +985,7 @@ func waitForExit(pid int, timeout time.Duration, proj string) {
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
+	// pid intentionally unused — DaemonRunning check above is authoritative.
 	_ = pid
 }
 

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -686,7 +687,7 @@ func (h *Handlers) dedupLookup(key string) string {
 // dedupRecord stores a (key -> contentID) mapping with expiry dedupTTL into
 // the future. When the cache is full the recorder evicts expired entries
 // first, then drops arbitrary live ones — a missed dedup is never wrong,
-// just suboptimal.
+// just suboptimal. Eviction iterates over sorted keys for determinism.
 func (h *Handlers) dedupRecord(key, contentID string) {
 	h.dedupMu.Lock()
 	defer h.dedupMu.Unlock()
@@ -695,16 +696,25 @@ func (h *Handlers) dedupRecord(key, contentID string) {
 	}
 	now := time.Now()
 	if len(h.dedupCache) >= dedupCap {
+		// First pass: evict expired entries.
 		for k, v := range h.dedupCache {
 			if now.After(v.expiresAt) {
 				delete(h.dedupCache, k)
 			}
 		}
-		for k := range h.dedupCache {
-			if len(h.dedupCache) < dedupCap {
-				break
+		// Second pass: if still over cap, drop oldest entries by sorted key.
+		if len(h.dedupCache) >= dedupCap {
+			keys := make([]string, 0, len(h.dedupCache))
+			for k := range h.dedupCache {
+				keys = append(keys, k)
 			}
-			delete(h.dedupCache, k)
+			sort.Strings(keys)
+			for _, k := range keys {
+				if len(h.dedupCache) < dedupCap {
+					break
+				}
+				delete(h.dedupCache, k)
+			}
 		}
 	}
 	h.dedupCache[key] = dedupEntry{contentID: contentID, expiresAt: now.Add(dedupTTL)}
