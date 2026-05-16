@@ -27,46 +27,133 @@ Internal package shapes (`internal/...`) are NOT covered by SemVer.
 
 ## [Unreleased]
 
+## [0.6.8] — 2026-05-16
+
+A refactor-and-test release. No wire contract changes; every entry below is
+internal cleanup that closes the `refactor.md` audit list. The MCP tool
+shapes, on-disk journal format, and CLI subcommand surface are unchanged.
+
+### Changed — file structure (Wave 2)
+
+- `internal/cli/dispatch.go` split into nine files
+  (`dispatch.go`, `daemon.go`, `doctor.go`, `setup.go`, `project.go`,
+  `recall.go`, `config.go`, `dashboard.go`, `tools.go`, `mcp.go`).
+- `internal/sandbox/permissions.go` split into eight files by
+  responsibility (path, exec, fetch, runtime, etc.).
+- `internal/transport/handlers.go` split into seven `handlers_*.go`
+  files keyed by tool group.
+
+### Changed — god-function decompositions (Wave 3 + §9 closure)
+
+- `handleToolsList` 302 → 20 LOC (MCP tool schemas extracted to
+  `mcp_schemas.go`).
+- `runDoctor` 344 → 76 LOC (`coreChecks` + `runChecks`).
+- `daemon.New` 261 → 110 LOC (`loadJournalAndIndex`, `loadSandbox`,
+  `buildServer`).
+- `handleToolsCall` 228 → 82 LOC. Generic `dispatchTool[T, R]` helper
+  collapses 11 nearly-identical tool-dispatch cases. The Stats case's
+  bare `json.Unmarshal` is normalized to `decodeParams`; non-strict
+  mode is functionally identical and Stats now also rejects trailing
+  tokens, matching every other tool.
+- `handleAPIProxy` 244 → 79 LOC. Five helpers split out:
+  `writeProxyError` (15 duplicate error-encode sites → 1),
+  `readDaemonRegistry`, `resolveProxyTarget`,
+  `forwardProxyOverUnix`, `forwardProxyOverHTTP`. Wire contract
+  (status codes, JSON-RPC error codes, body caps) byte-identical.
+- `splitByShellOperators` 186 → 118 LOC. Three helpers
+  (`scanParensClose`, `scanBacktickClose`, `appendInnerSplits`)
+  deduplicate the five paren / backtick / subshell scanners that were
+  inlined separately. A bug fix to paren counting now lands in one
+  place instead of five.
+- `sandbox.Grep` 170 → 77 LOC. Four helpers (`compileGrepPattern`,
+  `resolveGrepSearchRoot`, `grepFileLines`, `filterMatchesByIntent`)
+  make file-level grep behavior independently unit-testable. Same
+  100-match cap, same 200-byte line truncation, same intent-filter
+  "preserve unfiltered when filter empties the set" semantics.
+
+### Changed — duplication kills
+
+- New `internal/osutil` package consolidates 6 copies of the
+  `goosWindows` constant and ~35 inline `runtime.GOOS == "windows"`
+  sites. Cross-package `SamePath` / `SameCleanPath` helpers replace
+  four near-duplicate path-equality functions.
+- Named context timeouts: `rpcTimeout` (5 s, short metadata calls),
+  `toolTimeout` (30 s, interactive tool calls),
+  `perProjectShutdownTimeout` (5 s, per-project journal +
+  index shutdown work) — names the 4 inline 5 s budgets in
+  `projectres.go` and the 10 inline 5 s/30 s call sites in `cli`.
+- `cli.ParseGlobals(args)` consolidates global-flag parsing
+  (`stripGlobalFlags` / `SetGlobalJSON` / `SetGlobalProject` were
+  three views of the same logic). `cmd/dfmt/main.go` now calls one
+  parser; strict-mode `--project` error returns surface to the
+  operator instead of silently dropping. The lenient
+  `stripGlobalFlags` stays as a one-line wrapper preserving the
+  historical Dispatch-by-tests tolerance.
+- `cli.resolveSpawnExePath` consolidates the test-binary refusal
+  dance (4 sites across `startGlobalDaemonBackground` and
+  `startDaemonBackground`) into one resolution point.
+
+### Added — sentinel errors
+
+- `sandbox.ErrPolicyDenied` — every "operation denied by policy"
+  error now wraps this sentinel via `%w`. Callers / tests can
+  `errors.Is(err, sandbox.ErrPolicyDenied)` instead of substring-
+  matching the formatted message.
+- `sandbox.ErrPathContainsNullByte` — load-bearing path-sanitization
+  refusal, previously an inline `errors.New` at three sites.
+- `core.ErrJournalClosed` — Append / Read after Close. Lets callers
+  distinguish post-shutdown writes from generic I/O errors.
+- `transport.ErrServerAlreadyRunning` — same identity on
+  `HTTPServer.Start` and `SocketServer.Start`. Supervisor logic can
+  now branch on the sentinel.
+
+### Removed
+
+- `cli.SetGlobalJSON` and `cli.SetGlobalProject` exported setters.
+  Replaced by `cli.ParseGlobals` which writes the package-private
+  flag state directly.
+
 ### Fixed
 
-- **`--help` / `-h` no longer mutates state on `dfmt task` and
-  `dfmt install-hooks`**. Pre-fix `dfmt task --help` journaled an
-  event whose subject was the literal string "--help", and
-  `dfmt install-hooks --help` rewrote `.git/hooks/{post-commit,
-  post-checkout,pre-push}` unconditionally because `runInstallHooks`
-  ignored its argv. Both subcommands now route through a FlagSet
-  (install-hooks) or an explicit `helpRequested` check (task) so
-  help requests short-circuit before any side effect runs.
-- **`dfmt note --help` prints "Usage of note:"** rather than the
-  misleading "Usage of remember:". The shared `runRemember` now takes
-  the invocation verb and names its FlagSet accordingly.
-- **`dfmt stats|status|list|stop --help` print usage** instead of
-  silently running the underlying command. Each function now parses
-  args through a `flag.NewFlagSet(name, ContinueOnError)` so unknown
-  flags and stray positionals exit 2 the same way every other
-  subcommand does.
-- **`dfmt shell-init --help` / `dfmt capture --help` / `dfmt config
-  get --help`** print usage rather than the previous confusing errors
-  ("unknown shell: --help", "unknown capture type: --help",
-  "unknown config key '--help'").
-- **Global `-json` / `--json` / `--project` flags survive direct
-  `Dispatch` calls**. `cmd/dfmt/main.go` already stripped them before
-  dispatch, but external callers (and the test suite) that imported
-  `internal/cli` and called `Dispatch` directly had their globals
-  treated as subcommand flags. A new `stripGlobalFlags` helper runs at
-  the top of `Dispatch` so every caller behaves the same way.
+- `--help` / `-h` no longer mutates state on `dfmt task` and `dfmt
+  install-hooks`. Pre-fix `dfmt task --help` journaled an event whose
+  subject was the literal string "--help", and `dfmt install-hooks
+  --help` rewrote `.git/hooks/{post-commit,post-checkout,pre-push}`
+  unconditionally because `runInstallHooks` ignored its argv. Both
+  subcommands now route through a FlagSet (install-hooks) or an
+  explicit `helpRequested` check (task) so help requests
+  short-circuit before any side effect runs.
+- `dfmt note --help` prints "Usage of note:" rather than the
+  misleading "Usage of remember:". The shared `runRemember` now
+  takes the invocation verb and names its FlagSet accordingly.
+- `dfmt stats|status|list|stop --help` print usage instead of
+  silently running the underlying command.
+- `dfmt shell-init --help` / `dfmt capture --help` / `dfmt config
+  get --help` print usage rather than the previous confusing errors
+  ("unknown shell: --help", "unknown capture type: --help", "unknown
+  config key '--help'").
+- Global `-json` / `--json` / `--project` flags survive direct
+  `Dispatch` calls — external callers and the test suite that import
+  `internal/cli` and call `Dispatch` directly now behave the same as
+  `cmd/dfmt`.
+- `errors.Is` at two remaining sentinel-equality sites: the
+  `errSkipCapture` check in `cli/setup.go` and the `path_prepend`
+  stat error in `sandbox/permissions.go` (now `%w`-wrapped).
 
 ### Tests
 
+- Wave 4 coverage push: cli 63.4 → 69.3%, transport 82.4 → 83.1%,
+  daemon 75.0 → 75.2%. New `setupInProcessDaemon` helper uses
+  `daemon.PromoteInProcess` to give CLI tests an in-process daemon
+  without sibling-process fork.
+- Wave 5 cli push: tests for `loadedProjectsViaAPI` (five branches
+  via `httptest`) and `signalStopProcess` panic-safety edges
+  (PID 0, PID outside kernel range).
 - New `TestHelpFlagDoesNotMutateState_{Task,InstallHooks}` regression
-  guards for the state-mutating-help bug class.
-- New `TestHelpFlagPrintsRightUsage_Note` pins the `note --help`
-  exit-zero contract.
-- `TestRunInstallHooks{Bash,Zsh,Fish}Shell` renamed to
-  `TestRunInstallHooksRejectsBogusShellFlag*` and updated to assert
-  exit 2 (FlagSet rejecting an undefined flag) — the previous
-  assertion `want 0` only passed because the function silently
-  ignored its argv.
+  guards. `TestRunInstallHooks{Bash,Zsh,Fish}Shell` renamed to
+  `TestRunInstallHooksRejectsBogusShellFlag*` and corrected to
+  assert exit 2 (the previous `want 0` only passed because
+  `runInstallHooks` silently ignored its argv).
 
 ## [0.6.7] — 2026-05-08
 
