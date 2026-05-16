@@ -2,7 +2,6 @@ package sandbox
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -31,7 +30,7 @@ func (s *SandboxImpl) Edit(ctx context.Context, req EditReq) (EditResp, error) {
 	// Reject null bytes — Go's os.Open rejects them on Windows but on Unix
 	// they are valid filename characters, so explicit rejection is defense-in-depth.
 	if strings.IndexByte(cleanPath, 0) >= 0 {
-		return EditResp{}, errors.New("path contains null byte")
+		return EditResp{}, ErrPathContainsNullByte
 	}
 
 	// Verify path is within working directory
@@ -133,7 +132,7 @@ func (s *SandboxImpl) Write(ctx context.Context, req WriteReq) (WriteResp, error
 	// Reject null bytes — Go's os.Open rejects them on Windows but on Unix
 	// they are valid filename characters, so explicit rejection is defense-in-depth.
 	if strings.IndexByte(cleanPath, 0) >= 0 {
-		return WriteResp{}, errors.New("path contains null byte")
+		return WriteResp{}, ErrPathContainsNullByte
 	}
 
 	// Verify path is within working directory

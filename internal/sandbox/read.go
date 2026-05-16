@@ -23,7 +23,7 @@ func (s *SandboxImpl) Read(ctx context.Context, req ReadReq) (ReadResp, error) {
 	// Reject null bytes — Go's os.Open rejects them on Windows but on Unix they
 	// are valid filename characters, so explicit rejection is defense-in-depth.
 	if strings.IndexByte(cleanPath, 0) >= 0 {
-		return ReadResp{}, errors.New("path contains null byte")
+		return ReadResp{}, ErrPathContainsNullByte
 	}
 
 	// Resolve to an absolute path and require it to sit inside the working

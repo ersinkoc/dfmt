@@ -24,6 +24,11 @@ var (
 	ErrJournalNotFound = errors.New("journal not found")
 	// ErrEventTooLarge is returned when a single event exceeds maxEventBytes.
 	ErrEventTooLarge = errors.New("event exceeds max serialized size")
+	// ErrJournalClosed is returned by Append/Read paths after Close has
+	// finished. Pre-extraction this was an inline errors.New at two sites
+	// in this file, with no shared identity so a caller could not
+	// distinguish "journal closed" from any other write error.
+	ErrJournalClosed = errors.New("journal closed")
 )
 
 // maxEventBytes caps the serialized size of a single journal event. The limit
@@ -226,7 +231,7 @@ func (j *journalImpl) Append(ctx context.Context, e Event) error {
 	}
 
 	if j.closed {
-		return errors.New("journal closed")
+		return ErrJournalClosed
 	}
 
 	// Size limit check MUST be under the lock to avoid TOCTOU: two concurrent
@@ -453,7 +458,7 @@ func (j *journalImpl) Size() (int64, error) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	if j.closed {
-		return 0, errors.New("journal closed")
+		return 0, ErrJournalClosed
 	}
 	if j.file == nil {
 		return 0, errors.New("journal file not open")

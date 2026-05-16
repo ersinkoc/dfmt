@@ -2,7 +2,6 @@ package transport
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -70,7 +69,7 @@ func (s *SocketServer) Start(ctx context.Context) error {
 	s.mu.Lock()
 	if s.running {
 		s.mu.Unlock()
-		return errors.New("server already running")
+		return ErrServerAlreadyRunning
 	}
 
 	// Ensure directory exists

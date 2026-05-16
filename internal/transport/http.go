@@ -24,6 +24,14 @@ import (
 	"github.com/ersinkoc/dfmt/internal/safejson"
 )
 
+// ErrServerAlreadyRunning is returned by HTTPServer.Start and
+// SocketServer.Start when the same instance is started twice without an
+// intervening Stop. Pre-extraction this was an inline errors.New at
+// both call sites with no shared identity — a caller wanting to
+// distinguish "already started" from a generic bind error had no
+// reliable way to do so.
+var ErrServerAlreadyRunning = errors.New("server already running")
+
 const (
 	jsonRPCVersion = "2.0"
 	// methodXxx are the JSON-RPC method names accepted on the HTTP and socket
@@ -139,7 +147,7 @@ func (s *HTTPServer) Start(ctx context.Context) error {
 	defer s.mu.Unlock()
 
 	if s.running {
-		return errors.New("server already running")
+		return ErrServerAlreadyRunning
 	}
 
 	// Pick a listener first so actualPort is known before we write the port file.

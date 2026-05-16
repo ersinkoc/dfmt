@@ -748,23 +748,43 @@ func runDaemonForeground(proj string, cfg *config.Config) int {
 	return 0
 }
 
+// errRefuseSpawnFromTestBinary signals that the current process looks
+// like a test binary (flag.Lookup("test.v") set, or exe basename ends
+// in .test/.test.exe). Spawning the daemon as `<test-binary> daemon`
+// would re-enter `go test`'s harness instead of starting the daemon,
+// causing an exponential fork bomb under the test runner.
+var errRefuseSpawnFromTestBinary = errors.New("refusing to spawn daemon from test binary")
+
+// resolveSpawnExePath returns os.Executable() unless the current
+// binary is recognized as a test binary. Pre-extraction the same
+// six-line dance (test.v lookup → os.Executable → .test suffix check)
+// appeared twice in this file across startGlobalDaemonBackground and
+// startDaemonBackground; bugs in the path-comparison logic had to be
+// fixed in lockstep across both. Now there's a single resolution
+// point, and the two callers each shrink by ~10 lines.
+func resolveSpawnExePath() (string, error) {
+	if flag.Lookup("test.v") != nil {
+		return "", errRefuseSpawnFromTestBinary
+	}
+	exePath, err := os.Executable()
+	if err != nil {
+		return "", fmt.Errorf("find executable: %w", err)
+	}
+	exeBase := strings.ToLower(filepath.Base(exePath))
+	if strings.HasSuffix(exeBase, ".test") || strings.HasSuffix(exeBase, ".test.exe") {
+		return "", fmt.Errorf("%w: %s", errRefuseSpawnFromTestBinary, exePath)
+	}
+	return exePath, nil
+}
+
 // startGlobalDaemonBackground spawns the host-wide daemon as a
 // detached child. Lock acquisition (~/.dfmt/lock) enforces singleton
 // semantics — a second invocation while one is already running fails
 // at lock time, not here, and the user sees the LockError message.
 func startGlobalDaemonBackground() (int, error) {
-	if flag.Lookup("test.v") != nil {
-		return 0, errors.New("refusing to spawn daemon from test binary")
-	}
-
-	exePath, err := os.Executable()
+	exePath, err := resolveSpawnExePath()
 	if err != nil {
-		return 0, fmt.Errorf("find executable: %w", err)
-	}
-
-	exeBase := strings.ToLower(filepath.Base(exePath))
-	if strings.HasSuffix(exeBase, ".test") || strings.HasSuffix(exeBase, ".test.exe") {
-		return 0, fmt.Errorf("refusing to spawn daemon from test binary: %s", exePath)
+		return 0, err
 	}
 
 	cmd := exec.Command(exePath, "daemon", "--global", "--foreground")
@@ -799,21 +819,9 @@ func startDaemonBackground(proj string) (int, error) {
 		return 0, errors.New("daemon already running")
 	}
 
-	// Refuse to re-exec a test binary as the daemon. Under `go test` the
-	// test framework would ignore the extra args and re-run the suite,
-	// causing an exponential fork bomb.
-	if flag.Lookup("test.v") != nil {
-		return 0, errors.New("refusing to spawn daemon from test binary")
-	}
-
-	exePath, err := os.Executable()
+	exePath, err := resolveSpawnExePath()
 	if err != nil {
-		return 0, fmt.Errorf("find executable: %w", err)
-	}
-
-	exeBase := strings.ToLower(filepath.Base(exePath))
-	if strings.HasSuffix(exeBase, ".test") || strings.HasSuffix(exeBase, ".test.exe") {
-		return 0, fmt.Errorf("refusing to spawn daemon from test binary: %s", exePath)
+		return 0, err
 	}
 
 	// Same project-on-cmdline rationale as client.startDaemon: --project

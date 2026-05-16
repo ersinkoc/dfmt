@@ -18,6 +18,16 @@ const langBash = "bash"
 // of the contract and is free to change without breaking inspectors.
 var ErrPolicyDenied = errors.New("operation denied by policy")
 
+// ErrPathContainsNullByte is returned by Read/Edit/Write when the
+// caller-supplied path contains a NUL (\x00) byte. Pre-extraction the
+// same errors.New literal appeared at three sites with no caller able
+// to inspect it as anything other than a string. Null-byte rejection
+// is a load-bearing path-sanitization step (POSIX strings terminate
+// at NUL, so a valid Go-string path with an embedded NUL can be
+// truncated mid-call by the kernel — different effective path than
+// the policy check evaluated).
+var ErrPathContainsNullByte = errors.New("path contains null byte")
+
 // pathHint returns a canonical path string for error messages.
 // On Windows: converts to forward slashes and lowercases drive letter.
 // On Unix: returns path as-is.
