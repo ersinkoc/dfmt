@@ -141,7 +141,7 @@ func runRead(args []string) int {
 		}
 	}()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), toolTimeout)
 	defer cancel()
 	ctx = transport.WithProjectID(ctx, proj)
 
@@ -297,7 +297,7 @@ func runGlob(args []string) int {
 		}
 	}()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), toolTimeout)
 	defer cancel()
 	ctx = transport.WithProjectID(ctx, proj)
 
@@ -360,7 +360,7 @@ func runGrep(args []string) int {
 		}
 	}()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), toolTimeout)
 	defer cancel()
 	ctx = transport.WithProjectID(ctx, proj)
 
@@ -422,7 +422,7 @@ func runEdit(args []string) int {
 		}
 	}()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), toolTimeout)
 	defer cancel()
 	ctx = transport.WithProjectID(ctx, proj)
 
@@ -480,7 +480,7 @@ func runWrite(args []string) int {
 		}
 	}()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), toolTimeout)
 	defer cancel()
 	ctx = transport.WithProjectID(ctx, proj)
 

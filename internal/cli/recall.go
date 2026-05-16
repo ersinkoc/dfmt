@@ -93,7 +93,7 @@ func runRemember(verb string, args []string) int {
 		Tags:   fs.Args(),
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
 	defer cancel()
 	ctx = transport.WithProjectID(ctx, proj)
 	params.ProjectID = proj
@@ -146,7 +146,7 @@ func runSearch(args []string) int {
 		}
 	}()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
 	defer cancel()
 	ctx = transport.WithProjectID(ctx, proj)
 
@@ -294,7 +294,7 @@ func runStats(args []string) int {
 		}
 	}()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
 	defer cancel()
 	ctx = transport.WithProjectID(ctx, proj)
 

@@ -883,7 +883,7 @@ func runStop(args []string) int {
 	if pid > 0 {
 		signalStopProcess(pid, false)
 		fmt.Printf("Sent stop signal to PID %d\n", pid)
-		waitForExit(pid, 5*time.Second, proj)
+		waitForExit(pid, rpcTimeout, proj)
 	}
 
 	if pid > 0 && client.DaemonRunning(proj) {
@@ -929,7 +929,7 @@ func stopGlobalDaemon() int {
 
 	signalStopProcess(pid, false)
 	fmt.Printf("Sent stop signal to global daemon (PID %d)\n", pid)
-	waitForGlobalExit(pid, 5*time.Second)
+	waitForGlobalExit(pid, rpcTimeout)
 
 	if isProcessRunning(pid) {
 		fmt.Printf("Global daemon still running after graceful stop; escalating to forced kill\n")

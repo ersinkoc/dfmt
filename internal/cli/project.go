@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/ersinkoc/dfmt/internal/client"
 	"github.com/ersinkoc/dfmt/internal/config"
@@ -101,7 +100,7 @@ func runRemove(args []string) int {
 	abs, _ := filepath.Abs(dir)
 	if abs != "" && client.DaemonRunning(abs) {
 		if cl, cerr := client.NewClient(abs); cerr == nil {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
 			if _, derr := cl.DropProject(ctx, abs); derr != nil {
 				fmt.Fprintf(os.Stderr, "warn: daemon DropProject(%s): %v\n", abs, derr)
 			}
