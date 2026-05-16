@@ -98,6 +98,16 @@ type ProjectResources struct {
 // back on (degraded mode). Surfaces as -32603 to MCP clients.
 var errProjectIDRequired = errors.New("project_id required: daemon has no default project")
 
+// perProjectShutdownTimeout caps the time spent winding down a single
+// project's resources (fswatch Stop, journal Checkpoint, index
+// PersistIndex, journal Close) on LRU eviction, DropProject, and
+// closeExtraProjects. Bounded so a wedged journal cannot hang the
+// owning code path — Daemon.Stop, eviction, or operator drop. 5 s
+// was chosen to mirror the default-project Stop budget; before this
+// constant the value appeared inline at four sites with three
+// comments noting "5s matches closeExtraProjects".
+const perProjectShutdownTimeout = 5 * time.Second
+
 // extraProjectsMaxEntries caps the number of additional projects the
 // daemon keeps live in the resource cache simultaneously. When the
 // cap is hit on a cache miss, the project with the oldest
@@ -266,7 +276,7 @@ func (d *Daemon) Resources(projectID string) (*ProjectResources, error) {
 				}()
 				r.stopFSWatch()
 				r.stopIndexTail()
-				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				ctx, cancel := context.WithTimeout(context.Background(), perProjectShutdownTimeout)
 				defer cancel()
 				if r.Journal != nil && r.Index != nil && r.IndexPath != "" && !r.NeedsRebuild {
 					if hiID, cerr := r.Journal.Checkpoint(ctx); cerr != nil {
@@ -669,8 +679,8 @@ func (r *ProjectResources) stopFSWatch() {
 	if r.FSWatcher != nil {
 		// Stop is fire-and-forget for our purposes — the cancel above
 		// already unblocks the consumer; Stop just releases the OS-level
-		// watch handles. 5 s budget mirrors closeExtraProjects.
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		// watch handles.
+		ctx, cancel := context.WithTimeout(context.Background(), perProjectShutdownTimeout)
 		_ = r.FSWatcher.Stop(ctx)
 		cancel()
 	}
@@ -728,7 +738,7 @@ func (d *Daemon) DropProject(projectID string) error {
 	r.stopFSWatch()
 	r.stopIndexTail()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), perProjectShutdownTimeout)
 	defer cancel()
 	if r.Journal != nil && r.Index != nil && r.IndexPath != "" && !r.NeedsRebuild {
 		if hiID, cerr := r.Journal.Checkpoint(ctx); cerr != nil {
@@ -763,8 +773,8 @@ func (d *Daemon) closeExtraProjects() {
 	d.projectsMu.Lock()
 	defer d.projectsMu.Unlock()
 	// Bound the per-project checkpoint+persist work so a wedged journal
-	// can't hang Stop. 5 s matches the default-project Stop budget.
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// can't hang Stop.
+	ctx, cancel := context.WithTimeout(context.Background(), perProjectShutdownTimeout)
 	defer cancel()
 	for k, r := range d.extraProjects {
 		if r == nil {
