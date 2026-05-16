@@ -50,11 +50,11 @@ func (s *SandboxImpl) Exec(ctx context.Context, req ExecReq) (ExecResp, error) {
 		baseCmd := extractBaseCommand(cmd)
 		// Skip env var assignments (e.g., "GOCACHE=xxx go test")
 		if baseCmd != "" && !isEnvAssignment(baseCmd) && !s.policy.Evaluate("exec", baseCmd) {
-			return ExecResp{}, fmt.Errorf("operation denied by policy: %s: base command '%s' not allowed\n%s", cmd, baseCmd, policyDenyHint("exec"))
+			return ExecResp{}, fmt.Errorf("%w: %s: base command '%s' not allowed\n%s", ErrPolicyDenied, cmd, baseCmd, policyDenyHint("exec"))
 		}
 		// Second check: does the full command match any deny rule?
 		if !s.policy.Evaluate("exec", cmdForPolicy) {
-			return ExecResp{}, fmt.Errorf("operation denied by policy: %s: %v\n%s", cmd, "blocked by deny rule", policyDenyHint("exec"))
+			return ExecResp{}, fmt.Errorf("%w: %s: blocked by deny rule\n%s", ErrPolicyDenied, cmd, policyDenyHint("exec"))
 		}
 		// Third check: each individual command (defense in depth)
 		// Skip redirection operands (2>&1, 1>, etc.) - they're not commands
@@ -74,7 +74,7 @@ func (s *SandboxImpl) Exec(ctx context.Context, req ExecReq) (ExecResp, error) {
 			}
 			partBase := extractBaseCommand(part)
 			if !s.policy.Evaluate("exec", partBase) {
-				return ExecResp{}, fmt.Errorf("operation denied by policy: %s: part '%s' not allowed\n%s", cmd, part, policyDenyHint("exec"))
+				return ExecResp{}, fmt.Errorf("%w: %s: part '%s' not allowed\n%s", ErrPolicyDenied, cmd, part, policyDenyHint("exec"))
 			}
 		}
 	} else if isLangPrefix {

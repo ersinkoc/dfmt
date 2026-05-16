@@ -11,6 +11,13 @@ import (
 
 const langBash = "bash"
 
+// ErrPolicyDenied is the sentinel wrapped by every "operation denied by
+// policy" error this package returns. Callers (and tests) should inspect via
+// errors.Is(err, sandbox.ErrPolicyDenied) instead of substring-matching the
+// formatted message — the human-readable suffix (op, text, hint) is not part
+// of the contract and is free to change without breaking inspectors.
+var ErrPolicyDenied = errors.New("operation denied by policy")
+
 // pathHint returns a canonical path string for error messages.
 // On Windows: converts to forward slashes and lowercases drive letter.
 // On Unix: returns path as-is.
@@ -139,7 +146,7 @@ func (s *SandboxImpl) SetWorkingDir(wd string) {
 // PolicyCheck checks if an operation is allowed by the policy.
 func (s *SandboxImpl) PolicyCheck(op, text string) error {
 	if !s.policy.Evaluate(op, text) {
-		return fmt.Errorf("operation denied by policy: %s %s\n%s", op, text, policyDenyHint(op))
+		return fmt.Errorf("%w: %s %s\n%s", ErrPolicyDenied, op, text, policyDenyHint(op))
 	}
 	return nil
 }

@@ -82,8 +82,8 @@ func TestFetchPolicyCheckError(t *testing.T) {
 	if err == nil {
 		t.Error("Fetch should be denied by policy")
 	}
-	if !strings.Contains(err.Error(), "operation denied by policy") {
-		t.Errorf("Error = %q, want to contain 'operation denied by policy'", err.Error())
+	if !errors.Is(err, ErrPolicyDenied) {
+		t.Errorf("Error = %q, want errors.Is(err, ErrPolicyDenied)", err)
 	}
 }
 
@@ -1132,7 +1132,7 @@ func TestExecGoExeAllowed(t *testing.T) {
 	// On systems without `go` on PATH the runtime layer reports its own error,
 	// distinct from "denied by policy".
 	_, err := sb.Exec(ctx, ExecReq{Code: "go.exe version", Lang: "bash"})
-	if err != nil && strings.Contains(err.Error(), "denied by policy") {
+	if err != nil && errors.Is(err, ErrPolicyDenied) {
 		t.Errorf("Exec(go.exe version) wrongly denied by policy: %v", err)
 	}
 }
@@ -1565,7 +1565,7 @@ func TestExecQuotedHereStringDenied(t *testing.T) {
 			t.Errorf("Exec(%q): expected policy denial, got nil", cmd)
 			continue
 		}
-		if !strings.Contains(err.Error(), "denied by policy") {
+		if !errors.Is(err, ErrPolicyDenied) {
 			t.Errorf("Exec(%q): expected policy denial, got: %v", cmd, err)
 		}
 	}

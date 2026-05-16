@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -1018,8 +1019,8 @@ func TestSandboxReadPolicyDenied(t *testing.T) {
 	if err == nil {
 		t.Error("Read should be denied by policy")
 	}
-	if !strings.Contains(err.Error(), "operation denied by policy") {
-		t.Errorf("Error = %q, want to contain 'operation denied by policy'", err.Error())
+	if !errors.Is(err, ErrPolicyDenied) {
+		t.Errorf("Error = %q, want errors.Is(err, ErrPolicyDenied)", err)
 	}
 }
 
@@ -1562,7 +1563,7 @@ func TestEdit_FiresEditOpDenyRules(t *testing.T) {
 	if err == nil {
 		t.Fatal("Edit should be denied by edit-op deny rule")
 	}
-	if !strings.Contains(err.Error(), "denied by policy") {
+	if !errors.Is(err, ErrPolicyDenied) {
 		t.Errorf("want policy denial, got: %v", err)
 	}
 	// File must be unchanged.
