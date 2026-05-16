@@ -74,9 +74,10 @@ To confirm the wire-up actually works:
 dfmt stats            # non-zero events_total + bytes_saved means yes
 ```
 
-If anything looks off, `dfmt doctor` runs nine state checks plus two
-cross-cutting passes (per-agent wire-up + instruction-block staleness)
-and prints a one-line fix per failure.
+If anything looks off, `dfmt doctor` runs twelve state checks plus
+three cross-cutting passes (per-agent wire-up, instruction-block
+staleness, and sandbox PATH visibility) and prints a one-line fix per
+failure.
 
 ## Why use it
 
@@ -204,14 +205,23 @@ strips its keys from any shared user config like `~/.claude.json`).
 - `scripts/` — helper scripts
 - `install.sh` / `install.ps1` — one-command install
 - `internal/core/` — events, journal, BM25 index, tokenizer, classifier
+- `internal/daemon/` — daemon lifecycle, per-project resource cache, idle/shutdown
 - `internal/sandbox/` — exec/read/fetch/glob/grep/edit/write policy gate
-- `internal/transport/` — MCP, JSON-RPC, HTTP dashboard
+- `internal/transport/` — MCP, JSON-RPC, HTTP dashboard, socket
+- `internal/client/` — CLI ↔ daemon RPC client
+- `internal/cli/` — subcommand dispatch and runX entry points
 - `internal/setup/` — agent auto-detection and config writers
 - `internal/redact/` — secret redaction patterns
-- `internal/safefs/` — symlink-safe write helper
 - `internal/capture/` — git hooks + filesystem watcher + shell hook
 - `internal/content/` — ephemeral content store for raw tool output
-- `internal/retrieve/` — reserved snapshot/markdown rendering scaffolding (path interning, multi-format output); not wired to the production `dfmt_recall` path yet — see `docs/ROADMAP.md` v0.3.
+- `internal/config/` — per-project `config.yaml` loading and merging
+- `internal/project/` — project discovery and global-dir paths
+- `internal/safefs/` — symlink-safe write helper
+- `internal/safejson/` — depth-capped JSON decode (rejects nesting bombs)
+- `internal/osutil/` — GOOS classification + case-aware path equality
+- `internal/logging/` — leveled logger used by daemon-side code paths
+- `internal/version/` — single-source release identity (`version.Current`)
+- `internal/retrieve/` — reserved snapshot/markdown rendering scaffolding (path interning, multi-format output); not wired to the production `dfmt_recall` path yet — see `docs/ROADMAP.md` v0.7.
 
 See `AGENTS.md` for the canonical agent-onboarding instructions and
 `CLAUDE.md` (which now points at AGENTS.md). Other top-level docs:
@@ -219,9 +229,9 @@ See `AGENTS.md` for the canonical agent-onboarding instructions and
 - `CHANGELOG.md` — release-by-release user-visible changes.
 - `SECURITY.md` — vulnerability reporting + supported versions +
   threat model summary.
-- `docs/ROADMAP.md` — v0.2.3 / v0.3.0 / v1.0.0 milestone plan.
+- `docs/ROADMAP.md` — v0.6.x / v0.7.0 / v1.0.0 milestone plan.
 - `docs/ARCHITECTURE.md` — system architecture deep dive.
-- `docs/adr/` — Architecture Decision Records (19 ADRs as of v0.2.3).
+- `docs/adr/` — Architecture Decision Records (22 ADRs as of v0.6.8).
 
 ## Dependency policy
 
