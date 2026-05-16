@@ -89,7 +89,7 @@ func ValidatePathPrepend(dirs []string) error {
 				errs = append(errs, fmt.Errorf("path_prepend entry %q does not exist", d))
 				continue
 			}
-			errs = append(errs, fmt.Errorf("path_prepend entry %q stat failed: %v", d, err))
+			errs = append(errs, fmt.Errorf("path_prepend entry %q stat failed: %w", d, err))
 			continue
 		}
 		if !fi.IsDir() {

@@ -266,7 +266,7 @@ func runCapture(args []string) int {
 	}
 	params, err := buildCaptureParams(args)
 	if err != nil {
-		if err == errSkipCapture {
+		if errors.Is(err, errSkipCapture) {
 			return 0
 		}
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
