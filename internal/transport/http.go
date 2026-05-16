@@ -1036,6 +1036,129 @@ func (s *HTTPServer) handleAPIAllDaemons(w http.ResponseWriter, r *http.Request)
 // Browser sends {target_project_path, method, params} and we forward to the
 // target daemon via HTTP, enabling cross-daemon stats from the dashboard
 // without hitting same-origin restrictions.
+// writeProxyError writes a JSON-RPC error envelope to w in the shape
+// /api/proxy uses: ID always nil (the endpoint is request/response, not
+// a streamed protocol where the agent assigns IDs), Error populated.
+// The Encode write is best-effort and intentionally drops the error —
+// if the response writer has been closed mid-write we can't recover by
+// writing a different response. Pre-extraction this exact eight-line
+// block appeared 15 times in handleAPIProxy.
+func writeProxyError(w http.ResponseWriter, code int, msg string) {
+	_ = json.NewEncoder(w).Encode(Response{
+		JSONRPC: jsonRPCVersion,
+		Error:   &RPCError{Code: code, Message: msg},
+		ID:      nil,
+	})
+}
+
+// readDaemonRegistry returns the parsed daemons.json contents, or a
+// (code, msg) pair the caller can pass straight to writeProxyError when
+// the file is missing or malformed.
+func readDaemonRegistry() (entries []map[string]any, errCode int, errMsg string) {
+	home, _ := os.UserHomeDir()
+	if home == "" {
+		home = os.TempDir()
+	}
+	data, err := os.ReadFile(filepath.Join(home, ".dfmt", "daemons.json"))
+	if err != nil {
+		return nil, -32603, "could not read registry: " + err.Error()
+	}
+	if err := json.Unmarshal(data, &entries); err != nil {
+		return nil, -32603, "could not parse registry: " + err.Error()
+	}
+	return entries, 0, ""
+}
+
+// resolveProxyTarget walks the registry for the daemon owning
+// targetProjectPath and returns the platform-appropriate URL plus, on
+// unix, the socket path the caller will dial. errCode != 0 signals
+// either "no daemon registered for this project" or "the registered
+// daemon entry lacks the port/socket field for the running platform".
+func resolveProxyTarget(registry []map[string]any, targetProjectPath string) (targetURL, socketPath string, errCode int, errMsg string) {
+	for _, d := range registry {
+		p, ok := d["project_path"].(string)
+		if !ok || !pathsEqualForRuntime(p, targetProjectPath) {
+			continue
+		}
+		if osutil.IsWindows() {
+			port, ok := d["port"].(float64)
+			if !ok || port <= 0 {
+				return "", "", -32603, "daemon has no port for project: " + targetProjectPath
+			}
+			return fmt.Sprintf("http://127.0.0.1:%d/api/stats", int(port)), "", 0, ""
+		}
+		sock, ok := d["socket_path"].(string)
+		if !ok || sock == "" {
+			return "", "", -32603, "daemon has no socket for project: " + targetProjectPath
+		}
+		return "http://unix/api/stats", sock, 0, ""
+	}
+	return "", "", -32603, "daemon not running for project: " + targetProjectPath
+}
+
+// forwardProxyOverUnix writes the proxy request to socketPath, reads
+// back the reply (capped at 16 MiB per V-21), and streams it to w. The
+// response body is committed before the read completes, so a late write
+// failure can only be logged — there is no way to switch to a JSON-RPC
+// error envelope after w.Write has flushed bytes.
+func forwardProxyOverUnix(ctx context.Context, w http.ResponseWriter, socketPath string, body []byte) {
+	dialer := net.Dialer{Timeout: 5 * time.Second}
+	conn, err := dialer.DialContext(ctx, "unix", socketPath)
+	if err != nil {
+		writeProxyError(w, -32603, "could not connect to daemon: "+err.Error())
+		return
+	}
+	defer func() { _ = conn.Close() }()
+
+	if _, werr := conn.Write(body); werr != nil {
+		writeProxyError(w, -32603, "could not send request: "+werr.Error())
+		return
+	}
+
+	respBytes, rerr := io.ReadAll(io.LimitReader(conn, 16<<20))
+	if rerr != nil && rerr != io.EOF {
+		writeProxyError(w, -32603, "could not read response: "+rerr.Error())
+		return
+	}
+	if _, werr := w.Write(respBytes); werr != nil {
+		logging.Warnf("api/proxy unix-branch write failed: %v", werr)
+	}
+}
+
+// forwardProxyOverHTTP issues the proxy request to targetURL over the
+// shared http.Client and copies the response body verbatim to w. Any
+// non-200 status from the target is translated into a JSON-RPC error
+// envelope rather than passed through — the caller's contract is
+// "200 OK + JSON-RPC body" regardless of how the target responded.
+func forwardProxyOverHTTP(ctx context.Context, w http.ResponseWriter, targetURL string, body []byte) {
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", targetURL, bytes.NewReader(body))
+	if err != nil {
+		writeProxyError(w, -32603, "could not create request: "+err.Error())
+		return
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	httpClient := &http.Client{Timeout: 5 * time.Second}
+	resp, err := httpClient.Do(httpReq)
+	if err != nil {
+		writeProxyError(w, -32603, "request to daemon failed: "+err.Error())
+		return
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		writeProxyError(w, -32603, fmt.Sprintf("daemon returned status %d", resp.StatusCode))
+		return
+	}
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		writeProxyError(w, -32603, "could not read daemon response: "+err.Error())
+		return
+	}
+	_, _ = w.Write(respBody)
+}
+
 func (s *HTTPServer) handleAPIProxy(w http.ResponseWriter, r *http.Request) {
 	defer func() {
 		if rec := recover(); rec != nil {
@@ -1068,95 +1191,32 @@ func (s *HTTPServer) handleAPIProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := safejson.Unmarshal(body, &req); err != nil {
-		_ = json.NewEncoder(w).Encode(Response{
-			JSONRPC: jsonRPCVersion,
-			Error:   &RPCError{Code: -32600, Message: "invalid request: " + err.Error()},
-			ID:      nil,
-		})
+		writeProxyError(w, -32600, "invalid request: "+err.Error())
 		return
 	}
 
 	if req.TargetProjectPath == "" {
-		_ = json.NewEncoder(w).Encode(Response{
-			JSONRPC: jsonRPCVersion,
-			Error:   &RPCError{Code: -32602, Message: "target_project_path is required"},
-			ID:      nil,
-		})
+		writeProxyError(w, -32602, "target_project_path is required")
 		return
 	}
 
-	// Read registry to find target daemon's address
-	home, _ := os.UserHomeDir()
-	if home == "" {
-		home = os.TempDir()
-	}
-	registryPath := filepath.Join(home, ".dfmt", "daemons.json")
-
-	data, err := os.ReadFile(registryPath)
-	if err != nil {
-		_ = json.NewEncoder(w).Encode(Response{
-			JSONRPC: jsonRPCVersion,
-			Error:   &RPCError{Code: -32603, Message: "could not read registry: " + err.Error()},
-			ID:      nil,
-		})
+	registry, code, msg := readDaemonRegistry()
+	if code != 0 {
+		writeProxyError(w, code, msg)
 		return
 	}
 
-	var daemonList []map[string]any
-	if err := json.Unmarshal(data, &daemonList); err != nil {
-		_ = json.NewEncoder(w).Encode(Response{
-			JSONRPC: jsonRPCVersion,
-			Error:   &RPCError{Code: -32603, Message: "could not parse registry: " + err.Error()},
-			ID:      nil,
-		})
+	targetURL, socketPath, code, msg := resolveProxyTarget(registry, req.TargetProjectPath)
+	if code != 0 {
+		writeProxyError(w, code, msg)
 		return
 	}
 
-	var targetDaemon map[string]any
-	for _, d := range daemonList {
-		if p, ok := d["project_path"].(string); ok && pathsEqualForRuntime(p, req.TargetProjectPath) {
-			targetDaemon = d
-			break
-		}
-	}
-
-	if targetDaemon == nil {
-		_ = json.NewEncoder(w).Encode(Response{
-			JSONRPC: jsonRPCVersion,
-			Error:   &RPCError{Code: -32603, Message: "daemon not running for project: " + req.TargetProjectPath},
-			ID:      nil,
-		})
-		return
-	}
-
-	// Determine target URL
-	var targetURL string
-	if osutil.IsWindows() {
-		if port, ok := targetDaemon["port"].(float64); ok && port > 0 {
-			targetURL = fmt.Sprintf("http://127.0.0.1:%d/api/stats", int(port))
-		} else {
-			_ = json.NewEncoder(w).Encode(Response{
-				JSONRPC: jsonRPCVersion,
-				Error:   &RPCError{Code: -32603, Message: "daemon has no port for project: " + req.TargetProjectPath},
-				ID:      nil,
-			})
-			return
-		}
-	} else {
-		if sock, ok := targetDaemon["socket_path"].(string); ok && sock != "" {
-			targetURL = "http://unix/api/stats"
-		} else {
-			_ = json.NewEncoder(w).Encode(Response{
-				JSONRPC: jsonRPCVersion,
-				Error:   &RPCError{Code: -32603, Message: "daemon has no socket for project: " + req.TargetProjectPath},
-				ID:      nil,
-			})
-			return
-		}
-	}
-
-	// Make HTTP request to target daemon
-	proxyReq := struct {
+	// Wrap the agent's method+params into a JSON-RPC envelope the target
+	// daemon will recognize. The fixed ID=1 is intentional: this proxy is
+	// request/response, the target's reply ID is discarded, and the
+	// envelope returned to the original agent uses its own ID handling.
+	proxyBody, err := json.Marshal(struct {
 		JSONRPC string          `json:"jsonrpc"`
 		Method  string          `json:"method"`
 		Params  json.RawMessage `json:"params"`
@@ -1166,119 +1226,17 @@ func (s *HTTPServer) handleAPIProxy(w http.ResponseWriter, r *http.Request) {
 		Method:  req.Method,
 		Params:  req.Params,
 		ID:      1,
-	}
-
-	body, err = json.Marshal(proxyReq)
+	})
 	if err != nil {
-		_ = json.NewEncoder(w).Encode(Response{
-			JSONRPC: jsonRPCVersion,
-			Error:   &RPCError{Code: -32603, Message: "could not marshal request: " + err.Error()},
-			ID:      nil,
-		})
+		writeProxyError(w, -32603, "could not marshal request: "+err.Error())
 		return
 	}
-
-	httpClient := &http.Client{Timeout: 5 * time.Second}
-	var httpReq *http.Request
 
 	if osutil.IsWindows() {
-		httpReq, err = http.NewRequest("POST", targetURL, bytes.NewReader(body))
-	} else {
-		// Unix socket - use DialContext
-		socketPath := targetDaemon["socket_path"].(string)
-		dialer := net.Dialer{Timeout: 5 * time.Second}
-		conn, err := dialer.DialContext(r.Context(), "unix", socketPath)
-		if err != nil {
-			_ = json.NewEncoder(w).Encode(Response{
-				JSONRPC: jsonRPCVersion,
-				Error:   &RPCError{Code: -32603, Message: "could not connect to daemon: " + err.Error()},
-				ID:      nil,
-			})
-			return
-		}
-		defer func() { _ = conn.Close() }()
-
-		// Write request directly to socket
-		if _, werr := conn.Write(body); werr != nil {
-			_ = json.NewEncoder(w).Encode(Response{
-				JSONRPC: jsonRPCVersion,
-				Error:   &RPCError{Code: -32603, Message: "could not send request: " + werr.Error()},
-				ID:      nil,
-			})
-			return
-		}
-
-		// V-21: read with an io.LimitReader cap rather than a fixed-size
-		// buffer + single Read. The prior `conn.Read(respBuf)` could
-		// return short on a multi-packet response (the socket protocol
-		// is stream-oriented, not message-oriented), and the 16 MiB
-		// buffer was allocated up-front regardless of actual response
-		// size. ReadAll-with-cap allocates only what's needed and
-		// surfaces oversized responses as an explicit error rather
-		// than silent truncation.
-		respBytes, rerr := io.ReadAll(io.LimitReader(conn, 16<<20))
-		if rerr != nil && rerr != io.EOF {
-			_ = json.NewEncoder(w).Encode(Response{
-				JSONRPC: jsonRPCVersion,
-				Error:   &RPCError{Code: -32603, Message: "could not read response: " + rerr.Error()},
-				ID:      nil,
-			})
-			return
-		}
-		// V-21: do NOT shadow the outer err with the Write result; the
-		// pre-fix code did so and then returned without checking, masking
-		// the failure. Log a write error directly — the response has
-		// already been committed so we can't switch to a JSON-RPC error
-		// at this point.
-		if _, werr := w.Write(respBytes); werr != nil {
-			logging.Warnf("api/proxy unix-branch write failed: %v", werr)
-		}
+		forwardProxyOverHTTP(r.Context(), w, targetURL, proxyBody)
 		return
 	}
-
-	if err != nil {
-		_ = json.NewEncoder(w).Encode(Response{
-			JSONRPC: jsonRPCVersion,
-			Error:   &RPCError{Code: -32603, Message: "could not create request: " + err.Error()},
-			ID:      nil,
-		})
-		return
-	}
-
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq = httpReq.WithContext(r.Context())
-
-	resp, err := httpClient.Do(httpReq)
-	if err != nil {
-		_ = json.NewEncoder(w).Encode(Response{
-			JSONRPC: jsonRPCVersion,
-			Error:   &RPCError{Code: -32603, Message: "request to daemon failed: " + err.Error()},
-			ID:      nil,
-		})
-		return
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode != http.StatusOK {
-		_ = json.NewEncoder(w).Encode(Response{
-			JSONRPC: jsonRPCVersion,
-			Error:   &RPCError{Code: -32603, Message: fmt.Sprintf("daemon returned status %d", resp.StatusCode)},
-			ID:      nil,
-		})
-		return
-	}
-
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		_ = json.NewEncoder(w).Encode(Response{
-			JSONRPC: jsonRPCVersion,
-			Error:   &RPCError{Code: -32603, Message: "could not read daemon response: " + err.Error()},
-			ID:      nil,
-		})
-		return
-	}
-
-	_, _ = w.Write(respBody)
+	forwardProxyOverUnix(r.Context(), w, socketPath, proxyBody)
 }
 
 // handleAPIStream streams journal events via SSE (Server-Sent Events).
