@@ -435,6 +435,39 @@ func (m *MCPProtocol) handleToolsList(req *MCPRequest) (*MCPResponse, error) {
 	}, nil
 }
 
+// dispatchTool factors the four-step boilerplate every tool case shared
+// before the table-driven rewrite: decode args → attach effective project
+// ID to ctx → invoke backend method → wrap result. Generic over the args
+// type T and the response type R so the call site stays type-checked end
+// to end; the per-tool variation is just (decoder, pid-accessor, method
+// value). decode is decodeRequiredParams for tools whose schema has any
+// required field and decodeParams for Stats/Recall, which both accept an
+// all-zero params object.
+func dispatchTool[T any, R any](
+	ctx context.Context,
+	m *MCPProtocol,
+	req *MCPRequest,
+	raw json.RawMessage,
+	decode func(json.RawMessage, any) error,
+	pid func(T) string,
+	call func(context.Context, T) (R, error),
+) (*MCPResponse, error) {
+	var args T
+	if err := decode(raw, &args); err != nil {
+		return m.errorResult(req.ID, -32602, err.Error())
+	}
+	ctx = WithProjectID(ctx, m.effectiveProjectID(pid(args)))
+	result, err := call(ctx, args)
+	if err != nil {
+		return m.errorResult(req.ID, -32603, err.Error())
+	}
+	return &MCPResponse{
+		JSONRPC: jsonRPCVersion,
+		Result:  mcpToolResult(result),
+		ID:      req.ID,
+	}, nil
+}
+
 func (m *MCPProtocol) handleToolsCall(ctx context.Context, req *MCPRequest) (*MCPResponse, error) {
 	if m.backend == nil {
 		return m.errorResult(req.ID, -32603, "daemon not connected")
@@ -470,195 +503,49 @@ func (m *MCPProtocol) handleToolsCall(ctx context.Context, req *MCPRequest) (*MC
 			ID: req.ID,
 		}, nil
 	}
-	// Accept both the MCP-spec-compliant underscored names (mcpToolXxx) and
-	// the legacy dotted methodXxx names. Old `mcp__dfmt__dfmt.exec` allow
-	// rules in user settings.json and any client still calling the dotted
-	// name keep working.
+	// Accept both the MCP-spec-compliant underscored names (mcpToolXxx)
+	// and the legacy dotted methodXxx names. Old `mcp__dfmt__dfmt.exec`
+	// allow rules in user settings.json and any client still calling the
+	// dotted name keep working. Pre-rewrite the switch held 11 nearly
+	// identical 12-line cases; dispatchTool absorbs the boilerplate so
+	// each case is just (args type, decoder, project-id accessor,
+	// backend method).
 	switch params.Name {
 	case mcpToolExec, methodExec:
-		var args ExecParams
-		if err := decodeRequiredParams(params.Args, &args); err != nil {
-			return m.errorResult(req.ID, -32602, err.Error())
-		}
-		ctx = WithProjectID(ctx, m.effectiveProjectID(args.ProjectID))
-		result, err := m.backend.Exec(ctx, args)
-		if err != nil {
-			return m.errorResult(req.ID, -32603, err.Error())
-		}
-		return &MCPResponse{
-			JSONRPC: jsonRPCVersion,
-			Result:  mcpToolResult(result),
-			ID:      req.ID,
-		}, nil
-
+		return dispatchTool(ctx, m, req, params.Args, decodeRequiredParams,
+			func(p ExecParams) string { return p.ProjectID }, m.backend.Exec)
 	case mcpToolRead, methodRead:
-		var args ReadParams
-		if err := decodeRequiredParams(params.Args, &args); err != nil {
-			return m.errorResult(req.ID, -32602, err.Error())
-		}
-		ctx = WithProjectID(ctx, m.effectiveProjectID(args.ProjectID))
-		result, err := m.backend.Read(ctx, args)
-		if err != nil {
-			return m.errorResult(req.ID, -32603, err.Error())
-		}
-		return &MCPResponse{
-			JSONRPC: jsonRPCVersion,
-			Result:  mcpToolResult(result),
-			ID:      req.ID,
-		}, nil
-
+		return dispatchTool(ctx, m, req, params.Args, decodeRequiredParams,
+			func(p ReadParams) string { return p.ProjectID }, m.backend.Read)
 	case mcpToolFetch, methodFetch:
-		var args FetchParams
-		if err := decodeRequiredParams(params.Args, &args); err != nil {
-			return m.errorResult(req.ID, -32602, err.Error())
-		}
-		ctx = WithProjectID(ctx, m.effectiveProjectID(args.ProjectID))
-		result, err := m.backend.Fetch(ctx, args)
-		if err != nil {
-			return m.errorResult(req.ID, -32603, err.Error())
-		}
-		return &MCPResponse{
-			JSONRPC: jsonRPCVersion,
-			Result:  mcpToolResult(result),
-			ID:      req.ID,
-		}, nil
-
+		return dispatchTool(ctx, m, req, params.Args, decodeRequiredParams,
+			func(p FetchParams) string { return p.ProjectID }, m.backend.Fetch)
 	case mcpToolRemember, methodRemember:
-		var args RememberParams
-		if err := decodeRequiredParams(params.Args, &args); err != nil {
-			return m.errorResult(req.ID, -32602, err.Error())
-		}
-		ctx = WithProjectID(ctx, m.effectiveProjectID(args.ProjectID))
-		result, err := m.backend.Remember(ctx, args)
-		if err != nil {
-			return m.errorResult(req.ID, -32603, err.Error())
-		}
-		return &MCPResponse{
-			JSONRPC: jsonRPCVersion,
-			Result:  mcpToolResult(result),
-			ID:      req.ID,
-		}, nil
-
+		return dispatchTool(ctx, m, req, params.Args, decodeRequiredParams,
+			func(p RememberParams) string { return p.ProjectID }, m.backend.Remember)
 	case mcpToolStats, methodStats:
-		// Stats accepts an empty params struct — it has no required fields.
-		// Empty/absent Args is fine, but malformed JSON should still surface
-		// as Invalid params (-32602) so the agent learns about the typo
-		// instead of silently getting a zero-value StatsParams. Pre-fix the
-		// json.Unmarshal error was discarded; every other case in this
-		// switch already checks it and this one was the lone outlier.
-		var args StatsParams
-		if len(params.Args) != 0 {
-			if err := json.Unmarshal(params.Args, &args); err != nil {
-				return m.errorResult(req.ID, -32602, err.Error())
-			}
-		}
-		ctx = WithProjectID(ctx, m.effectiveProjectID(args.ProjectID))
-		result, err := m.backend.Stats(ctx, args)
-		if err != nil {
-			return m.errorResult(req.ID, -32603, err.Error())
-		}
-		return &MCPResponse{
-			JSONRPC: jsonRPCVersion,
-			Result:  mcpToolResult(result),
-			ID:      req.ID,
-		}, nil
-
+		// Stats and Recall accept an empty arguments object — neither
+		// has any required field — so they use the lax decoder.
+		return dispatchTool(ctx, m, req, params.Args, decodeParams,
+			func(p StatsParams) string { return p.ProjectID }, m.backend.Stats)
 	case mcpToolSearch, methodSearch:
-		var args SearchParams
-		if err := decodeRequiredParams(params.Args, &args); err != nil {
-			return m.errorResult(req.ID, -32602, err.Error())
-		}
-		ctx = WithProjectID(ctx, m.effectiveProjectID(args.ProjectID))
-		result, err := m.backend.Search(ctx, args)
-		if err != nil {
-			return m.errorResult(req.ID, -32603, err.Error())
-		}
-		return &MCPResponse{
-			JSONRPC: jsonRPCVersion,
-			Result:  mcpToolResult(result),
-			ID:      req.ID,
-		}, nil
-
+		return dispatchTool(ctx, m, req, params.Args, decodeRequiredParams,
+			func(p SearchParams) string { return p.ProjectID }, m.backend.Search)
 	case mcpToolRecall, methodRecall:
-		var args RecallParams
-		if err := decodeParams(params.Args, &args); err != nil {
-			return m.errorResult(req.ID, -32602, err.Error())
-		}
-		ctx = WithProjectID(ctx, m.effectiveProjectID(args.ProjectID))
-		result, err := m.backend.Recall(ctx, args)
-		if err != nil {
-			return m.errorResult(req.ID, -32603, err.Error())
-		}
-		return &MCPResponse{
-			JSONRPC: jsonRPCVersion,
-			Result:  mcpToolResult(result),
-			ID:      req.ID,
-		}, nil
-
+		return dispatchTool(ctx, m, req, params.Args, decodeParams,
+			func(p RecallParams) string { return p.ProjectID }, m.backend.Recall)
 	case mcpToolGlob, methodGlob:
-		var args GlobParams
-		if err := decodeRequiredParams(params.Args, &args); err != nil {
-			return m.errorResult(req.ID, -32602, err.Error())
-		}
-		ctx = WithProjectID(ctx, m.effectiveProjectID(args.ProjectID))
-		result, err := m.backend.Glob(ctx, args)
-		if err != nil {
-			return m.errorResult(req.ID, -32603, err.Error())
-		}
-		return &MCPResponse{
-			JSONRPC: jsonRPCVersion,
-			Result:  mcpToolResult(result),
-			ID:      req.ID,
-		}, nil
-
+		return dispatchTool(ctx, m, req, params.Args, decodeRequiredParams,
+			func(p GlobParams) string { return p.ProjectID }, m.backend.Glob)
 	case mcpToolGrep, methodGrep:
-		var args GrepParams
-		if err := decodeRequiredParams(params.Args, &args); err != nil {
-			return m.errorResult(req.ID, -32602, err.Error())
-		}
-		ctx = WithProjectID(ctx, m.effectiveProjectID(args.ProjectID))
-		result, err := m.backend.Grep(ctx, args)
-		if err != nil {
-			return m.errorResult(req.ID, -32603, err.Error())
-		}
-		return &MCPResponse{
-			JSONRPC: jsonRPCVersion,
-			Result:  mcpToolResult(result),
-			ID:      req.ID,
-		}, nil
-
+		return dispatchTool(ctx, m, req, params.Args, decodeRequiredParams,
+			func(p GrepParams) string { return p.ProjectID }, m.backend.Grep)
 	case mcpToolEdit, methodEdit:
-		var args EditParams
-		if err := decodeRequiredParams(params.Args, &args); err != nil {
-			return m.errorResult(req.ID, -32602, err.Error())
-		}
-		ctx = WithProjectID(ctx, m.effectiveProjectID(args.ProjectID))
-		result, err := m.backend.Edit(ctx, args)
-		if err != nil {
-			return m.errorResult(req.ID, -32603, err.Error())
-		}
-		return &MCPResponse{
-			JSONRPC: jsonRPCVersion,
-			Result:  mcpToolResult(result),
-			ID:      req.ID,
-		}, nil
-
+		return dispatchTool(ctx, m, req, params.Args, decodeRequiredParams,
+			func(p EditParams) string { return p.ProjectID }, m.backend.Edit)
 	case mcpToolWrite, methodWrite:
-		var args WriteParams
-		if err := decodeRequiredParams(params.Args, &args); err != nil {
-			return m.errorResult(req.ID, -32602, err.Error())
-		}
-		ctx = WithProjectID(ctx, m.effectiveProjectID(args.ProjectID))
-		result, err := m.backend.Write(ctx, args)
-		if err != nil {
-			return m.errorResult(req.ID, -32603, err.Error())
-		}
-		return &MCPResponse{
-			JSONRPC: jsonRPCVersion,
-			Result:  mcpToolResult(result),
-			ID:      req.ID,
-		}, nil
-
+		return dispatchTool(ctx, m, req, params.Args, decodeRequiredParams,
+			func(p WriteParams) string { return p.ProjectID }, m.backend.Write)
 	default:
 		return m.errorResult(req.ID, -32601, fmt.Sprintf("unknown tool: %s", params.Name))
 	}
