@@ -443,6 +443,56 @@ func TestStripGlobalFlags_ProjectDanglingNoValue(t *testing.T) {
 	}
 }
 
+// TestRunInstallHooks_HelpFlag covers the --help short-circuit added
+// after the pre-fix `dfmt install-hooks --help` actually installed
+// hooks (because the function ignored args).
+func TestRunInstallHooks_HelpFlag(t *testing.T) {
+	if code := runInstallHooks([]string{"--help"}); code != 0 {
+		t.Errorf("want 0, got %d", code)
+	}
+}
+
+// TestRunInstallHooks_UnknownFlag covers the flag-parse error path.
+func TestRunInstallHooks_UnknownFlag(t *testing.T) {
+	if code := runInstallHooks([]string{"--no-such-flag"}); code != 2 {
+		t.Errorf("want 2, got %d", code)
+	}
+}
+
+// TestRunInstallHooks_PositionalArgs covers the explicit rejection.
+func TestRunInstallHooks_PositionalArgs(t *testing.T) {
+	if code := runInstallHooks([]string{"foo"}); code != 2 {
+		t.Errorf("want 2, got %d", code)
+	}
+}
+
+// TestRunInstallHooks_HappyPath: with a tempdir that has a .git/
+// directory (so getProject succeeds and the hooks dir is creatable),
+// the function writes three hook scripts and returns 0.
+func TestRunInstallHooks_HappyPath(t *testing.T) {
+	proj := t.TempDir()
+	// .git/ presence makes getProject treat this as a git project root
+	// (matters for some path-resolution logic). Hooks dir is created
+	// underneath even if .git/ wasn't there, so this is belt-and-braces.
+	if err := os.MkdirAll(filepath.Join(proj, ".git"), 0o755); err != nil {
+		t.Fatalf("mkdir .git: %v", err)
+	}
+
+	prevProject := flagProject
+	t.Cleanup(func() { flagProject = prevProject })
+	flagProject = proj
+
+	if code := runInstallHooks(nil); code != 0 {
+		t.Fatalf("want 0, got %d", code)
+	}
+	for _, hook := range []string{"post-commit", "post-checkout", "pre-push"} {
+		path := filepath.Join(proj, ".git", "hooks", hook)
+		if _, err := os.Stat(path); err != nil {
+			t.Errorf("hook %s not installed: %v", hook, err)
+		}
+	}
+}
+
 // TestIsTestBinary_ReturnsTrue confirms the test binary detection
 // works in this test context — the function is used by acquireBackend
 // to gate the in-process promotion fallback, and if it ever returns
