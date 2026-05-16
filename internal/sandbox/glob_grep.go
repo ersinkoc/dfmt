@@ -131,61 +131,148 @@ func (s *SandboxImpl) Glob(ctx context.Context, req GlobReq) (GlobResp, error) {
 	return resp, nil
 }
 
+// compileGrepPattern validates the user-supplied pattern (size +
+// complexity budget — RE2 is linear-time but pathological patterns can
+// still hit compile cost) and returns the compiled regexp. The
+// case-insensitive flag is folded into the pattern via (?i) rather
+// than passed to a separate compile path so all callers see one error
+// shape.
+func compileGrepPattern(pattern string, caseInsensitive bool) (*regexp.Regexp, error) {
+	if err := validateGrepPattern(pattern); err != nil {
+		return nil, err
+	}
+	if caseInsensitive {
+		pattern = "(?i)" + pattern
+	}
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		return nil, fmt.Errorf("invalid pattern: %w", err)
+	}
+	return re, nil
+}
+
+// resolveGrepSearchRoot turns the optional req.Path into an absolute
+// directory or file under absWd that the walk should descend from.
+// Untrusted input → clean + absolutize + lexical containment check
+// against absWd; a path that escapes (Rel returns ".." or starts
+// with ".."+sep) is refused. A missing target Stat is also refused
+// so the agent gets a clear error rather than an empty walk.
+// Returns absWd when reqPath is empty.
+func resolveGrepSearchRoot(absWd, reqPath string) (string, error) {
+	if reqPath == "" {
+		return absWd, nil
+	}
+	p := filepath.Clean(reqPath)
+	if !filepath.IsAbs(p) {
+		p = filepath.Join(absWd, p)
+	}
+	rel, err := filepath.Rel(absWd, p)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("grep path escapes working directory: %s", pathHint(reqPath))
+	}
+	if _, err := os.Stat(p); err != nil {
+		return "", fmt.Errorf("grep path: %w", err)
+	}
+	return p, nil
+}
+
+// grepFileLines reads path, applies pattern to each line, and returns
+// the matches with File set to rel. ok=false signals the file should be
+// skipped (unreadable / policy-denied / symlink-escapes-wd). The match
+// cap is enforced by the caller, but we stop early when the caller's
+// pre-call accounting plus our local hits would cross 100 so we don't
+// read past the budget.
+func grepFileLines(s *SandboxImpl, pattern *regexp.Regexp, path, rel, absWd string, remainingBudget int) (matches []GrepMatch, ok bool) {
+	// F-02: per-file deny-rule enforcement. The directory-level
+	// PolicyCheck above only blocks if the wd itself is denied;
+	// per-file rules like `read **/.env*` need to be applied here,
+	// before reading. Without this, dfmt_grep "API_KEY" --files "*"
+	// would surface secrets that direct dfmt_read of .env refuses.
+	if err := s.PolicyCheck("read", path); err != nil {
+		return nil, false
+	}
+	// V-01: refuse to read through a symlink leaf whose target escapes
+	// wd. The lexical Rel check upstream is purely textual — a symlink
+	// `notes.txt -> /etc/passwd` looks contained but os.ReadFile follows
+	// it. EnsureResolvedUnder centralizes the pattern.
+	if _, sym := safefs.EnsureResolvedUnder(path, absWd); sym != nil {
+		return nil, false
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, false
+	}
+	lines := strings.Split(string(data), "\n")
+	for lineNum, line := range lines {
+		if pattern.MatchString(line) {
+			matches = append(matches, GrepMatch{
+				File:    rel,
+				Line:    lineNum + 1,
+				Content: line,
+			})
+			if len(matches) >= remainingBudget {
+				break
+			}
+		}
+	}
+	return matches, true
+}
+
+// filterMatchesByIntent applies the intent-keyword filter to matches. A
+// non-zero number of keyword-hit matches replaces the input slice and
+// the returned summarySuffix records the filter count; otherwise the
+// input passes through unchanged. Trimming the per-line Content cap is
+// folded in here since both steps mutate the same slice in lockstep.
+const maxGrepLineBytes = 200
+
+func filterMatchesByIntent(matches []GrepMatch, intent string) (out []GrepMatch, summarySuffix string) {
+	out = matches
+	keywords := ExtractKeywords(intent)
+	if len(keywords) > 0 {
+		var filtered []GrepMatch
+		for _, m := range matches {
+			if MatchContent(m.Content, keywords, 1) != nil {
+				filtered = append(filtered, m)
+			}
+		}
+		if len(filtered) > 0 {
+			summarySuffix = fmt.Sprintf(" (filtered by intent: %d matches)", len(filtered))
+			out = filtered
+		}
+	}
+	// Trim per-line content so a regex matching very long lines
+	// (minified JS, log dumps) doesn't push the response into the
+	// megabytes — grep is meant for navigation, not bulk extraction.
+	for i := range out {
+		if len(out[i].Content) > maxGrepLineBytes {
+			out[i].Content = truncate(out[i].Content, maxGrepLineBytes)
+		}
+	}
+	return out, summarySuffix
+}
+
 // Grep implements the Sandbox interface.
 func (s *SandboxImpl) Grep(ctx context.Context, req GrepReq) (GrepResp, error) {
-	// Resolve working directory
 	wd := s.wd
 	if wd == "" {
 		wd = "."
 	}
-
 	absWd, err := filepath.Abs(wd)
 	if err != nil {
 		return GrepResp{}, fmt.Errorf("resolve working directory: %w", err)
 	}
-
-	// Policy check on the directory
 	if err := s.PolicyCheck("read", absWd); err != nil {
 		return GrepResp{}, err
 	}
 
-	if err := validateGrepPattern(req.Pattern); err != nil {
+	pattern, err := compileGrepPattern(req.Pattern, req.CaseInsensitive)
+	if err != nil {
 		return GrepResp{}, err
 	}
 
-	// Compile regex pattern. Go's regexp engine is RE2-based and linear-time;
-	// the validator above bounds compile/match resource use for very large or
-	// deeply repetitive user-provided patterns.
-	var pattern *regexp.Regexp
-	if req.CaseInsensitive {
-		pattern, err = regexp.Compile("(?i)" + req.Pattern)
-	} else {
-		pattern, err = regexp.Compile(req.Pattern)
-	}
+	searchRoot, err := resolveGrepSearchRoot(absWd, req.Path)
 	if err != nil {
-		return GrepResp{}, fmt.Errorf("invalid pattern: %w", err)
-	}
-
-	// Resolve the walk root. req.Path scopes the search to a subtree (or
-	// a single file); without it the walk descends from absWd. The path
-	// is untrusted input, so we clean + absolutize + reject anything
-	// that escapes absWd. Per-file PolicyCheck below is the second line
-	// of defense, so even a symlink that points outside absWd cannot
-	// leak content.
-	searchRoot := absWd
-	if req.Path != "" {
-		p := filepath.Clean(req.Path)
-		if !filepath.IsAbs(p) {
-			p = filepath.Join(absWd, p)
-		}
-		rel, rerr := filepath.Rel(absWd, p)
-		if rerr != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-			return GrepResp{}, fmt.Errorf("grep path escapes working directory: %s", pathHint(req.Path))
-		}
-		if _, serr := os.Stat(p); serr != nil {
-			return GrepResp{}, fmt.Errorf("grep path: %w", serr)
-		}
-		searchRoot = p
+		return GrepResp{}, err
 	}
 
 	// Walk recursively from searchRoot. The previous implementation used
@@ -193,75 +280,43 @@ func (s *SandboxImpl) Grep(ctx context.Context, req GrepReq) (GrepResp, error) {
 	// non-recursive depth-2 match — Go's stdlib Glob does NOT treat **
 	// as a recursive wildcard, so matches in nested dirs (the typical
 	// case) were missing. WalkDir walks the actual tree.
+	const grepMatchCap = 100
 	var grepMatches []GrepMatch
 	totalFiles := 0
 	walkErr := filepath.WalkDir(searchRoot, func(path string, d fs.DirEntry, werr error) error {
 		if werr != nil {
-			// Unreadable dir/file — skip and continue.
 			return nil
 		}
-		if len(grepMatches) >= 100 {
+		if len(grepMatches) >= grepMatchCap {
 			return filepath.SkipAll
 		}
 		if d.IsDir() {
 			return nil
 		}
-
 		// Lexical containment: refuse paths whose textual form escapes
 		// absWd (e.g. `..\..\etc\passwd` after a buggy join). This is a
-		// fast pre-filter; the symlink-target check below is what
-		// actually closes the renamed-symlink-leaf bypass.
+		// fast pre-filter; the symlink-target check inside grepFileLines
+		// is what actually closes the renamed-symlink-leaf bypass.
 		rel, rerr := filepath.Rel(absWd, path)
 		if rerr != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 			return nil
 		}
-
-		// Files glob: a basename pattern (e.g. "*.go") applied per file.
-		// Empty pattern matches everything. Matches are basename-only by
-		// design — agents asking for "*.go" want every .go file under
-		// the search root, not just the top level.
+		// Files glob: basename-only by design — agents asking for "*.go"
+		// want every .go file under the search root, not just the top
+		// level. Empty pattern matches everything.
 		if req.Files != "" {
 			if ok, _ := filepath.Match(req.Files, d.Name()); !ok {
 				return nil
 			}
 		}
-
-		// F-02: per-file deny-rule enforcement. The directory-level
-		// PolicyCheck above only blocks if the wd itself is denied;
-		// per-file rules like `read **/.env*` need to be applied here,
-		// before reading. Without this, dfmt_grep "API_KEY" --files "*"
-		// would surface secrets that direct dfmt_read of .env refuses.
-		if perr := s.PolicyCheck("read", path); perr != nil {
-			return nil
-		}
-
-		// V-01: refuse to read through a symlink leaf whose target
-		// escapes wd. The lexical Rel check above is purely textual —
-		// a symlink `notes.txt -> /etc/passwd` looks contained but
-		// os.ReadFile follows it. Read does the equivalent inline;
-		// EnsureResolvedUnder centralizes the pattern.
-		if _, sym := safefs.EnsureResolvedUnder(path, absWd); sym != nil {
-			return nil
-		}
-
-		data, rerr := os.ReadFile(path)
-		if rerr != nil {
+		fileMatches, ok := grepFileLines(s, pattern, path, rel, absWd, grepMatchCap-len(grepMatches))
+		if !ok {
 			return nil
 		}
 		totalFiles++
-
-		lines := strings.Split(string(data), "\n")
-		for lineNum, line := range lines {
-			if pattern.MatchString(line) {
-				grepMatches = append(grepMatches, GrepMatch{
-					File:    rel,
-					Line:    lineNum + 1,
-					Content: line,
-				})
-				if len(grepMatches) >= 100 {
-					return filepath.SkipAll
-				}
-			}
+		grepMatches = append(grepMatches, fileMatches...)
+		if len(grepMatches) >= grepMatchCap {
+			return filepath.SkipAll
 		}
 		return nil
 	})
@@ -269,38 +324,10 @@ func (s *SandboxImpl) Grep(ctx context.Context, req GrepReq) (GrepResp, error) {
 		return GrepResp{}, fmt.Errorf("grep walk: %w", walkErr)
 	}
 
-	// Generate summary
 	summary := fmt.Sprintf("Found %d matches in %d files", len(grepMatches), totalFiles)
-
-	// Intent-based filtering on matches
-	var filteredMatches []GrepMatch
-	keywords := ExtractKeywords(req.Intent)
-	if len(keywords) > 0 {
-		for _, m := range grepMatches {
-			if MatchContent(m.Content, keywords, 1) != nil {
-				filteredMatches = append(filteredMatches, m)
-			}
-		}
-		if len(filteredMatches) > 0 {
-			summary += fmt.Sprintf(" (filtered by intent: %d matches)", len(filteredMatches))
-			grepMatches = filteredMatches
-		}
-	}
-
-	// Trim per-line content so a regex matching very long lines (minified JS,
-	// log dumps) doesn't push the response into the megabytes — grep is meant
-	// for navigation, not bulk extraction.
-	const maxGrepLineBytes = 200
-	for i := range grepMatches {
-		if len(grepMatches[i].Content) > maxGrepLineBytes {
-			grepMatches[i].Content = truncate(grepMatches[i].Content, maxGrepLineBytes)
-		}
-	}
-
-	return GrepResp{
-		Matches: grepMatches,
-		Summary: summary,
-	}, nil
+	grepMatches, suffix := filterMatchesByIntent(grepMatches, req.Intent)
+	summary += suffix
+	return GrepResp{Matches: grepMatches, Summary: summary}, nil
 }
 
 func validateGrepPattern(pattern string) error {
