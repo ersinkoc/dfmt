@@ -18,6 +18,7 @@ import (
 	"github.com/ersinkoc/dfmt/internal/core"
 	"github.com/ersinkoc/dfmt/internal/logging"
 	"github.com/ersinkoc/dfmt/internal/osutil"
+	"github.com/ersinkoc/dfmt/internal/timeouts"
 	"github.com/ersinkoc/dfmt/internal/redact"
 	"github.com/ersinkoc/dfmt/internal/sandbox"
 )
@@ -106,7 +107,7 @@ var errProjectIDRequired = errors.New("project_id required: daemon has no defaul
 // was chosen to mirror the default-project Stop budget; before this
 // constant the value appeared inline at four sites with three
 // comments noting "5s matches closeExtraProjects".
-const perProjectShutdownTimeout = 5 * time.Second
+const perProjectShutdownTimeout = timeouts.PerProjectShutdown
 
 // extraProjectsMaxEntries caps the number of additional projects the
 // daemon keeps live in the resource cache simultaneously. When the

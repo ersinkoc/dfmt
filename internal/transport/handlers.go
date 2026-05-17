@@ -17,6 +17,7 @@ import (
 	"github.com/ersinkoc/dfmt/internal/core"
 	"github.com/ersinkoc/dfmt/internal/redact"
 	"github.com/ersinkoc/dfmt/internal/sandbox"
+	"github.com/ersinkoc/dfmt/internal/timeouts"
 )
 
 // Handlers implements the business logic for all transport layers. Mutable
@@ -116,7 +117,7 @@ type Handlers struct {
 // while still showing fresh data at human-perceptible rates. Declared as
 // var (not const) so tests can override it to assert cache behavior
 // without sleeping.
-var statsTTL = 5 * time.Second
+var statsTTL = timeouts.StatsTTL
 
 // dedupEntry maps a content hash to the chunk-set ID that already holds those
 // bytes. expiresAt is absolute time, not a duration — comparing against
@@ -132,7 +133,7 @@ type dedupEntry struct {
 // generated file" — long enough to catch real reuse, short enough that the
 // store doesn't keep stale pointers alive past the conversation turn that
 // produced them.
-const dedupTTL = 30 * time.Second
+const dedupTTL = timeouts.DedupTTL
 
 // dedupCap bounds the cache to keep memory predictable on a noisy session.
 // Past this size the recorder prunes expired entries first, then drops

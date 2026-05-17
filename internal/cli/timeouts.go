@@ -1,6 +1,6 @@
 package cli
 
-import "time"
+import "github.com/ersinkoc/dfmt/internal/timeouts"
 
 // Named context timeouts used by CLI subcommands. Pre-consolidation
 // these were inline literals — `5 * time.Second` appeared at 5+ call
@@ -17,12 +17,12 @@ const (
 	// teardown). These are not user-visible long-runners; if the
 	// daemon doesn't respond in 5 s something is wrong and the caller
 	// should surface the error rather than wait.
-	rpcTimeout = 5 * time.Second
+	rpcTimeout = timeouts.RPC
 
 	// toolTimeout caps interactive tool calls (exec, read, fetch, edit,
 	// write, glob, grep, remember). The sandbox itself enforces a
 	// per-call deadline via cfg.Exec.Timeout; this is the outer cap
 	// the dispatch layer applies so a runaway tool call doesn't hang
 	// the CLI past 30 s even if the daemon-side deadline is misconfigured.
-	toolTimeout = 30 * time.Second
+	toolTimeout = timeouts.Tool
 )

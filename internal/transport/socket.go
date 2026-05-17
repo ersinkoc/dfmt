@@ -12,9 +12,13 @@ import (
 	"github.com/ersinkoc/dfmt/internal/core"
 	"github.com/ersinkoc/dfmt/internal/logging"
 	"github.com/ersinkoc/dfmt/internal/safefs"
+	"github.com/ersinkoc/dfmt/internal/timeouts"
 )
 
-var socketReadIdleTimeout = 60 * time.Second
+var (
+	socketReadIdleTimeout = timeouts.SocketReadIdle
+	stopDrainTimeout      = timeouts.StopDrain
+)
 
 // socketConnMaxLifetime is a hard ceiling on a single connection's total
 // lifetime. socketReadIdleTimeout already kills idle peers, but a peer that
@@ -48,13 +52,6 @@ type SocketServer struct {
 	// http.Server.Shutdown; the socket transport had no equivalent.
 	connWG sync.WaitGroup
 }
-
-// stopDrainTimeout caps how long Stop() waits for in-flight connections to
-// finish. Past this, Stop returns and the OS unwinds the rest. 5s is
-// generous for a handler that has already observed serverCtx cancellation —
-// most calls return promptly; a long-running exec finishes whatever syscall
-// it was on and unwinds.
-var stopDrainTimeout = 5 * time.Second
 
 // NewSocketServer creates a new socket server.
 func NewSocketServer(socketPath string, handlers *Handlers) *SocketServer {

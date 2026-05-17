@@ -21,6 +21,7 @@ import (
 	"github.com/ersinkoc/dfmt/internal/osutil"
 	"github.com/ersinkoc/dfmt/internal/project"
 	"github.com/ersinkoc/dfmt/internal/setup"
+	"github.com/ersinkoc/dfmt/internal/timeouts"
 	"github.com/ersinkoc/dfmt/internal/transport"
 )
 
@@ -157,7 +158,7 @@ func NewClient(projectPath string) (*Client, error) {
 			network:    globalNetwork,
 			address:    globalAddress,
 			authToken:  globalToken,
-			timeout:    5 * time.Second,
+			timeout:    timeouts.RPC,
 			sessionID:  resolveSessionID(),
 			projectID:  resolvedProj,
 			globalMode: true,
@@ -188,7 +189,7 @@ func NewClient(projectPath string) (*Client, error) {
 		socketPath: socketPath,
 		network:    network,
 		address:    address,
-		timeout:    5 * time.Second,
+		timeout:    timeouts.RPC,
 		sessionID:  resolveSessionID(),
 		projectID:  resolvedProj,
 	}
