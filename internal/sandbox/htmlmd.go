@@ -152,9 +152,14 @@ const (
 )
 
 func walkToMarkdown(tokens []token) string {
-	w := &walker{tokens: tokens}
+	out := GetBuilder()
+	codeFenceBuf := GetBuilder()
+	w := &walker{tokens: tokens, out: *out, codeFenceBuf: *codeFenceBuf}
 	w.run()
-	return w.finalize()
+	s := w.finalize()
+	PoolBuilderReturn(&w.out)
+	PoolBuilderReturn(&w.codeFenceBuf)
+	return s
 }
 
 func (w *walker) run() {

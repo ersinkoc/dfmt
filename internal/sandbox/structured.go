@@ -1,7 +1,6 @@
 package sandbox
 
 import (
-	"bytes"
 	"encoding/json"
 	"os"
 	"regexp"
@@ -147,14 +146,16 @@ func CompactYAML(s string) string {
 		// matches the Kubernetes/Helm convention the input arrived in
 		// and prevents the re-marshal from inflating bytes past the
 		// input size (which would trigger the cap-regression guard).
-		var buf bytes.Buffer
-		enc := yaml.NewEncoder(&buf)
+		buf := GetBuffer()
+		enc := yaml.NewEncoder(buf)
 		enc.SetIndent(2)
 		if err := enc.Encode(walked); err != nil {
 			_ = enc.Close()
+			PoolBufferReturn(buf)
 			return s
 		}
 		if err := enc.Close(); err != nil {
+			PoolBufferReturn(buf)
 			return s
 		}
 		compacted = append(compacted, strings.TrimRight(buf.String(), "\n"))
