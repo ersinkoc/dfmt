@@ -10,7 +10,6 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/ersinkoc/dfmt/internal/daemon"
 	"github.com/ersinkoc/dfmt/internal/logging"
 	"github.com/ersinkoc/dfmt/internal/setup"
 	"github.com/ersinkoc/dfmt/internal/transport"
@@ -19,15 +18,11 @@ import (
 func runMCP(_ []string) int {
 	// MCP over stdio - read MCP JSON-RPC from stdin, write to stdout.
 	//
-	// v0.6.0: single-binary self-promotion. If a global daemon is
-	// already running this process is a thin client (NewClient + the
-	// ClientBackend adapter). If no daemon is running, *this* process
-	// becomes the daemon via daemon.PromoteInProcess and uses the
-	// in-process Handlers as its Backend — no exec.Command, no second
-	// dfmt.exe in tasklist, no spawn-and-handoff dance. When the MCP
-	// stdio loop exits (Claude Code closes), the daemon role keeps
-	// running until SIGINT or the idle-exit timer fires; another
-	// dfmt invocation on the same host can connect during that window.
+	// This process is a PURE PROXY: it connects to the global daemon
+	// (starting one if necessary via ensureGlobalDaemon) and forwards
+	// MCP calls over the socket. It never adopts the daemon role itself.
+	// The global daemon outlives this process — closing stdin simply
+	// terminates the proxy; the daemon keeps running for other callers.
 	//
 	// Project resolution: getProject() walks up looking for .dfmt/ or
 	// .git/. A miss leaves the backend nil so every tool call returns
@@ -39,7 +34,6 @@ func runMCP(_ []string) int {
 	}
 
 	var backend transport.Backend
-	var ownedDaemon *daemon.Daemon
 	if proj != "" {
 		// Auto-init the project on every MCP startup. Same idempotent
 		// steps as `dfmt init`. Failure of any single step is non-fatal —
@@ -49,13 +43,12 @@ func runMCP(_ []string) int {
 			logging.Warnf("auto-init %s: %v", proj, ierr)
 		}
 
-		// MCP is long-lived: prefer in-process promotion so an MCP-
-		// driven session shows exactly one dfmt.exe in tasklist instead
-		// of "agent → dfmt mcp → spawned dfmt daemon" (two processes).
-		backend, ownedDaemon = acquireBackendForLongRunner(proj)
+		// acquireBackendForLongRunner ensures the global daemon is up
+		// before we connect. Always returns nil daemon — pure proxy.
+		backend, _ = acquireBackendForLongRunner(proj)
 		if backend == nil {
 			fmt.Fprintln(os.Stderr,
-				"dfmt mcp: cannot reach or promote daemon — tool calls will return -32603.")
+				"dfmt mcp: cannot reach global daemon — tool calls will return -32603.")
 		}
 	} else {
 		fmt.Fprintln(os.Stderr,
@@ -203,27 +196,7 @@ func runMCP(_ []string) int {
 		_ = writer.Flush()
 	}
 
-	// Stdin EOF (Claude Code closed the MCP transport). When this
-	// process owns the daemon, keep it running so other dfmt CLI
-	// invocations on the same host stay served — exit only on
-	// SIGINT/SIGTERM or when the daemon idle-exits.
-	//
-	// DFMT_MCP_EXIT_ON_EOF=1 short-circuits this: the process stops the
-	// owned daemon and exits as soon as stdin closes. This exists for
-	// CI / smoke-test harnesses (dev.ps1's MCP smoke test, in-tree
-	// integration tests) that pipe a finite request stream through
-	// `dfmt mcp` and need the process to terminate before their job
-	// timeout fires. Production agents (Claude Code, Cursor, …) keep
-	// stdin open for the entire session so the env var is irrelevant
-	// to them.
-	if ownedDaemon != nil {
-		if os.Getenv("DFMT_MCP_EXIT_ON_EOF") == "1" {
-			stopCtx, cancel := context.WithTimeout(context.Background(), ownedDaemon.ShutdownGrace())
-			defer cancel()
-			_ = ownedDaemon.Stop(stopCtx)
-			return 0
-		}
-		waitForDaemonShutdown(ownedDaemon)
-	}
+	// Stdin EOF (Claude Code closed the MCP transport). This process is
+	// a pure proxy — exit immediately. The global daemon keeps running.
 	return 0
 }

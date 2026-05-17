@@ -131,33 +131,20 @@ func TestRunRecall_Integration(t *testing.T) {
 	}
 }
 
-// TestAcquireBackendForLongRunner_PromotesNewDaemon drives the
-// daemon-not-running branch of acquireBackendForLongRunner. The
-// returned *Daemon must be non-nil (we own the daemon) and the
-// backend usable. Cleanup stops the daemon.
-func TestAcquireBackendForLongRunner_PromotesNewDaemon(t *testing.T) {
-	withIsolatedGlobalDir(t)
-	proj := t.TempDir()
-	if err := setup.EnsureProjectInitialized(proj); err != nil {
-		t.Fatalf("init: %v", err)
-	}
+// TestAcquireBackendForLongRunner_ConnectsToGlobalDaemon verifies that
+// acquireBackendForLongRunner connects to an already-running global
+// daemon and returns (backend, nil daemon) — it is a pure proxy,
+// never adopting the daemon role itself.
+func TestAcquireBackendForLongRunner_ConnectsToGlobalDaemon(t *testing.T) {
+	proj := setupInProcessDaemon(t)
 
 	backend, d := acquireBackendForLongRunner(proj)
 	if backend == nil {
-		t.Fatal("backend nil after promote")
+		t.Fatal("backend nil — should have connected to global daemon")
 	}
-	if d == nil {
-		t.Fatal("daemon nil — should be owned by us")
+	if d != nil {
+		t.Fatal("daemon should be nil — acquireBackendForLongRunner is a pure proxy")
 	}
-	t.Cleanup(func() {
-		stopCtx, cancel := context.WithTimeout(context.Background(), d.ShutdownGrace())
-		defer cancel()
-		_ = d.Stop(stopCtx)
-	})
-
-	// Exercise waitForDaemonShutdown's test-binary short-circuit
-	// (the function calls d.Stop with a bounded timeout and returns).
-	waitForDaemonShutdown(d)
 }
 
 // TestRunDoctor_Integration drives the doctor command end-to-end

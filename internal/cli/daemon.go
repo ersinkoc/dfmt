@@ -608,46 +608,33 @@ func acquireBackend(projectPath string) (transport.Backend, *daemon.Daemon) {
 	return client.NewBackend(cl), nil
 }
 
-// acquireBackendForLongRunner is the runMCP-and-tests variant of
-// acquireBackend: when no daemon is running, it promotes the current
-// process to daemon role via daemon.PromoteInProcess instead of
-// spawning a detached child. The caller MUST keep the *Daemon alive
-// (and eventually call waitForDaemonShutdown) so the daemon role
-// outlives the original work.
+// acquireBackendForLongRunner returns a Backend that connects to the
+// global daemon. Unlike the short-lived acquireBackend (which returns
+// an error if no daemon is running), this function ENSURES the global
+// daemon is running before connecting — spawning a detached child if
+// necessary.
 //
-// runMCP uses this because the MCP stdio loop is itself long-lived —
-// a sibling daemon child would mean two dfmt.exe in tasklist for the
-// duration of the agent session.
+// The returned *daemon.Daemon is always nil: there is no in-process
+// promotion. dfmt mcp is a pure proxy; the daemon always runs as a
+// detached sibling process. This is the key fix for the "MCP exit
+// killed daemon" problem — previously PromoteInProcess let the MCP
+// subprocess adopt the daemon role, so closing stdin terminated the
+// daemon along with it.
 //
 // Tests use this because they cannot fork sibling processes (the
 // test binary is not the dfmt binary; re-execing it would re-run the
 // suite).
 func acquireBackendForLongRunner(projectPath string) (transport.Backend, *daemon.Daemon) {
-	if client.DaemonRunning(projectPath) {
-		cl, cerr := client.NewClient(projectPath)
-		if cerr != nil {
-			fmt.Fprintf(os.Stderr, "acquireBackend: connect failed: %v\n", cerr)
-			return nil, nil
-		}
-		return client.NewBackend(cl), nil
-	}
-
-	d, perr := daemon.PromoteInProcess(context.Background(), config.Default())
-	if perr != nil {
-		var lerr *daemon.LockError
-		if errors.As(perr, &lerr) {
-			cl, cerr := client.NewClient(projectPath)
-			if cerr != nil {
-				fmt.Fprintf(os.Stderr, "acquireBackend: lock-race fallback: %v\n", cerr)
-				return nil, nil
-			}
-			return client.NewBackend(cl), nil
-		}
-		fmt.Fprintf(os.Stderr, "acquireBackend: promote failed: %v\n", perr)
+	if err := ensureGlobalDaemon(); err != nil {
+		fmt.Fprintf(os.Stderr, "acquireBackendForLongRunner: %v\n", err)
 		return nil, nil
 	}
-	h := d.Handlers()
-	return h, d
+	cl, cerr := client.NewClient(projectPath)
+	if cerr != nil {
+		fmt.Fprintf(os.Stderr, "acquireBackendForLongRunner: connect failed: %v\n", cerr)
+		return nil, nil
+	}
+	return client.NewBackend(cl), nil
 }
 
 // waitForDaemonShutdown blocks until the daemon stops on its own

@@ -839,7 +839,12 @@ func (d *Daemon) consumeFSWatch(ctx context.Context) {
 func (d *Daemon) startIdleMonitor(_ context.Context) {
 	idleTimeout, err := time.ParseDuration(d.config.Lifecycle.IdleTimeout)
 	if err != nil || idleTimeout <= 0 {
-		idleTimeout = defaultIdleTimeout
+		idleTimeout = 0 // 0 = disabled; daemon runs forever
+	}
+	if idleTimeout == 0 {
+		// Monitor never fires — daemon runs until SIGINT/SIGTERM or dfmt stop.
+		d.idleCh = make(chan struct{})
+		return
 	}
 
 	d.idleCh = make(chan struct{}, 1)
