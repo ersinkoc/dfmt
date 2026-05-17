@@ -27,6 +27,36 @@ Internal package shapes (`internal/...`) are NOT covered by SemVer.
 
 ## [Unreleased]
 
+## [0.6.9] — 2026-05-17
+
+### Fixed
+
+- **Daemon stability**: `dfmt mcp` no longer adopts the daemon role via
+  `PromoteInProcess`. It now connects to the global daemon as a pure
+  proxy — when the MCP stdin loop exits, only the proxy process terminates;
+  the global daemon keeps running for other callers. Previously, closing
+  the agent's MCP transport killed the daemon, causing orphaned processes
+  and dashboard downtime.
+
+### Changed
+
+- **Daemon idle timeout**: `idleTimeout=0` in config now explicitly disables
+  the idle monitor. The daemon runs indefinitely until `dfmt stop` or
+  `SIGINT/SIGTERM`. Previously, a zero/empty timeout fell back to the 30-min
+  default; now it is a first-class "never exit" value.
+
+### Internal
+
+- **Timeout constants**: all scattered timeout literals (`5 * time.Second`,
+  `30 * time.Second`, `60 * time.Second`) consolidated into a single
+  `internal/timeouts` package. One place to tune, everywhere to use.
+- **sync.Pool for buffers**: `strings.Builder` and `bytes.Buffer` now
+  reuse pooled instances via `sync.Pool` in `internal/sandbox/pool.go`,
+  reducing allocations in high-throughput exec paths.
+- **Path interning in renderers**: `buildPathRefs` path interning (ref
+  tokens like `[r1]`) is now active in `JSONRenderer` and `XMLRenderer`
+  as well as `MarkdownRenderer`, reducing repeated path string overhead.
+
 ## [0.6.8] — 2026-05-16
 
 A refactor-and-test release. No wire contract changes; every entry below is
