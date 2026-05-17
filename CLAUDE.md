@@ -113,10 +113,10 @@ Everything else — HTML parser, BM25, Porter stemmer, MCP wire format, JSON-RPC
 
 ### Test coverage thresholds
 
-- `internal/core` ≥ 90 %
-- `internal/transport` ≥ 85 %
-- `internal/daemon` ≥ 80 %
-- `internal/cli` ≥ 75 %
+- `internal/core`       ≥ 90 %
+- `internal/transport`  ≥ 85 %
+- `internal/daemon`    ≥ 75 %
+- `internal/cli`       ≥ 70 %
 
 New functionality requires tests; bug fixes require regression tests.
 

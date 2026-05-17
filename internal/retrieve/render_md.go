@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"encoding/xml"
 	"fmt"
+	"maps"
 	"regexp"
 	"sort"
 	"strings"
@@ -226,6 +227,31 @@ func NewJSONRenderer() *JSONRenderer {
 
 // Render renders a snapshot as JSON.
 func (r *JSONRenderer) Render(snap *Snapshot) string {
+	// Build path-reference table: paths appearing >= internThreshold times
+	// get a short [rNN] token so repeated paths shrink the JSON body.
+	refs := buildPathRefs(snap.Events)
+
+	// Walk events and substitute interned paths in e.Data["path"].
+	events := make([]core.Event, len(snap.Events))
+	for i, e := range snap.Events {
+		events[i] = e
+		if refs != nil && e.Data != nil {
+			if path, ok := e.Data["path"].(string); ok {
+				if tok, refed := refs[path]; refed {
+					// Shallow copy so we don't mutate the original snapshot.
+					cpy := maps.Clone(e.Data)
+					cpy["path"] = tok // replace path string with token
+					events[i].Data = cpy
+				}
+			}
+		}
+	}
+
+	snap = &Snapshot{
+		Events:    events,
+		ByteSize:  snap.ByteSize,
+		TierOrder: snap.TierOrder,
+	}
 	data, _ := json.MarshalIndent(snap, "", "  ")
 	return string(data)
 }
@@ -252,6 +278,10 @@ func xmlEscape(s string) string {
 
 // Render renders a snapshot as XML.
 func (r *XMLRenderer) Render(snap *Snapshot) string {
+	// Build path-reference table: paths appearing >= internThreshold times
+	// get a short [rNN] token so repeated paths shrink the XML body.
+	refs := buildPathRefs(snap.Events)
+
 	var b strings.Builder
 	b.WriteString("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n")
 	b.WriteString("<session_snapshot>\n")
@@ -261,6 +291,22 @@ func (r *XMLRenderer) Render(snap *Snapshot) string {
 		fmt.Fprintf(&b, "    <tier>%s</tier>\n", xmlEscape(t))
 	}
 	b.WriteString("  </tier_order>\n")
+
+	// Emit refs table if any paths are interned.
+	if len(refs) > 0 {
+		b.WriteString("  <refs>\n")
+		// Sort for deterministic output.
+		paths := make([]string, 0, len(refs))
+		for p := range refs {
+			paths = append(paths, p)
+		}
+		sort.Strings(paths)
+		for i, p := range paths {
+			fmt.Fprintf(&b, "    <ref id=\"r%d\">%s</ref>\n", i, xmlEscape(p))
+		}
+		b.WriteString("  </refs>\n")
+	}
+
 	b.WriteString("  <events>\n")
 	for _, e := range snap.Events {
 		b.WriteString("    <event>\n")
@@ -270,6 +316,19 @@ func (r *XMLRenderer) Render(snap *Snapshot) string {
 		fmt.Fprintf(&b, "      <ts>%s</ts>\n", e.TS.Format(time.RFC3339Nano))
 		if e.Actor != "" {
 			fmt.Fprintf(&b, "      <actor>%s</actor>\n", xmlEscape(e.Actor))
+		}
+		// Interned path in a <path> element.
+		if e.Data != nil {
+			if path, ok := e.Data["path"].(string); ok {
+				if tok, refed := refs[path]; refed {
+					fmt.Fprintf(&b, "      <path ref=\"%s\"/>\n", xmlEscape(tok))
+				} else {
+					fmt.Fprintf(&b, "      <path>%s</path>\n", xmlEscape(path))
+				}
+			}
+			if msg, ok := e.Data["message"].(string); ok {
+				fmt.Fprintf(&b, "      <message>%s</message>\n", xmlEscape(msg))
+			}
 		}
 		b.WriteString("    </event>\n")
 	}
