@@ -54,8 +54,9 @@ func (s *SandboxImpl) Exec(ctx context.Context, req ExecReq) (ExecResp, error) {
 			return ExecResp{}, fmt.Errorf("%w: %s: base command '%s' not allowed\n%s", ErrPolicyDenied, cmd, baseCmd, policyDenyHint("exec"))
 		}
 		// Second check: does the full command match any deny rule?
-		if !s.policy.Evaluate("exec", cmdForPolicy) {
-			return ExecResp{}, fmt.Errorf("%w: %s: blocked by deny rule\n%s", ErrPolicyDenied, cmd, policyDenyHint("exec"))
+		if ok, reason := s.policy.EvaluateReason("exec", cmdForPolicy); !ok {
+			return ExecResp{}, fmt.Errorf("%w: %s: %s\n%s",
+				ErrPolicyDenied, cmd, denyReasonText(reason), policyDenyHint("exec"))
 		}
 		// Third check: each individual command (defense in depth)
 		// Skip redirection operands (2>&1, 1>, etc.) - they're not commands

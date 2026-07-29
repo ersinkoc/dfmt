@@ -91,7 +91,31 @@ func globToRegexShell(pattern string) string {
 			i++
 		}
 	}
-	return "^" + result.String() + "$"
+	return anchorPattern(result.String())
+}
+
+// anchorPattern wraps a translated glob body in the full-text anchors every
+// rule match relies on, with `(?s)` so `.` also matches a newline.
+//
+// Without `(?s)`, Go's `.` stops at `\n`, so `**` compiles to `^.*$` and
+// fails against ANY multi-line text. Under the documented default-permissive
+// policy — `allow:exec:**`, no exec deny rules at all — that made every
+// multi-line command fail its allow check and get reported as
+// "blocked by deny rule", naming a rule that does not exist. A heredoc, a
+// two-line script, or any `dfmt_exec` call with an embedded newline was
+// rejected outright.
+//
+// Newline-transparency is the correct reading for both rule kinds. A glob
+// is matched against one command (or one path) as a single unit of text;
+// `*` means "any characters", and a caller writing a two-line script has not
+// written something a `*` should refuse to cover. For deny rules the change
+// can only ever match MORE text, which is the safe direction.
+//
+// This is deliberately separate from the space → `[ \t]+` translation above,
+// which is about token separators INSIDE a rule and correctly excludes
+// newline (the chain splitter treats `\n` as a command boundary).
+func anchorPattern(body string) string {
+	return "(?s)^" + body + "$"
 }
 
 func globToRegex(pattern string) string {
@@ -140,7 +164,10 @@ func globToRegex(pattern string) string {
 			i++
 		}
 	}
-	return "^" + result.String() + "$"
+	// Same newline-transparency as the shell variant. Paths may legally
+	// contain a newline on Unix, and an `allow:read:**` that silently
+	// refuses such a file would be a confusing, hard-to-diagnose denial.
+	return anchorPattern(result.String())
 }
 
 // regexLRU is a small bounded LRU cache for compiled glob-derived regex patterns.

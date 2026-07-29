@@ -27,6 +27,66 @@ Internal package shapes (`internal/...`) are NOT covered by SemVer.
 
 ## [Unreleased]
 
+## [0.7.2] — 2026-07-29
+
+Findings from a full-project scan. Both fixes address failures that were
+certain rather than unlikely, and both had been silently degrading sessions
+for some time.
+
+### Fixed
+
+- **Every multi-line command was rejected, blaming a rule that does not
+  exist.** Go's `.` does not match `\n`, so a glob of `**` compiled to
+  `^.*$` and could not match any multi-line text. Under the documented
+  default-permissive policy — `allow:exec:**`, with *no* exec deny rules at
+  all — a two-line script, a heredoc, or any `dfmt_exec` with an embedded
+  newline failed its ALLOW check and was reported as "blocked by deny rule",
+  accompanied by a hint stating that all exec commands are allowed by
+  default. Both halves were true; the message was not.
+
+  All glob-derived patterns now carry `(?s)`. For deny rules this can only
+  ever match *more* text, which is the safe direction, and a regression test
+  pins that a denied token on a second line is still caught.
+
+  `Policy.EvaluateReason` now distinguishes `ReasonExplicitDeny` from
+  `ReasonNoAllowMatch`, because the remedies are opposites: remove a deny
+  rule, or add an allow rule.
+
+- **`dfmt mcp` never recovered when the daemon went away.** The proxy
+  resolved its backend once at startup and never revalidated it. The daemon
+  idle-exits after 30 minutes and agent sessions routinely idle longer, so
+  from that point every tool call returned a raw platform dial error for the
+  rest of the session, recoverable only by reconnecting the MCP server by
+  hand.
+
+  `cli.reconnectingBackend` re-runs `ensureGlobalDaemon`, rebuilds the
+  client, and retries once. Detection deliberately does not parse the error
+  — dial failures are wrapped, platform- and locale-specific strings — but
+  asks the liveness question it can actually answer. **Only a vanished
+  daemon is retryable**: `dfmt_exec` and `dfmt_write` are not idempotent, so
+  a policy denial or a failing command surfaces immediately and unchanged.
+  `StreamEvents` is exempt from retry (re-subscribing would restart the
+  event position).
+
+### Changed
+
+- **`dfmt doctor`** probes the shell's POSIX userland (ls, cat, sed, awk)
+  separately from the language toolchains. The v0.7.1 Windows PATH bug hid
+  because go/node/python resolve from the Windows PATH while the coreutils
+  did not, so every toolchain check passed while the sandbox was unusable.
+
+### Removed
+
+- `registerProjectWithGlobalDaemon` — dead since v0.5.0 turned `dfmt mcp`
+  into a proxy, as its own doc comment anticipated. No callers remained.
+
+### Documentation
+
+- [ADR-0022](docs/adr/0022-daemon-identity-and-resilient-proxy.md) records
+  the daemon identity mechanism shipped in v0.7.0 and the proxy reconnect
+  added here, including the alternatives rejected (warn-only, refuse-to-
+  serve, hashing the binary, a shutdown RPC, retrying every failed call).
+
 ## [0.7.1] — 2026-07-29
 
 ### Fixed
@@ -1460,7 +1520,8 @@ for v0.3.x:
   `privacy.allow_nonlocal_http` not wired — DFMT never
   phones home regardless.
 
-[Unreleased]: https://github.com/ersinkoc/dfmt/compare/v0.7.1...HEAD
+[Unreleased]: https://github.com/ersinkoc/dfmt/compare/v0.7.2...HEAD
+[0.7.2]: https://github.com/ersinkoc/dfmt/releases/tag/v0.7.2
 [0.7.1]: https://github.com/ersinkoc/dfmt/releases/tag/v0.7.1
 [0.7.0]: https://github.com/ersinkoc/dfmt/releases/tag/v0.7.0
 [0.6.9]: https://github.com/ersinkoc/dfmt/releases/tag/v0.6.9

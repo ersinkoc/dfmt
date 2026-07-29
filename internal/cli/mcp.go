@@ -45,11 +45,18 @@ func runMCP(_ []string) int {
 
 		// acquireBackendForLongRunner ensures the global daemon is up
 		// before we connect. Always returns nil daemon — pure proxy.
-		backend, _ = acquireBackendForLongRunner(proj)
-		if backend == nil {
+		initial, _ := acquireBackendForLongRunner(proj)
+		if initial == nil {
 			fmt.Fprintln(os.Stderr,
-				"dfmt mcp: cannot reach global daemon — tool calls will return -32603.")
+				"dfmt mcp: cannot reach global daemon — will retry on the first tool call.")
 		}
+		// Wrap so this long-lived proxy survives the daemon going away
+		// underneath it. The daemon idle-exits after 30 minutes and agent
+		// sessions routinely idle longer, so without this every tool call
+		// after that point failed with a raw dial error until the user
+		// manually reconnected the MCP server. A nil initial backend is
+		// fine — the wrapper dials on first use.
+		backend = newReconnectingBackend(proj, initial)
 	} else {
 		fmt.Fprintln(os.Stderr,
 			"dfmt mcp: no project found — tool calls will return -32603. "+

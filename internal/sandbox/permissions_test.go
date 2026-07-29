@@ -1198,18 +1198,23 @@ func TestGlobMatchDoubleStarMatchesPathSeparators(t *testing.T) {
 
 // TestGlobToRegexConvertsCorrectly tests that globToRegex produces valid regexes.
 func TestGlobToRegexConvertsCorrectly(t *testing.T) {
+	// All patterns carry the `(?s)` flag so `.` also matches a newline.
+	// Without it, `**` compiled to `^.*$` and could not match any multi-line
+	// text — which, under the default-permissive policy, rejected every
+	// multi-line command and blamed a deny rule that does not exist.
+	// See anchorPattern in glob.go.
 	tests := []struct {
 		pattern string
 		regex   string
 	}{
 		// globToRegex is path-style, so * doesn't match /
-		{"*", "^[^/]*$"},
-		{"**", "^.*$"},
+		{"*", "(?s)^[^/]*$"},
+		{"**", "(?s)^.*$"},
 		// '.' is now QuoteMeta'd so a literal dot in the pattern becomes \. in the regex.
-		{"*.go", "^[^/]*\\.go$"},
-		{"test*", "^test[^/]*$"},
+		{"*.go", "(?s)^[^/]*\\.go$"},
+		{"test*", "(?s)^test[^/]*$"},
 		// a/**/b: /** matches zero or more path segments (.*), giving a/.*/b
-		{"a/**/b", "^a/.*/b$"},
+		{"a/**/b", "(?s)^a/.*/b$"},
 	}
 
 	for _, tt := range tests {

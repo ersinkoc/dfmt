@@ -96,10 +96,48 @@ func (p *Policy) CompileAll() {
 // Evaluate checks the policy for a given operation.
 // Returns true if allowed, false if denied.
 func (p Policy) Evaluate(op, text string) bool {
+	allowed, _ := p.EvaluateReason(op, text)
+	return allowed
+}
+
+// DenyReason explains why EvaluateReason refused an operation.
+type DenyReason int
+
+const (
+	// ReasonAllowed: the operation passed.
+	ReasonAllowed DenyReason = iota
+	// ReasonExplicitDeny: a deny rule matched. The operator (or the
+	// built-in SSRF list) asked for this.
+	ReasonExplicitDeny
+	// ReasonNoAllowMatch: no deny rule matched, but no allow rule covered
+	// the text either. Distinguishing this from ReasonExplicitDeny matters
+	// because the remedy is the opposite: the caller must ADD an allow
+	// rule, not remove a deny one.
+	//
+	// Conflating the two produced a genuinely misleading error — a
+	// multi-line command under the default-permissive policy (which has no
+	// exec deny rules whatsoever) was reported as "blocked by deny rule",
+	// with a hint that simultaneously stated all exec commands are allowed
+	// by default. Both halves were true; the message was not.
+	ReasonNoAllowMatch
+)
+
+// denyReasonText renders a DenyReason as the clause that goes into a
+// policy-denied error, so every call site describes a refusal the same way.
+func denyReasonText(r DenyReason) string {
+	if r == ReasonNoAllowMatch {
+		return "no allow rule matches this command"
+	}
+	return "blocked by deny rule"
+}
+
+// EvaluateReason is Evaluate plus the reason for a refusal, so callers can
+// render an error that points at the rule kind actually responsible.
+func (p Policy) EvaluateReason(op, text string) (bool, DenyReason) {
 	// Check deny rules first
 	for _, rule := range p.Deny {
 		if rule.Match(op, text) {
-			return false
+			return false, ReasonExplicitDeny
 		}
 	}
 
@@ -107,14 +145,14 @@ func (p Policy) Evaluate(op, text string) bool {
 	if len(p.Allow) > 0 {
 		for _, rule := range p.Allow {
 			if rule.Match(op, text) {
-				return true
+				return true, ReasonAllowed
 			}
 		}
-		return false
+		return false, ReasonNoAllowMatch
 	}
 
 	// No allow rules means everything is allowed (except denied)
-	return true
+	return true, ReasonAllowed
 }
 
 // DefaultPolicy returns the default security policy.

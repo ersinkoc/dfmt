@@ -73,6 +73,17 @@ On Windows the graceful stop cannot work for a `DETACHED_PROCESS` daemon (no con
 
 `readGlobalDaemonInfo()` (`internal/cli/daemon.go`) is the single reader for "what is serving this host"; `status`, `list`, `dashboard`, and `doctor` all go through it so they cannot report different PIDs for the same process.
 
+**The MCP proxy self-heals** (`internal/cli/reconnect.go`). `dfmt mcp` resolved its backend once at startup and never revalidated it, so when the daemon idle-exited at 30 minutes — and agent sessions routinely idle longer — every subsequent tool call returned a raw dial error for the rest of the session, recoverable only by reconnecting the MCP server by hand. `reconnectingBackend` re-runs `ensureGlobalDaemon`, rebuilds the client, and retries once.
+
+Two rules there are load-bearing:
+
+- **Never parse the error to decide whether to retry.** Dial failures are wrapped, platform- and locale-specific strings. The wrapper instead asks `client.DaemonRunning` — the condition it can actually fix. If a daemon is reachable, the error came from the call and is returned untouched.
+- **Only a vanished daemon is retryable.** `dfmt_exec` and `dfmt_write` are not idempotent; retrying a policy denial or a failing command would double the side effects the first attempt already had. `StreamEvents` is exempt from retry entirely (re-subscribing would restart the event position).
+
+Both mechanisms are recorded in [ADR-0022](docs/adr/0022-daemon-identity-and-resilient-proxy.md).
+
+**Policy globs are newline-transparent** (`anchorPattern` in `internal/sandbox/glob.go`). Go's `.` does not match `\n`, so `**` compiled to `^.*$` and could not match any multi-line text. Under the default-permissive policy — `allow:exec:**`, with no exec deny rules at all — that made every multi-line command fail its ALLOW check and get reported as "blocked by deny rule", naming a rule that does not exist. All glob-derived patterns now carry `(?s)`. `Policy.EvaluateReason` distinguishes `ReasonExplicitDeny` from `ReasonNoAllowMatch` so the error names the rule kind actually responsible — the remedies are opposites.
+
 Legacy per-project daemons from v0.3.x are stopped during `dfmt setup --refresh`. The daemon-side wire carries a `project_id` field on every RPC so one process disambiguates calls from different projects.
 
 ### Core domain (`internal/core/`)
