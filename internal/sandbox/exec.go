@@ -142,7 +142,10 @@ func (s *SandboxImpl) execImpl(ctx context.Context, req ExecReq, rt Runtime) (Ex
 	}
 
 	cmd.Dir = s.wd
-	cmd.Env = prependPATH(buildEnv(req.Env), s.pathPrepend)
+	// Operator-configured dirs first, then the shell's own userland
+	// (Git Bash's coreutils on Windows — see shellCompanionDirs for why the
+	// shell cannot find `ls` without this), then the inherited PATH.
+	cmd.Env = prependPATH(buildEnv(req.Env), append(append([]string{}, s.pathPrepend...), shellCompanionDirs(rt.Executable)...))
 	// Windows: give the child its own (invisible) console. Without this a
 	// detached daemon — the normal production configuration — spawns children
 	// that wedge before running a single instruction. No-op elsewhere.

@@ -27,6 +27,33 @@ Internal package shapes (`internal/...`) are NOT covered by SemVer.
 
 ## [Unreleased]
 
+## [0.7.1] — 2026-07-29
+
+### Fixed
+
+- **Windows: every POSIX command in the sandbox returned exit 127.**
+  `lookPath` deliberately resolves `bash` to Git Bash at
+  `<root>\usr\bin\bash.exe` — the same directory that holds ls, cat, grep,
+  sed, awk, find, which and the rest of the coreutils. A stock Git for
+  Windows install keeps that directory *off* the Windows PATH so its POSIX
+  tools don't shadow Windows commands, and Git Bash re-adds it when you open
+  a terminal. The sandbox never gets that step: it runs `bash.exe -c` with an
+  environment it builds itself, whose PATH is the Windows PATH. So bash
+  started fine and then could not find a single one of its own utilities.
+
+  `shellCompanionDirs` now prepends the resolved shell's companion
+  directories (`usr\bin`, `mingw64\bin`, `usr\local\bin` when present) for
+  shells located inside a Git-for-Windows tree. Prepended rather than
+  appended, matching an interactive Git Bash session: the interpreter is
+  bash, so `find . -name '*.go'` must mean POSIX find, not Windows
+  `find.exe`. Shells outside a Git tree contribute nothing, so no unrelated
+  directory is ever injected.
+
+  The bug survived because the existing toolchain probe checks go, node and
+  python — all of which *do* live on the Windows PATH — so they resolved
+  happily while `ls` was broken. `dfmt doctor` now probes the coreutils
+  separately and reports a shell that cannot find its own userland.
+
 ## [0.7.0] — 2026-07-29
 
 The release that makes an upgrade actually take effect.
@@ -1433,7 +1460,8 @@ for v0.3.x:
   `privacy.allow_nonlocal_http` not wired — DFMT never
   phones home regardless.
 
-[Unreleased]: https://github.com/ersinkoc/dfmt/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/ersinkoc/dfmt/compare/v0.7.1...HEAD
+[0.7.1]: https://github.com/ersinkoc/dfmt/releases/tag/v0.7.1
 [0.7.0]: https://github.com/ersinkoc/dfmt/releases/tag/v0.7.0
 [0.6.9]: https://github.com/ersinkoc/dfmt/releases/tag/v0.6.9
 [0.2.8]: https://github.com/ersinkoc/dfmt/releases/tag/v0.2.8

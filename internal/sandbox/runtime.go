@@ -239,6 +239,69 @@ var findGitBashWindows = func() (string, bool) {
 	return "", false
 }
 
+// shellCompanionDirs returns the directories that must be on PATH for the
+// resolved shell's own userland to work, or nil when none are needed.
+//
+// This exists because of a Git-for-Windows layout detail that silently broke
+// every POSIX command in the sandbox. lookPath deliberately resolves `bash`
+// to Git Bash (see its comment), which lives at
+// `<root>\usr\bin\bash.exe` — and `<root>\usr\bin` is where ls, cat, grep,
+// sed, awk, find, which, head, tail, sort and the rest of the coreutils live
+// too. A stock Git for Windows install deliberately keeps that directory OUT
+// of the Windows PATH so its POSIX tools don't shadow Windows commands;
+// Git Bash puts it back at startup when you open a terminal.
+//
+// The sandbox never gets that startup step: it runs `bash.exe -c "<cmd>"`
+// with an environment it builds itself (buildEnv), whose PATH is the Windows
+// PATH. So bash launched fine and then could not find a single one of its own
+// utilities — `ls` returned exit 127, and so did cat, grep, sed, awk, which.
+// Toolchains masked the problem in testing because go/node/python DO live on
+// the Windows PATH, so `go version` worked while `ls` did not.
+//
+// The dirs are PREPENDED by the caller, matching what an interactive Git Bash
+// session does. The shell is bash, so POSIX tool semantics are the contract:
+// a caller writing `find . -name '*.go'` means POSIX find, not the
+// Windows find.exe that would otherwise win.
+func shellCompanionDirs(exePath string) []string {
+	if !osutil.IsWindows() || exePath == "" {
+		return nil
+	}
+	root, ok := gitForWindowsRoot(exePath)
+	if !ok {
+		return nil
+	}
+	// Order matters: usr\bin first (the coreutils the shell expects),
+	// then mingw64\bin (git.exe and the MinGW toolchain), then the
+	// optional usr\local\bin an operator may have populated.
+	var out []string
+	for _, sub := range [][]string{{"usr", "bin"}, {"mingw64", "bin"}, {"usr", "local", "bin"}} {
+		dir := filepath.Join(append([]string{root}, sub...)...)
+		if fi, err := os.Stat(dir); err == nil && fi.IsDir() {
+			out = append(out, dir)
+		}
+	}
+	return out
+}
+
+// gitForWindowsRoot recovers the Git-for-Windows install root from the path
+// of a shell binary inside it. Handles both supported layouts —
+// `<root>\usr\bin\bash.exe` (stock) and `<root>\bin\bash.exe` (legacy) —
+// mirroring gitBashCandidates. Returns ok=false for a shell that is not
+// inside a Git tree (a WSL bash, an MSYS2 install, a hand-placed binary),
+// so no unrelated directory is ever injected into the sandbox PATH.
+func gitForWindowsRoot(exePath string) (string, bool) {
+	binDir := filepath.Dir(exePath) // <root>\usr\bin  |  <root>\bin
+	parent := filepath.Dir(binDir)  // <root>\usr      |  <root>
+	if strings.EqualFold(filepath.Base(binDir), "bin") &&
+		strings.EqualFold(filepath.Base(parent), "usr") {
+		return filepath.Dir(parent), true
+	}
+	if strings.EqualFold(filepath.Base(binDir), "bin") {
+		return parent, true
+	}
+	return "", false
+}
+
 // DetectRuntimes is a convenience function to probe all runtimes.
 func DetectRuntimes(ctx context.Context) (*Runtimes, error) {
 	r := NewRuntimes()

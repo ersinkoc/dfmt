@@ -437,6 +437,8 @@ func checkSandboxToolchains(dir string) {
 		fmt.Println("      - Or have the agent invoke the .exe form (`go.exe version`, `node.exe --version`).")
 	}
 
+	checkSandboxCoreutils(cl)
+
 	if len(bareMissing) == 0 {
 		return
 	}
@@ -454,6 +456,44 @@ func checkSandboxToolchains(dir string) {
 	}
 	fmt.Println("")
 	fmt.Println("    Then restart the daemon: `dfmt stop` (auto-restarts on next call).")
+}
+
+// checkSandboxCoreutils verifies the sandbox shell can find its OWN
+// userland — ls, cat, sed, awk — not just the language toolchains.
+//
+// The toolchain probe above cannot catch this class of breakage, and that
+// is exactly how it stayed hidden: go, node and python live on the Windows
+// PATH, so they resolved happily while every POSIX command returned exit
+// 127. The cause is a Git-for-Windows layout detail — `bash.exe` sits in
+// `<root>\usr\bin` alongside the coreutils, and that directory is
+// deliberately kept off the Windows PATH so Git's tools don't shadow
+// Windows ones. An interactive Git Bash re-adds it at startup; a
+// `bash.exe -c` invocation with a caller-supplied environment does not.
+//
+// A shell that cannot run `ls` is not a usable sandbox, so this is
+// reported loudly even though the toolchains look fine.
+func checkSandboxCoreutils(cl *client.Client) {
+	probes := []string{"ls", "cat", "sed", "awk"}
+	var missing []string
+	for _, p := range probes {
+		if _, ok := probeSandboxTool(cl, p); !ok {
+			missing = append(missing, p)
+		}
+	}
+	if len(missing) == 0 {
+		fmt.Println("✓ Sandbox shell has its POSIX userland (ls, cat, sed, awk)")
+		return
+	}
+	fmt.Printf("[!] Sandbox shell cannot find %s — every POSIX command returns exit 127.\n",
+		strings.Join(missing, ", "))
+	if osutil.IsWindows() {
+		fmt.Println("    On Windows this means the shell's own directory (Git's `usr\\bin`)")
+		fmt.Println("    is missing from the sandbox PATH. DFMT adds it automatically as of")
+		fmt.Println("    v0.7.1 — if you see this, the running daemon predates that fix:")
+		fmt.Println("    run `dfmt stop` and let the next call restart it on the current build.")
+	} else {
+		fmt.Println("    Check that coreutils are installed and visible to the shell that starts dfmt.")
+	}
 }
 
 // probeSandboxTool runs `command -v <name>` through the daemon's exec
