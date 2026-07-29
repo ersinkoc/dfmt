@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -21,6 +22,7 @@ import (
 	"github.com/ersinkoc/dfmt/internal/sandbox"
 	"github.com/ersinkoc/dfmt/internal/setup"
 	"github.com/ersinkoc/dfmt/internal/transport"
+	"github.com/ersinkoc/dfmt/internal/version"
 )
 
 // doctorCheck is one row of the `dfmt doctor` health report. The fn
@@ -94,6 +96,11 @@ func runDoctor(args []string) int {
 	if !checkAgentWireUp() {
 		allOk = false
 	}
+
+	// Which binary is actually serving. Runs after the agent wire-up block
+	// because it reuses the same resolved command path and reads best next
+	// to it. Advisory — never flips allOk.
+	checkBinaryConsistency()
 
 	// Instruction-file staleness: a project may have been `dfmt init`-ed
 	// on a previous DFMT version whose canonical block body has since
@@ -593,6 +600,133 @@ func checkInstructionBlockStaleness() {
 			fmt.Println("✓ Instruction blocks current")
 		}
 	}
+}
+
+// checkBinaryConsistency reports whether every path that can end up
+// launching dfmt refers to the same binary, and whether the daemon
+// currently serving this host was built from the same release as this CLI.
+//
+// This is the check that makes the stale-daemon trap visible instead of
+// silent. Three independent things decide which dfmt code actually runs:
+// the binary on PATH (what the user types), the binary written into each
+// agent's MCP config (what the agent launches), and the binary of the
+// already-running daemon (what actually executes every tool call, since the
+// daemon outlives the command that spawned it and holds the singleton lock).
+// When copies of dfmt exist in more than one directory these three drift
+// apart, and the symptom is not an error — it is correct-looking answers
+// produced by code the user thought they had replaced.
+//
+// Advisory only: returns true (does not fail doctor) because a mismatch is
+// recoverable and, for the version case, self-healing on the next command.
+// Nothing is deleted; the operator decides which copy to keep.
+func checkBinaryConsistency() bool {
+	fmt.Println()
+	fmt.Println("Binary consistency:")
+
+	self, _ := os.Executable()
+	configured := setup.ResolveDFMTCommand()
+	onPath, pathErr := exec.LookPath("dfmt")
+	info := readGlobalDaemonInfo()
+
+	fmt.Printf("    this CLI:      %s (%s)\n", displayPath(self), version.Current)
+	if pathErr == nil {
+		fmt.Printf("    on PATH:       %s\n", displayPath(onPath))
+	} else {
+		fmt.Printf("    on PATH:       (not found — agents that rely on PATH will fail)\n")
+	}
+	fmt.Printf("    agent configs: %s\n", displayPath(configured))
+	if info.Alive {
+		exe := info.Exe
+		if exe == "" {
+			exe = "(unknown — daemon predates identity publishing)"
+		} else {
+			exe = displayPath(exe)
+		}
+		fmt.Printf("    running daemon: %s (%s, PID %d)\n", exe, info.VersionLabel(), info.PID)
+	} else {
+		fmt.Println("    running daemon: (none)")
+	}
+
+	// Collect the distinct binaries in play. Compare case-insensitively on
+	// Windows, where the same file is reachable as C:\... and c:\....
+	seen := map[string]string{}
+	note := func(label, p string) {
+		if p == "" {
+			return
+		}
+		if abs, err := filepath.Abs(p); err == nil {
+			p = abs
+		}
+		key := p
+		if osutil.IsWindows() {
+			key = strings.ToLower(key)
+		}
+		if prev, dup := seen[key]; dup {
+			seen[key] = prev + ", " + label
+			return
+		}
+		seen[key] = label
+	}
+	note("this CLI", self)
+	if pathErr == nil {
+		note("PATH", onPath)
+	}
+	note("agent configs", configured)
+	note("running daemon", info.Exe)
+
+	ok := true
+	if len(seen) > 1 {
+		ok = false
+		fmt.Printf("! %d different dfmt binaries are in play:\n", len(seen))
+		for p, who := range seen {
+			fmt.Printf("    %s  ← %s\n", displayPath(p), who)
+		}
+		fmt.Println("    Keep one. Whichever you keep, run `dfmt setup --force` from it so")
+		fmt.Println("    agent configs point at it, then `dfmt stop` to retire the old daemon.")
+	}
+
+	// A version skew is reported separately from a path skew: the same path
+	// can serve an old build (the binary was replaced under a running
+	// daemon), which is exactly how this repo ended up on a months-old
+	// daemon while every path agreed.
+	if info.Alive && !info.Current {
+		ok = false
+		if daemon.SameVersion(info.Version, version.Current) {
+			// Same tag, different bytes — the binary was rebuilt or
+			// reinstalled under the running daemon. Naming this explicitly
+			// matters: "daemon is v0.6.9, CLI is v0.6.9, but it's stale"
+			// looks like a bug in the report unless we say why.
+			fmt.Printf("! daemon is %s but was started from a since-replaced binary\n", info.VersionLabel())
+		} else {
+			fmt.Printf("! daemon is %s but this CLI is %s\n", info.VersionLabel(), version.Current)
+		}
+		fmt.Println("    Self-healing: the next dfmt command restarts the daemon on the new build.")
+	}
+
+	if ok {
+		fmt.Println("✓ one dfmt binary, daemon build matches this CLI")
+	}
+	return true // advisory: never fails the overall doctor verdict
+}
+
+// displayPath shortens a home-relative path to ~/... for readability. Long
+// Windows profile paths otherwise dominate every line of the report.
+func displayPath(p string) string {
+	if p == "" {
+		return "(unknown)"
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return p
+	}
+	cmp, base := p, home
+	if osutil.IsWindows() {
+		cmp, base = strings.ToLower(p), strings.ToLower(home)
+	}
+	if strings.HasPrefix(cmp, base) {
+		return "~" + filepath.ToSlash(p[len(home):])
+	}
+	return p
 }
 
 func checkAgentWireUp() bool {

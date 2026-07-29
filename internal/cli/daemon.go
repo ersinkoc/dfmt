@@ -25,6 +25,7 @@ import (
 	"github.com/ersinkoc/dfmt/internal/osutil"
 	"github.com/ersinkoc/dfmt/internal/project"
 	"github.com/ersinkoc/dfmt/internal/transport"
+	"github.com/ersinkoc/dfmt/internal/version"
 )
 
 func runStatus(args []string) int {
@@ -55,11 +56,16 @@ func runStatus(args []string) int {
 	// the operator hadn't touched yet. Treat the missing-project case
 	// as a degraded report: skip per-project fields, still show global
 	// daemon liveness + dashboard URL + last crash.
+	// One read of the global daemon's state, shared by every field below,
+	// so the reported PID / port / version / dashboard cannot disagree with
+	// each other or with `dfmt list`.
+	ginfo := readGlobalDaemonInfo()
+
 	proj, projErr := getProject()
 	running := false
 	if projErr == nil {
 		running = client.DaemonRunning(proj)
-	} else if globalDashboardURL() != "" {
+	} else if ginfo.Alive {
 		running = true
 	}
 
@@ -76,7 +82,7 @@ func runStatus(args []string) int {
 			// No project resolved, but the global daemon is reachable —
 			// surface its URL directly so the operator can still navigate
 			// to the dashboard.
-			dashboardURL = globalDashboardURL()
+			dashboardURL = ginfo.Dashboard
 		}
 	}
 
@@ -101,7 +107,7 @@ func runStatus(args []string) int {
 	if projErr == nil {
 		socketPath = project.SocketPath(proj)
 	}
-	if globalDashboardURL() != "" {
+	if ginfo.Alive {
 		if osutil.IsWindows() {
 			socketPath = project.GlobalPortPath()
 		} else {
@@ -119,6 +125,21 @@ func runStatus(args []string) int {
 			"socket":         socketPath,
 			"dashboard":      dashboardURL,
 		}
+		if ginfo.Alive {
+			// Report which build is actually serving, and this binary's own,
+			// so a skew is visible in one command instead of inferred from
+			// symptoms. cli_version is what a stale daemon would be
+			// restarted to match.
+			payload["daemon_pid"] = ginfo.PID
+			payload["daemon_version"] = ginfo.Version
+			payload["cli_version"] = version.Current
+			if ginfo.Exe != "" {
+				payload["daemon_exe"] = ginfo.Exe
+			}
+			if ginfo.StartedAt != "" {
+				payload["daemon_started_at"] = ginfo.StartedAt
+			}
+		}
 		if projErr != nil {
 			payload["project_error"] = projErr.Error()
 		}
@@ -134,7 +155,18 @@ func runStatus(args []string) int {
 			fmt.Printf("Project: (none — %v)\n", projErr)
 		}
 		if running {
-			fmt.Println("Daemon: running")
+			if ginfo.Alive {
+				fmt.Printf("Daemon: running (PID %d, %s)\n", ginfo.PID, ginfo.VersionLabel())
+				if !ginfo.Current {
+					// Not an error: the next dfmt command restarts it. Say so,
+					// rather than leaving the operator to wonder why status
+					// prints two different versions.
+					fmt.Printf("  ! stale — this CLI is %s; the daemon will be restarted on the next command\n",
+						version.Current)
+				}
+			} else {
+				fmt.Println("Daemon: running")
+			}
 			if dashboardURL != "" {
 				// Surfacing the dashboard URL on every `dfmt status` lets
 				// the user reach the running dashboard without invoking
@@ -288,6 +320,70 @@ func globalDashboardURL() string {
 	return fmt.Sprintf("http://127.0.0.1:%d/dashboard", port)
 }
 
+// globalDaemonInfo is the single answer to "what is serving this host right
+// now", assembled once from ~/.dfmt/{daemon.json,port,daemon.pid}.
+//
+// It exists because `dfmt status`, `dfmt list`, `dfmt dashboard`, and
+// `dfmt doctor` each used to reconstruct this from a different subset of
+// those files, in a different order, with different fallbacks — so they
+// could and did disagree with each other about whether a daemon was up and
+// which PID it had. One reader, one shape, four consistent surfaces.
+type globalDaemonInfo struct {
+	Alive     bool
+	PID       int
+	Port      int
+	Version   string // "" when the daemon predates identity publishing
+	Exe       string
+	StartedAt string
+	Dashboard string
+	// Current is the staleness verdict, computed once here via
+	// Identity.IsCurrent so `status`, `doctor`, and the restart path all
+	// answer it identically. Comparing versions ad-hoc at each call site
+	// was how doctor could report "fine" about a daemon the next command
+	// was about to restart.
+	Current bool
+}
+
+// readGlobalDaemonInfo gathers the current global daemon's state. Alive is
+// driven by the same dial every other liveness check uses, so this helper
+// can never claim a daemon is up when a client would fail to reach it.
+//
+// Version/Exe/StartedAt are best-effort: a daemon older than the identity
+// file leaves them empty, which callers render as "unknown" rather than
+// treating as an error. Liveness does not depend on them.
+func readGlobalDaemonInfo() globalDaemonInfo {
+	info := globalDaemonInfo{
+		Alive: client.DaemonRunning(""),
+		PID:   readGlobalDaemonPID(),
+	}
+	if port, _, err := readGlobalPortFile(); err == nil && port > 0 {
+		info.Port = port
+		info.Dashboard = fmt.Sprintf("http://127.0.0.1:%d/dashboard", port)
+	}
+	if id, ok := daemon.ReadIdentity(); ok {
+		info.Version = id.Version
+		info.Exe = id.Exe
+		info.StartedAt = id.StartedAt
+		info.Current = id.IsCurrent(version.Current)
+		// The identity file is written by the live process and the PID file
+		// is separate bookkeeping that can drift (the globalDaemonOrphan
+		// state exists precisely for that). Prefer the identity's PID.
+		if id.PID > 0 {
+			info.PID = id.PID
+		}
+	}
+	return info
+}
+
+// VersionLabel renders the daemon's build for human-facing output,
+// naming the pre-identity case explicitly rather than showing a blank.
+func (g globalDaemonInfo) VersionLabel() string {
+	if g.Version == "" {
+		return "unknown (pre-identity build)"
+	}
+	return g.Version
+}
+
 // readGlobalPortFile reads the host-wide daemon's port + token from
 // ~/.dfmt/port (or DFMT_GLOBAL_DIR override). Returns the same
 // (port, token, error) shape as the per-project port reader so
@@ -376,6 +472,14 @@ func runDaemon(args []string) int {
 				"Then retry `dfmt daemon`.\n",
 			existingPID, existingPID, existingPID)
 		return 1
+	case globalDaemonStale:
+		// Explicit `dfmt daemon` against an outdated daemon is a request to
+		// have THIS build serving, so replace it rather than reporting
+		// "already running" and leaving the old one in place.
+		if !restartStaleGlobalDaemon(existingPID) {
+			return 1
+		}
+		cleanupStaleGlobalDaemon()
 	case globalDaemonDead:
 		cleanupStaleGlobalDaemon()
 	}
@@ -453,6 +557,17 @@ const (
 	// or points to a dead process. The daemon is up (just bookkeeping
 	// drift) — connect and warn rather than refuse or spawn a sibling.
 	globalDaemonOrphan
+	// globalDaemonStale: PID alive and listener responsive, but the
+	// daemon reports a different build than this binary (or reports no
+	// build at all, i.e. it predates ~/.dfmt/daemon.json).
+	//
+	// This is the state that made an upgrade a no-op. Liveness is a bare
+	// dial, so a daemon from any build looked "Running" forever: after
+	// rebuilding and reinstalling, the old process kept the singleton
+	// lock and kept serving, and its replies were well-formed enough
+	// that the skew surfaced as wrong answers rather than errors.
+	// Handled by stopping the old daemon and spawning a fresh one.
+	globalDaemonStale
 )
 
 // inspectGlobalDaemon classifies the global daemon's on-disk state against
@@ -465,6 +580,11 @@ func inspectGlobalDaemon() (globalDaemonStatus, int) {
 	pidAlive := pid > 0 && isProcessRunning(pid)
 	switch {
 	case listener && pidAlive:
+		// Healthy on every liveness signal — now ask the only question a
+		// dial cannot answer: is it OUR build?
+		if !globalDaemonVersionMatches() {
+			return globalDaemonStale, pid
+		}
 		return globalDaemonRunning, pid
 	case listener && !pidAlive:
 		return globalDaemonOrphan, pid
@@ -473,6 +593,70 @@ func inspectGlobalDaemon() (globalDaemonStatus, int) {
 	default:
 		return globalDaemonDead, pid
 	}
+}
+
+// globalDaemonVersionMatches reports whether the running global daemon is
+// executing the same code as this binary — both the same release AND the
+// same bytes on disk (see Identity.IsCurrent; a rebuild at an unchanged
+// version tag is the common case when developing DFMT itself).
+//
+// A missing or malformed ~/.dfmt/daemon.json counts as a mismatch: it means
+// the daemon predates identity publishing, so it is by definition an older
+// build than one that knows to look for the file. That is what lets the
+// first run of an upgraded binary replace a long-lived legacy daemon.
+func globalDaemonVersionMatches() bool {
+	id, ok := daemon.ReadIdentity()
+	if !ok {
+		return false
+	}
+	return id.IsCurrent(version.Current)
+}
+
+// restartAttempted guards against a restart loop. If the freshly spawned
+// daemon still fails the version check — a bad identity write, a read-only
+// ~/.dfmt, two dfmt builds fighting over the same host — we must degrade to
+// a warning rather than stop-and-spawn forever. One process gets one
+// restart; anything past that is a bug to report, not to retry.
+var restartAttempted bool
+
+// restartStaleGlobalDaemon stops the outdated daemon so the caller can spawn
+// a current one. Returns false when the restart must not be attempted
+// (already tried once this process), leaving the caller to proceed against
+// the stale daemon with a warning.
+//
+// Stop-then-spawn goes through the existing stopGlobalDaemon /
+// startGlobalDaemonBackground helpers rather than a bespoke path, so the
+// singleton lock still serializes the handover and the "two dfmt.exe"
+// case stays impossible.
+func restartStaleGlobalDaemon(pid int) bool {
+	if restartAttempted {
+		logging.Warnf(
+			"global daemon (PID %d) still reports a different build after a restart; "+
+				"continuing against it. Run `dfmt doctor` — this usually means two dfmt "+
+				"binaries are installed, or ~/.dfmt is not writable", pid)
+		return false
+	}
+	restartAttempted = true
+
+	reason := "a build that predates identity publishing"
+	if id, ok := daemon.ReadIdentity(); ok {
+		if !daemon.SameVersion(id.Version, version.Current) {
+			reason = id.Version
+		} else {
+			// Same release, different bytes: the binary was rebuilt or
+			// reinstalled underneath the running daemon. Say which, so the
+			// restart doesn't look arbitrary to someone who just ran `go build`.
+			reason = version.Current + " from a since-replaced binary"
+		}
+	}
+	logging.Warnf("global daemon (PID %d) is running %s but this binary is %s; restarting it",
+		pid, reason, version.Current)
+
+	if rc := stopGlobalDaemon(); rc != 0 {
+		logging.Warnf("could not stop the outdated daemon; continuing against it")
+		return false
+	}
+	return true
 }
 
 // cleanupStaleGlobalDaemon removes ~/.dfmt/{daemon.pid,port,daemon.sock,lock}
@@ -534,6 +718,20 @@ func ensureGlobalDaemon() error {
 				"this usually means the process is hung; recovery on Windows: "+
 				"`dfmt stop` or `taskkill /PID %d /F`; on Unix: `dfmt stop` or `kill %d`; "+
 				"then retry the command", pid, pid, pid)
+	case globalDaemonStale:
+		// An outdated daemon answers dials perfectly well, so leaving it in
+		// place means silently serving results from code the user already
+		// replaced. Restart it. Never from a test binary or under
+		// DISABLE_AUTOSTART: those environments deliberately manage the
+		// daemon themselves, and killing a developer's daemon mid-suite
+		// would be a far worse surprise than a version skew.
+		if isTestBinary() || os.Getenv("DFMT_DISABLE_AUTOSTART") == "1" {
+			return nil
+		}
+		if !restartStaleGlobalDaemon(pid) {
+			return nil // degraded: serve from the old daemon rather than fail
+		}
+		cleanupStaleGlobalDaemon()
 	case globalDaemonDead:
 		cleanupStaleGlobalDaemon()
 	}
@@ -588,17 +786,21 @@ func ensureGlobalDaemon() error {
 // stderr-logged error and exit. The *daemon.Daemon return is non-nil
 // only in the test-binary fallback path.
 func acquireBackend(projectPath string) (transport.Backend, *daemon.Daemon) {
-	if !client.DaemonRunning(projectPath) {
-		if err := ensureGlobalDaemon(); err != nil {
-			// Test-binary or DISABLE_AUTOSTART: fall back to the legacy
-			// in-process promote so unit tests that exercise this code
-			// path still get a working backend.
-			if isTestBinary() || os.Getenv("DFMT_DISABLE_AUTOSTART") == "1" {
-				return acquireBackendForLongRunner(projectPath)
-			}
-			fmt.Fprintf(os.Stderr, "acquireBackend: %v\n", err)
-			return nil, nil
+	// Call ensureGlobalDaemon unconditionally rather than gating it on
+	// !DaemonRunning. A stale daemon is running — that is the whole problem
+	// with it — so the short-circuit would skip the version check on exactly
+	// the path that matters and connect us to the outdated process. The
+	// gate also bought nothing: inspectGlobalDaemon's first act is the same
+	// dial DaemonRunning performs.
+	if err := ensureGlobalDaemon(); err != nil {
+		// Test-binary or DISABLE_AUTOSTART: fall back to the legacy
+		// in-process promote so unit tests that exercise this code
+		// path still get a working backend.
+		if isTestBinary() || os.Getenv("DFMT_DISABLE_AUTOSTART") == "1" {
+			return acquireBackendForLongRunner(projectPath)
 		}
+		fmt.Fprintf(os.Stderr, "acquireBackend: %v\n", err)
+		return nil, nil
 	}
 	cl, cerr := client.NewClient(projectPath)
 	if cerr != nil {
@@ -1052,25 +1254,25 @@ func runList(args []string) int {
 	// project. We pull project paths from the dashboard URL helper
 	// and the global PID file; ProjectPath is set to "<global>" to
 	// distinguish from per-project legacy rows.
-	if globalURL := globalDashboardURL(); globalURL != "" {
-		gpid := readGlobalDaemonPID()
-		port := 0
-		if p, _, err := readGlobalPortFile(); err == nil {
-			port = p
-		}
+	ginfo := readGlobalDaemonInfo()
+	if ginfo.Alive {
 		// One synthetic row per loaded project, all sharing the
 		// daemon's PID/port. Operators reading `dfmt list` see
 		// every project the global daemon has cached, mirroring
-		// the dashboard switcher.
-		loaded := loadedProjectsViaAPI(port)
+		// the dashboard switcher — this is the visible proof of the
+		// one-daemon-serves-every-project design, so the rows stay.
+		// What changed is where PID/port come from: readGlobalDaemonInfo,
+		// the same reader `dfmt status` uses, so the two commands can no
+		// longer report different PIDs for the same process.
+		loaded := loadedProjectsViaAPI(ginfo.Port)
 		if len(loaded) == 0 {
 			loaded = []string{"<global>"}
 		}
 		for _, p := range loaded {
 			daemons = append(daemons, client.DaemonEntry{
 				ProjectPath: p,
-				PID:         gpid,
-				Port:        port,
+				PID:         ginfo.PID,
+				Port:        ginfo.Port,
 				StartedAt:   time.Now(),
 				LastSeen:    time.Now(),
 			})
@@ -1107,6 +1309,13 @@ func runList(args []string) int {
 		fmt.Println("]")
 	} else {
 		fmt.Println("Running DFMT daemons:")
+		if ginfo.Alive {
+			// The whole point of the global daemon is that these rows are
+			// many projects served by ONE process — state that, so a
+			// multi-row listing is not misread as multiple daemons.
+			fmt.Printf("(global daemon PID %d, %s — one process serves every project below)\n",
+				ginfo.PID, ginfo.VersionLabel())
+		}
 		fmt.Println("")
 		for _, d := range daemons {
 			uptime := time.Since(d.StartedAt).Round(time.Second)
@@ -1116,7 +1325,15 @@ func runList(args []string) int {
 				fmt.Printf("  [%d] %s (socket, uptime %s)\n", d.PID, d.ProjectPath, uptime)
 			}
 		}
-		fmt.Printf("\n%d daemon(s) running\n", len(daemons))
+		// Count processes, not rows. Under the global daemon every row is
+		// the SAME process serving a different project, so "3 daemon(s)
+		// running" for one PID contradicted the whole design and read as a
+		// singleton violation to anyone checking.
+		if ginfo.Alive {
+			fmt.Printf("\n%d project(s) served by 1 daemon\n", len(daemons))
+		} else {
+			fmt.Printf("\n%d daemon(s) running\n", len(daemons))
+		}
 	}
 	return 0
 }

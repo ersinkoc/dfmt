@@ -40,11 +40,14 @@ func strictParams() bool {
 //     says params is optional, so refusing it would break legitimate
 //     callers (Stats, Recall with no filters, …).
 //
-//   - Unknown fields are rejected by default. A client sending {"limt":10} for
-//     {"limit":10} previously got back a successful empty result instead
-//     of an error — silent typos. DisallowUnknownFields surfaces these
-//     as -32602 so the agent learns about the typo immediately.
-//     Override with DFMT_MCP_STRICT_PARAMS=0.
+//   - Unknown fields are IGNORED unless DFMT_MCP_STRICT_PARAMS=1. (This
+//     comment previously claimed the opposite — "rejected by default,
+//     override with DFMT_MCP_STRICT_PARAMS=0" — which contradicted
+//     strictParams() directly above and misled anyone debugging a client
+//     whose fields were being dropped.) A misspelled field is therefore
+//     silently discarded here; what catches it is per-tool required-field
+//     validation in params_validate.go, which fires when the misspelling
+//     leaves a required field at its zero value.
 //
 //   - Trailing tokens after the JSON value are rejected. json.Unmarshal
 //     allows {"a":1}garbage to decode silently; the strict path catches

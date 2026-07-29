@@ -55,3 +55,53 @@ func PoolBufferReturn(buf *bytes.Buffer) {
 	buf.Reset()
 	bufferPool.Put(buf)
 }
+
+// cappedBuffer is an io.Writer that retains at most `limit` bytes and
+// silently discards the rest, reporting every write as fully consumed.
+//
+// It exists so `cmd.Stderr` can be captured without handing an unbounded
+// buffer to a subprocess the agent chose. A `go build ./...` across a broken
+// monorepo, a test runner in verbose mode, or any tool stuck in a retry loop
+// can emit tens of megabytes on stderr; the daemon is long-lived and serves
+// every project on the host, so an unbounded sink there is a heap-growth
+// vector rather than a hypothetical.
+//
+// Reporting short writes instead would make exec.Cmd's internal copier
+// abandon the stream with ErrShortWrite and surface a spurious failure on
+// what is really just a chatty-but-successful command — so the contract here
+// is deliberately "absorb and drop", matching the io.Discard-after-cap
+// behavior the stdout path gets from io.LimitReader.
+//
+// Truncation is observable via Truncated(); callers append the
+// "(truncated)" marker rather than silently presenting a partial tail as
+// complete output.
+type cappedBuffer struct {
+	buf       bytes.Buffer
+	limit     int
+	truncated bool
+}
+
+// Write implements io.Writer. Always returns len(p), nil — see the type
+// comment for why a short write would be wrong here.
+func (c *cappedBuffer) Write(p []byte) (int, error) {
+	if room := c.limit - c.buf.Len(); room > 0 {
+		if len(p) <= room {
+			c.buf.Write(p)
+		} else {
+			c.buf.Write(p[:room])
+			c.truncated = true
+		}
+	} else if len(p) > 0 {
+		c.truncated = true
+	}
+	return len(p), nil
+}
+
+// String returns the retained bytes.
+func (c *cappedBuffer) String() string { return c.buf.String() }
+
+// Len returns the number of retained bytes (never more than limit).
+func (c *cappedBuffer) Len() int { return c.buf.Len() }
+
+// Truncated reports whether any bytes were dropped at the cap.
+func (c *cappedBuffer) Truncated() bool { return c.truncated }

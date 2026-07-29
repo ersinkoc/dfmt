@@ -456,6 +456,16 @@ func dispatchTool[T any, R any](
 	if err := decode(raw, &args); err != nil {
 		return m.errorResult(req.ID, -32602, err.Error())
 	}
+	// Enforce the schema's "required" list. Decoding succeeds for an
+	// arguments object that simply omits a required field, leaving it at
+	// the zero value — and a zero-value command / path / pattern produces a
+	// successful-looking empty result rather than an error. See
+	// params_validate.go.
+	if v, hasRequired := any(args).(validator); hasRequired {
+		if err := v.Validate(); err != nil {
+			return m.errorResult(req.ID, -32602, err.Error())
+		}
+	}
 	ctx = WithProjectID(ctx, m.effectiveProjectID(pid(args)))
 	result, err := call(ctx, args)
 	if err != nil {

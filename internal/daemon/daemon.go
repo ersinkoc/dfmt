@@ -554,6 +554,16 @@ func (d *Daemon) Start(ctx context.Context) error {
 			logging.Warnf("write pid file: %v", err)
 		}
 
+		// Global daemons additionally publish their build identity so
+		// clients can tell a current daemon from a stale one. Only the
+		// global daemon does this: legacy per-project daemons are a
+		// deprecated straddle path and clients never version-check them.
+		if d.globalMode {
+			if err := writeIdentityFile(); err != nil {
+				logging.Warnf("write identity file: %v", err)
+			}
+		}
+
 		// Start optional filesystem watcher and pipe its events into the journal.
 		if d.fswatcher != nil {
 			if err := d.fswatcher.Start(ctx); err != nil {
@@ -739,6 +749,11 @@ func (d *Daemon) Stop(ctx context.Context) error {
 		var pidPath string
 		if d.globalMode {
 			pidPath = project.GlobalPIDPath()
+			// Remove the identity file alongside the PID file. A stale
+			// identity next to a dead listener would make the next client
+			// believe a current daemon is up; absent-but-alive is the
+			// safe direction (treated as stale → restart).
+			_ = os.Remove(project.GlobalIdentityPath())
 		} else {
 			pidPath = filepath.Join(d.projectPath, ".dfmt", "daemon.pid")
 		}

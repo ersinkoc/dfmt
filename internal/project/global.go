@@ -30,6 +30,17 @@ const (
 	// last-N event tags. Written by the daemon's panic recover handler;
 	// read by `dfmt doctor` so operators see why the daemon went down.
 	GlobalCrashLogName = "last-crash.log"
+	// GlobalIdentityFileName records which build is currently serving:
+	// {"version","pid","exe","started_at"}. Written by the daemon itself
+	// at Start (not by the HTTP server) so the answer exists on every
+	// transport, including a socket-only daemon with HTTP disabled where
+	// no port file is written at all.
+	//
+	// This is the file that makes an upgrade take effect. Liveness alone
+	// is a bare TCP dial, which any build satisfies forever — so before
+	// this existed, rebuilding and reinstalling dfmt left the OLD daemon
+	// answering indefinitely, silently serving results from stale code.
+	GlobalIdentityFileName = "daemon.json"
 )
 
 // GlobalDir returns the directory where the global daemon stores its
@@ -103,4 +114,11 @@ func GlobalLockPath() string {
 // archive last-crash.log before restarting.
 func GlobalCrashPath() string {
 	return filepath.Join(GlobalDir(), GlobalCrashLogName)
+}
+
+// GlobalIdentityPath returns the path to the running global daemon's
+// identity file. Written at Start, removed at Stop; its absence next to a
+// live listener means a pre-identity (or crashed) daemon.
+func GlobalIdentityPath() string {
+	return filepath.Join(GlobalDir(), GlobalIdentityFileName)
 }

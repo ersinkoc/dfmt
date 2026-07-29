@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 
@@ -142,6 +143,11 @@ func (s *SandboxImpl) execImpl(ctx context.Context, req ExecReq, rt Runtime) (Ex
 
 	cmd.Dir = s.wd
 	cmd.Env = prependPATH(buildEnv(req.Env), s.pathPrepend)
+	// Windows: give the child its own (invisible) console. Without this a
+	// detached daemon — the normal production configuration — spawns children
+	// that wedge before running a single instruction. No-op elsewhere.
+	// See spawn_windows.go for the full failure analysis.
+	configureChildProc(cmd)
 
 	// F-10: bound the in-memory subprocess buffer at MaxRawBytes via a
 	// streamed read on StdoutPipe + LimitReader, so a `find / -name "*"`
@@ -153,6 +159,14 @@ func (s *SandboxImpl) execImpl(ctx context.Context, req ExecReq, rt Runtime) (Ex
 	if err != nil {
 		return ExecResp{}, err
 	}
+	// Stderr was previously left nil, which routes the child's diagnostics to
+	// the null device. Every compiler error, stack trace, and `go test`
+	// failure banner an agent asked for came back as an empty response with
+	// exit != 0 and nothing to act on. Capture it under the same MaxRawBytes
+	// ceiling as stdout; a capped writer keeps a chatty subprocess from
+	// growing the daemon's heap without bound.
+	errw := &cappedBuffer{limit: MaxRawBytes}
+	cmd.Stderr = errw
 	if err := cmd.Start(); err != nil {
 		return ExecResp{}, err
 	}
@@ -205,10 +219,27 @@ func (s *SandboxImpl) execImpl(ctx context.Context, req ExecReq, rt Runtime) (Ex
 	// them into the content store regardless of what the policy dropped.
 	filtered := ApplyReturnPolicy(output, req.Intent, req.Return)
 
+	// Stderr gets the same terminal-noise normalization as stdout (compilers
+	// and test runners colorize diagnostics too) but deliberately NOT the
+	// return-policy filter: stderr is the channel that explains a non-zero
+	// exit, and excerpting it to intent-matched fragments is exactly how an
+	// agent loses the one line that names the failing file. It is already
+	// bounded by cappedBuffer at MaxRawBytes.
+	//
+	// ExecResp.Stderr existed and the transport already read and redacted it
+	// (handlers_exec.go), but execImpl never assigned it — so every compiler
+	// error, stack trace, and test-failure banner arrived as an empty body
+	// with a bare non-zero exit code and nothing to act on.
+	stderrText := NormalizeOutput(errw.String())
+	if errw.Truncated() {
+		stderrText += "\n(stderr truncated at " + strconv.Itoa(MaxRawBytes) + " bytes)"
+	}
+
 	return ExecResp{
 		Exit:       exitCode,
 		Stdout:     filtered.Body,
 		RawStdout:  output,
+		Stderr:     stderrText,
 		Matches:    filtered.Matches,
 		Summary:    filtered.Summary,
 		Vocabulary: filtered.Vocabulary,

@@ -18,9 +18,9 @@ import (
 	"github.com/ersinkoc/dfmt/internal/core"
 	"github.com/ersinkoc/dfmt/internal/logging"
 	"github.com/ersinkoc/dfmt/internal/osutil"
-	"github.com/ersinkoc/dfmt/internal/timeouts"
 	"github.com/ersinkoc/dfmt/internal/redact"
 	"github.com/ersinkoc/dfmt/internal/sandbox"
+	"github.com/ersinkoc/dfmt/internal/timeouts"
 )
 
 // ProjectResources groups the per-project state a daemon needs to serve

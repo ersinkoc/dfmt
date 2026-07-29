@@ -2,7 +2,11 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-The canonical agent-onboarding document is **[AGENTS.md](AGENTS.md)** — this file mirrors the Claude-relevant subset. If the two diverge, trust `AGENTS.md` and update this file to match.
+`AGENTS.md` is **not** an architecture document — it is the generated
+`<!-- dfmt:v1 -->` context-discipline block that `dfmt init` writes into every
+project, DFMT's own repo included, and `dfmt init` will overwrite edits to it.
+This file is the canonical architecture reference; keep architecture facts
+here, and treat `AGENTS.md` as generated output.
 
 ## Project
 
@@ -42,9 +46,32 @@ This repository is DFMT itself. When working on it, you are dogfooding the daemo
 
 **One spawn site**: `startGlobalDaemonBackground` (with platform-specific detach: Windows `DETACHED_PROCESS|CREATE_NO_WINDOW|CREATE_NEW_PROCESS_GROUP`, Unix `setsid()`), called from exactly two places — `runDaemon` (explicit `dfmt daemon`) and `ensureGlobalDaemon` (implicit-on-need from `acquireBackend` and from `runStatus` / `runList` / `runDoctor` at function entry). `client.NewClient` has no auto-spawn; the pre-v0.6.0 pattern of every code path triggering its own spawn is gone.
 
-**runMCP exception**: `dfmt mcp` is itself a long-lived process (the agent's MCP transport). To avoid having an agent session show two PIDs (`agent → dfmt mcp + dfmt daemon`), runMCP uses `acquireBackendForLongRunner` which keeps the v0.6.2 in-process self-promote path: when no daemon is running, the MCP process becomes the daemon. MCP-driven sessions still show exactly one `dfmt.exe`.
+**`dfmt mcp` is a pure proxy**: it is itself a long-lived process (the agent's MCP transport), and it uses `acquireBackendForLongRunner`, which *ensures* a detached daemon is running and connects to it as a client. It never adopts the daemon role — `acquireBackendForLongRunner` returns a nil `*daemon.Daemon` by construction. This is deliberate: under the old in-process self-promote path, the MCP subprocess became the daemon, so closing the agent's stdin killed the daemon for every other project on the host. An agent session therefore shows two processes (`dfmt mcp` + `dfmt daemon`) but still exactly **one daemon**.
 
 **Test-binary short-circuit**: `acquireBackend` checks `isTestBinary()` and `DFMT_DISABLE_AUTOSTART=1`; either falls back to in-process promotion via `acquireBackendForLongRunner` so unit tests don't fork sibling processes (the test binary is not the dfmt binary).
+
+**Daemon identity — why an upgrade takes effect**: the daemon outlives the command that started it and holds the singleton lock, and liveness is a bare dial (`client.fastDialOK`), which *any* build satisfies. Without a version check, rebuilding and reinstalling dfmt did nothing — the old process kept answering, and because its replies were well-formed the skew showed up as silently wrong results rather than errors. (Observed: a May-15 binary served a v0.6.9 checkout and returned empty stdout for every exec.)
+
+So the global daemon publishes `~/.dfmt/daemon.json` — `{version, pid, exe, exe_fingerprint, started_at}` — written by `Daemon.Start` next to the PID file (`internal/daemon/identity.go`), removed by `Stop`. `inspectGlobalDaemon()` evaluates it via `Identity.IsCurrent` and returns the `globalDaemonStale` state; `ensureGlobalDaemon()` handles that by stopping the old daemon and spawning a fresh one.
+
+`IsCurrent` checks **two independent** staleness signals, because they catch different failures:
+
+1. **Version skew** — one installed release replaced by another.
+2. **Fingerprint skew** — the daemon's own binary overwritten on disk while it kept running (`exe_fingerprint` is `"<modtime-unixnano>:<size>"` of `exe`, re-statted on each check). This is the one that matters when working on DFMT itself: a contributor rebuilds many times at the same tag, and a version-only check would compare equal every time while the daemon kept serving the code they just replaced. Deliberately mtime+size, not a hash — the question is "was this replaced", not "is it authentic", and hashing a 13 MB binary before every command would cost far more than it tells us.
+
+Invariants:
+
+- A **missing or malformed** `daemon.json` counts as stale — that is what lets the first run of an upgraded binary replace a pre-identity daemon.
+- An **unstamped client** (plain `go build`, no `-ldflags`) matches any *version* (`daemon.SameVersion`), so a dev build never restarts the daemon over a version skew alone. The fingerprint check still applies — it is valid however the client was stamped.
+- An **unstatable `exe`** (moved/deleted) is *not* stale; guessing otherwise would restart the daemon on every command.
+- **One restart per process** (`restartAttempted`); if the fresh daemon still mismatches, warn and continue rather than loop.
+- Never restarts under `isTestBinary()` or `DFMT_DISABLE_AUTOSTART=1`.
+- `acquireBackend` calls `ensureGlobalDaemon()` **unconditionally** — do not re-add a `if !client.DaemonRunning(...)` guard around it. A stale daemon *is* running, so that guard skips the version check on precisely the path that matters.
+- Compute the verdict once via `readGlobalDaemonInfo().Current`, never by comparing versions ad-hoc at a call site — that is how `doctor` could report "fine" about a daemon the next command was about to restart.
+
+On Windows the graceful stop cannot work for a `DETACHED_PROCESS` daemon (no console, so nothing can deliver a console control event), so `stopGlobalDaemon` waits 5 s and force-kills. That is expected and survivable: the journal is append-only and its reader already tolerates a truncated trailing line. The cost is a lost `index.gob` cache, rebuilt by journal replay on next start, once per upgrade.
+
+`readGlobalDaemonInfo()` (`internal/cli/daemon.go`) is the single reader for "what is serving this host"; `status`, `list`, `dashboard`, and `doctor` all go through it so they cannot report different PIDs for the same process.
 
 Legacy per-project daemons from v0.3.x are stopped during `dfmt setup --refresh`. The daemon-side wire carries a `project_id` field on every RPC so one process disambiguates calls from different projects.
 
@@ -89,7 +116,15 @@ Five ingestion paths feed the journal: MCP calls (live), CLI commands like `dfmt
 
 ### Recall (`internal/transport/handlers.go::Recall`)
 
-`dfmt_recall` rebuilds a markdown snapshot under a byte budget. Per-tier streaming with FIFO eviction — lower-priority content drops first when the budget tightens. Path interning (Refs table at the top of the snapshot + `[rN]` token references in events, kicks in at ≥3 occurrences) is implemented in `internal/retrieve/render_md.go` but **not yet wired** to the production recall path; wiring is tracked on the v0.3 roadmap (see `docs/ROADMAP.md`).
+`dfmt_recall` rebuilds a markdown snapshot under a byte budget. Per-tier streaming with FIFO eviction — lower-priority content drops first when the budget tightens. Path interning (Refs table at the top of the snapshot + `[rN]` token references in events, kicks in at ≥3 occurrences) lives in `internal/retrieve/render_md.go` and is wired for `format=json` and `format=xml`, which route through `retrieve.SnapshotBuilder`. The **default markdown path is not interned** — it builds its lines inline in `handlers_recall.go` and never reaches the renderer. Wiring markdown is tracked on the roadmap (see `docs/ROADMAP.md`).
+
+### MCP required-argument validation (`internal/transport/params_validate.go`)
+
+Every tool schema declares a `required` list, but nothing enforced it: `decodeRequiredParams` rejects only a wholly **absent** `arguments` object, so an object that merely omits the required field decoded to a zero value and the tool ran on it. `dfmt_exec` with no `code` handed an empty string to the shell, which exits 0 in ~25 ms having printed nothing, and the caller got `{"exit":0,"duration_ms":25,"timed_out":false}` — a successful-looking result, indistinguishable from a real command that printed nothing. An agent guessing the wrong argument name (`command` for `code`, `file` for `path`) got silence instead of a correction, and retrying the same wrong name never revealed it.
+
+Param types with required fields now implement `Validate() error`; `dispatchTool` calls it after decode and maps failures to `-32602`. Two deliberate divergences from the schema: JSON Schema `required` constrains **key presence, not emptiness**, and `edit.new_string` (empty = deletion) and `write.content` (empty = truncate) have meaningful empty values, so they are not validated. When adding a tool, add its `Validate()` alongside the schema's `required` array.
+
+Note `strictParams()` (`rpc_params.go`) — `DisallowUnknownFields` — is **off** by default despite its doc comment claiming otherwise; enable with `DFMT_MCP_STRICT_PARAMS=1` when debugging a client that seems to be sending fields the server ignores.
 
 `dfmt_search` returns hits with a short `excerpt` field (≤80 bytes, rune-aligned) drawn from the event's `message` / `path` / `type` — agents can decide whether to drill in without a follow-up `dfmt_recall` round-trip.
 
@@ -126,7 +161,9 @@ Adding a new component, changing component interactions, adopting a dependency, 
 
 ### Local state (per-project `.dfmt/`)
 
-`config.yaml`, `journal.jsonl`, `index.gob` (JSON payload — `.gob` filename retained for backwards compat with old daemons that may still be running; serialized via `writeJSONAtomic` in `internal/core/index_persist.go`), `port`, `lock`, optional `permissions.yaml` (line format) and `redact.yaml` (YAML). All `0o600`. `.dfmt/` is added to `.gitignore` automatically by `dfmt init`. Both override files are **wired** at daemon + CLI startup — see ADR-0014 for the merge semantics (hard-deny invariant on exec allows, additive-only redact patterns).
+`config.yaml`, `journal.jsonl`, `index.gob` (JSON payload — `.gob` filename retained for backwards compat with old daemons that may still be running; serialized via `writeJSONAtomic` in `internal/core/index_persist.go`), `port`, `lock`, optional `permissions.yaml` (line format) and `redact.yaml` (YAML). All `0o600`.
+
+Host-wide state lives in `~/.dfmt/` (override: `$DFMT_GLOBAL_DIR`): `daemon.sock` / `port`, `daemon.pid`, `daemon.json` (identity — see above), `lock`, `last-crash.log`, `daemons.json`. Path helpers are in `internal/project/global.go`; never hand-join these paths. `daemons.json` holds **only legacy per-project rows** — the global daemon does not register itself there, and `dfmt list` synthesizes its rows from the resource cache via `/api/all-daemons`, which is what makes one process visibly serve many projects. `.dfmt/` is added to `.gitignore` automatically by `dfmt init`. Both override files are **wired** at daemon + CLI startup — see ADR-0014 for the merge semantics (hard-deny invariant on exec allows, additive-only redact patterns).
 
 ### Line endings
 
