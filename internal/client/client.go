@@ -592,11 +592,11 @@ func (c *Client) Exec(ctx context.Context, params transport.ExecParams) (*transp
 	if params.ProjectID == "" {
 		params.ProjectID = c.projectID
 	}
-	body, err := c.doHTTP("/", transport.Request{
+	body, err := c.doHTTPTimeout("/", transport.Request{
 		Method: "exec",
 		Params: mustMarshal(params),
 		ID:     1,
-	})
+	}, execRPCTimeout(params.Timeout))
 	if err != nil {
 		return nil, err
 	}
@@ -623,11 +623,11 @@ func (c *Client) Read(ctx context.Context, params transport.ReadParams) (*transp
 	if params.ProjectID == "" {
 		params.ProjectID = c.projectID
 	}
-	body, err := c.doHTTP("/", transport.Request{
+	body, err := c.doHTTPTimeout("/", transport.Request{
 		Method: "read",
 		Params: mustMarshal(params),
 		ID:     1,
-	})
+	}, timeouts.Tool)
 	if err != nil {
 		return nil, err
 	}
@@ -654,11 +654,11 @@ func (c *Client) Fetch(ctx context.Context, params transport.FetchParams) (*tran
 	if params.ProjectID == "" {
 		params.ProjectID = c.projectID
 	}
-	body, err := c.doHTTP("/", transport.Request{
+	body, err := c.doHTTPTimeout("/", transport.Request{
 		Method: "fetch",
 		Params: mustMarshal(params),
 		ID:     1,
-	})
+	}, execRPCTimeout(params.Timeout))
 	if err != nil {
 		return nil, err
 	}
@@ -685,11 +685,11 @@ func (c *Client) Glob(ctx context.Context, params transport.GlobParams) (*transp
 	if params.ProjectID == "" {
 		params.ProjectID = c.projectID
 	}
-	body, err := c.doHTTP("/", transport.Request{
+	body, err := c.doHTTPTimeout("/", transport.Request{
 		Method: "glob",
 		Params: mustMarshal(params),
 		ID:     1,
-	})
+	}, timeouts.Tool)
 	if err != nil {
 		return nil, err
 	}
@@ -716,11 +716,11 @@ func (c *Client) Grep(ctx context.Context, params transport.GrepParams) (*transp
 	if params.ProjectID == "" {
 		params.ProjectID = c.projectID
 	}
-	body, err := c.doHTTP("/", transport.Request{
+	body, err := c.doHTTPTimeout("/", transport.Request{
 		Method: "grep",
 		Params: mustMarshal(params),
 		ID:     1,
-	})
+	}, timeouts.Tool)
 	if err != nil {
 		return nil, err
 	}
@@ -747,11 +747,11 @@ func (c *Client) Edit(ctx context.Context, params transport.EditParams) (*transp
 	if params.ProjectID == "" {
 		params.ProjectID = c.projectID
 	}
-	body, err := c.doHTTP("/", transport.Request{
+	body, err := c.doHTTPTimeout("/", transport.Request{
 		Method: "edit",
 		Params: mustMarshal(params),
 		ID:     1,
-	})
+	}, timeouts.Tool)
 	if err != nil {
 		return nil, err
 	}
@@ -778,11 +778,11 @@ func (c *Client) Write(ctx context.Context, params transport.WriteParams) (*tran
 	if params.ProjectID == "" {
 		params.ProjectID = c.projectID
 	}
-	body, err := c.doHTTP("/", transport.Request{
+	body, err := c.doHTTPTimeout("/", transport.Request{
 		Method: "write",
 		Params: mustMarshal(params),
 		ID:     1,
-	})
+	}, timeouts.Tool)
 	if err != nil {
 		return nil, err
 	}
@@ -805,14 +805,67 @@ func (c *Client) Write(ctx context.Context, params transport.WriteParams) (*tran
 }
 
 // doHTTP makes an HTTP JSON-RPC request.
+// rpcHeadroom is added to a tool's own deadline so the client always
+// outlives the daemon-side work it asked for. Without slack the two
+// deadlines race: the sandbox kills the subprocess at exactly T while the
+// client gives up at exactly T, and the caller sees a transport timeout
+// instead of the sandbox's own "timed_out" result, which carries the
+// partial output.
+const rpcHeadroom = 10 * time.Second
+
+// execRPCTimeout returns the client-side deadline for a call that runs
+// user-supplied work for up to `seconds` (0 = the sandbox default). It
+// mirrors the sandbox's own clamping so the client never waits longer than
+// the daemon could possibly take.
+func execRPCTimeout(seconds int) time.Duration {
+	d := time.Duration(seconds) * time.Second
+	if seconds <= 0 {
+		d = sandboxDefaultExecTimeout
+	}
+	if d > sandboxMaxExecTimeout {
+		d = sandboxMaxExecTimeout
+	}
+	return d + rpcHeadroom
+}
+
+// Mirrored from internal/sandbox rather than imported: internal/sandbox
+// pulls in the whole policy/runtime tree, and client is linked into every
+// short-lived CLI invocation where that cost is not warranted. The values
+// are pinned by TestExecRPCTimeoutMatchesSandboxLimits.
+const (
+	sandboxDefaultExecTimeout = 60 * time.Second
+	sandboxMaxExecTimeout     = 300 * time.Second
+)
+
+// doHTTP issues an RPC with the client's default (short) timeout. Use it
+// for metadata calls whose cost is bounded by the daemon's own work —
+// stats, search, recall, remember. Calls that run user-supplied work must
+// use doHTTPTimeout with a deadline derived from that work.
 func (c *Client) doHTTP(method string, req transport.Request) ([]byte, error) {
+	return c.doHTTPTimeout(method, req, c.timeout)
+}
+
+// doHTTPTimeout is doHTTP with an explicit per-call deadline.
+//
+// This exists because a single client-wide timeout silently capped every
+// tool call at timeouts.RPC (5 s). The sandbox honours its own
+// DefaultExecTimeout (60 s), MaxExecTimeout (300 s), and the `timeout`
+// argument the MCP schema advertises as "Timeout in seconds. Default: 60" —
+// but the caller had already hung up at 5 s, so anything slower than that
+// was unreachable through the daemon no matter what the caller asked for.
+//
+// The failure did not look like a cap. The subprocess kept running
+// server-side and the client reported "context deadline exceeded", which
+// reads as a hung command; running a build or a test suite through
+// dfmt_exec was simply impossible, with no error naming the real limit.
+func (c *Client) doHTTPTimeout(method string, req transport.Request, timeout time.Duration) ([]byte, error) {
 	body, err := json.Marshal(req)
 	if err != nil {
 		return nil, err
 	}
 
 	var url string
-	client := &http.Client{Timeout: c.timeout}
+	client := &http.Client{Timeout: timeout}
 	if c.network == netUnix {
 		url = "http://unix" + method
 		client.Transport = &http.Transport{
