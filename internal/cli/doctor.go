@@ -624,7 +624,7 @@ func checkBinaryConsistency() bool {
 	fmt.Println("Binary consistency:")
 
 	self, _ := os.Executable()
-	configured := setup.ResolveDFMTCommand()
+	configured := configuredMCPCommands()
 	onPath, pathErr := exec.LookPath("dfmt")
 	info := readGlobalDaemonInfo()
 
@@ -634,7 +634,17 @@ func checkBinaryConsistency() bool {
 	} else {
 		fmt.Printf("    on PATH:       (not found — agents that rely on PATH will fail)\n")
 	}
-	fmt.Printf("    agent configs: %s\n", displayPath(configured))
+	switch len(configured) {
+	case 0:
+		fmt.Println("    agent configs: (none found — run `dfmt setup`)")
+	case 1:
+		fmt.Printf("    agent configs: %s\n", displayPath(configured[0]))
+	default:
+		fmt.Println("    agent configs:")
+		for _, c := range configured {
+			fmt.Printf("        %s\n", displayPath(c))
+		}
+	}
 	if info.Alive {
 		exe := info.Exe
 		if exe == "" {
@@ -671,7 +681,9 @@ func checkBinaryConsistency() bool {
 	if pathErr == nil {
 		note("PATH", onPath)
 	}
-	note("agent configs", configured)
+	for _, c := range configured {
+		note("agent configs", c)
+	}
 	note("running daemon", info.Exe)
 
 	ok := true
@@ -862,6 +874,61 @@ func verifyMCPCommandPath(path, expectedCmd string) (bool, string) {
 		return true, ""
 	}
 	return false, gotCmd
+}
+
+// configuredMCPCommands returns the distinct `command` values actually
+// present in the agents' MCP config files, i.e. the binaries the agents
+// will really launch.
+//
+// This must be read from the files rather than derived from
+// setup.ResolveDFMTCommand(): that function returns the path the CURRENT
+// process would WRITE on the next `dfmt setup`, which for a doctor run is
+// just os.Executable(). Reporting it as "agent configs" made the row
+// tautologically agree with "this CLI" and hid the exact drift the check
+// exists to surface — an agent still launching an old binary from a
+// previous install.
+func configuredMCPCommands() []string {
+	m, err := setup.LoadManifest()
+	if err != nil || m == nil {
+		return nil
+	}
+	seen := map[string]struct{}{}
+	var out []string
+	for _, f := range m.Files {
+		if !strings.HasSuffix(strings.ToLower(f.Path), ".json") {
+			continue
+		}
+		data, rerr := os.ReadFile(f.Path)
+		if rerr != nil || len(data) == 0 {
+			continue
+		}
+		var raw map[string]any
+		if json.Unmarshal(data, &raw) != nil {
+			continue
+		}
+		servers, _ := raw["mcpServers"].(map[string]any)
+		if servers == nil {
+			continue
+		}
+		entry, _ := servers["dfmt"].(map[string]any)
+		if entry == nil {
+			continue
+		}
+		cmd, _ := entry["command"].(string)
+		if cmd == "" {
+			continue
+		}
+		key := cmd
+		if osutil.IsWindows() {
+			key = strings.ToLower(key)
+		}
+		if _, dup := seen[key]; dup {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, cmd)
+	}
+	return out
 }
 
 // pathsEqual is a doctor-local alias over osutil.SameCleanPath. The
