@@ -27,6 +27,107 @@ Internal package shapes (`internal/...`) are NOT covered by SemVer.
 
 ## [Unreleased]
 
+## [0.7.0] — 2026-07-29
+
+The release that makes an upgrade actually take effect.
+
+The daemon is a singleton that outlives the command which started it, and
+liveness was decided by a bare socket dial — a check *any* build passes. So
+rebuilding and reinstalling DFMT did nothing: the old process kept the
+host-wide lock and kept answering. Because its replies were well-formed, the
+skew surfaced as silently wrong results rather than errors. Observed in the
+wild: a months-old binary serving a current checkout and returning empty
+stdout for every `dfmt_exec`, with no error anywhere to explain it.
+
+Two independent defects produced that same silent-wrong-answer signature, and
+both are fixed here. The daemon now publishes its build identity and is
+replaced when it no longer matches; and MCP tool calls now enforce the
+`required` arguments their schemas always declared.
+
+### Added
+
+- **Daemon identity file** `~/.dfmt/daemon.json` —
+  `{version, pid, exe, exe_fingerprint, started_at}`, written by
+  `Daemon.Start` next to the PID file and removed by `Stop`. Written by the
+  daemon itself rather than the HTTP server, so it exists on every transport
+  including a socket-only daemon with HTTP disabled.
+- **Automatic stale-daemon restart.** `inspectGlobalDaemon` gained a
+  `globalDaemonStale` state; `ensureGlobalDaemon` stops the outdated daemon
+  and spawns a fresh one. Staleness is two independent signals: a **version**
+  skew (one release replaced by another), and a **fingerprint** skew — the
+  daemon's own binary overwritten on disk while it kept running. The second
+  is what catches a rebuild at an unchanged tag, the everyday case when
+  developing DFMT itself, which a version-only check compares equal forever.
+  Bounded to one restart per process; never fires under a test binary or
+  `DFMT_DISABLE_AUTOSTART=1`; an unstamped dev build is exempt from the
+  version half but not the fingerprint half.
+- **`dfmt doctor` binary-consistency check.** Compares the `dfmt` on `PATH`,
+  the command each agent's MCP config actually launches, and the running
+  daemon's `exe` + `version`, and reports any divergence. Nothing is deleted —
+  the operator chooses which copy to keep.
+- **`dfmt status`** now reports the serving daemon's PID and build, and warns
+  when it is stale and due to be restarted. `--json` gains `daemon_pid`,
+  `daemon_version`, `cli_version`, `daemon_exe`, `daemon_started_at`.
+
+### Fixed
+
+- **MCP tool calls silently ignored missing required arguments.** Every tool
+  schema declares a `required` list that nothing enforced: `decodeRequiredParams`
+  rejects only a wholly *absent* `arguments` object, so an object that merely
+  omits the required field decoded to a zero value and the tool ran on it.
+  `dfmt_exec` without `code` handed an empty string to the shell, which exits
+  0 in ~25 ms having printed nothing, returning
+  `{"exit":0,"duration_ms":25,"timed_out":false}` — indistinguishable from a
+  real command that printed nothing. A caller guessing the wrong argument name
+  (`command` for `code`, `file` for `path`) got silence instead of a
+  correction. Param types now implement `Validate()`; failures map to
+  JSON-RPC `-32602` naming the missing field.
+- **`ExecResp.Stderr` was never populated.** The field existed and the
+  transport already read and redacted it, but the sandbox never assigned it —
+  so every compiler error, stack trace, and test-failure banner arrived as an
+  empty body with a bare non-zero exit code and nothing to act on. Stderr is
+  captured under a `MaxRawBytes` cap, normalized like stdout, and deliberately
+  *not* passed through the return-policy filter: excerpting the channel that
+  explains a failure is how the one line naming the failing file gets lost.
+- **Windows: every `dfmt_exec` through a detached daemon returned nothing.**
+  A `DETACHED_PROCESS` daemon owns no console, and spawning a console
+  application from it without `CREATE_NO_WINDOW` makes Windows wedge the child
+  at 0 CPU seconds — it never runs its command and never writes a byte. No
+  unit test caught this because a test binary always has a console. Child
+  processes are now created with `CREATE_NO_WINDOW`.
+- **`dfmt doctor` reported the wrong binary for agent configs**, showing the
+  path the *current* process would write on the next `dfmt setup` rather than
+  what the configs contain. The row therefore always agreed with "this CLI"
+  and concealed the exact drift the check exists to surface.
+
+### Changed
+
+- **`dfmt list`** now prints `N project(s) served by 1 daemon` instead of
+  `N daemon(s) running`. Under the global daemon every row is the same
+  process serving a different project, so the old wording contradicted the
+  design and read as a singleton violation.
+- **Single source of truth for daemon state.** `status`, `list`, `dashboard`,
+  and `doctor` now read `readGlobalDaemonInfo()` instead of each
+  reconstructing liveness from a different subset of `~/.dfmt/*` in a
+  different order. They can no longer disagree about whether a daemon is up
+  or which PID it has.
+- **`acquireBackend` always calls `ensureGlobalDaemon`.** The previous
+  `if !client.DaemonRunning(...)` guard skipped the freshness check on
+  precisely the path that mattered — a stale daemon *is* running.
+
+### Notes
+
+- On Windows a graceful stop cannot reach a `DETACHED_PROCESS` daemon (no
+  console, so no console control event can be delivered), so `stopGlobalDaemon`
+  waits 5 s and force-kills. This is survivable: the journal is append-only
+  and its reader already tolerates a truncated trailing line. The cost is a
+  discarded `index.gob` cache, rebuilt by journal replay on the next start,
+  once per upgrade.
+- `strictParams()` / `DisallowUnknownFields` remains **off** by default; its
+  doc comment previously claimed the opposite. Enable with
+  `DFMT_MCP_STRICT_PARAMS=1` when debugging a client whose fields appear to be
+  ignored.
+
 ## [0.6.9] — 2026-05-17
 
 ### Fixed
@@ -1332,7 +1433,9 @@ for v0.3.x:
   `privacy.allow_nonlocal_http` not wired — DFMT never
   phones home regardless.
 
-[Unreleased]: https://github.com/ersinkoc/dfmt/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/ersinkoc/dfmt/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/ersinkoc/dfmt/releases/tag/v0.7.0
+[0.6.9]: https://github.com/ersinkoc/dfmt/releases/tag/v0.6.9
 [0.2.8]: https://github.com/ersinkoc/dfmt/releases/tag/v0.2.8
 [0.2.2]: https://github.com/ersinkoc/dfmt/releases/tag/v0.2.2
 [0.2.1]: https://github.com/ersinkoc/dfmt/releases/tag/v0.2.1
