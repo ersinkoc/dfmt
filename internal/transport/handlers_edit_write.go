@@ -14,12 +14,20 @@ type EditParams struct {
 	Path      string `json:"path"`
 	OldString string `json:"old_string"`
 	NewString string `json:"new_string"`
+	// ReplaceAll opts into rewriting every occurrence. Absent it, an
+	// old_string that matches more than once is refused rather than applied
+	// to the first match — see sandbox.Edit for the reasoning.
+	ReplaceAll bool `json:"replace_all,omitempty"`
 }
 
 // EditResponse is the response from an edit operation.
 type EditResponse struct {
 	Success bool   `json:"success"`
 	Summary string `json:"summary"`
+	// Replacements reports how many occurrences were rewritten, so a
+	// replace_all sweep is visible in the response rather than only in the
+	// file.
+	Replacements int `json:"replacements,omitempty"`
 }
 
 // WriteParams are the parameters for the Write method.
@@ -52,9 +60,10 @@ func (h *Handlers) Edit(ctx context.Context, params EditParams) (_ *EditResponse
 	}
 	defer release()
 	req := sandbox.EditReq{
-		Path:      params.Path,
-		OldString: params.OldString,
-		NewString: params.NewString,
+		Path:       params.Path,
+		OldString:  params.OldString,
+		NewString:  params.NewString,
+		ReplaceAll: params.ReplaceAll,
 	}
 
 	resp, err := bundle.Sandbox.Edit(ctx, req)
@@ -67,8 +76,9 @@ func (h *Handlers) Edit(ctx context.Context, params EditParams) (_ *EditResponse
 	})
 
 	return &EditResponse{
-		Success: resp.Success,
-		Summary: resp.Summary,
+		Success:      resp.Success,
+		Summary:      resp.Summary,
+		Replacements: resp.Replacements,
 	}, nil
 }
 

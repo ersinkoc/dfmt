@@ -902,15 +902,25 @@ func formatEventData(data map[string]any) string {
 		return " " + strings.Join(parts, " ")
 	}
 
-	// Default: use first few keys as summary
-	var keys []string
-	for k := range data {
-		keys = append(keys, k)
-	}
+	// Default: a few key=value pairs, in a DETERMINISTIC order.
+	//
+	// This loop used to iterate the map directly, so which three keys made
+	// it into a recall line — and in what order — changed between calls on
+	// identical data. Two costs, one of them specific to what this snapshot
+	// is for: the output could not be diffed across sessions, and because
+	// the snapshot is fed back to an agent as context, a reshuffled prefix
+	// invalidates its prompt cache on every recall. A context-discipline
+	// tool paying that tax on its own output is backwards.
+	//
+	// Ordering is by informativeness first, then alphabetical. Plain
+	// alphabetical alone would have been deterministic but worse: for a
+	// tool.exec event the keys are code/duration/exit/raw_bytes/…, so
+	// `message` — the thing a human or an agent actually reads — sorts last
+	// and fell off the three-key budget.
+	keys := orderedEventDataKeys(data)
 	if len(keys) == 0 {
 		return ""
 	}
-	// Show up to 3 key=value pairs
 	summary := ""
 	for i := 0; i < len(keys) && i < 3; i++ {
 		if summary != "" {
@@ -922,6 +932,37 @@ func formatEventData(data map[string]any) string {
 		summary += " ..."
 	}
 	return " " + summary
+}
+
+// eventDataPreferredKeys are surfaced ahead of everything else when a recall
+// line has room for only a few fields. They are the ones that identify WHAT
+// an event was about; the rest (byte counts, durations, exit codes) describe
+// how it went and are recoverable from the journal when needed.
+var eventDataPreferredKeys = []string{"message", "subject", "path", "code", "intent", "error", "pattern", "url"}
+
+// orderedEventDataKeys returns data's keys with the preferred ones first (in
+// the order declared above) and the remainder sorted alphabetically, so the
+// same event always renders the same way.
+func orderedEventDataKeys(data map[string]any) []string {
+	if len(data) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(data))
+	seen := make(map[string]struct{}, len(data))
+	for _, k := range eventDataPreferredKeys {
+		if _, ok := data[k]; ok {
+			keys = append(keys, k)
+			seen[k] = struct{}{}
+		}
+	}
+	rest := make([]string, 0, len(data))
+	for k := range data {
+		if _, dup := seen[k]; !dup {
+			rest = append(rest, k)
+		}
+	}
+	sort.Strings(rest)
+	return append(keys, rest...)
 }
 
 // getInt extracts an integer from a map[string]any.

@@ -156,12 +156,20 @@ type EditReq struct {
 	Path      string `json:"path"`       // File path
 	OldString string `json:"old_string"` // String to replace
 	NewString string `json:"new_string"` // Replacement string
+	// ReplaceAll opts into replacing every occurrence. Without it an
+	// OldString that appears more than once is refused — see Edit for why
+	// "replace the first one" is the wrong default.
+	ReplaceAll bool `json:"replace_all,omitempty"`
 }
 
 // EditResp is the response from an edit operation.
 type EditResp struct {
 	Success bool   `json:"success"`
 	Summary string `json:"summary"`
+	// Replacements is how many occurrences were rewritten. Always 1 unless
+	// ReplaceAll was set; surfaced so a caller can tell a broad replace_all
+	// from the single edit it may have expected.
+	Replacements int `json:"replacements,omitempty"`
 }
 
 // WriteReq is a request to write a file.
@@ -181,6 +189,20 @@ const DefaultExecTimeout = 60 * time.Second
 
 // MaxExecTimeout is the maximum allowed execution timeout.
 const MaxExecTimeout = 300 * time.Second
+
+// execWaitDelay is how long Wait may keep blocking after the deadline has
+// fired and the process tree has been killed. It exists for the descendant
+// that survives the kill — a process in another session, or one wedged in
+// uninterruptible I/O — because such a descendant still holds the inherited
+// stdout pipe, and an unbounded Wait would sit on it for as long as that
+// process lives. Past this grace period os/exec closes the pipes and Wait
+// returns exec.ErrWaitDelay, so the caller gets its partial output and its
+// timed_out verdict on schedule.
+//
+// 2s is generous for "did the kill land": a tree that has been SIGKILLed or
+// TerminateProcess'd closes its handles in milliseconds. The cost of the
+// window is only paid on the timeout path.
+const execWaitDelay = 2 * time.Second
 
 // DefaultFetchTimeout is the default HTTP fetch timeout when the caller
 // does not supply one (the inner sandbox Fetch also defaults to 30s).

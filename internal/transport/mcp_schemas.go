@@ -310,11 +310,16 @@ func schemaEdit() MCPTool {
 				},
 				"old_string": map[string]any{
 					"type":        "string",
-					"description": "The exact string to replace",
+					"description": "The exact string to replace. Must be unique in the file unless replace_all is set.",
 				},
 				"new_string": map[string]any{
 					"type":        "string",
 					"description": "The replacement string",
+				},
+				"replace_all": map[string]any{
+					"type":        "boolean",
+					"description": "Replace all occurrences.",
+					"default":     false,
 				},
 			},
 			"required": []string{"path", "old_string", "new_string"},

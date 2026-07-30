@@ -27,6 +27,75 @@ Internal package shapes (`internal/...`) are NOT covered by SemVer.
 
 ## [Unreleased]
 
+A full read-through of the code base. Seven fixes; the first four are
+the same failure shape as 0.7.3's — a control that existed, looked
+implemented, and did not hold, with no error anywhere to notice it by.
+See [ADR-0023](docs/adr/0023-real-deadlines-concurrent-proxy-and-rpc-auth.md).
+
+### Fixed
+
+- **`dfmt_exec`'s timeout stopped nothing.** `exec.CommandContext`
+  kills the process it started; `bash -c "a; b"` forks, so the
+  grandchild survived the deadline and kept the inherited stdout pipe
+  open, leaving the read blocked until the command finished on its
+  own. Measured with `Timeout: 3s`: returned at **20.7 s**,
+  `timed_out=false`, and the output printed before the kill was
+  discarded. The deadline now kills the whole process tree (`Setpgid`
+  + `kill(-pgid)` on Unix, `taskkill /T /F` on Windows), `WaitDelay`
+  bounds `Wait` afterwards, partial output survives, and `timed_out`
+  is finally set — it had been `false` on every call ever made.
+
+- **Every tool call was capped at 30 seconds by the HTTP server.**
+  `WriteTimeout` is absolute from request-header time, so it bounded
+  handler duration regardless of the timeout the agent asked for
+  (`dfmt_exec` advertises 60 s by default, 300 s max). `sleep 25`
+  returned; `sleep 45` died with a bare `EOF` while the command kept
+  running server-side. DFMT could not run its own ~9-minute test suite
+  through the tool meant to replace `Bash`. The same deadline killed
+  the dashboard's SSE stream every 30 seconds.
+
+- **`dfmt_glob` did not recurse.** `filepath.Glob` has no `**` — the
+  second star adds nothing to `filepath.Match` — so `**/*.go` matched
+  exactly one level of depth and returned **2 of this repo's 278 Go
+  files**, silently, while the tool schema advertised that very
+  pattern. Recursive patterns now walk with doublestar semantics
+  (`**/` is zero-or-more segments, so root-level files match);
+  non-`**` patterns keep the stdlib path unchanged.
+
+- **`dfmt_edit` silently edited the first of N matches.** The
+  implementation was `strings.Replace(..., 1)`, and the anchors an
+  agent picks — an error string, a field name, a repeated call — are
+  exactly the text that repeats. An `old_string` that is not unique is
+  now refused with its occurrence count; `replace_all` opts into a
+  sweep and the response reports `replacements`.
+
+- **One slow tool call froze the whole MCP session.** The stdio loop
+  was `read → handle → write`, one request at a time; a `dfmt_read`
+  was observed waiting more than two minutes behind a running
+  `go test`. Requests are still read serially but dispatched to a
+  bounded worker pool with a mutex-guarded writer.
+
+- **The RPC endpoint never checked the token it minted.** The daemon
+  generated a 32-byte bearer token, wrote an *empty* string into the
+  port file, and ignored the `Authorization` header its own clients
+  were sending. On Windows the transport is loopback TCP with no ACL,
+  so `/` — exec, write, edit, fetch — was reachable by any process on
+  the host. The token is now published in the 0600 port file and
+  verified in constant time on `/`. The dashboard and read-only `/api`
+  endpoints are unchanged (a browser has no token to present).
+
+- **Smaller correctness fixes.** Recall lines rendered event fields in
+  map-iteration order, so identical data produced different output on
+  every call — undiffable, and it invalidated the agent's prompt cache
+  on a tool whose entire job is context economy; ordering is now
+  deterministic and prefers identifying fields (`message`, `path`)
+  over byte counts. A failed journal rotation left the file handle
+  closed, so every later append failed until the daemon restarted; it
+  now reopens. UTF-16 surrogate pairs (emoji, astral-plane CJK) from a
+  Windows shell were encoded as CESU-8 and arrived as replacement
+  characters. A truncated journal read no longer ends the stream
+  silently.
+
 ## [0.7.3] — 2026-07-30
 
 Four fixes. Two of them made a tool return confident, well-formed,
