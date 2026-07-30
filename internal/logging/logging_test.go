@@ -374,3 +374,16 @@ func TestConfigStruct(t *testing.T) {
 		t.Errorf("Output = %s, want 'stdout'", cfg.Output)
 	}
 }
+
+// EnvSet reports whether DFMT_LOG was set at process start. It gates
+// whether the daemon honours an explicit log level or falls back to its
+// default, and was uncovered.
+func TestEnvSetAnswers(t *testing.T) {
+	// The value depends on the ambient environment at package init, so the
+	// contract under test is that it answers without panicking and is
+	// stable within a run.
+	first := EnvSet()
+	if second := EnvSet(); first != second {
+		t.Errorf("EnvSet() changed within a run: %v -> %v", first, second)
+	}
+}

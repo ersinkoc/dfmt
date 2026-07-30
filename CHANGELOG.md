@@ -27,6 +27,141 @@ Internal package shapes (`internal/...`) are NOT covered by SemVer.
 
 ## [Unreleased]
 
+## [0.7.3] — 2026-07-30
+
+Four fixes. Two of them made a tool return confident, well-formed,
+useless output rather than an error — which is why they survived so
+long: nothing looked broken from the outside.
+
+### Fixed
+
+- **`dfmt_grep` searched build output and could not find code.** The
+  walker was a bare `filepath.WalkDir` with no exclusions of any kind —
+  no VCS skip, no build-output skip, no binary detection. On dfmt's own
+  repo (130 MB, of which **98 MB is `dist/`**: eight cross-compiled
+  release binaries, plus 14 MB of `.git`) that inverted the entire point
+  of the project. Measured before the fix:
+
+  | pattern | where the 100 match slots went |
+  |---|---|
+  | `runtime` | **58 to `dist/dfmt.exe`**, 2 to `.git/objects/pack/*.pack`, **0 to `internal/` or `cmd/`** |
+  | `error` | 10 to `.git/hooks/fsmonitor-watchman.sample`, 0 to `internal/` |
+
+  `WalkDir` is lexical, so `dist` is reached before `docs` and
+  `internal`: build output claimed the match cap before the walker ever
+  saw source. The agent paid twice — once for a compiled binary's string
+  table at ~55 approximated tokens per line (against ~22 for a source
+  line; `ApproxTokens` charges one token per non-ASCII rune), and again
+  when it got no usable signal and fell back to native grep for the same
+  search.
+
+  Grep also matched **its own journal**: a search for a nonexistent
+  token returned exactly one hit — the previous grep's query, recorded
+  in `.dfmt/journal.jsonl` moments earlier. The journal grows with every
+  call, so that was a feedback loop.
+
+  Two exclusions now apply, both O(1) per entry:
+
+  - **Directory pruning by basename** (`fs.SkipDir`, so a pruned subtree
+    is never stat'ed): VCS, build output, dependency trees, tool caches,
+    editor state, and `.dfmt` itself. Never applied to the search root,
+    so `path: "dist"` still searches `dist`.
+  - **Binary detection from a 512-byte prefix**, reusing `detectBinary`
+    so the walker and the output pipeline share one definition of
+    "binary". Unconditional, since an executable's string table is
+    unusable however explicitly it was requested. This also removed a
+    pathological read: `grepFileLines` slurps whole files, so each 13 MB
+    artifact meant a 13 MB allocation plus a `strings.Split` over it.
+
+  Plus an 8 MiB per-file cap for large *text* (logs, generated dumps)
+  that binary sniffing passes.
+
+  Measured after, same four patterns: **23% fewer tokens overall, 43% on
+  `runtime`**, and 62 garbage lines → 0. The percentage understates it —
+  the point is that `runtime` now returns `internal/osutil/os.go` and
+  `internal/config/config.go` instead of a binary's string table. One
+  pattern (`error`) went *up* 50 tokens, because the excluded `.git/hooks`
+  matches were replaced by real documentation matches.
+
+  Exclusions are reported in the result summary (`(skipped 4 ignored
+  dirs, 2 binary)`) rather than applied silently — an unreported skip is
+  indistinguishable from "no matches there", which is precisely how this
+  hid for so long. The note costs nothing when nothing was skipped.
+
+  `dfmt_glob` had the same hole on a separate code path (it filters
+  `filepath.Glob` output rather than walking) and got the same
+  exclusions, including in its intent-matching read loop, which was
+  feeding binary bodies through `MatchContent`.
+
+  The skip list is a hardcoded basename set mirroring the ignore list
+  already shipped for the fs watcher (`capture.fs.ignore`) — the same
+  knowledge, never wired to the walkers. Honoring `.gitignore` instead is
+  the principled version and is now tracked on the roadmap; it needs an
+  in-tree matcher and its own ADR.
+
+- **The `SessionStart` hook failed on every session start on Windows.**
+  `dfmt init` branched on `GOOS` and wrote a PowerShell body —
+  `if (Test-Path .dfmt/last-recall.md) { Write-Host …; Get-Content … }` —
+  into `.claude/settings.json`. But Claude Code does not hand hook bodies
+  to the host shell; it runs them through bash (`/usr/bin/bash -c`, the
+  bundled Git Bash on Windows). So the body was a syntax error, not a
+  portability win, and every new conversation opened with
+
+  ```
+  SessionStart:startup hook error [if (Test-Path .dfmt/last-recall.md) …]:
+  /usr/bin/bash: -c: line 1: syntax error near unexpected token `('
+  ```
+
+  The hook's whole job is to prepend the previous session's snapshot, so
+  Windows users silently lost cross-session recall — the `PreCompact` half
+  kept writing `.dfmt/last-recall.md`, and nothing ever read it back.
+
+  All hook bodies are now POSIX shell on every platform. The POSIX form
+  already worked on Windows; only the PowerShell branch was ever broken.
+
+- **Upgrading did not repair an affected config.** `mergeClaudeHook` is
+  keyed on the exact command string, so a re-run of `dfmt init` / `dfmt
+  setup` on a machine carrying the PowerShell body left it in place and
+  registered the POSIX one *beside* it — two `SessionStart` entries, one
+  of which still errored. A new legacy kind (`LegacyPowerShellHook`)
+  purges the fossil, dropping a group left with no hooks and an event left
+  with no groups so upgrades stop accumulating dead scaffolding. Detection
+  is anchored on dfmt's own `last-recall.md` artifact, so a hand-written
+  user hook that happens to call `Test-Path` is untouched. Picked up
+  automatically by `dfmt init`, `dfmt setup --clean`, and `dfmt
+  quickstart`, for both the project and user-scope settings files.
+
+- **Every non-ASCII Latin-1 character came back as `�`.** The UTF-16LE
+  decoder used by the Windows exec path took `hi == 0` to mean "ASCII"
+  and wrote the low byte through untouched. That is only true below
+  `0x80`: for U+0080–U+00FF the branch emitted a raw byte that is not
+  valid UTF-8, and `encoding/json` then replaced it with U+FFFD on the
+  way to the agent. So `ç ö ü ş ğ é ñ` — every accented character in
+  Turkish, and much of Western European text — arrived mangled from a
+  Windows Git Bash. The general branch below already handled these
+  correctly; the fast path was simply wrong about its own precondition.
+  Now gated on `hi == 0 && lo < 0x80`.
+
+- **`dfmt setup` wrote an impossible binary path on WSL.**
+  `wslPathToWindowsPath` sliced with `p[5:]` to strip `/mnt/c`, which is
+  six characters — so the drive letter survived and `/mnt/c/Users/foo`
+  became `C:c\Users\foo`. That value went into every agent's MCP config
+  whenever the dfmt binary lived on a Windows drive, so the agent could
+  not launch dfmt at all. Also generalized past the hardcoded `c`: a
+  binary on `/mnt/d` used to fall through and be returned as an
+  unconverted Unix path, failing the same way but more quietly. The
+  drive letter must now be its own path segment, so `/mnt/c` and
+  `/mnt/c/...` convert while `/mnt/config` is left alone.
+
+### Internal
+
+- Coverage tests for previously unexercised paths in `internal/client`
+  (RPC surface), `internal/sandbox`, `internal/capture` (fs watcher
+  units), `internal/cli` (Windows detach, reconnect errors),
+  `internal/config` (save), `internal/project` (identity paths) and
+  `internal/setup` (project init, WSL path conversion). No behavior
+  change.
+
 ## [0.7.2] — 2026-07-29
 
 Findings from a full-project scan. Both fixes address failures that were

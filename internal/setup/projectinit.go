@@ -9,7 +9,6 @@ import (
 
 	"github.com/ersinkoc/dfmt/internal/config"
 	"github.com/ersinkoc/dfmt/internal/logging"
-	"github.com/ersinkoc/dfmt/internal/osutil"
 	"github.com/ersinkoc/dfmt/internal/project"
 	"github.com/ersinkoc/dfmt/internal/safefs"
 )
@@ -155,12 +154,18 @@ func writeProjectClaudeSettings(dir string) error {
 	}
 
 	preCompact := `dfmt recall --save --format md`
-	var sessionStart string
-	if osutil.IsWindows() {
-		sessionStart = `if (Test-Path .dfmt/last-recall.md) { Write-Host '--- Previous session summary ---'; Get-Content .dfmt/last-recall.md; Write-Host '--- End of previous session ---' }`
-	} else {
-		sessionStart = `if [ -f .dfmt/last-recall.md ]; then echo '--- Previous session summary ---' && cat .dfmt/last-recall.md && echo '--- End of previous session ---'; fi`
-	}
+	// POSIX shell on every platform, Windows included. Claude Code does not
+	// hand hook bodies to the host shell -- it runs them through bash
+	// (`/usr/bin/bash -c` from the bundled Git Bash on Windows), so a
+	// PowerShell body is a syntax error there, not a portability win. dfmt
+	// branched on GOOS here through v0.7.2 and every Windows session start
+	// failed the hook; purgePowerShellHooks migrates those configs.
+	sessionStart := `if [ -f .dfmt/last-recall.md ]; then echo '--- Previous session summary ---' && cat .dfmt/last-recall.md && echo '--- End of previous session ---'; fi`
+	// Strip the fossil first: mergeClaudeHook is keyed on the exact command
+	// string, so without this an upgraded Windows install keeps the broken
+	// PowerShell entry and gains the POSIX one beside it -- the hook error
+	// survives the upgrade.
+	purgePowerShellHooks(cfg)
 	mergeClaudeHook(cfg, "PreCompact", preCompact, 30, "Saving session snapshot for next session...")
 	mergeClaudeHook(cfg, "SessionStart", sessionStart, 10, "Loading previous session summary...")
 	mergeClaudeHookWithMatcher(cfg, "PreToolUse", `dfmt hook claude-code pretooluse`, "Bash|Read|WebFetch|Grep|Task|Edit|Write|Glob", 5, "Routing through dfmt for token savings...")

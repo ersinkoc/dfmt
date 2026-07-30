@@ -57,6 +57,7 @@ func (s *SandboxImpl) Glob(ctx context.Context, req GlobReq) (GlobResp, error) {
 	// Filtering is silent: callers are not told *which* paths were withheld,
 	// only that the result list is shorter than a raw glob would produce.
 	var files []string
+	var skipped walkSkipStats
 	for _, m := range matches {
 		fi, err := os.Stat(m)
 		if err != nil {
@@ -69,6 +70,14 @@ func (s *SandboxImpl) Glob(ctx context.Context, req GlobReq) (GlobResp, error) {
 			continue
 		}
 		relPath, _ := filepath.Rel(absWd, m)
+		// Same exclusions as Grep: without them a `**/*` glob spends
+		// its 500-path cap on node_modules and build output. Skipped
+		// only when the caller's own pattern does not name the
+		// directory — `dist/*` still returns dist.
+		if pathHasSkippedDir(relPath, req.Pattern) {
+			skipped.dirs++
+			continue
+		}
 		files = append(files, relPath)
 	}
 
@@ -89,6 +98,13 @@ func (s *SandboxImpl) Glob(ctx context.Context, req GlobReq) (GlobResp, error) {
 			// check inline; safefs.EnsureResolvedUnder keeps Glob's
 			// intent-content path on the same boundary.
 			if _, sym := safefs.EnsureResolvedUnder(fullPath, absWd); sym != nil {
+				continue
+			}
+			// Binary bodies would come back through MatchContent as
+			// ContentMatch lines — the same high-entropy garbage the
+			// Grep walker was emitting, on a path that bypasses it.
+			if isBinaryPath(fullPath) {
+				skipped.binary++
 				continue
 			}
 			data, err := os.ReadFile(fullPath)
@@ -127,6 +143,11 @@ func (s *SandboxImpl) Glob(ctx context.Context, req GlobReq) (GlobResp, error) {
 		resp.Matches = append(resp.Matches, ContentMatch{
 			Text: fmt.Sprintf("(truncated: %d more files not shown; refine pattern)", totalFiles-maxGlobInlineFiles),
 		})
+	}
+	// Same honesty rule as Grep: an unreported exclusion is
+	// indistinguishable from a file that does not exist.
+	if note := skipped.note(); note != "" {
+		resp.Matches = append(resp.Matches, ContentMatch{Text: note})
 	}
 	return resp, nil
 }
@@ -283,6 +304,7 @@ func (s *SandboxImpl) Grep(ctx context.Context, req GrepReq) (GrepResp, error) {
 	const grepMatchCap = 100
 	var grepMatches []GrepMatch
 	totalFiles := 0
+	var skipped walkSkipStats
 	walkErr := filepath.WalkDir(searchRoot, func(path string, d fs.DirEntry, werr error) error {
 		if werr != nil {
 			return nil
@@ -291,6 +313,16 @@ func (s *SandboxImpl) Grep(ctx context.Context, req GrepReq) (GrepResp, error) {
 			return filepath.SkipAll
 		}
 		if d.IsDir() {
+			// Prune build output, VCS internals, dependency trees and
+			// dfmt's own state. This is what keeps the match cap for
+			// source: WalkDir is lexical, so without pruning, `dist`
+			// is reached before `internal` and claims the budget.
+			// The search root itself is never pruned — an agent that
+			// asked for path:"dist" gets dist.
+			if path != searchRoot && shouldSkipDir(d.Name()) {
+				skipped.dirs++
+				return filepath.SkipDir
+			}
 			return nil
 		}
 		// Lexical containment: refuse paths whose textual form escapes
@@ -308,6 +340,20 @@ func (s *SandboxImpl) Grep(ctx context.Context, req GrepReq) (GrepResp, error) {
 			if ok, _ := filepath.Match(req.Files, d.Name()); !ok {
 				return nil
 			}
+		}
+		// Content-sniffed exclusions, applied after the cheap filters
+		// above so we only pay a stat/open for files we would scan.
+		// Both are unconditional — a matched line from inside an
+		// executable is unusable to the agent and costs ~2.5x a source
+		// line in tokens, so honoring an explicit path:"dist" by
+		// dumping its string table would serve nobody.
+		if info, ierr := d.Info(); ierr == nil && info.Size() > maxGrepFileBytes {
+			skipped.large++
+			return nil
+		}
+		if isBinaryPath(path) {
+			skipped.binary++
+			return nil
 		}
 		fileMatches, ok := grepFileLines(s, pattern, path, rel, absWd, grepMatchCap-len(grepMatches))
 		if !ok {
@@ -327,6 +373,11 @@ func (s *SandboxImpl) Grep(ctx context.Context, req GrepReq) (GrepResp, error) {
 	summary := fmt.Sprintf("Found %d matches in %d files", len(grepMatches), totalFiles)
 	grepMatches, suffix := filterMatchesByIntent(grepMatches, req.Intent)
 	summary += suffix
+	// Name the exclusions. A skip the agent cannot see reads exactly
+	// like "no matches here", which is how build output masqueraded as
+	// an empty source tree. Costs a handful of tokens, and only when
+	// something was actually skipped.
+	summary += skipped.note()
 	return GrepResp{Matches: grepMatches, Summary: summary}, nil
 }
 

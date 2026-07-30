@@ -51,6 +51,15 @@ const (
 	// flagged but NOT auto-deleted -- a user might still want them to
 	// restore from. Callers can choose to remove them after confirming.
 	LegacyOrphanBackup LegacyKind = "orphan_backup"
+
+	// LegacyPowerShellHook: a SessionStart hook body written in PowerShell
+	// syntax. Pre-v0.7.3 dfmt branched on runtime.GOOS and emitted
+	// `if (Test-Path .dfmt/last-recall.md) { ... }` on Windows -- but
+	// Claude Code executes every hook command through bash (`/usr/bin/bash
+	// -c`) on all platforms, so that body is a syntax error and the hook
+	// fails on every session start. The POSIX form works everywhere,
+	// including Windows, so the PowerShell variant is always a fossil.
+	LegacyPowerShellHook LegacyKind = "powershell_hook"
 )
 
 // LegacyEntry describes one fossil that PurgeLegacyClaudeSettings will
@@ -112,6 +121,17 @@ var dottedMCPPermPattern = regexp.MustCompile(`^mcp__dfmt__dfmt\.[a-z]+$`)
 // the regex requires the dfmt binary to be the leading executable token.
 var dfmtHookCmdPattern = regexp.MustCompile(
 	`(?i)(^|[/\\])(dfmt|dfmt\.exe)(\s+(hook|recall|capture|exec|read|fetch))`,
+)
+
+// powershellRecallHookPattern matches the PowerShell-syntax SessionStart
+// body dfmt wrote on Windows before v0.7.3. Matching on the cmdlet plus
+// the snapshot filename (rather than the exact historical string) catches
+// every past spelling -- quoting and the Write-Host wording drifted across
+// releases, but `Test-Path` against `last-recall.md` did not. Anchored on
+// dfmt's own artifact so a hand-written user hook that merely happens to
+// call Test-Path is never touched.
+var powershellRecallHookPattern = regexp.MustCompile(
+	`(?i)Test-Path\s+["']?[^"'\s]*last-recall\.md`,
 )
 
 // CleanLegacyClaudeSettings parses a Claude settings.json and reports
@@ -193,6 +213,13 @@ func PurgeLegacyClaudeSettings(path, resolveDFMTCommand string) (PurgeReport, er
 			// may want to restore from one. Caller can sweep them with a
 			// separate explicit step.
 			report.Skipped = append(report.Skipped, e)
+		case LegacyPowerShellHook:
+			if applied := purgePowerShellHooks(cfg); applied {
+				report.Removed = append(report.Removed, e)
+				mutated = true
+			} else {
+				report.Skipped = append(report.Skipped, e)
+			}
 		}
 	}
 
@@ -278,7 +305,56 @@ func detectLegacy(path string, cfg map[string]any, resolveDFMTCommand string) []
 		entries = append(entries, hookEntries...)
 	}
 
+	// 4. PowerShell-bodied hooks. Deliberately LAST: this is the only kind
+	// whose purge *deletes* hook entries, which shifts the slice indices
+	// that the location-keyed purges above (repointHookCommand,
+	// expandHookMatcher) resolve against. Detecting it last means those
+	// have already been applied by the time the sweep runs.
+	if locs := findPowerShellHooks(cfg); len(locs) > 0 {
+		entries = append(entries, LegacyEntry{
+			Kind:     LegacyPowerShellHook,
+			Path:     path,
+			Location: strings.Join(locs, ", "),
+			Detail: "PowerShell-syntax hook body; Claude Code runs hooks through bash " +
+				"on every platform, so this fails with a bash syntax error each session",
+		})
+	}
+
 	return entries
+}
+
+// findPowerShellHooks returns the locations of every hook entry whose
+// command is the pre-v0.7.3 PowerShell recall body. One entry per hook,
+// in stable event/group/hook order.
+func findPowerShellHooks(cfg map[string]any) []string {
+	hooks, _ := cfg["hooks"].(map[string]any)
+	if hooks == nil {
+		return nil
+	}
+	var locs []string
+	// Fixed event order rather than map iteration: the Location string ends
+	// up in operator output and test assertions.
+	for _, eventName := range []string{hookEventPreToolUse, "PreCompact", "SessionStart"} {
+		groups, _ := hooks[eventName].([]any)
+		for gi, g := range groups {
+			grp, _ := g.(map[string]any)
+			if grp == nil {
+				continue
+			}
+			inner, _ := grp["hooks"].([]any)
+			for hi, h := range inner {
+				hc, _ := h.(map[string]any)
+				if hc == nil {
+					continue
+				}
+				cmd, _ := hc["command"].(string)
+				if powershellRecallHookPattern.MatchString(cmd) {
+					locs = append(locs, fmt.Sprintf("hooks.%s[%d].hooks[%d]", eventName, gi, hi))
+				}
+			}
+		}
+	}
+	return locs
 }
 
 // hasDenyTriplet returns true when permissions.deny contains all three
@@ -484,6 +560,68 @@ func purgeDenyTriplet(cfg map[string]any) bool {
 		perms["deny"] = pruned
 	}
 	cfg["permissions"] = perms
+	return true
+}
+
+// purgePowerShellHooks deletes every hook entry whose command is the
+// pre-v0.7.3 PowerShell recall body, in one sweep. A group left with no
+// hooks is dropped, and an event left with no groups is removed entirely,
+// so the file does not accumulate empty scaffolding across upgrades.
+//
+// Sweep-all rather than location-keyed (unlike repointHookCommand): this
+// is the only purge that shortens the hook slices, and applying it once
+// for the whole cfg keeps every index it might invalidate out of play.
+func purgePowerShellHooks(cfg map[string]any) bool {
+	hooks, _ := cfg["hooks"].(map[string]any)
+	if hooks == nil {
+		return false
+	}
+	changed := false
+	for _, eventName := range []string{hookEventPreToolUse, "PreCompact", "SessionStart"} {
+		groups, _ := hooks[eventName].([]any)
+		if len(groups) == 0 {
+			continue
+		}
+		keptGroups := make([]any, 0, len(groups))
+		for _, g := range groups {
+			grp, _ := g.(map[string]any)
+			if grp == nil {
+				keptGroups = append(keptGroups, g)
+				continue
+			}
+			inner, _ := grp["hooks"].([]any)
+			keptHooks := make([]any, 0, len(inner))
+			for _, h := range inner {
+				hc, _ := h.(map[string]any)
+				if hc != nil {
+					if cmd, _ := hc["command"].(string); powershellRecallHookPattern.MatchString(cmd) {
+						changed = true
+						continue
+					}
+				}
+				keptHooks = append(keptHooks, h)
+			}
+			if len(keptHooks) == 0 {
+				// Whole group was the fossil -- drop the group too.
+				continue
+			}
+			grp["hooks"] = keptHooks
+			keptGroups = append(keptGroups, grp)
+		}
+		if len(keptGroups) == 0 {
+			delete(hooks, eventName)
+			continue
+		}
+		hooks[eventName] = keptGroups
+	}
+	if !changed {
+		return false
+	}
+	if len(hooks) == 0 {
+		delete(cfg, "hooks")
+	} else {
+		cfg["hooks"] = hooks
+	}
 	return true
 }
 

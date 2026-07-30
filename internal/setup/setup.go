@@ -117,9 +117,25 @@ func wslPathToWindowsPath(p string) string {
 			return "C:\\Users\\" + user + winRemainder
 		}
 	}
-	// /mnt/c/... -> C:\...
-	if strings.HasPrefix(p, "/mnt/c") {
-		return "C:" + strings.ReplaceAll(p[5:], "/", "\\")
+	// /mnt/<drive>/... -> <DRIVE>:\...
+	//
+	// The slice index was off by one: "/mnt/c" is six characters, so p[5:]
+	// kept the drive letter and produced "C:c\Users\foo" — a path that
+	// cannot exist. On WSL this is what `dfmt setup` wrote into every agent
+	// MCP config whenever the binary lived on a Windows drive, so the agent
+	// could not launch dfmt at all.
+	//
+	// Also generalized past the hardcoded "c": a binary on /mnt/d used to
+	// fall through and be returned as an unconverted Unix path, which fails
+	// the same way, just more quietly.
+	if rest, ok := strings.CutPrefix(p, "/mnt/"); ok && len(rest) >= 1 {
+		drive := rest[0]
+		isDrive := (drive >= 'a' && drive <= 'z') || (drive >= 'A' && drive <= 'Z')
+		// The drive letter must be its own path segment: /mnt/c and
+		// /mnt/c/... convert, /mnt/config does not.
+		if isDrive && (len(rest) == 1 || rest[1] == '/') {
+			return strings.ToUpper(string(drive)) + ":" + strings.ReplaceAll(rest[1:], "/", "\\")
+		}
 	}
 	// already a Windows path or can't convert
 	return p

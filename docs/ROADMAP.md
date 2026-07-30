@@ -118,6 +118,34 @@ The CLAUDE.md / AGENTS.md targets drifted out of compliance:
 - [ ] **`logging.format`**: validated to only "text"; the
   JSON output path doesn't exist. ADR-or-implement.
 
+### Traversal exclusions — make them principled
+
+v0.7.3 gave the Grep/Glob walkers a hardcoded basename skip
+list (`defaultSkipDirs` in `internal/sandbox/walkskip.go`)
+after build output was found eating the match cap. That fixed
+the bleeding but it is a curated guess, not a contract:
+
+- [ ] **Honor `.gitignore`.** The repo already knows what is
+  not source; a skip list re-states it by hand and drifts from
+  it. Needs an in-tree matcher (stdlib-only — no
+  `go-gitignore`), so it needs an ADR. Non-trivial: nested
+  ignore files, negation (`!`), directory-vs-file semantics,
+  and the walker must stay O(1) per directory or it trades one
+  cost for another.
+- [ ] **Make the list configurable.** A `sandbox.exclude` key,
+  merged with (not replacing) the defaults. Note
+  `capture.fs.ignore` already exists for the fs watcher and
+  holds the same knowledge in glob form — decide whether these
+  converge on one setting or stay deliberately separate before
+  adding a second knob. See ADR-0015 on config consolidation.
+- [ ] **Reconsider `out`, `obj`, `target`, `build`.** These are
+  build output in most ecosystems but plausible source
+  directories in some. Excluding them by basename is a guess
+  that `.gitignore` support would settle correctly. (`bin` was
+  left OUT of the defaults for exactly this reason — too many
+  projects keep committed scripts there — which is itself an
+  inconsistency the guess forces on us.)
+
 ## v1.0.0 — Stability commitment
 
 The promise: **SemVer guarantees apply** to the wire surfaces

@@ -2196,14 +2196,23 @@ sequenceDiagram
     end
 ```
 
-The three hooks and their commands (templated by OS — POSIX shell
-on Unix/macOS, PowerShell on Windows):
+The three hooks and their commands. All bodies are **POSIX shell on
+every platform, Windows included** — Claude Code does not hand hook
+bodies to the host shell, it runs them through bash (`/usr/bin/bash -c`,
+from the bundled Git Bash on Windows). DFMT branched on `GOOS` here and
+emitted a PowerShell `SessionStart` body on Windows through v0.7.2,
+which failed with `bash: -c: line 1: syntax error near unexpected
+token '('` on every session start. `purgePowerShellHooks`
+(`internal/setup/legacy.go`, kind `LegacyPowerShellHook`) migrates
+affected configs — it has to, because `mergeClaudeHook` is keyed on the
+exact command string, so a plain re-run would leave the broken body in
+place and register the POSIX one beside it.
 
 | Hook | Command | Timeout |
 |------|---------|---------|
 | `PreToolUse` (matcher `""` — fires on every tool) | `dfmt capture tool` | 5 s |
 | `PreCompact` (fires before Claude Code compacts the conversation) | `dfmt recall --save --format md` | 30 s |
-| `SessionStart` (fires when the user opens a new conversation) | POSIX: `if [ -f .dfmt/last-recall.md ]; then echo '--- Previous session summary ---' && cat .dfmt/last-recall.md && echo '--- End of previous session ---'; fi` (PowerShell equivalent on Windows) | 10 s |
+| `SessionStart` (fires when the user opens a new conversation) | `if [ -f .dfmt/last-recall.md ]; then echo '--- Previous session summary ---' && cat .dfmt/last-recall.md && echo '--- End of previous session ---'; fi` | 10 s |
 
 The same `.claude/settings.json` carries DFMT's MCP allow-list
 (`mcp__dfmt__dfmt_exec` through `mcp__dfmt__dfmt_write`, 11 entries)
@@ -3196,6 +3205,8 @@ internal/
 │   ├── tokens.go            ApproxTokens — ascii/4 + non_ascii_runes (ADR-0012)
 │   ├── signals.go           kind-aware signal regexes (panic, FAIL, error:, …)
 │   ├── binary.go            CompactBinary — magic-number sniff + UTF-8 refusal
+│   ├── walkskip.go          Grep/Glob traversal exclusions — prune build output
+│   │                        and VCS dirs, skip binaries, report what was skipped
 │   ├── diff.go              CompactGitDiff — drop `index <hash>..<hash>` lines
 │   ├── stacktrace.go        CompactStackTracePaths — collapse repeated frame paths
 │   ├── structured.go        CompactStructured/CompactYAML/CompactMarkdownFrontmatter (ADR-0010)

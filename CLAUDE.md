@@ -106,6 +106,15 @@ Implements the seven tool primitives. Output is summarized, intent-matched again
 
 **Allow-rule contract** (V-20). Exec allow rules use the form `allow:exec:<base-cmd> *` — the trailing space + `*` is what makes the boundary the end-of-token. Without it, `allow:exec:git*` would also match `git-shell`, `git-receive-pack`, etc. Always include ` *` on exec allows.
 
+**Traversal exclusions** (`walkskip.go`). The Grep/Glob walkers prune build output, VCS internals, dependency trees, tool caches and `.dfmt` itself by directory basename, and skip binary files by sniffing a 512-byte prefix through `detectBinary` (one definition of "binary", shared with pipeline stage 1). Both are load-bearing, not tidiness: the walker was a bare `filepath.WalkDir` with no exclusions, and since `WalkDir` is lexical, `dist` was reached before `internal` — grepping `runtime` on this repo spent 58 of its 100 match slots inside `dist/dfmt.exe` and returned **nothing** from `internal/` or `cmd/`. Grep also matched its own `.dfmt/journal.jsonl`, which grows with every call.
+
+Two rules there:
+
+- **Directory pruning never applies to the search root.** `path: "dist"` means the agent asked for build output; the exclusions are a default, not a prohibition. Binary skipping *is* unconditional — an executable's string table is unusable however explicitly it was requested.
+- **Report the exclusions.** `walkSkipStats.note()` appends `(skipped N ignored dirs, M binary)` to the summary. A silent skip is indistinguishable from "no matches there", which is how this hid for so long. Do not "clean up" that note.
+
+The list is hardcoded basenames mirroring `capture.fs.ignore` (the fs watcher's ignore set — same knowledge, two consumers). Honoring `.gitignore` instead is the principled version; see `docs/ROADMAP.md`, and it needs an ADR.
+
 The sandbox runs an 8-stage **`NormalizeOutput` pipeline** before responses reach the policy filter (`internal/sandbox/intent.go`):
 
 1. **Binary refusal** (`binary.go`) — non-UTF-8 / magic-number-detected bodies (PNG, PDF, gzip, …) become a one-line `(binary; type=…; N bytes; sha256=…)` summary.

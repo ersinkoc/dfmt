@@ -514,8 +514,15 @@ func decodeUTF16LE(data []byte) string {
 	for i := 0; i+1 < len(data); i += 2 {
 		lo := data[i]
 		hi := data[i+1]
-		if hi == 0 {
-			// ASCII
+		if hi == 0 && lo < 0x80 {
+			// True ASCII: one byte in UTF-8 as well.
+			//
+			// The `lo < 0x80` half was missing, so this branch also caught
+			// U+0080–U+00FF and wrote the raw byte instead of encoding it.
+			// Every Latin-1 character — ç ö ü ş é ñ — came out as an invalid
+			// UTF-8 byte, which encoding/json then replaced with U+FFFD.
+			// Turkish output from a Windows Git Bash arrived mangled; the
+			// general path below already handled these correctly.
 			result.WriteByte(lo)
 		} else {
 			// UTF-16 code point - convert to UTF-8
