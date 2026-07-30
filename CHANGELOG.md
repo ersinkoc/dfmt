@@ -84,6 +84,44 @@ See [ADR-0023](docs/adr/0023-real-deadlines-concurrent-proxy-and-rpc-auth.md).
   verified in constant time on `/`. The dashboard and read-only `/api`
   endpoints are unchanged (a browser has no token to present).
 
+- **`dfmt_remember` wrote fine and retrieved badly.** The write path
+  was sound (journal + index + redaction + signature), but nothing
+  about retrieval favoured a deliberate note over the automatic tool
+  events around it — 193 of 202 events in this repo's own journal.
+  `SearchHit.Type` and `SearchHit.Source` were declared on the wire
+  struct and never assigned, so every hit arrived unlabelled; tool
+  events carried an excerpt of their own type name (`"tool.grep"`)
+  because only `data["path"]` was consulted; and a query for
+  `timeout` returned six tool events and *not* the note that
+  discusses timeouts at length, because BM25 length normalization
+  favours short documents and the corpus is almost entirely short
+  documents. Hits now carry type and source, excerpts fall back to
+  the command/pattern/URL the event recorded, and `dfmt_search`
+  accepts a `type` filter (`type: "note"` searches only your own
+  memories). The scoring itself is unchanged — the corpus is
+  lopsided, not the ranking — so the fix is to let the caller say
+  which corpus it means rather than to invent a weight.
+
+- **The tag vocabulary that governs retention was undocumented at the
+  point of use.** `summary`/`decision`/`strengths`/`ledger` elevate a
+  note to P2 and `audit`/`finding`/`followup`/`preserve` to P3, which
+  decides what survives a tight recall budget — but the `tags`
+  parameter said only "Tags for categorizing the event", and the tool
+  description advertised `dfmt_remember` as a token-telemetry
+  recorder. Both now say what they do, within the `tools/list` byte
+  budget.
+
+- **Recall labelled events with the wrong priority.** The tier came
+  from the classifier, the printed `[pN]` came from the stored value,
+  and `dfmt_remember` coerces every agent-written event to p3 — so a
+  note elevated to P2 by its tags rendered as `[p3]` sorted above
+  `[p2]` lines, which reads as a sorting bug and hides the one signal
+  the tag vocabulary exists to produce.
+
+- **`dfmt_remember` was missing from the tool-call metrics.** Every
+  other tool records duration and errors (ADR-0018); the hole was
+  exactly where session memory is written.
+
 - **Smaller correctness fixes.** Recall lines rendered event fields in
   map-iteration order, so identical data produced different output on
   every call — undiffable, and it invalidated the agent's prompt cache

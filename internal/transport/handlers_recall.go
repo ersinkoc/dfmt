@@ -73,8 +73,18 @@ func (h *Handlers) Recall(ctx context.Context, params RecallParams) (_ *RecallRe
 	var buckets [4][]core.Event
 
 	for e := range stream {
+		// Classification decides the tier, so it must also decide the label.
+		// The rendered line used to print e.Priority — the value stored at
+		// write time — while the bucket came from Classify. Those disagree
+		// by design: dfmt_remember coerces every agent-written event to p3
+		// (F-21), and the classifier then elevates a note tagged `summary`
+		// or `decision` to p2. The snapshot therefore showed a "p3" line
+		// sorted above "p2" lines, which reads as a sorting bug and hides
+		// the one signal the tag vocabulary exists to produce.
+		effective := classifier.Classify(e)
+		e.Priority = effective
 		var idx int
-		switch classifier.Classify(e) {
+		switch effective {
 		case core.PriP1:
 			idx = 0
 		case core.PriP2:
@@ -105,7 +115,7 @@ func (h *Handlers) Recall(ctx context.Context, params RecallParams) (_ *RecallRe
 	// surface newest-first — matching the previous sort.Slice
 	// "TS.After" tiebreak.
 	sorted := make([]core.Event, 0, len(buckets[0])+len(buckets[1])+len(buckets[2])+len(buckets[3]))
-	for tier := 0; tier < 4; tier++ {
+	for tier := range 4 {
 		bucket := buckets[tier]
 		for i := len(bucket) - 1; i >= 0; i-- {
 			sorted = append(sorted, bucket[i])

@@ -150,6 +150,18 @@ Five ingestion paths feed the journal: MCP calls (live), CLI commands like `dfmt
 
 `dfmt_recall` rebuilds a markdown snapshot under a byte budget. Per-tier streaming with FIFO eviction — lower-priority content drops first when the budget tightens. Path interning (Refs table at the top of the snapshot + `[rN]` token references in events, kicks in at ≥3 occurrences) lives in `internal/retrieve/render_md.go` and is wired for `format=json` and `format=xml`, which route through `retrieve.SnapshotBuilder`. The **default markdown path is not interned** — it builds its lines inline in `handlers_recall.go` and never reaches the renderer. Wiring markdown is tracked on the roadmap (see `docs/ROADMAP.md`).
 
+### Session memory retrieval (`dfmt_remember` → `dfmt_search` / `dfmt_recall`)
+
+Writing a memory was never the weak half; finding it again was. A journal is overwhelmingly automatic — 193 of 202 events on this repo were `tool.*` calls — and BM25 length-normalization favours those short documents over a long, information-dense note. Measured: a query for `timeout` returned six `tool.grep`/`tool.exec` hits and not the note that discussed timeouts at length.
+
+Three things follow from that, and they are the reason retrieval works now:
+
+- **Hits are labelled.** `SearchHit.Type`/`Source` are populated from `core.Index.meta` (a per-document `DocMeta`, non-persisted, rebuilt on load like excerpts). They were declared and never assigned, so a note looked exactly like the tool call beside it.
+- **`dfmt_search` takes a `type` filter.** `type: "note"` searches only what the agent deliberately recorded. Scoring is untouched: the corpus is lopsided, not the ranking, so the caller says which corpus it means instead of the code inventing a weight. Filtering happens after scoring, over-fetching `searchFilterOverFetch` candidates and capped at `searchFilterMaxCandidates`.
+- **Tags decide retention, so they are documented in the schema.** `summary`/`decision`/`strengths`/`ledger` → P2, `audit`/`finding`/`followup`/`preserve` → P3, everything else P4 (dropped first under budget). That vocabulary lives in `core.NewClassifier`'s seeded rules; the `tags` parameter description is the only place an agent can learn it.
+
+Note that `Recall` classifies each event (`classifier.Classify`) to pick its tier AND to label it. The stored `Priority` is not the effective one — `dfmt_remember` coerces every agent-written event to p3 (F-21) and the classifier re-elevates from tags — so rendering the stored value printed `[p3]` on lines sorted above `[p2]`.
+
 ### MCP required-argument validation (`internal/transport/params_validate.go`)
 
 Every tool schema declares a `required` list, but nothing enforced it: `decodeRequiredParams` rejects only a wholly **absent** `arguments` object, so an object that merely omits the required field decoded to a zero value and the tool ran on it. `dfmt_exec` with no `code` handed an empty string to the shell, which exits 0 in ~25 ms having printed nothing, and the caller got `{"exit":0,"duration_ms":25,"timed_out":false}` — a successful-looking result, indistinguishable from a real command that printed nothing. An agent guessing the wrong argument name (`command` for `code`, `file` for `path`) got silence instead of a correction, and retrying the same wrong name never revealed it.

@@ -35,7 +35,11 @@ type RememberResponse struct {
 }
 
 // Remember adds an event to the journal and index.
-func (h *Handlers) Remember(ctx context.Context, params RememberParams) (*RememberResponse, error) {
+func (h *Handlers) Remember(ctx context.Context, params RememberParams) (_ *RememberResponse, err error) {
+	// Every other tool records its call; Remember was the one that did not,
+	// so the duration histograms and error counters (ADR-0018) had a hole
+	// exactly where session memory is written.
+	defer recordToolCall("remember", ctx, &err, time.Now())
 	h.touch()
 	bundle, err := h.resolveBundle(ctx)
 	if err != nil {
@@ -141,6 +145,18 @@ type SearchParams struct {
 	Query     string `json:"query"`
 	Limit     int    `json:"limit,omitempty"`
 	Layer     string `json:"layer,omitempty"` // "bm25", "trigram", "fuzzy"
+	// Type restricts results to one event type ("note" for things recorded
+	// with dfmt_remember, "tool.exec" for command history, …).
+	//
+	// It exists because a journal is overwhelmingly automatic: 193 of 202
+	// events on this repo were tool.* calls, each a short document that
+	// BM25's length normalization favours over a long, information-dense
+	// note. Measured before this filter existed: a query for "timeout"
+	// against a journal whose single note discussed timeouts at length
+	// returned six tool.grep/tool.exec hits and not the note. The scoring
+	// is not wrong — the corpus is lopsided — so the fix is to let the
+	// caller say which corpus it means rather than to invent a weight.
+	Type string `json:"type,omitempty"`
 }
 
 // SearchResponse is the response for the Search method.
@@ -182,9 +198,19 @@ func (h *Handlers) Search(ctx context.Context, params SearchParams) (_ *SearchRe
 	var hits []core.ScoredHit
 	resolvedLayer := params.Layer
 
+	// With a type filter, ask the index for more candidates than the caller
+	// wants and drop the ones that do not match. Filtering after scoring
+	// keeps BM25 intact (relative ranking within the type is unchanged) at
+	// the cost of over-fetching. The multiplier is bounded so a filter that
+	// matches nothing cannot turn into a full-index scan.
+	fetch := params.Limit
+	if params.Type != "" {
+		fetch = min(params.Limit*searchFilterOverFetch, searchFilterMaxCandidates)
+	}
+
 	switch params.Layer {
 	case "trigram":
-		hits = bundle.Index.SearchTrigram(params.Query, params.Limit)
+		hits = bundle.Index.SearchTrigram(params.Query, fetch)
 	case "fuzzy":
 		// Fuzzy search would go here
 		hits = nil
@@ -195,24 +221,37 @@ func (h *Handlers) Search(ctx context.Context, params SearchParams) (_ *SearchRe
 		// splits awkwardly; trigram match restores them. Reporting the
 		// resolved layer back lets clients distinguish a true miss
 		// from a fallback hit.
-		hits = bundle.Index.SearchBM25(params.Query, params.Limit)
+		hits = bundle.Index.SearchBM25(params.Query, fetch)
 		if len(hits) > 0 {
 			resolvedLayer = "bm25"
 		} else {
-			hits = bundle.Index.SearchTrigram(params.Query, params.Limit)
+			hits = bundle.Index.SearchTrigram(params.Query, fetch)
 			if len(hits) > 0 {
 				resolvedLayer = "trigram"
 			}
 		}
 	}
 
-	results := make([]SearchHit, len(hits))
-	for i, hit := range hits {
-		results[i] = SearchHit{
-			ID:      hit.ID,
-			Score:   hit.Score,
-			Layer:   hit.Layer,
+	results := make([]SearchHit, 0, len(hits))
+	for _, hit := range hits {
+		meta := bundle.Index.Meta(hit.ID)
+		if params.Type != "" && meta.Type != params.Type {
+			continue
+		}
+		results = append(results, SearchHit{
+			ID:    hit.ID,
+			Score: hit.Score,
+			Layer: hit.Layer,
+			// Type and Source were declared on this struct from the start
+			// and never assigned, so every hit arrived unlabelled and a
+			// deliberately recorded note looked exactly like the tool call
+			// next to it. They come from the index's per-document metadata.
+			Type:    meta.Type,
+			Source:  meta.Source,
 			Excerpt: bundle.Index.Excerpt(hit.ID),
+		})
+		if len(results) >= params.Limit {
+			break
 		}
 	}
 
@@ -221,5 +260,16 @@ func (h *Handlers) Search(ctx context.Context, params SearchParams) (_ *SearchRe
 		Layer:   resolvedLayer,
 	}, nil
 }
+
+// searchFilterOverFetch is how many candidates per requested result the
+// index is asked for when a type filter is active, and
+// searchFilterMaxCandidates is the ceiling on that expansion. Together they
+// bound the cost of a filter that matches little or nothing: a query for
+// type "note" against a journal of 100k tool events scans at most
+// searchFilterMaxCandidates scored hits rather than every document.
+const (
+	searchFilterOverFetch     = 20
+	searchFilterMaxCandidates = 500
+)
 
 // RecallParams are the parameters for the Recall method.

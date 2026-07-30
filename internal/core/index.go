@@ -36,6 +36,18 @@ type Index struct {
 	// (Index.Add is called during journal load anyway).
 	excerpts map[string]string
 
+	// meta maps event ID to the few fields a search result needs in order
+	// to be actionable: what KIND of event this is and where it came from.
+	//
+	// Without it, SearchHit.Type and SearchHit.Source were declared on the
+	// wire struct and never populated, so every hit looked alike. That
+	// matters more than it sounds: a journal is overwhelmingly automatic
+	// tool events (193 of 202 on this repo at the time of writing), so a
+	// result list with no type is a list in which the one note the agent
+	// deliberately recorded is indistinguishable from the noise around it.
+	// Same non-persistence rationale as excerpts.
+	meta map[string]DocMeta
+
 	// oldestHeap is a min-heap of document IDs by ULID timestamp.
 	// Provides O(log N) eviction instead of O(N) scan of docLen.
 	// Entries are removed lazily (on eviction) so the heap may
@@ -119,6 +131,7 @@ func NewIndexWithParams(p IndexParams) *Index {
 		trigramPL:    make(map[string]*PostingList),
 		docLen:       make(map[string]int),
 		excerpts:     make(map[string]string),
+		meta:         make(map[string]DocMeta),
 		k1:           p.K1,
 		b:            p.B,
 		headingBoost: p.HeadingBoost,
@@ -212,6 +225,9 @@ func (ix *Index) UnmarshalJSON(data []byte) error {
 	if ix.excerpts == nil {
 		ix.excerpts = make(map[string]string)
 	}
+	if ix.meta == nil {
+		ix.meta = make(map[string]DocMeta)
+	}
 	ix.avgDocLen = j.AvgDocLen
 	ix.totalDocs = j.TotalDocs
 	return nil
@@ -267,6 +283,10 @@ func (ix *Index) Add(e Event) {
 	if ex := buildExcerpt(e); ex != "" {
 		ix.excerpts[id] = ex
 	}
+	if ix.meta == nil {
+		ix.meta = make(map[string]DocMeta)
+	}
+	ix.meta[id] = DocMeta{Type: string(e.Type), Source: string(e.Source)}
 
 	// Extract searchable text from event
 	text := ix.eventText(e)
@@ -314,6 +334,23 @@ func (ix *Index) Add(e Event) {
 	heap.Push(&ix.oldestHeap, id)
 }
 
+// DocMeta carries the per-document facts a search result needs beyond its
+// score: the event type and the source that produced it. Kept deliberately
+// tiny — this is held for every indexed document (up to MaxIndexDocs).
+type DocMeta struct {
+	Type   string
+	Source string
+}
+
+// Meta returns the type/source recorded for docID at index time. The zero
+// value means the document predates this feature or was never indexed.
+// Safe for concurrent reads.
+func (ix *Index) Meta(docID string) DocMeta {
+	ix.mu.RLock()
+	defer ix.mu.RUnlock()
+	return ix.meta[docID]
+}
+
 // Excerpt returns the short text snippet attached to docID at index
 // time, or "" when no excerpt is recorded (event was indexed before
 // the excerpt feature, or never had a message/path field). Safe for
@@ -336,8 +373,17 @@ func buildExcerpt(e Event) string {
 		if msg, ok := e.Data["message"].(string); ok && msg != "" {
 			return excerptTruncate(msg, excerptMaxBytes)
 		}
-		if path, ok := e.Data["path"].(string); ok && path != "" {
-			return excerptTruncate(string(e.Type)+" "+path, excerptMaxBytes)
+		// The field that identifies a tool event is whatever it acted on.
+		// Only "path" was consulted before, so every tool.exec, tool.grep,
+		// and tool.glob hit came back with an excerpt of just its own type
+		// ("tool.grep") — a search result carrying no information beyond
+		// what the type field already says. The command, pattern, or URL is
+		// the one thing that tells the agent whether the hit is the call it
+		// was looking for.
+		for _, key := range []string{"path", "code", "pattern", "query", "url", "subject"} {
+			if v, ok := e.Data[key].(string); ok && v != "" {
+				return excerptTruncate(string(e.Type)+" "+v, excerptMaxBytes)
+			}
 		}
 	}
 	if e.Actor != "" {
@@ -579,6 +625,7 @@ func (ix *Index) removeLocked(id string) {
 	}
 	delete(ix.docLen, id)
 	delete(ix.excerpts, id)
+	delete(ix.meta, id)
 	if ix.totalDocs > 0 {
 		ix.totalDocs--
 	}
