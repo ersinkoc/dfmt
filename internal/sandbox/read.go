@@ -121,7 +121,7 @@ func (s *SandboxImpl) Read(ctx context.Context, req ReadReq) (ReadResp, error) {
 	// content is a trap for the next step in the loop — an agent that copies
 	// an anchor out of it builds an old_string that cannot match the file,
 	// and dfmt_edit would refuse (or worse, with the old first-match
-	// behaviour, silently hit the wrong site). The line numbers travel in
+	// behavior, silently hit the wrong site). The line numbers travel in
 	// the response metadata and in Matches[].Line instead.
 	startLine := int(req.Offset)
 	if startLine < 1 {

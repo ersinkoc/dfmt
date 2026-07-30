@@ -27,10 +27,18 @@ Internal package shapes (`internal/...`) are NOT covered by SemVer.
 
 ## [Unreleased]
 
-A full read-through of the code base. Seven fixes; the first four are
-the same failure shape as 0.7.3's — a control that existed, looked
-implemented, and did not hold, with no error anywhere to notice it by.
-See [ADR-0023](docs/adr/0023-real-deadlines-concurrent-proxy-and-rpc-auth.md).
+A full read-through of the code base, in two passes.
+
+The first pass found controls that existed, looked implemented, and did
+not hold — the same failure shape as 0.7.3's, with no error anywhere to
+notice them by
+([ADR-0023](docs/adr/0023-real-deadlines-concurrent-proxy-and-rpc-auth.md)).
+
+The second found limits that held perfectly well and were set against
+the wrong thing: an index that forgot its most valuable events first, a
+five-minute ceiling on nine-minute work, and a read tool that spoke a
+unit nothing else uses
+([ADR-0024](docs/adr/0024-retention-ceilings-and-line-oriented-reads.md)).
 
 ### Fixed
 
@@ -51,13 +59,11 @@ See [ADR-0023](docs/adr/0023-real-deadlines-concurrent-proxy-and-rpc-auth.md).
   (`dfmt_exec` advertises 60 s by default, 300 s max). `sleep 25`
   returned; `sleep 45` died with a bare `EOF` while the command kept
   running server-side. The same deadline killed the dashboard's SSE
-  stream every 30 seconds. Note what this does *not* fix: the sandbox's
-  own `MaxExecTimeout` (300 s) still stands, so a job longer than five
-  minutes — this repo's ~9-minute `go test ./...` among them — remains
-  out of reach in a single call. It now fails as a clean `timed_out`
-  verdict with partial output instead of a bare `EOF`; running such a
-  job to completion needs either a raised ceiling or an async
-  job-handle API, neither of which is in this change.
+  stream every 30 seconds. Removing it makes the sandbox's own
+  `MaxExecTimeout` the real ceiling — see the Changed section, where
+  that ceiling is raised to 900 s so a build or test suite fits. Past
+  it, a job now fails as a clean `timed_out` verdict with partial
+  output rather than a bare `EOF`.
 
 - **`dfmt_glob` did not recurse.** `filepath.Glob` has no `**` — the
   second star adds nothing to `filepath.Match` — so `**/*.go` matched
@@ -99,7 +105,7 @@ See [ADR-0023](docs/adr/0023-real-deadlines-concurrent-proxy-and-rpc-auth.md).
   because only `data["path"]` was consulted; and a query for
   `timeout` returned six tool events and *not* the note that
   discusses timeouts at length, because BM25 length normalization
-  favours short documents and the corpus is almost entirely short
+  favors short documents and the corpus is almost entirely short
   documents. Hits now carry type and source, excerpts fall back to
   the command/pattern/URL the event recorded, and `dfmt_search`
   accepts a `type` filter (`type: "note"` searches only your own
@@ -126,6 +132,58 @@ See [ADR-0023](docs/adr/0023-real-deadlines-concurrent-proxy-and-rpc-auth.md).
 - **`dfmt_remember` was missing from the tool-call metrics.** Every
   other tool records duration and errors (ADR-0018); the hole was
   exactly where session memory is written.
+
+### Changed
+
+- **`dfmt_read` takes lines, not bytes.** `offset` is now the 1-based
+  first line (0 and 1 both mean the top) and `limit` a line count, and
+  the response reports `start_line` / `end_line` / `total_lines`. Bytes
+  are a unit nothing else an agent works with uses — stack traces,
+  editors, review comments and DFMT's own `matches[].line` all speak
+  lines — so reading a function that starts "around line 400" meant
+  guessing an offset and getting back something you could not cite.
+  Line numbers are deliberately NOT prefixed onto the content: an agent
+  that copies an anchor out of numbered text builds an `old_string`
+  that cannot match the file. `total_lines` is 0 when the read stopped
+  early, because a partial count presented as the total is worse than
+  silence. Deep windows stay reachable in files larger than the read
+  ceiling. This changes the meaning of two existing arguments; see
+  [ADR-0024](docs/adr/0024-retention-ceilings-and-line-oriented-reads.md).
+
+- **`MaxExecTimeout` raised from 300 s to 900 s.** With the transport
+  cap gone (above), 300 s became the real ceiling — below the length of
+  ordinary work. This repository's own `go test ./...` takes ~531 s. A
+  runaway is still bounded: the deadline kills the whole process tree,
+  four exec slots, and the caller's own timeout is usually far lower.
+  A job that outlives even this needs an async job handle, which is a
+  feature with its own ADR rather than a larger constant.
+
+### Performance
+
+- **The index forgot from the wrong end.** At `MaxIndexDocs` eviction
+  popped the smallest ULID — the oldest document, whatever it was. On a
+  journal that is 193 automatic tool events to 1 deliberate note, that
+  retires the earliest decisions while keeping every recent
+  `tool.read`. Quietly: the note stays in the journal so `dfmt_recall`
+  still shows it, and only `dfmt_search` forgets. Eviction now drains
+  the lowest-priority tier first, oldest-first within a tier, using the
+  same classifier (and therefore the same tag vocabulary) that recall
+  uses.
+
+- **Removing one document scanned the whole index.** `removeLocked`
+  walked every stem and trigram posting list and recomputed
+  `avgDocLen` over every document — per insert, once at the cap. With
+  per-document reverse maps, a running length sum, and front-deletion
+  by re-slicing: **739 µs → 8.7 µs** at a 2 000-document cap and
+  **6 215 µs → 13.3 µs** at 20 000. Cost growth for a 10× larger index
+  went from 8.4× to 1.5×.
+
+- **Recall re-read the entire journal on every call**, unmarshalling
+  every line and recomputing every event signature, even when nothing
+  had been appended since the last one. Snapshots are now memoised
+  against the journal cursor — exact invalidation, not a TTL.
+
+### Fixed
 
 - **Smaller correctness fixes.** Recall lines rendered event fields in
   map-iteration order, so identical data produced different output on
@@ -1607,7 +1665,7 @@ wiring (ADR-0014) land in this build. No wire-format changes.
 Patch release. The v0.2.0 binaries shipped before a Linux-only
 security regression and a CI-toolchain mismatch were diagnosed
 under WSL; v0.2.1 republishes the same feature set with both
-closed. No wire-format or behaviour changes for end users on
+closed. No wire-format or behavior changes for end users on
 Windows or macOS — Linux operators should upgrade.
 
 ### Security
@@ -1636,7 +1694,7 @@ Windows or macOS — Linux operators should upgrade.
   the target file's, so a `0o444` file inside a `0o755` parent is
   still atomically replaceable by its owner. The test now also
   locks the parent directory to `0o555` (and restores it in a
-  `defer` so `t.TempDir` cleanup can remove it). Windows behaviour
+  `defer` so `t.TempDir` cleanup can remove it). Windows behavior
   is unchanged.
 - **CI: golangci-lint v2.4.0 → v2.11.4** — v2.4.0 was built with
   go1.25 and panicked inside `go/types.(*Checker).initFiles` with

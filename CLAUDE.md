@@ -118,6 +118,8 @@ Implements the seven tool primitives. Output is summarized, intent-matched again
 
 **Edit refuses an ambiguous anchor** (`edit_write.go`). `strings.Replace(..., 1)` rewrote the first of N occurrences and reported success; the anchors an agent picks are exactly the text that repeats. `old_string` must now match once, or the call is refused with the occurrence count. `replace_all` opts into a sweep and the response reports `replacements`.
 
+**`dfmt_read` is line-oriented** (`read.go`). `Offset` is the 1-based first line (0 and 1 both mean the top), `Limit` is a line count, and the response carries `StartLine`/`EndLine`/`TotalLines`. They were bytes — a unit nothing else an agent uses speaks, which is why code reading kept falling back to the native Read tool. Two rules: line numbers are NOT prefixed onto the content (an anchor copied out of numbered text cannot match the file, so `dfmt_edit` would refuse it), and `TotalLines` is 0 when the scan stopped early, because a partial count presented as a total is indistinguishable from the truth and wrong. The scan streams, so a window deep inside a file larger than `MaxSandboxReadBytes` stays reachable.
+
 **Traversal exclusions** (`walkskip.go`). The Grep/Glob walkers prune build output, VCS internals, dependency trees, tool caches and `.dfmt` itself by directory basename, and skip binary files by sniffing a 512-byte prefix through `detectBinary` (one definition of "binary", shared with pipeline stage 1). Both are load-bearing, not tidiness: the walker was a bare `filepath.WalkDir` with no exclusions, and since `WalkDir` is lexical, `dist` was reached before `internal` — grepping `runtime` on this repo spent 58 of its 100 match slots inside `dist/dfmt.exe` and returned **nothing** from `internal/` or `cmd/`. Grep also matched its own `.dfmt/journal.jsonl`, which grows with every call.
 
 Two rules there:
@@ -150,9 +152,11 @@ Five ingestion paths feed the journal: MCP calls (live), CLI commands like `dfmt
 
 `dfmt_recall` rebuilds a markdown snapshot under a byte budget. Per-tier streaming with FIFO eviction — lower-priority content drops first when the budget tightens. Path interning (Refs table at the top of the snapshot + `[rN]` token references in events, kicks in at ≥3 occurrences) lives in `internal/retrieve/render_md.go` and is wired for `format=json` and `format=xml`, which route through `retrieve.SnapshotBuilder`. The **default markdown path is not interned** — it builds its lines inline in `handlers_recall.go` and never reaches the renderer. Wiring markdown is tracked on the roadmap (see `docs/ROADMAP.md`).
 
+Recall memoizes its rendered snapshot against the journal cursor, keyed by (project, budget, format). Invalidation is exact, not TTL-based: one appended event moves `Journal.Checkpoint` and the next call rebuilds. Two invariants — an **empty cursor is never cached** (it cannot distinguish two journal states, so a journal whose checkpoint does not advance would pin a stale snapshot forever), and **`SetRedactor` clears the cache** (snapshots were rendered through the old redactor while the cursor stayed put).
+
 ### Session memory retrieval (`dfmt_remember` → `dfmt_search` / `dfmt_recall`)
 
-Writing a memory was never the weak half; finding it again was. A journal is overwhelmingly automatic — 193 of 202 events on this repo were `tool.*` calls — and BM25 length-normalization favours those short documents over a long, information-dense note. Measured: a query for `timeout` returned six `tool.grep`/`tool.exec` hits and not the note that discussed timeouts at length.
+Writing a memory was never the weak half; finding it again was. A journal is overwhelmingly automatic — 193 of 202 events on this repo were `tool.*` calls — and BM25 length-normalization favors those short documents over a long, information-dense note. Measured: a query for `timeout` returned six `tool.grep`/`tool.exec` hits and not the note that discussed timeouts at length.
 
 Three things follow from that, and they are the reason retrieval works now:
 
@@ -161,6 +165,15 @@ Three things follow from that, and they are the reason retrieval works now:
 - **Tags decide retention, so they are documented in the schema.** `summary`/`decision`/`strengths`/`ledger` → P2, `audit`/`finding`/`followup`/`preserve` → P3, everything else P4 (dropped first under budget). That vocabulary lives in `core.NewClassifier`'s seeded rules; the `tags` parameter description is the only place an agent can learn it.
 
 Note that `Recall` classifies each event (`classifier.Classify`) to pick its tier AND to label it. The stored `Priority` is not the effective one — `dfmt_remember` coerces every agent-written event to p3 (F-21) and the classifier re-elevates from tags — so rendering the stored value printed `[p3]` on lines sorted above `[p2]`.
+
+### Index retention (`internal/core/index.go`)
+
+At `MaxIndexDocs` (100k) the index evicts. Two rules there are load-bearing:
+
+- **Eviction is priority-first, age-second.** One min-heap per tier; the lowest-priority non-empty tier is drained first. The tier comes from the same `core.Classifier` Recall uses, so tags decide index retention exactly as they decide recall retention. The previous rule was age-only, which on a journal that is ~200:1 automatic events retired the earliest decisions while keeping every recent `tool.read` — and did it quietly, because the note stayed in the journal (so `dfmt_recall` still showed it) and only `dfmt_search` forgot. Documents restored from a persisted index have no tier and go in the lowest one.
+- **Removal is reverse-mapped.** `docStems` / `docTrigrams` record which terms a document contributed to; `docLenSum` keeps `avgDocLen` arithmetic; front deletion re-slices rather than memmoves. Removal used to walk every posting list and recompute `avgDocLen` over every document — per insert, once at the cap: 739 µs → 8.7 µs at a 2k cap, 6 215 µs → 13.3 µs at 20k (`BenchmarkAddAtCap` pins both).
+
+`removeFromPostingList` binary-searches on the assumption that posting lists are in ULID order (they are append-only in insertion order) and falls back to a linear scan on a miss — so an out-of-order list stays correct while getting slower. That is a silent performance cliff, not a bug, and it is how the first version of this change hid a full-index sweep behind a guard that always fired. Every test passed; only a CPU profile showed it. See [ADR-0024](docs/adr/0024-retention-ceilings-and-line-oriented-reads.md).
 
 ### MCP required-argument validation (`internal/transport/params_validate.go`)
 
