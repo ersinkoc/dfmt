@@ -98,3 +98,58 @@ func BenchmarkIndexAdd_1k(b *testing.B) {
 		}
 	}
 }
+
+// BenchmarkAddAtCap measures the steady-state insert cost once the index is
+// full, which is the only regime where eviction runs — and the regime the
+// old implementation was pathological in. Removal used to walk EVERY stem
+// and trigram posting list and then recompute avgDocLen over every
+// document, so each insert past the cap paid a scan of the whole index.
+// The reverse-mapped removal visits only the terms the evicted document
+// contributed to.
+//
+// The two cap sizes are the point of the benchmark: with per-document
+// reverse mappings the cost of an insert-plus-eviction is a function of the
+// evicted document's own term count, so the numbers should stay flat as the
+// index grows. A cost that tracks the cap means the reverse maps stopped
+// being used and removal fell back to sweeping every posting list.
+//
+// Measured on this machine (Ryzen 9 9950X3D), before and after that change:
+//
+//	cap 2 000    739 µs/op  →  8.7 µs/op   (85×)
+//	cap 20 000  6 215 µs/op → 13.3 µs/op  (467×)
+//
+// Note the second row: the old cost grew 8.4× when the index grew 10×,
+// because every insert past the cap swept the whole term dictionary. The
+// new cost grows 1.5×, which is map and GC pressure rather than algorithm.
+// That gap is the whole point — an index at its cap is the steady state of
+// a long-lived daemon, not an edge case.
+//
+// Run with: go test ./internal/core -bench AddAtCap -benchtime 300x -run XXX
+func BenchmarkAddAtCap(b *testing.B) {
+	for _, cap := range []int{2000, 20000} {
+		b.Run(fmt.Sprintf("cap%d", cap), func(b *testing.B) {
+			orig := MaxIndexDocs
+			MaxIndexDocs = cap
+			defer func() { MaxIndexDocs = orig }()
+
+			ix := NewIndex()
+			// Fill to the cap first so every timed iteration evicts.
+			for i := 0; i < MaxIndexDocs; i++ {
+				ix.Add(Event{
+					ID:   fmt.Sprintf("%020d", i),
+					Type: EvtMCPCall,
+					Data: map[string]any{"message": fmt.Sprintf("deploy build test event %d variant%d", i, i%97)},
+				})
+			}
+
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				ix.Add(Event{
+					ID:   fmt.Sprintf("%020d", MaxIndexDocs+i),
+					Type: EvtMCPCall,
+					Data: map[string]any{"message": fmt.Sprintf("deploy build test event %d variant%d", i, i%97)},
+				})
+			}
+		})
+	}
+}

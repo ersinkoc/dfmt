@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 
@@ -48,12 +49,42 @@ type Index struct {
 	// Same non-persistence rationale as excerpts.
 	meta map[string]DocMeta
 
-	// oldestHeap is a min-heap of document IDs by ULID timestamp.
-	// Provides O(log N) eviction instead of O(N) scan of docLen.
-	// Entries are removed lazily (on eviction) so the heap may
-	// contain stale IDs — this is safe because removeLocked ignores
-	// missing IDs and the heap grows back to correct size on next Add.
-	oldestHeap docIDHeap
+	// docStems / docTrigrams are the reverse index: which terms a
+	// document contributed to. Without them, removing one document meant
+	// walking EVERY posting list in the index — and since eviction runs on
+	// every Add once the cap is reached, that turned a full index into a
+	// per-insert full scan. With them, removal touches only the terms the
+	// document actually has.
+	docStems    map[string][]string
+	docTrigrams map[string][]string
+
+	// docLenSum is the running total of docLen values, so avgDocLen is
+	// arithmetic rather than a fresh walk over every document on each
+	// removal.
+	docLenSum int
+
+	// evictHeaps holds one min-heap of document IDs per priority tier
+	// (index 0 = P1 … 3 = P4). Eviction drains the lowest-priority
+	// non-empty tier first, so a routine tool call is dropped before a
+	// decision note.
+	//
+	// A single age-ordered heap — what this was — evicted strictly by ULID,
+	// which meant the OLDEST note went before the NEWEST tool call. On a
+	// journal that is overwhelmingly automatic (193 of 202 events here),
+	// that is precisely backwards: the note stayed in the journal, so
+	// recall could still see it, while the index silently forgot it and
+	// dfmt_search could not.
+	//
+	// Entries are removed lazily, so a heap may hold IDs that are already
+	// gone; evictLowestPriorityLocked skips them.
+	evictHeaps [4]docIDHeap
+
+	// classifier assigns the tier used above. It is the SAME classifier
+	// Recall uses, so the tag vocabulary (summary/decision → P2,
+	// audit/finding → P3) governs what survives in the index exactly as it
+	// governs what survives a recall budget. Two different answers to
+	// "how important is this event" would be worse than either.
+	classifier *Classifier
 
 	// BM25 / scoring parameters (ADR-0015 v0.4 wire-up).
 	//
@@ -132,6 +163,9 @@ func NewIndexWithParams(p IndexParams) *Index {
 		docLen:       make(map[string]int),
 		excerpts:     make(map[string]string),
 		meta:         make(map[string]DocMeta),
+		docStems:     make(map[string][]string),
+		docTrigrams:  make(map[string][]string),
+		classifier:   NewClassifier(),
 		k1:           p.K1,
 		b:            p.B,
 		headingBoost: p.HeadingBoost,
@@ -228,8 +262,36 @@ func (ix *Index) UnmarshalJSON(data []byte) error {
 	if ix.meta == nil {
 		ix.meta = make(map[string]DocMeta)
 	}
+	// The reverse maps and the classifier are not persisted either. Nil maps
+	// would make the first Add panic on assignment, and a nil classifier
+	// would make tierFor fall back to the stored priority — which for agent
+	// events is always p3 (F-21), erasing exactly the tag-driven distinction
+	// eviction depends on.
+	if ix.docStems == nil {
+		ix.docStems = make(map[string][]string)
+	}
+	if ix.docTrigrams == nil {
+		ix.docTrigrams = make(map[string][]string)
+	}
+	if ix.classifier == nil {
+		ix.classifier = NewClassifier()
+	}
 	ix.avgDocLen = j.AvgDocLen
 	ix.totalDocs = j.TotalDocs
+
+	// Rebuild the eviction state a loaded index would otherwise lack.
+	// docLenSum keeps avgDocLen arithmetic; the heaps decide what gets
+	// dropped at the cap. Loaded documents have no recorded tier — their
+	// metadata is rebuilt only when the journal is replayed over them — so
+	// they go in the lowest tier: they are both the oldest and the least
+	// identifiable, and leaving the heaps empty would send every eviction
+	// through the O(N) fallback scan instead.
+	ix.docLenSum = 0
+	for id, l := range ix.docLen {
+		ix.docLenSum += l
+		ix.evictHeaps[3] = append(ix.evictHeaps[3], id)
+	}
+	heap.Init(&ix.evictHeaps[3])
 	return nil
 }
 
@@ -271,7 +333,7 @@ func (ix *Index) Add(e Event) {
 	// future optimization if the per-add eviction cost becomes
 	// noticeable on profiling.
 	if len(ix.docLen) >= MaxIndexDocs {
-		ix.evictOldestLocked()
+		ix.evictLowestPriorityLocked()
 	}
 
 	// Stash a short content excerpt for search-result enrichment.
@@ -286,7 +348,8 @@ func (ix *Index) Add(e Event) {
 	if ix.meta == nil {
 		ix.meta = make(map[string]DocMeta)
 	}
-	ix.meta[id] = DocMeta{Type: string(e.Type), Source: string(e.Source)}
+	tier := ix.tierFor(e)
+	ix.meta[id] = DocMeta{Type: string(e.Type), Source: string(e.Source), Priority: priorityForTier(tier)}
 
 	// Extract searchable text from event
 	text := ix.eventText(e)
@@ -295,7 +358,8 @@ func (ix *Index) Add(e Event) {
 	docLen := len(tokens)
 	ix.docLen[id] = docLen
 	ix.totalDocs++
-	ix.avgDocLen = (ix.avgDocLen*float64(ix.totalDocs-1) + float64(docLen)) / float64(ix.totalDocs)
+	ix.docLenSum += docLen
+	ix.avgDocLen = float64(ix.docLenSum) / float64(ix.totalDocs)
 
 	// Count term frequencies
 	tf := make(map[string]int)
@@ -304,7 +368,9 @@ func (ix *Index) Add(e Event) {
 		tf[stem]++
 	}
 
-	// Update posting lists
+	// Update posting lists, recording which stems this document touched so
+	// removal does not have to rediscover them by scanning every term.
+	stems := make([]string, 0, len(tf))
 	for stem, freq := range tf {
 		pl, ok := ix.stemPL[stem]
 		if !ok {
@@ -313,12 +379,19 @@ func (ix *Index) Add(e Event) {
 		}
 		pl.IDs = append(pl.IDs, id)
 		pl.TFs = append(pl.TFs, uint32(freq))
+		stems = append(stems, stem)
 	}
+	if ix.docStems == nil {
+		ix.docStems = make(map[string][]string)
+	}
+	ix.docStems[id] = stems
 
 	// Also index for trigram search
 	ti := NewTrigramIndex()
 	ti.Add(id, text)
-	// Merge trigram postings into the main index
+	// Merge trigram postings into the main index, again recording the
+	// reverse mapping for removal.
+	trigrams := make([]string, 0, len(ti.postings))
 	for tg, ids := range ti.postings {
 		pl, ok := ix.trigramPL[tg]
 		if !ok {
@@ -326,12 +399,18 @@ func (ix *Index) Add(e Event) {
 			ix.trigramPL[tg] = pl
 		}
 		pl.IDs = append(pl.IDs, ids...)
+		trigrams = append(trigrams, tg)
 	}
+	if ix.docTrigrams == nil {
+		ix.docTrigrams = make(map[string][]string)
+	}
+	ix.docTrigrams[id] = trigrams
 
-	// Push to min-heap for O(log N) eviction. The heap may contain stale
-	// IDs (deleted docs) — this is safe because removeLocked ignores them
-	// and evicted stale entries are simply skipped on Pop.
-	heap.Push(&ix.oldestHeap, id)
+	// Push onto this document's tier heap. Stale entries (documents already
+	// removed) are skipped at eviction time rather than deleted here —
+	// finding an arbitrary element in a heap is O(N), and the eviction path
+	// has to pop anyway.
+	heap.Push(&ix.evictHeaps[tier], id)
 }
 
 // DocMeta carries the per-document facts a search result needs beyond its
@@ -340,6 +419,10 @@ func (ix *Index) Add(e Event) {
 type DocMeta struct {
 	Type   string
 	Source string
+	// Priority is the classified tier, not the value stored on the event:
+	// dfmt_remember coerces agent-written events to p3 and the classifier
+	// re-elevates from tags, so this is the one that decides retention.
+	Priority Priority
 }
 
 // Meta returns the type/source recorded for docID at index time. The zero
@@ -617,8 +700,16 @@ func (ix *Index) Remove(id string) {
 // ix.mu (write lock). Extracted from Remove so the V-13 eviction path
 // in Add — which already holds the lock — can reuse the same logic
 // without re-entering the mutex.
+//
+// Cost note: this used to walk every entry in stemPL and every entry in
+// trigramPL, rebuilding each posting list, and then recompute avgDocLen
+// across all documents. At MaxIndexDocs that ran on EVERY Add — a
+// per-insert scan of the whole index. It now visits only the terms the
+// document actually contributed to (docStems / docTrigrams) and keeps
+// avgDocLen arithmetic via docLenSum.
 func (ix *Index) removeLocked(id string) {
-	if _, ok := ix.docLen[id]; !ok {
+	docLen, ok := ix.docLen[id]
+	if !ok {
 		// No-op: unknown id. Prevents totalDocs from going negative on
 		// double-remove.
 		return
@@ -626,89 +717,199 @@ func (ix *Index) removeLocked(id string) {
 	delete(ix.docLen, id)
 	delete(ix.excerpts, id)
 	delete(ix.meta, id)
+	ix.docLenSum -= docLen
+	if ix.docLenSum < 0 {
+		ix.docLenSum = 0
+	}
 	if ix.totalDocs > 0 {
 		ix.totalDocs--
 	}
 
-	// Remove from stem posting lists.
-	for stem, pl := range ix.stemPL {
-		newIDs := make([]string, 0, len(pl.IDs))
-		newTFs := make([]uint32, 0, len(pl.TFs))
-		for i, docID := range pl.IDs {
-			if docID != id {
-				newIDs = append(newIDs, docID)
-				newTFs = append(newTFs, pl.TFs[i])
-			}
+	// Capture the reverse mappings BEFORE deleting them: whether this
+	// document HAD them decides whether the slow legacy path below is
+	// needed, and reading that back after the delete always answers "no"
+	// — which silently reinstated the full-index sweep this function
+	// exists to avoid. Caught by profiling, not by a test: every result
+	// stayed correct, only the cost changed (a linear scan of every
+	// posting list per removal, 2.5 ms/insert at a 20k cap).
+	stems, hadStems := ix.docStems[id]
+	trigrams, hadTrigrams := ix.docTrigrams[id]
+
+	for _, stem := range stems {
+		pl, ok := ix.stemPL[stem]
+		if !ok {
+			continue
 		}
-		if len(newIDs) == 0 {
+		if removeFromPostingList(pl, id) && len(pl.IDs) == 0 {
 			delete(ix.stemPL, stem)
-		} else {
-			pl.IDs = newIDs
-			pl.TFs = newTFs
 		}
 	}
+	delete(ix.docStems, id)
 
-	// Remove from trigram posting lists.
-	for tg, pl := range ix.trigramPL {
-		newIDs := make([]string, 0, len(pl.IDs))
-		for _, docID := range pl.IDs {
-			if docID != id {
-				newIDs = append(newIDs, docID)
-			}
+	for _, tg := range trigrams {
+		pl, ok := ix.trigramPL[tg]
+		if !ok {
+			continue
 		}
-		if len(newIDs) == 0 {
+		if removeFromPostingList(pl, id) && len(pl.IDs) == 0 {
 			delete(ix.trigramPL, tg)
-		} else {
-			pl.IDs = newIDs
 		}
 	}
+	delete(ix.docTrigrams, id)
 
-	// Recompute avgDocLen from the surviving docs to avoid drift.
+	// Legacy path: a document indexed before the reverse maps existed (an
+	// index deserialized from disk carries posting lists but no docStems).
+	// Without this its ID would linger in the posting lists forever and
+	// keep scoring as a hit for a document that is gone.
+	if !hadStems && !hadTrigrams {
+		ix.purgeFromAllPostings(id)
+	}
+
 	if ix.totalDocs == 0 {
 		ix.avgDocLen = 0
 	} else {
-		total := 0
-		for _, l := range ix.docLen {
-			total += l
-		}
-		ix.avgDocLen = float64(total) / float64(ix.totalDocs)
+		ix.avgDocLen = float64(ix.docLenSum) / float64(ix.totalDocs)
 	}
 }
 
-// evictOldestLocked removes the oldest document (smallest ULID) from the
-// index using the min-heap for O(log N) lookup. Stale heap entries (from
-// already-deleted docs) are skipped until they surface at the top. The
-// caller MUST hold ix.mu (write lock). Used by Add when at MaxIndexDocs.
+// purgeFromAllPostings is the slow path: a full sweep of every posting
+// list. Only reachable for legacy documents (see removeLocked) — the
+// reverse-mapped path never calls it.
+func (ix *Index) purgeFromAllPostings(id string) {
+	for stem, pl := range ix.stemPL {
+		if removeFromPostingList(pl, id) && len(pl.IDs) == 0 {
+			delete(ix.stemPL, stem)
+		}
+	}
+	for tg, pl := range ix.trigramPL {
+		if removeFromPostingList(pl, id) && len(pl.IDs) == 0 {
+			delete(ix.trigramPL, tg)
+		}
+	}
+}
+
+// removeFromPostingList drops every occurrence of id from pl, keeping IDs
+// and TFs parallel. Reports whether anything was removed.
 //
-// Smallest ULID == earliest timestamp because ULIDs encode time in their
-// lexicographically-comparable prefix (Crockford base32 of the milliseconds
-// since epoch). String comparison is therefore equivalent to time
-// comparison without parsing.
-func (ix *Index) evictOldestLocked() {
+// Posting lists are appended in insertion order, which is ULID order, so
+// they are sorted in practice and the common case — evicting the OLDEST
+// document — hits the front element. A binary search finds it; if the list
+// turns out not to be sorted (two events minted in the same millisecond can
+// interleave), the search falls back to a linear scan rather than silently
+// leaving the entry behind.
+func removeFromPostingList(pl *PostingList, id string) bool {
+	idx := sort.SearchStrings(pl.IDs, id)
+	if idx >= len(pl.IDs) || pl.IDs[idx] != id {
+		idx = -1
+		for i, docID := range pl.IDs {
+			if docID == id {
+				idx = i
+				break
+			}
+		}
+		if idx < 0 {
+			return false
+		}
+	}
+	if idx == 0 {
+		// Front deletion, which is the case eviction always hits: the
+		// document being dropped is the oldest, and posting lists are in
+		// insertion (ULID) order, so its entry is the first one. Re-slicing
+		// is O(1); the copy-shift below is O(len) and, on a posting list for
+		// a common term in a full index, that memmove was the entire cost of
+		// an eviction — measured at 3.0 ms/insert with a 20k-document cap
+		// versus 0.22 ms at 2k, i.e. still scaling with index size after the
+		// reverse maps had removed the term-dictionary scan.
+		//
+		// The dropped head stays alive in the backing array until the next
+		// append reallocates it, which is the standard cost of this trick and
+		// is bounded by the array's own size.
+		pl.IDs = pl.IDs[1:]
+		if len(pl.TFs) > 0 {
+			pl.TFs = pl.TFs[1:]
+		}
+		return true
+	}
+	pl.IDs = append(pl.IDs[:idx], pl.IDs[idx+1:]...)
+	if idx < len(pl.TFs) {
+		pl.TFs = append(pl.TFs[:idx], pl.TFs[idx+1:]...)
+	}
+	return true
+}
+
+// evictLowestPriorityLocked removes one document to make room, choosing the
+// oldest member of the LOWEST-priority non-empty tier. The caller MUST hold
+// ix.mu (write lock).
+//
+// Age alone was the previous rule, and on a real journal it evicted exactly
+// the wrong thing: automatic tool events outnumber deliberate notes roughly
+// 200:1, so "oldest first" quietly retired the earliest decisions — the ones
+// most likely to explain why the code looks the way it does — while keeping
+// every recent `tool.read`. The note survived in the journal, so `dfmt_recall`
+// could still show it, but `dfmt_search` could not find it: memory decaying
+// from the wrong end.
+//
+// Within a tier, oldest still goes first. Smallest ULID == earliest timestamp
+// because ULIDs encode time in their lexicographically-comparable prefix.
+func (ix *Index) evictLowestPriorityLocked() {
 	if len(ix.docLen) == 0 {
 		return
 	}
-	// Pop stale entries until we find one that's still in docLen.
-	var oldest string
-	for oldest == "" {
-		if len(ix.oldestHeap) == 0 {
-			// Heap exhausted but docLen non-empty — fall back to scan
-			// (should only happen on corrupt/edge case; defensive).
-			for id := range ix.docLen {
-				if oldest == "" || id < oldest {
-					oldest = id
-				}
+	// Walk tiers from P4 (index 3) up to P1 (index 0).
+	for tier := len(ix.evictHeaps) - 1; tier >= 0; tier-- {
+		for len(ix.evictHeaps[tier]) > 0 {
+			candidate := heap.Pop(&ix.evictHeaps[tier]).(string)
+			if _, live := ix.docLen[candidate]; live {
+				ix.removeLocked(candidate)
+				return
 			}
-			break
+			// Stale entry (already removed) — keep popping.
 		}
-		candidate := heap.Pop(&ix.oldestHeap).(string)
-		if _, ok := ix.docLen[candidate]; ok {
-			oldest = candidate
+	}
+	// Heaps exhausted but documents remain: an index deserialized from disk
+	// has posting lists and docLen but no tier information. Fall back to the
+	// old rule for those rather than refusing to evict, which would let the
+	// cap be exceeded indefinitely.
+	var oldest string
+	for id := range ix.docLen {
+		if oldest == "" || id < oldest {
+			oldest = id
 		}
-		// else: stale entry, skip
 	}
 	if oldest != "" {
 		ix.removeLocked(oldest)
+	}
+}
+
+// tierFor returns the evictHeaps index for an event: 0 = P1 … 3 = P4.
+func (ix *Index) tierFor(e Event) int {
+	pri := e.Priority
+	if ix.classifier != nil {
+		pri = ix.classifier.Classify(e)
+	}
+	switch pri {
+	case PriP1:
+		return 0
+	case PriP2:
+		return 1
+	case PriP3:
+		return 2
+	default:
+		return 3
+	}
+}
+
+// priorityForTier is the inverse of tierFor, for reporting.
+func priorityForTier(tier int) Priority {
+	switch tier {
+	case 0:
+		return PriP1
+	case 1:
+		return PriP2
+	case 2:
+		return PriP3
+	default:
+		return PriP4
 	}
 }
 
