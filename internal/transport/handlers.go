@@ -126,6 +126,14 @@ type Handlers struct {
 	// needlessly cold outside it.
 	recallCacheMu sync.Mutex
 	recallCache   map[string]recallCacheEntry
+
+	// jobs holds async exec submissions (see exec_jobs.go). asyncSem is
+	// deliberately separate from execSem: sharing it would let two
+	// hour-long jobs occupy half the interactive capacity, so a quick
+	// `git status` would queue behind a migration.
+	jobsMu   sync.Mutex
+	jobs     map[string]*execJob
+	asyncSem chan struct{}
 }
 
 // recallCacheEntry is one memoised snapshot plus the journal cursor it was
@@ -208,6 +216,7 @@ func NewHandlers(index *core.Index, journal core.Journal, sb sandbox.Sandbox) *H
 		fetchSem: make(chan struct{}, 8),
 		readSem:  make(chan struct{}, 8),
 		writeSem: make(chan struct{}, 4),
+		asyncSem: make(chan struct{}, asyncExecConcurrency),
 	}
 }
 

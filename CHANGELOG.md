@@ -40,6 +40,10 @@ five-minute ceiling on nine-minute work, and a read tool that spoke a
 unit nothing else uses
 ([ADR-0024](docs/adr/0024-retention-ceilings-and-line-oriented-reads.md)).
 
+The third closed the one gap the second deliberately left open: work
+that outlives any ceiling at all
+([ADR-0025](docs/adr/0025-async-exec-jobs.md)).
+
 ### Fixed
 
 - **`dfmt_exec`'s timeout stopped nothing.** `exec.CommandContext`
@@ -133,6 +137,28 @@ unit nothing else uses
   other tool records duration and errors (ADR-0018); the hole was
   exactly where session memory is written.
 
+### Added
+
+- **Async exec jobs.** `dfmt_exec {code, async: true}` submits and
+  returns a `job_id` immediately; `{job_id}` polls it; `{job_id,
+  cancel: true}` stops it. For work no synchronous ceiling fits — a
+  migration, a soak test, a watch build — where the alternative was
+  raising the timeout until it stopped bounding anything. Jobs run at
+  their own concurrency (2, separate from the interactive exec slots so
+  a `git status` never queues behind an hour-long job), are capped at
+  32 outstanding with a 30-minute retention on finished ones, and are
+  canceled on daemon shutdown rather than left as subprocesses nobody
+  owns. Cancel goes through the same tree-kill as a timeout: verified
+  end to end, a canceled `sleep 120; echo … > file` leaves no file.
+  Also available from the CLI: `dfmt exec -async`, `-job`, `-cancel`.
+
+  Async is parameters on `dfmt_exec` rather than a separate tool
+  because `tools/list` is paid on every session start and "run a
+  command" is one capability whose result you may want now or later.
+  This is the first deliberate raise of the tools/list byte budget
+  (6 KiB → 6.75 KiB); every other addition in this release was paid for
+  by trimming.
+
 ### Changed
 
 - **`dfmt_read` takes lines, not bytes.** `offset` is now the 1-based
@@ -155,8 +181,8 @@ unit nothing else uses
   ordinary work. This repository's own `go test ./...` takes ~531 s. A
   runaway is still bounded: the deadline kills the whole process tree,
   four exec slots, and the caller's own timeout is usually far lower.
-  A job that outlives even this needs an async job handle, which is a
-  feature with its own ADR rather than a larger constant.
+  A job that outlives even this now has an async job handle instead of
+  a larger constant — see Added.
 
 ### Performance
 

@@ -223,6 +223,21 @@ const DefaultExecTimeout = 60 * time.Second
 // That is a feature with its own ADR, not a constant.
 const MaxExecTimeout = 900 * time.Second
 
+// HardMaxExecTimeout is the absolute ceiling the sandbox enforces, as
+// opposed to MaxExecTimeout, which is the policy ceiling the transport
+// applies to SYNCHRONOUS calls.
+//
+// The two differ because the reasons differ. A synchronous call is capped at
+// 15 minutes because something is holding an RPC open and an exec slot with
+// it. An async job (transport/exec_jobs.go) holds neither — it was submitted
+// and answered — so the only thing bounding it is "a job that hangs must not
+// live forever". Two hours covers a migration or a soak test.
+//
+// Without this split the sandbox's own clamp silently capped async jobs at
+// the synchronous ceiling: the job context allowed two hours, execImpl cut
+// it to 900s, and the feature quietly did not do the one thing it exists for.
+const HardMaxExecTimeout = 2 * time.Hour
+
 // execWaitDelay is how long Wait may keep blocking after the deadline has
 // fired and the process tree has been killed. It exists for the descendant
 // that survives the kill — a process in another session, or one wedged in

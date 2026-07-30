@@ -118,12 +118,17 @@ func (s *SandboxImpl) execImpl(ctx context.Context, req ExecReq, rt Runtime) (Ex
 	var cmd *exec.Cmd
 	var err error
 
+	// The clamp here is the sandbox's own hard ceiling. Per-call policy
+	// (60s default, 900s for a synchronous call, longer for an async job)
+	// is the transport's decision and arrives already resolved in
+	// req.Timeout; clamping to MaxExecTimeout here would have overridden it
+	// and capped async jobs at the synchronous limit.
 	timeout := req.Timeout
 	if timeout == 0 {
 		timeout = DefaultExecTimeout
 	}
-	if timeout > MaxExecTimeout {
-		timeout = MaxExecTimeout
+	if timeout > HardMaxExecTimeout {
+		timeout = HardMaxExecTimeout
 	}
 
 	start := time.Now()

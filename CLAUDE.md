@@ -154,6 +154,19 @@ Five ingestion paths feed the journal: MCP calls (live), CLI commands like `dfmt
 
 Recall memoizes its rendered snapshot against the journal cursor, keyed by (project, budget, format). Invalidation is exact, not TTL-based: one appended event moves `Journal.Checkpoint` and the next call rebuilds. Two invariants — an **empty cursor is never cached** (it cannot distinguish two journal states, so a journal whose checkpoint does not advance would pin a stale snapshot forever), and **`SetRedactor` clears the cache** (snapshots were rendered through the old redactor while the cursor stayed put).
 
+### Async exec jobs (`internal/transport/exec_jobs.go`)
+
+`dfmt_exec` has three shapes: run-and-wait, `async:true` (submit, get a `job_id`), and `job_id` (poll, or `cancel:true` to stop). They are parameters on one tool because `tools/list` ships on every session start and a second tool object would pay for its own envelope before describing anything.
+
+Four properties are load-bearing:
+
+- **The worker runs under a detached context**, not the submitting request's — that one is done milliseconds later and would cancel the job at birth. It carries the project and session IDs forward so redaction and wire-dedup resolve identically for the job and its submitter.
+- **Async has its own semaphore** (2), separate from `execSem` (4). Sharing would let two hour-long jobs occupy half the interactive capacity.
+- **The job table refuses at the cap** (32) rather than evicting; dropping a running job to make room would hide the caller's leak behind a result that never arrives. Finished jobs are retained 30 minutes.
+- **Cancel reuses the deadline path**, so it kills the process tree (ADR-0023) rather than detaching from it, and waits `cancelSettleTimeout` (6s, covering `execWaitDelay` plus the journal tail) so one call can answer `canceled` instead of `running`.
+
+Note the ceiling split this introduced: `sandbox.MaxExecTimeout` (900s) is the SYNCHRONOUS policy applied by the transport, `MaxAsyncExecTimeout` (2h) the async one, and `sandbox.HardMaxExecTimeout` (2h) the sandbox's own backstop. `execImpl` must clamp to the hard one — clamping to `MaxExecTimeout` there silently cut every async job to fifteen minutes. See [ADR-0025](docs/adr/0025-async-exec-jobs.md).
+
 ### Session memory retrieval (`dfmt_remember` → `dfmt_search` / `dfmt_recall`)
 
 Writing a memory was never the weak half; finding it again was. A journal is overwhelmingly automatic — 193 of 202 events on this repo were `tool.*` calls — and BM25 length-normalization favors those short documents over a long, information-dense note. Measured: a query for `timeout` returned six `tool.grep`/`tool.exec` hits and not the note that discussed timeouts at length.

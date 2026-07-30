@@ -57,8 +57,22 @@ func schemaExec() MCPTool {
 				},
 				"timeout": map[string]any{
 					"type":        "integer",
-					"description": "Timeout in seconds (max 900).",
+					"description": "Timeout in seconds (max 900; 7200 when async).",
 					"default":     60,
+				},
+				"async": map[string]any{
+					"type":        "boolean",
+					"description": "Submit and return a job_id immediately instead of waiting. For work longer than the sync ceiling.",
+					"default":     false,
+				},
+				"job_id": map[string]any{
+					"type":        "string",
+					"description": "Poll a job submitted with async. Returns status 'running' or the finished result.",
+				},
+				"cancel": map[string]any{
+					"type":        "boolean",
+					"description": "With job_id: stop that job (kills its whole process tree).",
+					"default":     false,
 				},
 			},
 			"required": []string{"code"},

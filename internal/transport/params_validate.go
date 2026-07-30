@@ -55,6 +55,12 @@ func missingParam(tool, field string) error {
 // empty command is never a meaningful request, and treating it as one is
 // exactly the silent-success bug this guards.
 func (p ExecParams) Validate() error {
+	// A job_id call asks about an existing job; `code` is not just optional
+	// there, it is meaningless. Requiring it would force callers to send a
+	// dummy command to poll their own submission.
+	if p.JobID != "" {
+		return nil
+	}
 	if p.Code == "" {
 		return missingParam("dfmt_exec", "code")
 	}
