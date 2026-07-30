@@ -50,9 +50,14 @@ See [ADR-0023](docs/adr/0023-real-deadlines-concurrent-proxy-and-rpc-auth.md).
   handler duration regardless of the timeout the agent asked for
   (`dfmt_exec` advertises 60 s by default, 300 s max). `sleep 25`
   returned; `sleep 45` died with a bare `EOF` while the command kept
-  running server-side. DFMT could not run its own ~9-minute test suite
-  through the tool meant to replace `Bash`. The same deadline killed
-  the dashboard's SSE stream every 30 seconds.
+  running server-side. The same deadline killed the dashboard's SSE
+  stream every 30 seconds. Note what this does *not* fix: the sandbox's
+  own `MaxExecTimeout` (300 s) still stands, so a job longer than five
+  minutes — this repo's ~9-minute `go test ./...` among them — remains
+  out of reach in a single call. It now fails as a clean `timed_out`
+  verdict with partial output instead of a bare `EOF`; running such a
+  job to completion needs either a raised ceiling or an async
+  job-handle API, neither of which is in this change.
 
 - **`dfmt_glob` did not recurse.** `filepath.Glob` has no `**` — the
   second star adds nothing to `filepath.Match` — so `**/*.go` matched
