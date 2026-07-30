@@ -375,8 +375,18 @@ func (m *mockJournal) Stream(ctx context.Context, from string) (<-chan core.Even
 	return ch, nil
 }
 
+// Checkpoint returns the last appended event's ID, like journalImpl does.
+// It used to return "" unconditionally, which made every consumer that keys
+// off the cursor — Recall's snapshot cache among them — look like it worked
+// while actually comparing "" to "": a cache that never invalidated passed
+// its own invalidation test.
 func (m *mockJournal) Checkpoint(ctx context.Context) (string, error) {
-	return "", nil
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(m.events) == 0 {
+		return "", nil
+	}
+	return m.events[len(m.events)-1].ID, nil
 }
 
 func (m *mockJournal) Rotate(ctx context.Context) error {

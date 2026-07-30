@@ -110,7 +110,35 @@ type Handlers struct {
 	statsCacheMu  sync.RWMutex
 	statsCache    *StatsResponse
 	statsCachedAt time.Time
+
+	// recallCache memoises rendered snapshots against the journal cursor.
+	//
+	// Recall streams the ENTIRE journal on every call — every segment, every
+	// line unmarshalled, and every event signature-verified (a canonical
+	// re-marshal plus SHA-256 each). Nothing about that work changes between
+	// two calls with no new events, and an agent recalling twice in a turn,
+	// or two agents sharing a daemon, pays it twice.
+	//
+	// Keyed on (project, budget, format) and validated against the journal's
+	// checkpoint, so invalidation is exact rather than time-based: one new
+	// event changes the cursor and the next Recall rebuilds. A TTL would have
+	// been simpler and wrong in both directions — stale inside the window,
+	// needlessly cold outside it.
+	recallCacheMu sync.Mutex
+	recallCache   map[string]recallCacheEntry
 }
+
+// recallCacheEntry is one memoised snapshot plus the journal cursor it was
+// built from.
+type recallCacheEntry struct {
+	cursor   string
+	snapshot string
+}
+
+// recallCacheCap bounds the number of (project, budget, format) combinations
+// held. Small on purpose: callers use a handful of budgets, and a miss costs
+// only the work Recall would have done anyway.
+const recallCacheCap = 16
 
 // statsTTL is how long Stats() returns the memoised result before
 // re-streaming the journal. 5 seconds keeps the dashboard's poll loop cheap
@@ -210,6 +238,42 @@ func (h *Handlers) SetRedactor(r *redact.Redactor) {
 	h.sentCache = nil
 	h.sentOrder = nil
 	h.sentMu.Unlock()
+	// Snapshots were rendered through the previous redactor; a new one may
+	// mask more (or differently), and a cached snapshot would keep serving
+	// the old masking under an unchanged journal cursor.
+	h.recallCacheMu.Lock()
+	h.recallCache = nil
+	h.recallCacheMu.Unlock()
+}
+
+// recallCached returns the memoised snapshot for key when it was built from
+// the given journal cursor.
+func (h *Handlers) recallCached(key, cursor string) (string, bool) {
+	h.recallCacheMu.Lock()
+	defer h.recallCacheMu.Unlock()
+	entry, ok := h.recallCache[key]
+	if !ok || entry.cursor != cursor {
+		return "", false
+	}
+	return entry.snapshot, true
+}
+
+// recallStore memoises a rendered snapshot. Eviction is a plain drop of an
+// arbitrary entry at the cap: the cache is an optimization, and every entry
+// is equally cheap to rebuild.
+func (h *Handlers) recallStore(key, cursor, snapshot string) {
+	h.recallCacheMu.Lock()
+	defer h.recallCacheMu.Unlock()
+	if h.recallCache == nil {
+		h.recallCache = make(map[string]recallCacheEntry, recallCacheCap)
+	}
+	if len(h.recallCache) >= recallCacheCap {
+		for k := range h.recallCache {
+			delete(h.recallCache, k)
+			break
+		}
+	}
+	h.recallCache[key] = recallCacheEntry{cursor: cursor, snapshot: snapshot}
 }
 
 // getRedactor returns the current redactor under read-lock so callers see a

@@ -57,7 +57,7 @@ func schemaExec() MCPTool {
 				},
 				"timeout": map[string]any{
 					"type":        "integer",
-					"description": "Timeout in seconds. Default: 60",
+					"description": "Timeout in seconds (max 900).",
 					"default":     60,
 				},
 			},
@@ -83,12 +83,12 @@ func schemaRead() MCPTool {
 				},
 				"offset": map[string]any{
 					"type":        "integer",
-					"description": "Byte offset to start reading",
+					"description": "First line to return (1-based)",
 					"default":     0,
 				},
 				"limit": map[string]any{
 					"type":        "integer",
-					"description": "Maximum bytes to read",
+					"description": "Maximum number of lines",
 					"default":     0,
 				},
 				"return": map[string]any{

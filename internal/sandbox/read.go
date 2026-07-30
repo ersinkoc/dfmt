@@ -1,15 +1,22 @@
 package sandbox
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
-	"io"
+	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/ersinkoc/dfmt/internal/safefs"
 )
+
+// maxReadLineBytes caps a single line the scanner will return. Minified
+// bundles and one-line JSON dumps are the reason it is generous; beyond it
+// the scan fails rather than silently truncating, which is the same contract
+// the journal reader uses.
+const maxReadLineBytes = 1 << 20
 
 // MaxSandboxReadBytes caps the total bytes sandbox.Read will load into memory
 // regardless of the caller's requested limit. Prevents OOM on huge files.
@@ -99,32 +106,32 @@ func (s *SandboxImpl) Read(ctx context.Context, req ReadReq) (ReadResp, error) {
 	}
 	totalSize := fi.Size()
 
-	if req.Offset < 0 {
-		req.Offset = 0
+	// Line-oriented windowing.
+	//
+	// Offset and Limit used to be BYTES, which is a unit no agent thinks in:
+	// to look at a function it knew started around line 400, it had to guess
+	// a byte offset, and nothing in the response said which lines came back.
+	// The practical result was a fall back to the native Read tool for any
+	// real code work — measured on this very review. Offset is now a 1-based
+	// starting line (0 and 1 both mean "from the top") and Limit a line
+	// count, matching what every editor, stack trace, and code-review tool
+	// already agrees on.
+	//
+	// Deliberately NOT done: prefixing each line with its number. Numbered
+	// content is a trap for the next step in the loop — an agent that copies
+	// an anchor out of it builds an old_string that cannot match the file,
+	// and dfmt_edit would refuse (or worse, with the old first-match
+	// behaviour, silently hit the wrong site). The line numbers travel in
+	// the response metadata and in Matches[].Line instead.
+	startLine := int(req.Offset)
+	if startLine < 1 {
+		startLine = 1
 	}
-	if req.Limit < 0 {
-		req.Limit = 0
-	}
-	if req.Offset > 0 {
-		if _, err := f.Seek(req.Offset, io.SeekStart); err != nil {
-			return ReadResp{}, err
-		}
-	}
-	readBudget := int64(MaxSandboxReadBytes)
-	if req.Limit > 0 && req.Limit < readBudget {
-		readBudget = req.Limit
-	}
-	data, err := io.ReadAll(io.LimitReader(f, readBudget))
+	limit := int(req.Limit)
+
+	content, window, err := readLineWindow(f, totalSize, startLine, limit)
 	if err != nil {
 		return ReadResp{}, err
-	}
-
-	content := string(data)
-	// Trim a trailing partial UTF-8 rune when readBudget actually clipped the
-	// file — without this a multi-byte character cut at the boundary reaches
-	// the consumer as invalid UTF-8 (encoding/json emits U+FFFD on marshal).
-	if int64(len(data)) >= readBudget && totalSize-req.Offset > readBudget {
-		content = trimPartialRune(content)
 	}
 
 	// Apply unified return-policy filter; see ApplyReturnPolicy for rules.
@@ -138,7 +145,91 @@ func (s *SandboxImpl) Read(ctx context.Context, req ReadReq) (ReadResp, error) {
 		Summary:    filtered.Summary,
 		Size:       totalSize,
 		ReadBytes:  int64(len(content)),
+		StartLine:  window.start,
+		EndLine:    window.end,
+		TotalLines: window.total,
 	}, nil
+}
+
+// lineWindow describes which part of a file a read returned. total is 0 when
+// the scan stopped before the end of the file, because at that point the
+// count is genuinely unknown and reporting a partial count as the total
+// would be worse than saying nothing.
+type lineWindow struct {
+	start int
+	end   int
+	total int
+}
+
+// readLineWindow returns the requested line range as text plus the window it
+// covers. It streams rather than slurping: skipping to line 4000 of a large
+// log costs I/O but not memory, which is what preserves access to files
+// bigger than MaxSandboxReadBytes.
+//
+// The trailing newline of the last line is preserved only if the source had
+// one, so a full read round-trips byte-for-byte — anything else would break
+// dfmt_edit anchors taken from the end of a file.
+func readLineWindow(f *os.File, totalSize int64, startLine, limit int) (string, lineWindow, error) {
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 64*1024), maxReadLineBytes)
+
+	var b strings.Builder
+	w := lineWindow{start: startLine}
+	lineNo := 0
+	collected := 0
+	reachedEOF := true
+
+	for sc.Scan() {
+		lineNo++
+		if lineNo < startLine {
+			continue
+		}
+		if limit > 0 && collected >= limit {
+			reachedEOF = false
+			break
+		}
+		line := sc.Text()
+		if b.Len()+len(line)+1 > MaxSandboxReadBytes {
+			reachedEOF = false
+			break
+		}
+		b.WriteString(line)
+		b.WriteByte('\n')
+		collected++
+		w.end = lineNo
+	}
+	if err := sc.Err(); err != nil {
+		return "", w, err
+	}
+	if reachedEOF {
+		w.total = lineNo
+	}
+	if collected == 0 {
+		// Offset past the end of the file: an empty window, not an error.
+		// The caller asked a coherent question and the answer is "nothing
+		// there"; total (when known) tells it how far the file actually goes.
+		w.start, w.end = 0, 0
+		return "", w, nil
+	}
+
+	content := b.String()
+	// Drop the newline we appended to the final line when the file itself
+	// did not end with one and we read to its end.
+	if reachedEOF && totalSize > 0 && !fileEndsWithNewline(f, totalSize) {
+		content = strings.TrimSuffix(content, "\n")
+	}
+	return content, w, nil
+}
+
+// fileEndsWithNewline reports whether the last byte of the file is a newline.
+// A read error is reported as "yes" so the caller leaves the content as-is;
+// guessing the other way would silently strip a real newline.
+func fileEndsWithNewline(f *os.File, size int64) bool {
+	var buf [1]byte
+	if _, err := f.ReadAt(buf[:], size-1); err != nil {
+		return true
+	}
+	return buf[0] == '\n'
 }
 
 // MaxFetchBodyBytes caps the size of an HTTP response body that Fetch will read.

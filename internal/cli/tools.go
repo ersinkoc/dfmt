@@ -113,8 +113,8 @@ func runRead(args []string) int {
 
 	fs := flag.NewFlagSet("read", flag.ContinueOnError)
 	fs.StringVar(&intent, "intent", "", "Intent for content filtering")
-	fs.Int64Var(&offset, "offset", 0, "Byte offset")
-	fs.Int64Var(&limit, "limit", 0, "Max bytes to read")
+	fs.Int64Var(&offset, "offset", 0, "First line to return (1-based)")
+	fs.Int64Var(&limit, "limit", 0, "Max lines to read")
 	if err := fs.Parse(args); err != nil {
 		if err == flag.ErrHelp {
 			return 0

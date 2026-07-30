@@ -834,7 +834,7 @@ func execRPCTimeout(seconds int) time.Duration {
 // are pinned by TestExecRPCTimeoutMatchesSandboxLimits.
 const (
 	sandboxDefaultExecTimeout = 60 * time.Second
-	sandboxMaxExecTimeout     = 300 * time.Second
+	sandboxMaxExecTimeout     = 900 * time.Second
 )
 
 // doHTTP issues an RPC with the client's default (short) timeout. Use it
@@ -849,7 +849,7 @@ func (c *Client) doHTTP(method string, req transport.Request) ([]byte, error) {
 //
 // This exists because a single client-wide timeout silently capped every
 // tool call at timeouts.RPC (5 s). The sandbox honours its own
-// DefaultExecTimeout (60 s), MaxExecTimeout (300 s), and the `timeout`
+// DefaultExecTimeout (60 s), MaxExecTimeout (900 s), and the `timeout`
 // argument the MCP schema advertises as "Timeout in seconds. Default: 60" —
 // but the caller had already hung up at 5 s, so anything slower than that
 // was unreachable through the daemon no matter what the caller asked for.

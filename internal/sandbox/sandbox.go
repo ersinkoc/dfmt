@@ -50,11 +50,17 @@ type ExecResp struct {
 }
 
 // ReadReq is a request to read a file.
+//
+// Offset and Limit are LINES, not bytes: Offset is the 1-based first line to
+// return (0 and 1 both mean the top of the file) and Limit is how many lines
+// to return (0 = as many as fit). They were byte quantities, which is a unit
+// nothing else in an agent's world uses — stack traces, editors, review
+// comments and Matches[].Line all speak lines.
 type ReadReq struct {
 	Path   string // File path
 	Intent string // Intent for content filtering
-	Offset int64  // Byte offset to start reading
-	Limit  int64  // Maximum bytes to read
+	Offset int64  // 1-based first line to return (0 = from the top)
+	Limit  int64  // Maximum number of lines to return (0 = unlimited)
 	Return string // "auto" | "raw" | "summary" | "search"
 }
 
@@ -69,6 +75,15 @@ type ReadResp struct {
 	Matches    []ContentMatch // Intent-matched excerpts
 	Size       int64          // Total file size
 	ReadBytes  int64          // Bytes actually read
+	// StartLine/EndLine are the 1-based inclusive line range returned, so a
+	// caller can cite file:line without counting newlines itself. Both 0
+	// when the requested window lies past the end of the file.
+	StartLine int
+	EndLine   int
+	// TotalLines is the file's line count, or 0 when the read stopped early
+	// (line limit or byte ceiling) and the true total was never established.
+	// Reporting a partial count as the total would be worse than silence.
+	TotalLines int
 }
 
 // FetchReq is a request to fetch a URL.
@@ -188,7 +203,25 @@ type WriteResp struct {
 const DefaultExecTimeout = 60 * time.Second
 
 // MaxExecTimeout is the maximum allowed execution timeout.
-const MaxExecTimeout = 300 * time.Second
+//
+// 15 minutes, raised from 5. The ceiling exists to stop a runaway command
+// from pinning an exec slot forever, not to define what counts as a
+// reasonable job — and at 300 s it was doing the latter: this repository's
+// own `go test ./...` takes ~9 minutes, so the tool that exists to replace
+// Bash could not run the project's test suite. A build, a test suite, or a
+// container image pull is the normal shape of an agent-driven exec, and
+// none of them fit in five minutes on a cold cache.
+//
+// What still bounds a runaway: the deadline is enforced against the whole
+// process tree (see execImpl), the caller's own `timeout` argument is
+// usually far lower, execSem caps concurrent execs at 4, and a timed-out
+// call now returns a clean verdict with partial output rather than hanging.
+//
+// Deliberately NOT solved here: a job that outlives even this — a long
+// migration, a soak test — needs an async job handle (submit, poll, fetch
+// output), which is a new MCP tool, a job store, and a cancellation story.
+// That is a feature with its own ADR, not a constant.
+const MaxExecTimeout = 900 * time.Second
 
 // execWaitDelay is how long Wait may keep blocking after the deadline has
 // fired and the process tree has been killed. It exists for the descendant
