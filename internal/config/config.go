@@ -170,7 +170,7 @@ func Default() *Config {
 	// FSWatcher wire-up is opt-in: set capture.fs.enabled=true in the
 	// project config to start indexing file-system activity.
 	c.Capture.FS.Enabled = false
-	c.Capture.FS.Ignore = []string{".git/**", "node_modules/**", "__pycache__/**"}
+	c.Capture.FS.Ignore = []string{".dfmt/**", ".git/**", "node_modules/**", "__pycache__/**"}
 	c.Capture.FS.DebounceMS = 500
 
 	// Storage defaults
