@@ -1091,6 +1091,25 @@ func stopGlobalDaemon() int {
 		return 1
 	}
 
+	// LIF-2: never stop ourselves. An in-process daemon (runMCP, or a
+	// test's PromoteInProcess) shares this process's PID, so signaling
+	// "the daemon" would signal us — and the forced-kill escalation is
+	// SIGKILL on Unix, which kills the host CLI / test binary. This is
+	// exactly what broke the v0.7.4 release gate on ubuntu-latest: a test
+	// wrote its own PID into the global PID file, ran `dfmt stop`, and the
+	// escalation SIGKILLed the whole test binary ("signal: killed", no
+	// --- FAIL line). In production the CLI and daemon are always separate
+	// processes, so pid != Getpid there and this is a no-op. Treat "the
+	// daemon is us" as already stopped: clear the rendezvous files (but NOT
+	// the lock — LIF-1, we still hold the flock) and report success.
+	if pid == os.Getpid() {
+		_ = os.Remove(project.GlobalPIDPath())
+		_ = os.Remove(project.GlobalPortPath())
+		_ = os.Remove(project.GlobalSocketPath())
+		fmt.Printf("Global daemon stopped (was PID %d)\n", pid)
+		return 0
+	}
+
 	signalStopProcess(pid, false)
 	fmt.Printf("Sent stop signal to global daemon (PID %d)\n", pid)
 	waitForGlobalExit(pid, rpcTimeout)
@@ -1168,6 +1187,15 @@ func waitForGlobalExit(pid int, timeout time.Duration) {
 // index, releasing the lock cleanly. Force is only invoked after a graceful
 // attempt has timed out.
 func signalStopProcess(pid int, force bool) {
+	// LIF-2: never signal ourselves. An in-process daemon shares this
+	// process's PID; taskkill /F or SIGKILL against it would terminate the
+	// host CLI / test binary. stopGlobalDaemon short-circuits the self case
+	// earlier, but keep the guard here so no caller can ever kill the
+	// current process. No-op in production, where the CLI and daemon are
+	// always separate processes.
+	if pid == os.Getpid() {
+		return
+	}
 	if osutil.IsWindows() {
 		args := []string{"/PID", fmt.Sprintf("%d", pid), "/T"}
 		if force {
