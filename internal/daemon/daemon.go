@@ -308,15 +308,13 @@ func NewGlobal(cfg *config.Config) (*Daemon, error) {
 			return nil, fmt.Errorf("transport: no listener configured — transport.socket.enabled is false and transport.http.enabled is also false. " +
 				"Set one of them to true (HTTP requires transport.http.bind to also be non-empty)")
 		}
+		// LIF-3: store the socket path for deferred bind in Start(), after the
+		// singleton lock is acquired. Binding here would let a losing daemon
+		// race bind the socket before the lock winner, causing "address already
+		// in use" for the winner and leaving no daemon at all.
 		socketPath := project.GlobalSocketPath()
-		ln, err := transport.ListenUnixSocket(socketPath)
-		if err != nil {
-			return nil, fmt.Errorf("create global socket listener: %w", err)
-		}
-		if cerr := os.Chmod(socketPath, 0o700); cerr != nil {
-			logging.Warnf("chmod global socket: %v", cerr)
-		}
-		httpServer = transport.NewHTTPServerWithListener(ln, handlers, socketPath)
+		httpServer = transport.NewHTTPServer("", handlers)
+		httpServer.SetSocketBindPath(socketPath)
 	}
 	server = httpServer
 
