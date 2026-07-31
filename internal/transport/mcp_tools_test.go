@@ -55,11 +55,12 @@ func TestMCPToolsCall_Exec_HandlerError(t *testing.T) {
 	sb := &stubSandbox{execErr: errors.New("bad")}
 	m := newTestMCPProtocol(sb, nil)
 	resp := callTool(t, m, methodExec, ExecParams{Code: "x"})
-	if resp.Error == nil {
-		t.Fatal("expected error")
+	if resp.Error != nil {
+		t.Fatalf("TRN-7: expected IsError tool result, got JSON-RPC error: %s", resp.Error.Message)
 	}
-	if resp.Error.Code != -32603 {
-		t.Errorf("expected -32603, got %d", resp.Error.Code)
+	result, ok := resp.Result.(MCPCallToolResult)
+	if !ok || !result.IsError {
+		t.Fatal("TRN-7: expected IsError=true tool result")
 	}
 }
 
@@ -98,8 +99,12 @@ func TestMCPToolsCall_Read_HandlerError(t *testing.T) {
 	sb := &stubSandbox{readErr: errors.New("ENOENT")}
 	m := newTestMCPProtocol(sb, nil)
 	resp := callTool(t, m, methodRead, ReadParams{Path: "/x"})
-	if resp.Error == nil {
-		t.Fatal("expected error")
+	if resp.Error != nil {
+		t.Fatalf("TRN-7: expected IsError tool result, got JSON-RPC error: %s", resp.Error.Message)
+	}
+	result, ok := resp.Result.(MCPCallToolResult)
+	if !ok || !result.IsError {
+		t.Fatal("TRN-7: expected IsError=true tool result")
 	}
 }
 
@@ -130,8 +135,12 @@ func TestMCPToolsCall_Fetch_HandlerError(t *testing.T) {
 	sb := &stubSandbox{fetchErr: errors.New("dns")}
 	m := newTestMCPProtocol(sb, nil)
 	resp := callTool(t, m, methodFetch, FetchParams{URL: "x"})
-	if resp.Error == nil {
-		t.Fatal("expected error")
+	if resp.Error != nil {
+		t.Fatalf("TRN-7: expected IsError tool result, got JSON-RPC error: %s", resp.Error.Message)
+	}
+	result, ok := resp.Result.(MCPCallToolResult)
+	if !ok || !result.IsError {
+		t.Fatal("TRN-7: expected IsError=true tool result")
 	}
 }
 
@@ -178,8 +187,12 @@ func TestMCPToolsCall_Stats_HandlerError(t *testing.T) {
 	m := NewMCPProtocol(handlers)
 
 	resp := callTool(t, m, methodStats, StatsParams{})
-	if resp.Error == nil {
-		t.Fatal("expected error")
+	if resp.Error != nil {
+		t.Fatalf("TRN-7: expected IsError tool result, got JSON-RPC error: %s", resp.Error.Message)
+	}
+	result, ok := resp.Result.(MCPCallToolResult)
+	if !ok || !result.IsError {
+		t.Fatal("TRN-7: expected IsError=true tool result")
 	}
 }
 
@@ -190,8 +203,12 @@ func TestMCPToolsCall_Remember_HandlerError(t *testing.T) {
 	m := NewMCPProtocol(handlers)
 
 	resp := callTool(t, m, methodRemember, RememberParams{Type: "note", Source: "x"})
-	if resp.Error == nil {
-		t.Fatal("expected error")
+	if resp.Error != nil {
+		t.Fatalf("TRN-7: expected IsError tool result, got JSON-RPC error: %s", resp.Error.Message)
+	}
+	result, ok := resp.Result.(MCPCallToolResult)
+	if !ok || !result.IsError {
+		t.Fatal("TRN-7: expected IsError=true tool result")
 	}
 }
 
@@ -240,8 +257,12 @@ func TestMCPToolsCall_Recall_HandlerError(t *testing.T) {
 	// Recall streams the journal; the mock returns an error when failRecall
 	// is set, which exercises the error branch in handleToolsCall.
 	resp := callTool(t, m, methodRecall, RecallParams{})
-	if resp.Error == nil {
-		t.Fatal("expected error (recall stream fail)")
+	if resp.Error != nil {
+		t.Fatalf("TRN-7: expected IsError tool result, got JSON-RPC error: %s", resp.Error.Message)
+	}
+	result, ok := resp.Result.(MCPCallToolResult)
+	if !ok || !result.IsError {
+		t.Fatal("TRN-7: expected IsError=true tool result (recall stream fail)")
 	}
 }
 

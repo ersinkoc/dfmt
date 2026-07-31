@@ -180,6 +180,17 @@ func mcpToolResult(payload any) MCPCallToolResult {
 	}
 }
 
+// mcpToolResultWithErr wraps an execution error in a MCPCallToolResult with
+// IsError:true (TRN-7). The error text goes into content[0].text so the
+// model reads it, and structuredContent carries nil — there is no payload
+// to deliver, only the error message.
+func mcpToolResultWithErr(err error) MCPCallToolResult {
+	return MCPCallToolResult{
+		Content: []MCPContent{{Type: "text", Text: err.Error()}},
+		IsError: true,
+	}
+}
+
 // MCPResponse represents an MCP response. The ID field is emitted as
 // "null" on parse errors per JSON-RPC 2.0 §5.1, so we intentionally do
 // NOT use omitempty — notifications are filtered upstream by returning
@@ -469,7 +480,22 @@ func dispatchTool[T any, R any](
 	ctx = WithProjectID(ctx, m.effectiveProjectID(pid(args)))
 	result, err := call(ctx, args)
 	if err != nil {
-		return m.errorResult(req.ID, -32603, err.Error())
+		// TRN-7: execution errors (command failed, host blocked, no
+		// project, etc.) are tool-level failures, not protocol errors.
+		// The MCP spec distinguishes:
+		//   - JSON-RPC error (-326xx): protocol/validation/transport
+		//   - CallToolResult{isError:true}: the tool ran but the result
+		//     indicates failure; the model sees the message and can
+		//     recover.
+		// Many MCP hosts surface -32603 as "tool call failed" without
+		// giving the model the error text — losing carefully written
+		// recovery hints like errNoProject's instruction. Wrapping the
+		// error in IsError:true ensures the model receives the message.
+		return &MCPResponse{
+			JSONRPC: jsonRPCVersion,
+			Result:  mcpToolResultWithErr(err),
+			ID:      req.ID,
+		}, nil
 	}
 	return &MCPResponse{
 		JSONRPC: jsonRPCVersion,

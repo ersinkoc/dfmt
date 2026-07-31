@@ -2383,14 +2383,15 @@ func TestMCPProtocolHandleToolsCallRememberHandlerError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Handle failed: %v", err)
 	}
-	if resp.Error == nil {
-		t.Fatal("resp.Error is nil for handler error")
+	if resp.Error != nil {
+		t.Fatalf("TRN-7: expected IsError tool result, got JSON-RPC error: %s", resp.Error.Message)
 	}
-	if resp.Error.Code != -32603 {
-		t.Errorf("resp.Error.Code = %d, want -32603", resp.Error.Code)
+	result, ok := resp.Result.(MCPCallToolResult)
+	if !ok || !result.IsError {
+		t.Fatal("TRN-7: expected IsError=true tool result for handler error")
 	}
-	if !strings.Contains(resp.Error.Message, "journal append") {
-		t.Errorf("resp.Error.Message = %s, want to contain 'journal append'", resp.Error.Message)
+	if !strings.Contains(result.Content[0].Text, "journal append") {
+		t.Errorf("error text = %s, want to contain 'journal append'", result.Content[0].Text)
 	}
 }
 
@@ -2412,14 +2413,15 @@ func TestMCPProtocolHandleToolsCallRecallHandlerError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Handle failed: %v", err)
 	}
-	if resp.Error == nil {
-		t.Fatal("resp.Error is nil for handler error")
+	if resp.Error != nil {
+		t.Fatalf("TRN-7: expected IsError tool result, got JSON-RPC error: %s", resp.Error.Message)
 	}
-	if resp.Error.Code != -32603 {
-		t.Errorf("resp.Error.Code = %d, want -32603", resp.Error.Code)
+	result, ok := resp.Result.(MCPCallToolResult)
+	if !ok || !result.IsError {
+		t.Fatal("TRN-7: expected IsError=true tool result for handler error")
 	}
-	if !strings.Contains(resp.Error.Message, "stream journal") {
-		t.Errorf("resp.Error.Message = %s, want to contain 'stream journal'", resp.Error.Message)
+	if !strings.Contains(result.Content[0].Text, "stream journal") {
+		t.Errorf("error text = %s, want to contain 'stream journal'", result.Content[0].Text)
 	}
 }
 
