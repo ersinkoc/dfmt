@@ -24,7 +24,12 @@ type Response struct {
 	JSONRPC string    `json:"jsonrpc"`
 	Result  any       `json:"result,omitempty"`
 	Error   *RPCError `json:"error,omitempty"`
-	ID      any       `json:"id,omitempty"`
+	// ID is required in every response (JSON-RPC 2.0 §5). On parse
+	// errors where the request ID could not be decoded, it MUST be null
+	// (§5.1) — omitting it entirely breaks client correlation. The
+	// previous `omitempty` tag dropped the field when ID was nil, which
+	// is exactly the parse-error case (TRN-8).
+	ID any `json:"id"`
 }
 
 // RPCError represents a JSON-RPC error.

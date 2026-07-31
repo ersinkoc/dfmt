@@ -243,6 +243,32 @@ func TestResponse(t *testing.T) {
 	}
 }
 
+// TRN-8: Response.ID must be present in every serialized response, even
+// when it is 0 (integer IDs start at 0) or nil (parse-error envelope).
+// The previous `omitempty` tag dropped the field in both cases, breaking
+// client correlation per JSON-RPC 2.0 §5/§5.1.
+func TestResponseIDNeverOmitted(t *testing.T) {
+	// id=0 must survive round-trip (no omitempty).
+	resp0 := &Response{JSONRPC: jsonRPCVersion, ID: 0}
+	data, err := json.Marshal(resp0)
+	if err != nil {
+		t.Fatalf("Marshal id=0: %v", err)
+	}
+	if !strings.Contains(string(data), `"id":0`) {
+		t.Errorf("id=0 omitted from JSON: %s", data)
+	}
+
+	// id=nil (parse error) must serialize as "id":null, not be absent.
+	respNil := &Response{JSONRPC: jsonRPCVersion, Error: &RPCError{Code: -32700, Message: "parse error"}}
+	data, err = json.Marshal(respNil)
+	if err != nil {
+		t.Fatalf("Marshal id=nil: %v", err)
+	}
+	if !strings.Contains(string(data), `"id":null`) {
+		t.Errorf("id=nil not present as null in JSON: %s", data)
+	}
+}
+
 type pipeReadWriter struct {
 	buf *bytes.Buffer
 }
