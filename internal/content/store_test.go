@@ -3,11 +3,37 @@ package content
 import (
 	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/ersinkoc/dfmt/internal/core"
 )
+
+func TestValidateIDRejectsUnsafeText(t *testing.T) {
+	tests := []struct {
+		name string
+		id   string
+	}{
+		{name: "empty", id: ""},
+		{name: "too long", id: strings.Repeat("a", 129)},
+		{name: "newline suffix", id: "valid-prefix\n"},
+		{name: "path separator", id: "valid/prefix"},
+		{name: "carriage return", id: "valid\rprefix"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := validateID(tt.id); err == nil {
+				t.Errorf("validateID(%q) accepted unsafe content ID", tt.id)
+			}
+		})
+	}
+
+	if err := validateID("Safe_ID-123"); err != nil {
+		t.Errorf("validateID rejected safe content ID: %v", err)
+	}
+}
 
 func TestChunkAndChunkSet(t *testing.T) {
 	chunk := &Chunk{
