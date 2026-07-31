@@ -104,7 +104,7 @@ func TestValidate_LoggingFormatAllowlist(t *testing.T) {
 	if err := cfg.Validate(); err != nil {
 		t.Errorf("empty format: %v", err)
 	}
-	cfg.Logging.Format = "text"
+	cfg.Logging.Format = loggingFormatText
 	if err := cfg.Validate(); err != nil {
 		t.Errorf("text format: %v", err)
 	}
@@ -460,6 +460,7 @@ func TestLoadNonExistentProject(t *testing.T) {
 	}
 	if cfg == nil {
 		t.Fatal("Load returned nil config")
+		return
 	}
 	if cfg.Version != 1 {
 		t.Errorf("Default config should have version 1, got %d", cfg.Version)
@@ -502,7 +503,7 @@ func TestConfigFields(t *testing.T) {
 		t.Errorf("Logging.Level = %s, want 'warn'", cfg.Logging.Level)
 	}
 
-	if cfg.Logging.Format != "text" {
+	if cfg.Logging.Format != loggingFormatText {
 		t.Errorf("Logging.Format = %s, want 'text'", cfg.Logging.Format)
 	}
 }

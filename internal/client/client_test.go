@@ -584,6 +584,7 @@ func TestNewClient(t *testing.T) {
 	}
 	if cl == nil {
 		t.Fatal("NewClient returned nil")
+		return
 	}
 	if cl.timeout != 5*time.Second {
 		t.Errorf("timeout = %v, want 5s", cl.timeout)
@@ -695,6 +696,7 @@ func TestClientFields(t *testing.T) {
 	}
 	if cl == nil {
 		t.Fatal("client is nil")
+		return
 	}
 	if cl.socketPath == "" {
 		t.Error("socketPath should be set")
@@ -1106,6 +1108,7 @@ func TestNewClientWithRealPath(t *testing.T) {
 	}
 	if cl == nil {
 		t.Fatal("NewClient returned nil")
+		return
 	}
 	expected := project.SocketPath(tmpDir)
 	if cl.socketPath != expected {
@@ -1192,6 +1195,7 @@ func TestNewClientNonExistentPath(t *testing.T) {
 	}
 	if cl == nil {
 		t.Fatal("NewClient returned nil")
+		return
 	}
 	// socketPath should still be set correctly
 	if cl.socketPath == "" {

@@ -425,6 +425,7 @@ func TestHandlersSearch(t *testing.T) {
 	}
 	if resp == nil {
 		t.Fatal("SearchResponse is nil")
+		return
 	}
 	if resp.Layer != "" {
 		t.Errorf("resp.Layer = %s, want ''", resp.Layer)
@@ -2535,6 +2536,7 @@ func TestHandlersSearchNilIndex(t *testing.T) {
 	}
 	if resp == nil {
 		t.Fatal("resp is nil")
+		return
 	}
 	if resp.Results != nil {
 		t.Error("Results should be nil when index is nil")
@@ -2773,6 +2775,7 @@ func TestHandlersCloneStatsResponseFull(t *testing.T) {
 	got := cloneStatsResponse(src)
 	if got == nil {
 		t.Fatal("cloneStatsResponse returned nil")
+		return
 	}
 	if got == src {
 		t.Error("cloneStatsResponse should return a new pointer")

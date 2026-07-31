@@ -848,7 +848,7 @@ func (c *Client) doHTTP(method string, req transport.Request) ([]byte, error) {
 // doHTTPTimeout is doHTTP with an explicit per-call deadline.
 //
 // This exists because a single client-wide timeout silently capped every
-// tool call at timeouts.RPC (5 s). The sandbox honours its own
+// tool call at timeouts.RPC (5 s). The sandbox honors its own
 // DefaultExecTimeout (60 s), MaxExecTimeout (900 s), and the `timeout`
 // argument the MCP schema advertises as "Timeout in seconds. Default: 60" —
 // but the caller had already hung up at 5 s, so anything slower than that

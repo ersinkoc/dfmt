@@ -455,6 +455,7 @@ func TestLoadChunkSet(t *testing.T) {
 	}
 	if loaded == nil {
 		t.Fatal("LoadChunkSet returned nil")
+		return
 	}
 	if loaded.Kind != "test" {
 		t.Errorf("Kind = %q, want 'test'", loaded.Kind)

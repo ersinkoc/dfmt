@@ -150,7 +150,7 @@ type SearchParams struct {
 	//
 	// It exists because a journal is overwhelmingly automatic: 193 of 202
 	// events on this repo were tool.* calls, each a short document that
-	// BM25's length normalization favours over a long, information-dense
+	// BM25's length normalization favors over a long, information-dense
 	// note. Measured before this filter existed: a query for "timeout"
 	// against a journal whose single note discussed timeouts at length
 	// returned six tool.grep/tool.exec hits and not the note. The scoring

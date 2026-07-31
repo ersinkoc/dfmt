@@ -10,7 +10,7 @@ import (
 // Regression tests for the client-side timeout cap.
 //
 // Every tool call went through one http.Client built with the client's
-// single `timeout` field, which is timeouts.RPC (5 s). The sandbox honours
+// single `timeout` field, which is timeouts.RPC (5 s). The sandbox honors
 // DefaultExecTimeout (60 s), MaxExecTimeout (900 s), and the `timeout`
 // argument the MCP schema advertises as "Timeout in seconds. Default: 60" —
 // but the caller had already hung up at 5 s, so nothing slower than that was
@@ -43,7 +43,7 @@ func TestExecRPCTimeoutDerivesFromCallerRequest(t *testing.T) {
 	}{
 		{"zero means the sandbox default", 0, sandboxDefaultExecTimeout + rpcHeadroom},
 		{"negative treated as default", -5, sandboxDefaultExecTimeout + rpcHeadroom},
-		{"honours an explicit request", 120, 120*time.Second + rpcHeadroom},
+		{"honors an explicit request", 120, 120*time.Second + rpcHeadroom},
 		{"clamped at the sandbox maximum", 9999, sandboxMaxExecTimeout + rpcHeadroom},
 		{"exactly the maximum", 900, sandboxMaxExecTimeout + rpcHeadroom},
 	}

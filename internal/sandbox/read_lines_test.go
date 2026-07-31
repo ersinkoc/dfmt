@@ -19,7 +19,7 @@ func lineFile(t *testing.T, lines int, trailingNewline bool) (*SandboxImpl, stri
 	dir := t.TempDir()
 	var b strings.Builder
 	for i := 1; i <= lines; i++ {
-		b.WriteString(fmt.Sprintf("line %d", i))
+		fmt.Fprintf(&b, "line %d", i)
 		if i < lines || trailingNewline {
 			b.WriteString("\n")
 		}

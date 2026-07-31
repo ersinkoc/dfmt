@@ -376,7 +376,7 @@ func TestConfigStruct(t *testing.T) {
 }
 
 // EnvSet reports whether DFMT_LOG was set at process start. It gates
-// whether the daemon honours an explicit log level or falls back to its
+// whether the daemon honors an explicit log level or falls back to its
 // default, and was uncovered.
 func TestEnvSetAnswers(t *testing.T) {
 	// The value depends on the ambient environment at package init, so the

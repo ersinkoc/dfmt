@@ -412,6 +412,7 @@ func TestNewHTTPServerWithListener(t *testing.T) {
 	hs := NewHTTPServerWithListener(ln, handlers, "/tmp/does-not-matter.sock")
 	if hs == nil {
 		t.Fatal("expected server")
+		return
 	}
 	if hs.handlers != handlers {
 		t.Error("handlers not wired")

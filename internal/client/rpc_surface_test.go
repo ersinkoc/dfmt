@@ -345,13 +345,13 @@ func TestClientKeepsExplicitProjectID(t *testing.T) {
 	f.setResult(transport.ExecResponse{})
 	c := f.client("D:\\default")
 
-	_, err := c.Exec(context.Background(), transport.ExecParams{Code: "x", ProjectID: "D:\\other"})
+	_, err := c.Exec(context.Background(), transport.ExecParams{Code: "x", ProjectID: "D:\\target"})
 	if err != nil {
 		t.Fatalf("Exec: %v", err)
 	}
 	var sent transport.ExecParams
 	_ = json.Unmarshal(f.request().Params, &sent)
-	if sent.ProjectID != "D:\\other" {
+	if sent.ProjectID != "D:\\target" {
 		t.Errorf("ProjectID = %q, want the caller's explicit value", sent.ProjectID)
 	}
 }

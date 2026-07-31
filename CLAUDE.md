@@ -218,10 +218,13 @@ Everything else — HTML parser, BM25, Porter stemmer, MCP wire format, JSON-RPC
 
 ### Test coverage thresholds
 
+Executable targets live in `scripts/coverage-gate.go`; keep this table in sync with that script.
+CI currently runs the coverage gate informationally without `--strict` until the test-integrity cleanup is complete.
+
 - `internal/core`       ≥ 90 %
 - `internal/transport`  ≥ 85 %
-- `internal/daemon`    ≥ 75 %
-- `internal/cli`       ≥ 70 %
+- `internal/daemon`    ≥ 80 %
+- `internal/cli`       ≥ 75 %
 
 New functionality requires tests; bug fixes require regression tests.
 
