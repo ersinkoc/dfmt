@@ -255,11 +255,17 @@ func (s *SocketServer) dispatch(ctx context.Context, req *Request) (any, error) 
 		if err := decodeParams(req.Params, &params); err != nil {
 			return nil, err
 		}
+		if err := validateParams(params); err != nil {
+			return nil, err
+		}
 		return s.handlers.Remember(ctx, params)
 
 	case methodSearch, aliasSearch:
 		var params SearchParams
 		if err := decodeParams(req.Params, &params); err != nil {
+			return nil, err
+		}
+		if err := validateParams(params); err != nil {
 			return nil, err
 		}
 		return s.handlers.Search(ctx, params)
@@ -276,11 +282,17 @@ func (s *SocketServer) dispatch(ctx context.Context, req *Request) (any, error) 
 		if err := decodeParams(req.Params, &params); err != nil {
 			return nil, err
 		}
+		if err := validateParams(params); err != nil {
+			return nil, err
+		}
 		return s.handlers.Exec(ctx, params)
 
 	case methodRead, aliasRead:
 		var params ReadParams
 		if err := decodeParams(req.Params, &params); err != nil {
+			return nil, err
+		}
+		if err := validateParams(params); err != nil {
 			return nil, err
 		}
 		return s.handlers.Read(ctx, params)
@@ -290,11 +302,17 @@ func (s *SocketServer) dispatch(ctx context.Context, req *Request) (any, error) 
 		if err := decodeParams(req.Params, &params); err != nil {
 			return nil, err
 		}
+		if err := validateParams(params); err != nil {
+			return nil, err
+		}
 		return s.handlers.Fetch(ctx, params)
 
 	case methodGlob, aliasGlob:
 		var params GlobParams
 		if err := decodeParams(req.Params, &params); err != nil {
+			return nil, err
+		}
+		if err := validateParams(params); err != nil {
 			return nil, err
 		}
 		return s.handlers.Glob(ctx, params)
@@ -304,6 +322,9 @@ func (s *SocketServer) dispatch(ctx context.Context, req *Request) (any, error) 
 		if err := decodeParams(req.Params, &params); err != nil {
 			return nil, err
 		}
+		if err := validateParams(params); err != nil {
+			return nil, err
+		}
 		return s.handlers.Grep(ctx, params)
 
 	case methodEdit, aliasEdit:
@@ -311,11 +332,17 @@ func (s *SocketServer) dispatch(ctx context.Context, req *Request) (any, error) 
 		if err := decodeParams(req.Params, &params); err != nil {
 			return nil, err
 		}
+		if err := validateParams(params); err != nil {
+			return nil, err
+		}
 		return s.handlers.Edit(ctx, params)
 
 	case methodWrite, aliasWrite:
 		var params WriteParams
 		if err := decodeParams(req.Params, &params); err != nil {
+			return nil, err
+		}
+		if err := validateParams(params); err != nil {
 			return nil, err
 		}
 		return s.handlers.Write(ctx, params)

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -1299,6 +1300,31 @@ func TestSocketServerDispatch(t *testing.T) {
 	}
 	if result == nil {
 		t.Fatal("result is nil")
+	}
+}
+
+// TestSocketServerDispatchRejectsEmptyExecCode covers TRN-2: the socket
+// transport MUST call Validate() on params that implement the validator
+// interface, so dfmt_exec with no `code` gets a -32602 instead of running
+// an empty command that exits 0 and looks like success.
+func TestSocketServerDispatchRejectsEmptyExecCode(t *testing.T) {
+	handlers := NewHandlers(core.NewIndex(), &mockJournal{}, nil)
+	ss := NewSocketServer("/tmp/test.sock", handlers)
+
+	req := &Request{
+		JSONRPC: jsonRPCVersion,
+		Method:  methodExec,
+		Params:  json.RawMessage(`{}`),
+		ID:      1,
+	}
+
+	_, err := ss.dispatch(context.Background(), req)
+	if err == nil {
+		t.Fatal("dispatch with empty exec code should return validation error, got nil")
+	}
+	var pe *ParamsError
+	if !errors.As(err, &pe) {
+		t.Fatalf("dispatch error = %v, want ParamsError", err)
 	}
 }
 

@@ -627,6 +627,9 @@ func (s *HTTPServer) handleRemember(ctx context.Context, req Request) Response {
 	if r := decodeRPCParams(req, &params); r != nil {
 		return *r
 	}
+	if err := validateParams(params); err != nil {
+		return Response{JSONRPC: jsonRPCVersion, ID: req.ID, Error: &RPCError{Code: -32602, Message: err.Error()}}
+	}
 	ctx = WithProjectID(ctx, params.ProjectID)
 
 	resp, err := s.handlers.Remember(ctx, params)
@@ -644,6 +647,9 @@ func (s *HTTPServer) handleSearch(ctx context.Context, req Request) Response {
 	var params SearchParams
 	if r := decodeRPCParams(req, &params); r != nil {
 		return *r
+	}
+	if err := validateParams(params); err != nil {
+		return Response{JSONRPC: jsonRPCVersion, ID: req.ID, Error: &RPCError{Code: -32602, Message: err.Error()}}
 	}
 	ctx = WithProjectID(ctx, params.ProjectID)
 
@@ -663,6 +669,9 @@ func (s *HTTPServer) handleRecall(ctx context.Context, req Request) Response {
 	if r := decodeRPCParams(req, &params); r != nil {
 		return *r
 	}
+	if err := validateParams(params); err != nil {
+		return Response{JSONRPC: jsonRPCVersion, ID: req.ID, Error: &RPCError{Code: -32602, Message: err.Error()}}
+	}
 	ctx = WithProjectID(ctx, params.ProjectID)
 
 	resp, err := s.handlers.Recall(ctx, params)
@@ -680,6 +689,9 @@ func (s *HTTPServer) handleStats(ctx context.Context, req Request) Response {
 	var params StatsParams
 	if r := decodeRPCParams(req, &params); r != nil {
 		return *r
+	}
+	if err := validateParams(params); err != nil {
+		return Response{JSONRPC: jsonRPCVersion, ID: req.ID, Error: &RPCError{Code: -32602, Message: err.Error()}}
 	}
 	ctx = WithProjectID(ctx, params.ProjectID)
 
@@ -1469,6 +1481,9 @@ func (s *HTTPServer) handleExec(ctx context.Context, req Request) Response {
 	if r := decodeRPCParams(req, &params); r != nil {
 		return *r
 	}
+	if err := validateParams(params); err != nil {
+		return Response{JSONRPC: jsonRPCVersion, ID: req.ID, Error: &RPCError{Code: -32602, Message: err.Error()}}
+	}
 	ctx = WithProjectID(ctx, params.ProjectID)
 
 	resp, err := s.handlers.Exec(ctx, params)
@@ -1495,6 +1510,9 @@ func (s *HTTPServer) handleRead(ctx context.Context, req Request) Response {
 	if r := decodeRPCParams(req, &params); r != nil {
 		return *r
 	}
+	if err := validateParams(params); err != nil {
+		return Response{JSONRPC: jsonRPCVersion, ID: req.ID, Error: &RPCError{Code: -32602, Message: err.Error()}}
+	}
 	ctx = WithProjectID(ctx, params.ProjectID)
 
 	resp, err := s.handlers.Read(ctx, params)
@@ -1512,6 +1530,9 @@ func (s *HTTPServer) handleFetch(ctx context.Context, req Request) Response {
 	var params FetchParams
 	if r := decodeRPCParams(req, &params); r != nil {
 		return *r
+	}
+	if err := validateParams(params); err != nil {
+		return Response{JSONRPC: jsonRPCVersion, ID: req.ID, Error: &RPCError{Code: -32602, Message: err.Error()}}
 	}
 	ctx = WithProjectID(ctx, params.ProjectID)
 
@@ -1531,6 +1552,9 @@ func (s *HTTPServer) handleGlob(ctx context.Context, req Request) Response {
 	if r := decodeRPCParams(req, &params); r != nil {
 		return *r
 	}
+	if err := validateParams(params); err != nil {
+		return Response{JSONRPC: jsonRPCVersion, ID: req.ID, Error: &RPCError{Code: -32602, Message: err.Error()}}
+	}
 	ctx = WithProjectID(ctx, params.ProjectID)
 
 	resp, err := s.handlers.Glob(ctx, params)
@@ -1548,6 +1572,9 @@ func (s *HTTPServer) handleGrep(ctx context.Context, req Request) Response {
 	var params GrepParams
 	if r := decodeRPCParams(req, &params); r != nil {
 		return *r
+	}
+	if err := validateParams(params); err != nil {
+		return Response{JSONRPC: jsonRPCVersion, ID: req.ID, Error: &RPCError{Code: -32602, Message: err.Error()}}
 	}
 	ctx = WithProjectID(ctx, params.ProjectID)
 
@@ -1567,6 +1594,9 @@ func (s *HTTPServer) handleEdit(ctx context.Context, req Request) Response {
 	if r := decodeRPCParams(req, &params); r != nil {
 		return *r
 	}
+	if err := validateParams(params); err != nil {
+		return Response{JSONRPC: jsonRPCVersion, ID: req.ID, Error: &RPCError{Code: -32602, Message: err.Error()}}
+	}
 	ctx = WithProjectID(ctx, params.ProjectID)
 
 	resp, err := s.handlers.Edit(ctx, params)
@@ -1584,6 +1614,9 @@ func (s *HTTPServer) handleWrite(ctx context.Context, req Request) Response {
 	var params WriteParams
 	if r := decodeRPCParams(req, &params); r != nil {
 		return *r
+	}
+	if err := validateParams(params); err != nil {
+		return Response{JSONRPC: jsonRPCVersion, ID: req.ID, Error: &RPCError{Code: -32602, Message: err.Error()}}
 	}
 	ctx = WithProjectID(ctx, params.ProjectID)
 
