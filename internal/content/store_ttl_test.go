@@ -158,7 +158,7 @@ func TestStore_GetChunksEvictsViaParent(t *testing.T) {
 	if _, ok := s.GetChunks("parent"); ok {
 		t.Error("GetChunks with expired parent must miss; instead it returned hits")
 	}
-	// Both chunk and parent must be reaped.
+	// Both chunk and parent must be reaped, curSize drained.
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	if _, present := s.chunks["c1"]; present {
@@ -166,6 +166,9 @@ func TestStore_GetChunksEvictsViaParent(t *testing.T) {
 	}
 	if _, present := s.sets["parent"]; present {
 		t.Error("parent set should be reaped on lazy prune")
+	}
+	if s.curSize != 0 {
+		t.Errorf("curSize must drain to 0 after eviction; got %d", s.curSize)
 	}
 }
 
