@@ -2248,7 +2248,7 @@ must be fixed before the pipeline is pointed at file reads.
    or in-memory with a TTL) and implement one of them.
 4. **TRN-6** — delete the inline recall renderer; route markdown through `SnapshotBuilder` plus
    `MarkdownRenderer`, restoring interning and forgery escaping on the default format and collapsing TRN-6b
-   and TRN-6c with it.
+   and TRN-6c with it. ✅ FIXED `6576e7c`
 5. **CORE-5 / CORE-6 / CORE-7** — persist `meta` and the reverse maps, add a format version; add
    `BenchmarkAddAtCapAfterLoad` so the loaded path is measured.
 
