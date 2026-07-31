@@ -1202,9 +1202,17 @@ func TestJournalAppendMaxBytes(t *testing.T) {
 		t.Fatalf("Append failed: %v", err)
 	}
 
-	// Second append should fail due to size limit
-	if err := j.Append(ctx, e); err == nil {
-		t.Error("Append should fail when journal is full")
+	// Second append crosses the cap and must rotate-then-write (CORE-1),
+	// producing a rotated segment instead of failing forever.
+	if err := j.Append(ctx, e); err != nil {
+		t.Fatalf("Append after cap should rotate and succeed (CORE-1): %v", err)
+	}
+	segments, err := journalSegments(journalPath)
+	if err != nil {
+		t.Fatalf("journalSegments: %v", err)
+	}
+	if len(segments) == 0 {
+		t.Error("expected a rotated segment after crossing the cap (CORE-1)")
 	}
 
 	j.Close()

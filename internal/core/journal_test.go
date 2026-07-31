@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -126,7 +127,7 @@ func TestAppendJournal(t *testing.T) {
 		}
 	})
 
-	t.Run("returns ErrJournalFull when file exceeds max bytes", func(t *testing.T) {
+	t.Run("appends past a pre-created cap file (CORE-1)", func(t *testing.T) {
 		journalPath := filepath.Join(tmpDir, "full.journal")
 
 		// Pre-create a file that's already at the limit
@@ -144,11 +145,51 @@ func TestAppendJournal(t *testing.T) {
 		}
 		defer j.Close()
 
-		// This should fail because file is already at maxBytes
+		// CORE-1: a full journal must NOT stop recording. The file is at the
+		// cap but contains no decodable event (hiCursor is empty, so rotation
+		// is a no-op), and the append must still land rather than returning
+		// ErrJournalFull forever.
 		e := Event{ID: "01ARZ3NDEKTSV4RRFFQ69G5FA1", Type: EvtFileEdit, Project: "test"}
 		err = j.Append(context.Background(), e)
-		if err != ErrJournalFull {
-			t.Errorf("expected ErrJournalFull, got %v", err)
+		if err != nil {
+			t.Errorf("append to cap file returned %v, want success (CORE-1)", err)
+		}
+	})
+
+	t.Run("rotates and appends past the cap (CORE-1)", func(t *testing.T) {
+		journalPath := filepath.Join(tmpDir, "rotate.journal")
+		j, err := OpenJournal(journalPath, JournalOptions{MaxBytes: 200})
+		if err != nil {
+			t.Fatalf("OpenJournal failed: %v", err)
+		}
+		defer j.Close()
+
+		// Append until the journal crosses the cap.
+		for i := 0; i < 20; i++ {
+			e := Event{
+				ID:   fmt.Sprintf("01ARZ3NDEKTSV4RRFFQ69G5F%02d", i),
+				Type: EvtNote,
+				Data: map[string]any{"message": strings.Repeat("x", 40)},
+			}
+			if err := j.Append(context.Background(), e); err != nil {
+				t.Fatalf("Append #%d: %v", i, err)
+			}
+		}
+
+		// The cap was crossed, so rotation must have produced a segment.
+		segments, err := journalSegments(journalPath)
+		if err != nil {
+			t.Fatalf("journalSegments: %v", err)
+		}
+		if len(segments) == 0 {
+			t.Fatal("expected at least one rotated segment after crossing the cap (CORE-1)")
+		}
+
+		// And the active file must still accept appends (the bug: a full
+		// journal stopped recording forever).
+		last := Event{ID: "01ARZ3NDEKTSV4RRFFQ69G5FA9", Type: EvtNote}
+		if err := j.Append(context.Background(), last); err != nil {
+			t.Fatalf("Append after rotation failed — journal stopped recording: %v", err)
 		}
 	})
 
@@ -816,11 +857,13 @@ func TestAppendWithMaxBytesExact(t *testing.T) {
 	}
 	defer j.Close()
 
-	// Append should fail - file is at maxBytes
+	// CORE-1: a file at the cap must rotate-then-write, not fail. The
+	// pre-created file contains no decodable event, so rotation is a no-op
+	// and the append lands rather than returning ErrJournalFull forever.
 	e := Event{ID: "01ARZ3NDEKTSV4RRFFQ69G5FAV", Type: EvtNote}
 	err = j.Append(context.Background(), e)
-	if err != ErrJournalFull {
-		t.Errorf("expected ErrJournalFull, got %v", err)
+	if err != nil {
+		t.Errorf("append at maxBytes returned %v, want success (CORE-1)", err)
 	}
 }
 
@@ -1166,8 +1209,8 @@ func TestAppendErrors(t *testing.T) {
 
 		e := Event{ID: "01ARZ3NDEKTSV4RRFFQ69G5FAV", Type: EvtFileEdit, Project: "test"}
 		err = j.Append(context.Background(), e)
-		if err != ErrJournalFull {
-			t.Errorf("expected ErrJournalFull, got %v", err)
+		if err != nil {
+			t.Errorf("append at maxBytes returned %v, want success (CORE-1)", err)
 		}
 	})
 }
@@ -1679,11 +1722,13 @@ func TestAppendMaxBytesExactBoundary(t *testing.T) {
 	}
 	defer j.Close()
 
-	// Append should fail - file is at maxBytes boundary
+	// CORE-1: a file at the cap must rotate-then-write, not fail. The
+	// pre-created file contains no decodable event, so rotation is a no-op
+	// and the append lands rather than returning ErrJournalFull forever.
 	e := Event{ID: "01ARZ3NDEKTSV4RRFFQ69G5FAV", Type: EvtNote}
 	err = j.Append(context.Background(), e)
-	if err != ErrJournalFull {
-		t.Errorf("expected ErrJournalFull, got %v", err)
+	if err != nil {
+		t.Errorf("append at maxBytes boundary returned %v, want success (CORE-1)", err)
 	}
 }
 

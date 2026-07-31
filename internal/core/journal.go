@@ -237,9 +237,20 @@ func (j *journalImpl) Append(ctx context.Context, e Event) error {
 	// Size limit check MUST be under the lock to avoid TOCTOU: two concurrent
 	// Appends could both observe Size() < maxBytes and then push the journal
 	// past the limit.
+	//
+	// CORE-1: reaching the cap rotates the journal instead of failing
+	// permanently. Previously Append returned ErrJournalFull forever once the
+	// file hit storage.journal_max_bytes and Rotate had no production caller,
+	// so a full journal silently stopped recording. rotateLocked writes a
+	// tombstone, renames the active file to journal.<ULID>.jsonl, and reopens
+	// a fresh active file; the event below then lands in the new segment.
+	// If rotation itself fails, the error surfaces here rather than the
+	// journal stopping silently.
 	if j.maxBytes > 0 {
 		if fi, statErr := j.file.Stat(); statErr == nil && fi.Size() >= j.maxBytes {
-			return ErrJournalFull
+			if err := j.rotateLocked(ctx); err != nil {
+				return fmt.Errorf("rotate before append: %w", err)
+			}
 		}
 	}
 
@@ -483,7 +494,14 @@ func (j *journalImpl) Size() (int64, error) {
 func (j *journalImpl) Rotate(ctx context.Context) error {
 	j.mu.Lock()
 	defer j.mu.Unlock()
+	return j.rotateLocked(ctx)
+}
 
+// rotateLocked performs the rotation assuming j.mu is already held. Split
+// out of Rotate so Append can rotate-then-write at the size cap without
+// re-acquiring the mutex it already holds (CORE-1) — the public Rotate and
+// the Append-driven rotation share one code path.
+func (j *journalImpl) rotateLocked(ctx context.Context) error {
 	if j.hiCursor == "" {
 		return nil
 	}
