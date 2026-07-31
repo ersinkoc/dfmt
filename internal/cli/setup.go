@@ -352,10 +352,21 @@ func runHook(args []string) int {
 	return 0
 }
 
+// Native tool names that the hook redirects to dfmt tools.
+const (
+	toolBash     = "Bash"
+	toolRead     = "Read"
+	toolWebFetch = "WebFetch"
+	toolGlob     = "Glob"
+	toolGrep     = "Grep"
+	toolEdit     = "Edit"
+	toolWrite    = "Write"
+)
+
 // shouldRedirect returns true for mapped tools when the daemon is running.
 func shouldRedirect(toolName string) bool {
 	switch toolName {
-	case "Bash", "Read", "WebFetch", "Glob", "Grep", "Edit", "Write":
+	case toolBash, toolRead, toolWebFetch, toolGlob, toolGrep, toolEdit, toolWrite:
 		if proj, err := getProject(); err == nil && client.DaemonRunning(proj) {
 			return true
 		}
@@ -370,23 +381,23 @@ func buildRedirectResponse(toolName string, toolInput map[string]any) map[string
 
 	var dfmtParams map[string]any
 	switch toolName {
-	case "Bash":
+	case toolBash:
 		dfmtParams = map[string]any{"code": toolInput["command"], "lang": "bash"}
-	case "Read":
+	case toolRead:
 		dfmtParams = map[string]any{"path": toolInput["path"]}
-	case "WebFetch":
+	case toolWebFetch:
 		dfmtParams = map[string]any{"url": toolInput["url"]}
-	case "Glob":
+	case toolGlob:
 		dfmtParams = map[string]any{"pattern": toolInput["pattern"]}
-	case "Grep":
+	case toolGrep:
 		dfmtParams = map[string]any{"pattern": toolInput["pattern"], "files": toolInput["files"]}
-	case "Edit":
+	case toolEdit:
 		dfmtParams = map[string]any{
 			"path":       toolInput["path"],
 			"old_string": toolInput["old_string"],
 			"new_string": toolInput["new_string"],
 		}
-	case "Write":
+	case toolWrite:
 		dfmtParams = map[string]any{"path": toolInput["path"], "content": toolInput["content"]}
 	default:
 		dfmtParams = toolInput
@@ -403,19 +414,19 @@ func buildRedirectResponse(toolName string, toolInput map[string]any) map[string
 // toolSubcommand maps native tool name to dfmt subcommand.
 func toolSubcommand(toolName string) string {
 	switch toolName {
-	case "Bash":
+	case toolBash:
 		return "exec"
-	case "Read":
+	case toolRead:
 		return "read"
-	case "WebFetch":
+	case toolWebFetch:
 		return "fetch"
-	case "Glob":
+	case toolGlob:
 		return "glob"
-	case "Grep":
+	case toolGrep:
 		return "grep"
-	case "Edit":
+	case toolEdit:
 		return "edit"
-	case "Write":
+	case toolWrite:
 		return "write"
 	default:
 		return toolName
