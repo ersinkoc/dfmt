@@ -22,7 +22,7 @@ import (
 func newTestHTTPServerWithSandbox(sb sandbox.Sandbox) *HTTPServer {
 	idx := core.NewIndex()
 	handlers := NewHandlers(idx, &mockJournal{}, sb)
-	return NewHTTPServer("127.0.0.1:0", handlers)
+	return NewHTTPServer(loopbackEphemeral, handlers)
 }
 
 func doRPC(t *testing.T, hs *HTTPServer, method string, params any) Response {
@@ -137,7 +137,7 @@ func TestHTTPHandle_Stats_Error(t *testing.T) {
 	idx := core.NewIndex()
 	journal := &mockJournal{failSearch: true}
 	handlers := NewHandlers(idx, journal, nil)
-	hs := NewHTTPServer("127.0.0.1:0", handlers)
+	hs := NewHTTPServer(loopbackEphemeral, handlers)
 
 	resp := doRPC(t, hs, "dfmt.stats", StatsParams{})
 	if resp.Error == nil {
@@ -261,7 +261,7 @@ func TestHTTPHandleAPIStats_HandlerError(t *testing.T) {
 	idx := core.NewIndex()
 	journal := &mockJournal{failSearch: true}
 	handlers := NewHandlers(idx, journal, nil)
-	hs := NewHTTPServer("127.0.0.1:0", handlers)
+	hs := NewHTTPServer(loopbackEphemeral, handlers)
 
 	body, _ := json.Marshal(Request{JSONRPC: jsonRPCVersion, ID: 1, Method: "stats"})
 	req := httptest.NewRequest(http.MethodPost, "/api/stats", bytes.NewReader(body))
@@ -403,7 +403,7 @@ func TestNewHTTPServerWithListener(t *testing.T) {
 	idx := core.NewIndex()
 	handlers := NewHandlers(idx, &mockJournal{}, nil)
 
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	ln, err := net.Listen("tcp", loopbackEphemeral)
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
@@ -434,7 +434,7 @@ func TestHTTPHandleAPIStream_OK(t *testing.T) {
 	}
 	idx := core.NewIndex()
 	handlers := NewHandlers(idx, mj, nil)
-	hs := NewHTTPServer("127.0.0.1:0", handlers)
+	hs := NewHTTPServer(loopbackEphemeral, handlers)
 
 	// One-shot replay path (no `follow=true`): handler returns when
 	// journal HEAD is reached. ctx timeout is a backstop in case the
@@ -478,7 +478,7 @@ func TestHTTPHandleAPIStream_LiveTail(t *testing.T) {
 	}
 	idx := core.NewIndex()
 	handlers := NewHandlers(idx, mj, nil)
-	hs := NewHTTPServer("127.0.0.1:0", handlers)
+	hs := NewHTTPServer(loopbackEphemeral, handlers)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 	defer cancel()
@@ -539,7 +539,7 @@ func TestHTTPHandleAPIStream_MethodNotAllowed(t *testing.T) {
 }
 
 func TestHTTPHandleAPIStream_HandlersNil(t *testing.T) {
-	hs := NewHTTPServer("127.0.0.1:0", nil)
+	hs := NewHTTPServer(loopbackEphemeral, nil)
 	req := httptest.NewRequest(http.MethodGet, "/api/stream", nil)
 	rec := httptest.NewRecorder()
 	hs.handleAPIStream(rec, req)
@@ -549,7 +549,7 @@ func TestHTTPHandleAPIStream_HandlersNil(t *testing.T) {
 }
 
 func TestHTTPServerIsAllowedOrigin_TCPListener(t *testing.T) {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	ln, err := net.Listen("tcp", loopbackEphemeral)
 	if err != nil {
 		t.Skipf("skipping: could not create TCP listener: %v", err)
 	}
@@ -586,7 +586,7 @@ func TestHTTPServerIsAllowedOrigin_NonTCPListener(t *testing.T) {
 }
 
 func TestHTTPServerIsAllowedHost_TCPListener(t *testing.T) {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	ln, err := net.Listen("tcp", loopbackEphemeral)
 	if err != nil {
 		t.Skipf("skipping: could not create TCP listener: %v", err)
 	}

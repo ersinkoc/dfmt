@@ -1762,7 +1762,7 @@ func TestCodecWriteResponseSetVersion(t *testing.T) {
 
 func TestHTTPServerStartAlreadyRunning(t *testing.T) {
 	handlers := &Handlers{}
-	hs := NewHTTPServer("127.0.0.1:0", handlers)
+	hs := NewHTTPServer(loopbackEphemeral, handlers)
 
 	hs.mu.Lock()
 	hs.running = true
@@ -2117,7 +2117,7 @@ func TestHTTPServerStop(t *testing.T) {
 
 // TestHTTPServerStartWithNilListener tests that Start with nil listener doesn't panic.
 func TestHTTPServerStartWithNilListener(t *testing.T) {
-	hs := NewHTTPServer("127.0.0.1:0", nil)
+	hs := NewHTTPServer(loopbackEphemeral, nil)
 	hs.listener = nil // ensure nil listener path
 
 	// With nil listener and bind on loopback, Start should succeed

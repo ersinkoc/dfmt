@@ -34,7 +34,8 @@ import (
 var ErrServerAlreadyRunning = errors.New("server already running")
 
 const (
-	jsonRPCVersion = "2.0"
+	jsonRPCVersion    = "2.0"
+	loopbackEphemeral = "127.0.0.1:0"
 	// methodXxx are the JSON-RPC method names accepted on the HTTP and socket
 	// transports. They use dot namespacing for historical reasons and remain
 	// stable for back-compat — any existing client posting `dfmt.exec` keeps
@@ -119,7 +120,7 @@ type PortFile struct {
 func ephemeralBind(bind string) string {
 	host, _, err := net.SplitHostPort(bind)
 	if err != nil || host == "" {
-		return "127.0.0.1:0"
+		return loopbackEphemeral
 	}
 	return net.JoinHostPort(host, "0")
 }
