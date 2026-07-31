@@ -304,6 +304,14 @@ func (s *SandboxImpl) Fetch(ctx context.Context, req FetchReq) (FetchResp, error
 
 	content := string(body)
 
+	// Normalize fetched bodies (SBX-4): web pages arrive as raw HTML and
+	// previously never passed through the output-normalization pipeline —
+	// only shell output did. ConvertHTML turns boilerplate-heavy pages into
+	// markdown, dropping div soup the agent would otherwise pay full token
+	// price for. rawBody keeps the original bytes for the content store.
+	rawBody := content
+	content = NormalizeOutput(content)
+
 	// Apply unified return-policy filter; see ApplyReturnPolicy for rules.
 	// RawBody preserves the full bytes for the content store.
 	filtered := ApplyReturnPolicy(content, req.Intent, req.Return)
@@ -312,7 +320,7 @@ func (s *SandboxImpl) Fetch(ctx context.Context, req FetchReq) (FetchResp, error
 		Status:     resp.StatusCode,
 		Headers:    headers,
 		Body:       filtered.Body,
-		RawBody:    content,
+		RawBody:    rawBody,
 		Matches:    filtered.Matches,
 		Summary:    filtered.Summary,
 		Vocabulary: filtered.Vocabulary,

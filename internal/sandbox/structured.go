@@ -84,13 +84,16 @@ const structuredNoiseSuffix = "_url"
 const maxStructuredDocBytes = 1 << 20
 
 // yamlDetectPrefix matches the most reliable shape-markers for YAML:
-// either a `---` document separator on its own line, or an `apiVersion:`
-// / `kind:` field at the document root (the canonical Kubernetes/Helm
-// shape). We keep this conservative because YAML is a syntactic
-// superset of "any indented text" — false positives would mangle
+// either a `---` document separator as the FIRST line of the body, or an
+// `apiVersion:` / `kind:` field at the document root (the canonical
+// Kubernetes/Helm shape). Anchoring to the start of the body (SBX-6) is
+// what keeps ordinary text safe: a `grep -rn "kind: "` result set, a log
+// line `kind: warning`, or a markdown file with a mid-body horizontal rule
+// must NOT be treated as YAML. We keep this conservative because YAML is a
+// syntactic superset of "any indented text" — false positives would mangle
 // arbitrary log output. Bench-relevant shapes (`kubectl get -o yaml`,
-// `helm get manifest`) are caught.
-var yamlDetectPrefix = regexp.MustCompile(`(?m)^(?:---\s*$|apiVersion:\s|kind:\s)`)
+// `helm get manifest`) all start with the marker.
+var yamlDetectPrefix = regexp.MustCompile(`^(?:---\s*(?:\n|$)|apiVersion:\s|kind:\s)`)
 
 // CompactYAML detects YAML-shaped input and removes the same noise
 // fields CompactStructured drops from JSON. Walks the decoded document

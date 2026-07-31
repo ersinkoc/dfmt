@@ -134,9 +134,16 @@ func (s *SandboxImpl) Read(ctx context.Context, req ReadReq) (ReadResp, error) {
 		return ReadResp{}, err
 	}
 
+	// Normalize the visible content (SBX-4) while keeping RawContent
+	// byte-exact: Edit anchors are byte-offset based, so the version the
+	// agent reads must be what the file actually contains. NormalizeOutputFile
+	// applies only terminal hygiene (ANSI, CR collapse, CRLF) and skips the
+	// structural compactors that would break a copy→Edit round-trip.
+	visible := NormalizeOutputFile(content)
+
 	// Apply unified return-policy filter; see ApplyReturnPolicy for rules.
 	// RawContent preserves the full bytes for the content store.
-	filtered := ApplyReturnPolicy(content, req.Intent, req.Return)
+	filtered := ApplyReturnPolicy(visible, req.Intent, req.Return)
 
 	return ReadResp{
 		Content:    filtered.Body,

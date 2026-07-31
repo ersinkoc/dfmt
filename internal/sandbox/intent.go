@@ -1,6 +1,7 @@
 package sandbox
 
 import (
+	"encoding/json"
 	"fmt"
 	"math"
 	"regexp"
@@ -467,10 +468,15 @@ func NormalizeOutput(s string) string {
 	// Windows line endings: CRLF → LF. PowerShell and some CMD commands
 	// output CRLF, which causes issues when we split by \n. Also handle
 	// standalone CR (old Mac style, rare but possible).
-	s = normalizeLineEndings(s)
+	//
+	// Order matters (SBX-7): collapseCarriageReturns must run BEFORE
+	// normalizeLineEndings. normalizeLineEndings maps every standalone \r
+	// to \n when the body contains any CRLF — if it ran first, progress-bar
+	// output would explode into dozens of lines before the collapse stage
+	// whose entire purpose is compressing progress bars got to run.
 	s = stripANSI(s)
 	s = collapseCarriageReturns(s)
-	s = runLengthEncode(s)
+	s = normalizeLineEndings(s)
 	// Git diff `index` line drop: every file block in a `git diff`
 	// emits an `index <hash>..<hash> <mode>` line that's wire-noise
 	// for an LLM. CompactGitDiff drops them; no-op on non-diff input.
@@ -504,6 +510,55 @@ func NormalizeOutput(s string) string {
 	// bytes. ConvertHTML is detection-gated by the same leading
 	// `<!doctype>` / `<html>` prefix CompactHTML used.
 	s = ConvertHTML(s)
+	// RLE runs LAST and is skipped for structured bodies (SBX-5).
+	// Re-writing runs of >=4 identical adjacent lines into one line plus
+	// a marker is a win for spinner/retry loops but corrupts pretty-
+	// printed JSON, unified diffs, and YAML lists — all of which are
+	// exactly what an agent copies verbatim. The structural compactors
+	// above leave a recognizable shape behind (valid JSON, `---`-headed
+	// YAML, `diff --git` headers), which is what makes the skip safe.
+	if !looksStructured(s) {
+		s = runLengthEncode(s)
+	}
+	return s
+}
+
+// looksStructured reports whether s still carries a structured shape after
+// the compaction stages — valid JSON, start-anchored YAML, or a unified
+// diff. Used by NormalizeOutput to skip runLengthEncode (SBX-5): RLE is
+// destructive to all three, so it only applies to plain text/terminal
+// output where duplicate-line compression is meaningful.
+func looksStructured(s string) bool {
+	if json.Valid([]byte(s)) {
+		return true
+	}
+	if yamlDetectPrefix.MatchString(s) {
+		return true
+	}
+	if strings.HasPrefix(s, "diff --git ") || strings.Contains(s, "\ndiff --git ") {
+		return true
+	}
+	return false
+}
+
+// NormalizeOutputFile is the file-oriented normalization mode for Read
+// (SBX-4). Unlike NormalizeOutput it applies ONLY terminal hygiene —
+// binary refusal, ANSI stripping, carriage-return collapsing, and line-
+// ending normalization — and deliberately skips the structural
+// compactors (JSON/YAML/diff/RLE/frontmatter). A file's body is
+// something the agent copies out and writes back via Edit; rewriting it
+// would corrupt the round-trip. Hygiene that removes invisible noise
+// (escapes, progress-bar CRs, CRLF) is safe and token-favorable.
+func NormalizeOutputFile(s string) string {
+	if s == "" {
+		return s
+	}
+	if compacted := CompactBinary(s); compacted != s {
+		return compacted
+	}
+	s = stripANSI(s)
+	s = collapseCarriageReturns(s)
+	s = normalizeLineEndings(s)
 	return s
 }
 
