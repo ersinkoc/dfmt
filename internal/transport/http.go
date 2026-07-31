@@ -1200,6 +1200,14 @@ func forwardProxyOverUnix(ctx context.Context, w http.ResponseWriter, socketPath
 	}
 	defer func() { _ = conn.Close() }()
 
+	// The target daemon's JSON-RPC codec dispatches on '\n' (readCappedLine).
+	// json.Marshal produces no trailing newline, so without this append the
+	// target waits forever for the frame terminator and the proxy deadlocks
+	// until the daemon's read-idle timeout closes the connection (TRN-5).
+	if len(body) == 0 || body[len(body)-1] != '\n' {
+		body = append(body, '\n')
+	}
+
 	if _, werr := conn.Write(body); werr != nil {
 		writeProxyError(w, -32603, "could not send request: "+werr.Error())
 		return
