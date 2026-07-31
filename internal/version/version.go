@@ -10,28 +10,65 @@
 // different answers.
 //
 // This package consolidates the source: every consumer reads
-// version.Current; the build supplies the value via
+// version.Current; release builds supply the value via
 //
 //	go build -ldflags "-X github.com/ersinkoc/dfmt/internal/version.Current=v0.2.0"
 //
-// (or whatever tag is being cut). The default below is the
-// last-known-released tag so a `go install` from main produces a
-// non-"dev" build out of the box; the Makefile's release target
-// overrides it with the actual VERSION variable.
+// (or whatever tag is being cut). Unstamped builds default to "dev" and then
+// incorporate Go's VCS build info when available, so local builds no longer
+// report a specific released tag they are not.
 package version
 
-// Current is the build-time-injected DFMT release identity.
+import "runtime/debug"
+
+const devVersion = "dev"
+
+// Current is the DFMT release identity used by CLI output, MCP serverInfo, and
+// daemon identity checks.
 //
-// Reads:
-//   - cmd/dfmt/main.go        --version output
-//   - internal/cli/cli.go     re-exports as cli.Version
-//   - internal/core/core.go   re-exports as core.Version
-//   - internal/transport/mcp.go::handleInitialize  serverInfo.version
-//
-// Override at build time with:
+// Override release builds at build time with:
 //
 //	-ldflags "-X github.com/ersinkoc/dfmt/internal/version.Current=<value>"
 //
-// The default tracks the most-recently-released tag so that an
-// untagged `go install` produces a sensible string.
-var Current = "v0.7.3"
+// Unstamped builds start as "dev" and are expanded during init to include the
+// VCS revision recorded by `debug.ReadBuildInfo`, e.g. `dev-0123456789ab` or
+// `dev-0123456789ab-modified`.
+var Current = devVersion
+
+func init() {
+	Current = resolveCurrent(Current, debug.ReadBuildInfo)
+}
+
+func resolveCurrent(stamped string, readBuildInfo func() (*debug.BuildInfo, bool)) string {
+	if stamped != "" && stamped != devVersion {
+		return stamped
+	}
+	info, ok := readBuildInfo()
+	if !ok || info == nil {
+		return devVersion
+	}
+	revision, modified := buildInfoVCS(info)
+	if revision == "" {
+		return devVersion
+	}
+	if len(revision) > 12 {
+		revision = revision[:12]
+	}
+	out := devVersion + "-" + revision
+	if modified {
+		out += "-modified"
+	}
+	return out
+}
+
+func buildInfoVCS(info *debug.BuildInfo) (revision string, modified bool) {
+	for _, setting := range info.Settings {
+		switch setting.Key {
+		case "vcs.revision":
+			revision = setting.Value
+		case "vcs.modified":
+			modified = setting.Value == "true"
+		}
+	}
+	return revision, modified
+}
