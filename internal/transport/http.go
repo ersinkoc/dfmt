@@ -577,6 +577,16 @@ func (s *HTTPServer) handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// TRN-9: JSON-RPC 2.0 §4.1 — a Request with no id is a Notification.
+	// The server MUST NOT reply. HTTP returns 204 No Content; socket
+	// skips WriteResponse entirely. Replying would break pipelined
+	// clients that mis-pair notification responses with subsequent
+	// request responses.
+	if req.ID == nil {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
 	var resp any
 	switch req.Method {
 	case methodRemember, aliasRemember:

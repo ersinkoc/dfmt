@@ -245,8 +245,10 @@ func TestHandleJSONUnmarshalError(t *testing.T) {
 	handlers := NewHandlers(idx, nil, nil)
 	hs := NewHTTPServer("127.0.0.1:0", handlers)
 
-	// Valid JSON but missing required fields - will unmarshal but have empty method
-	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader([]byte(`{"not":"a request"}`)))
+	// Valid JSON but missing required fields — will unmarshal but have empty method.
+	// TRN-9: must include an id so the server treats this as a request (not a
+	// notification) and writes a response envelope.
+	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader([]byte(`{"jsonrpc":"2.0","id":1,"not":"a request"}`)))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 
@@ -535,6 +537,31 @@ func TestHTTPServerWritePortFileEmptyDir(t *testing.T) {
 // JSON or the wrong shape. Previously the marshal/unmarshal round-trip
 // silently produced a zero-value params struct and the request slid through
 // to the handler, masking client bugs and producing generic errors.
+// TRN-9: JSON-RPC 2.0 §4.1 — a Request with no id is a Notification.
+// The server MUST NOT reply. HTTP must return 204 No Content, not a
+// JSON-RPC envelope. A pipelined client that sends a notification then
+// a request would mis-pair every subsequent response otherwise.
+func TestHTTPNotificationReturnsNoContent(t *testing.T) {
+	idx := core.NewIndex()
+	handlers := NewHandlers(idx, nil, nil)
+	hs := NewHTTPServer(loopbackEphemeral, handlers)
+
+	// Send a valid request with no id (notification).
+	body := `{"jsonrpc":"2.0","method":"dfmt.stats"}`
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	hs.handle(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Errorf("notification status = %d, want 204 (TRN-9)", rec.Code)
+	}
+	// Body must be empty — no JSON-RPC envelope.
+	if rec.Body.Len() > 0 {
+		t.Errorf("notification body should be empty, got %q", rec.Body.String())
+	}
+}
+
 func TestHandleInvalidParams(t *testing.T) {
 	idx := core.NewIndex()
 	handlers := NewHandlers(idx, nil, nil)

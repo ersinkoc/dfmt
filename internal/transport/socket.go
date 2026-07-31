@@ -212,6 +212,14 @@ func (s *SocketServer) handleConn(serverCtx context.Context, conn net.Conn) {
 		reqCtx, cancel := context.WithCancel(serverCtx)
 		resp, err := s.dispatch(reqCtx, req)
 		cancel()
+
+		// TRN-9: JSON-RPC 2.0 §4.1 — a Request with no id is a
+		// Notification. The server MUST NOT reply. Skip both the
+		// error-write and success-write paths; just continue.
+		if req.ID == nil {
+			continue
+		}
+
 		if err != nil {
 			// Decode-time failures (unknown method already handled below
 			// via -32601 string match isn't reliable, so we only special-case
