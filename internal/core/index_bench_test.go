@@ -198,14 +198,14 @@ func persistIndexAtCap(b *testing.B, cap int) (dir string) {
 // First measured (Windows, AMD Ryzen 9 9950X3D, 16 cores, 300 iter):
 //
 //	                              built           loaded       loaded / built   allocs
-//	cap  2 000                   7 977 ns/op    9 599 ns/op        1.20×     94 allocs/op
-//	cap 20 000                  11 558 ns/op   12 227 ns/op        1.06×     93 allocs/op
+//	cap  2 000                   8 327 ns/op   11 465 ns/op        1.38×     94 allocs/op
+//	cap 20 000                  11 608 ns/op   14 577 ns/op        1.26×     93 allocs/op
 //
 // Both loaded numbers are an order of magnitude under the pre-fix µs
 // band (739 µs / 6 215 µs), so the reverse-map fast path survives the
-// cold load. The 1.06× / 1.20× built-vs-loaded gap is the on-disk
+// cold load. The 1.26× / 1.38× built-vs-loaded gap is the on-disk
 // posting list re-walk cost after deserialize and is recorded as a
-// follow-up finding, not a regression of CORE-5/6/7. The ~94 allocs/op
+// follow-up finding, not a regression of CORE-5/6/7. The ~93–94 allocs/op
 // in the loaded path is the per-eviction rebuild of the tier heaps
 // — see build for the baseline (built path makes no allocations
 // during steady-state Add).
