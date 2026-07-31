@@ -73,10 +73,10 @@ defaulting to **stdout** in a process that speaks JSON-RPC over stdout.
 | 4 | CAP-5 / XC-18 | `.dfmt/**` is missing from the Go-side default ignore list, re-opening the journal self-amplification loop | `config/config.go:172` | ✅ FIXED `9e23477` |
 | 5 | XC-28 | ADR-0014's hard-deny security invariant was deleted in code and is still asserted in the ADR, the index, and CLAUDE.md | `sandbox/policy.go:238` |
 | 6 | XC-13 | Dead slog subsystem defaults to **stdout** inside the MCP process | `logging/logging.go:51` | ✅ FIXED `53bb962` |
-| 7 | CORE-1 | Journal rotation has no caller — a full journal stops recording forever | `core/journal.go:483` |
-| 8 | TRN-4 | `/api/*` bypasses bearer auth and streams any project's journal by query parameter | `transport/http.go:387` |
-| 9 | LIF-1/2/3 | The daemon singleton protocol: the lock file is deleted while held, the listener binds before the lock, and nothing interlocks classify→spawn | `cli/daemon.go`, `daemon/daemon.go` |
-| 10 | SBX-4 | The normalization pipeline never runs for `fetch` or `read` | `sandbox/fetch.go:305`, `read.go:132` |
+| 7 | CORE-1 | Journal rotation has no caller — a full journal stops recording forever | `core/journal.go:483` | ✅ FIXED `3f84aac` |
+| 8 | TRN-4 | `/api/*` bypasses bearer auth and streams any project's journal by query parameter | `transport/http.go:387` | ✅ FIXED `ef3bec2` |
+| 9 | LIF-1/2/3 | The daemon singleton protocol: the lock file is deleted while held, the listener binds before the lock, and nothing interlocks classify→spawn | `cli/daemon.go`, `daemon/daemon.go` | 🔵 LIF-3 FIXED `cc3935f`; LIF-1/2 pending |
+| 10 | SBX-4 | The normalization pipeline never runs for `fetch` or `read` | `sandbox/fetch.go:305`, `read.go:132` | ✅ FIXED `f673758` |
 
 Findings 1–6 are each under an hour of work. Finding 1 makes the rest verifiable and should land first.
 
@@ -114,7 +114,7 @@ retention, snapshot rendering, and the ephemeral content store.
 
 ## I.1 — P0 findings
 
-### CORE-1 · Journal rotation is dead code; a full journal stops recording forever **[verified]**
+### CORE-1 · Journal rotation is dead code; a full journal stops recording forever **[verified]** ✅ FIXED `3f84aac`
 `internal/core/journal.go:483-553` (impl), `:109` (interface). **P0 · M**
 
 A repo-wide grep for `Rotate(` outside tests returns only the declaration, the implementation, and one
@@ -131,7 +131,7 @@ costs a directory glob on every `Stream` call.
 maintenance tick. Add an integration test that appends past the cap and asserts both a rotated segment and a
 successful subsequent write. Surface `ErrJournalFull` as a doctor row for the case where rotation itself fails.
 
-### CORE-2 · The content store is write-only: unbounded disk growth, unresolvable `content_id` **[verified]**
+### CORE-2 · The content store is write-only: unbounded disk growth, unresolvable `content_id` **[verified]** 🔵 DECIDED: in-memory TTL (Wave 5)
 `internal/content/store.go` — `GetChunk:236`, `GetChunkSet:259`, `GetChunks:298`, `PruneExpired:281`,
 `LoadChunkSet:433`, `Close:468`. **P0 · M**
 
@@ -444,7 +444,7 @@ from the same authenticated origin, so injecting it into the served JS (or a `__
 cookie) gives it to nobody who could not already read the 0600 port file. Keep `/healthz`/`/readyz` open;
 decide `/metrics` explicitly.
 
-### TRN-5 · The `/api/proxy` Unix branch never terminates its frame — every call hangs ~60 s and returns nothing
+### TRN-5 · The `/api/proxy` Unix branch never terminates its frame — every call hangs ~60 s and returns nothing ✅ FIXED `e6026ba`
 `internal/transport/http.go:1296-1316`, `forwardProxyOverUnix:1190-1199`, codec at `jsonrpc.go:66-86`. **P0 · S**
 
 `proxyBody` is built with `json.Marshal` (no trailing newline) and written to the socket; the codec only
@@ -458,7 +458,7 @@ No test covers the success path; the existing tests exercise error branches only
 **Fix:** append `'\n'`, set a connection deadline, add an end-to-end test against a real `SocketServer`.
 Consider deleting the endpoint — the dashboard stopped calling it, which is why nobody noticed.
 
-### TRN-6 · Recall's markdown path is a second implementation, and it is the default format
+### TRN-6 · Recall's markdown path is a second implementation, and it is the default format ✅ FIXED `6576e7c`
 `internal/transport/handlers_recall.go:86-194` vs `internal/retrieve/snapshot.go:34-124` +
 `render_md.go`. **P0 · M**
 
@@ -726,7 +726,7 @@ produces an inert rule with no diagnostic.
 in `dfmt doctor` and at daemon startup. Rename the file to `.dfmt/permissions.rules` or add a real YAML
 front-end. Cap file size and rule count.
 
-### SBX-4 · The normalization pipeline never runs for `Fetch` or `Read` **[verified]**
+### SBX-4 · The normalization pipeline never runs for `Fetch` or `Read` **[verified]** ✅ FIXED `f673758`
 `internal/sandbox/fetch.go:305-309`, `read.go:132-139`. **P0 · M**
 
 The only production callers of `NormalizeOutput` are `exec.go:266` and `:286`. Everything gated on
@@ -744,7 +744,7 @@ describe a path production does not take.
 mode for the latter. **Land SBX-5 through SBX-7 first** — the destructive stages below would otherwise start
 corrupting file reads.
 
-### SBX-5 · RLE runs before the structural compactors and invalidates them
+### SBX-5 · RLE runs before the structural compactors and invalidates them ✅ FIXED `f673758`
 `internal/sandbox/intent.go:474` (RLE) vs `:476` (diff), `:488` (JSON), `:492` (YAML). **P0 · M**
 
 `runLengthEncode` rewrites any run of ≥4 identical adjacent lines into one line plus a marker. Downstream:
@@ -761,7 +761,7 @@ corrupting file reads.
 JSON/YAML/diff. Cleanest: have each compactor return `(out string, matched bool)` and let the driver choose
 the tail stages.
 
-### SBX-6 · `CompactYAML` fires on ordinary text and silently rewrites it
+### SBX-6 · `CompactYAML` fires on ordinary text and silently rewrites it ✅ FIXED `f673758`
 `internal/sandbox/structured.go:93`, `:106-168`. **P0 · M**
 
 Detection is `^---\s*$` **or** a line starting `apiVersion: `/`kind: ` anywhere in the body. A
@@ -777,7 +777,7 @@ An agent that reads a config, edits it and writes it back loses all comments and
 `apiVersion` + `kind` (or explicit document separators), and never apply noise-field dropping to bodies that do
 not look like API output.
 
-### SBX-7 · `normalizeLineEndings` defeats `collapseCarriageReturns` on exactly the platform that needs it
+### SBX-7 · `normalizeLineEndings` defeats `collapseCarriageReturns` on exactly the platform that needs it ✅ FIXED `f673758`
 `internal/sandbox/intent.go:428-437`, `:527-542`. **P0 · S**
 
 `normalizeLineEndings` early-returns when there is no CRLF — but if there is even one, it also maps **every
@@ -788,7 +788,7 @@ Windows/PowerShell output.
 **Fix:** swap the order — `collapseCarriageReturns` first (it already trims trailing `\r` per line, so CRLF is
 safe), then `normalizeLineEndings`; or drop the standalone mapping and let the collapse own all `\r` semantics.
 
-### SBX-8 · Short UTF-16LE output is misdetected as binary and discarded (Windows)
+### SBX-8 · Short UTF-16LE output is misdetected as binary and discarded (Windows) ✅ FIXED `34ff453`
 `internal/sandbox/exec.go:550-559` + `binary.go:97`. **P0 · S**
 
 The BOM-less UTF-16 heuristic requires more than 15 NULs over the even positions of the first 100 bytes — at
@@ -1496,7 +1496,7 @@ LIF-1 and LIF-3 it may instead win the socket and lose the lock, or the reverse.
 already spawning — poll `DaemonRunning` for the readiness timeout and return. Roughly 15 lines, and it closes
 LIF-1 and LIF-2 together.
 
-### LIF-3 · The listener is bound before the singleton lock is acquired
+### LIF-3 · The listener is bound before the singleton lock is acquired ✅ FIXED `cc3935f`
 `internal/daemon/daemon.go:312` (in `NewGlobal`) vs `:499` (in `Start`). **P0 · M**
 
 `transport.ListenUnixSocket` runs in the constructor; `AcquireGlobalLock` runs in `Start`. So the loser of the
