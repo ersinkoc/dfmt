@@ -1,6 +1,7 @@
 package core
 
 import (
+	"errors"
 	"time"
 
 	"github.com/ersinkoc/dfmt/internal/version"
@@ -27,6 +28,11 @@ const (
 
 // DefaultDurability is the default journal durability mode.
 const DefaultDurability = "batched"
+
+// ErrIndexVersionMismatch is returned by UnmarshalJSON when the persisted
+// index format version does not match the current indexJSONVersion. Callers
+// (LoadIndexWithCursor) should treat this as needsRebuild=true (CORE-7).
+var ErrIndexVersionMismatch = errors.New("index format version mismatch")
 
 // Priority tiers.
 const (

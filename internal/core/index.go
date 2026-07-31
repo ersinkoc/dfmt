@@ -213,13 +213,21 @@ func (ix *Index) AvgDocLen() float64 {
 	return ix.avgDocLen
 }
 
+// indexJSONVersion is the persisted index format version. Increment when
+// the serialized shape changes; LoadIndex treats a mismatch as needsRebuild.
+const indexJSONVersion = 2
+
 // indexJSON is the JSON-serializable form of Index.
 type indexJSON struct {
-	StemPL    map[string]*PostingList `json:"stem_pl"`
-	TrigramPL map[string]*PostingList `json:"trigram_pl"`
-	DocLen    map[string]int          `json:"doc_len"`
-	AvgDocLen float64                 `json:"avg_doc_len"`
-	TotalDocs int                     `json:"total_docs"`
+	V           int                     `json:"v"`
+	StemPL      map[string]*PostingList `json:"stem_pl"`
+	TrigramPL   map[string]*PostingList `json:"trigram_pl"`
+	DocLen      map[string]int          `json:"doc_len"`
+	AvgDocLen   float64                 `json:"avg_doc_len"`
+	TotalDocs   int                     `json:"total_docs"`
+	Meta        map[string]DocMeta      `json:"meta,omitempty"`
+	DocStems    map[string][]string     `json:"doc_stems,omitempty"`
+	DocTrigrams map[string][]string     `json:"doc_trigrams,omitempty"`
 }
 
 // MarshalJSON implements json.Marshaler for Index.
@@ -228,11 +236,15 @@ func (ix *Index) MarshalJSON() ([]byte, error) {
 	defer ix.mu.RUnlock()
 
 	j := indexJSON{
-		StemPL:    ix.stemPL,
-		TrigramPL: ix.trigramPL,
-		DocLen:    ix.docLen,
-		AvgDocLen: ix.avgDocLen,
-		TotalDocs: ix.totalDocs,
+		V:           indexJSONVersion,
+		StemPL:      ix.stemPL,
+		TrigramPL:   ix.trigramPL,
+		DocLen:      ix.docLen,
+		AvgDocLen:   ix.avgDocLen,
+		TotalDocs:   ix.totalDocs,
+		Meta:        ix.meta,
+		DocStems:    ix.docStems,
+		DocTrigrams: ix.docTrigrams,
 	}
 	return json.Marshal(j)
 }
@@ -242,6 +254,14 @@ func (ix *Index) UnmarshalJSON(data []byte) error {
 	var j indexJSON
 	if err := json.Unmarshal(data, &j); err != nil {
 		return err
+	}
+
+	// CORE-7: version check. A mismatch means the serialized shape changed
+	// between releases; absent fields become zero values and the index is
+	// silently wrong. Return a sentinel error so callers can trigger a
+	// needsRebuild instead of using a half-deserialized index.
+	if j.V != 0 && j.V != indexJSONVersion {
+		return ErrIndexVersionMismatch
 	}
 
 	ix.mu.Lock()
@@ -268,17 +288,22 @@ func (ix *Index) UnmarshalJSON(data []byte) error {
 	if ix.excerpts == nil {
 		ix.excerpts = make(map[string]string)
 	}
+
+	// CORE-5: persist meta so tier/retention survives restart. If the
+	// loaded index has no meta (old format v0/1), init empty and fall
+	// through to the legacy P4 tier assignment below.
+	ix.meta = j.Meta
 	if ix.meta == nil {
 		ix.meta = make(map[string]DocMeta)
 	}
-	// The reverse maps and the classifier are not persisted either. Nil maps
-	// would make the first Add panic on assignment, and a nil classifier
-	// would make tierFor fall back to the stored priority — which for agent
-	// events is always p3 (F-21), erasing exactly the tag-driven distinction
-	// eviction depends on.
+
+	// CORE-6: persist the reverse maps so eviction takes the fast O(1)
+	// path instead of the O(N) full-sweep on every insert at the cap.
+	ix.docStems = j.DocStems
 	if ix.docStems == nil {
 		ix.docStems = make(map[string][]string)
 	}
+	ix.docTrigrams = j.DocTrigrams
 	if ix.docTrigrams == nil {
 		ix.docTrigrams = make(map[string][]string)
 	}
@@ -288,19 +313,25 @@ func (ix *Index) UnmarshalJSON(data []byte) error {
 	ix.avgDocLen = j.AvgDocLen
 	ix.totalDocs = j.TotalDocs
 
-	// Rebuild the eviction state a loaded index would otherwise lack.
+	// Rebuild the eviction state from persisted meta (CORE-5).
 	// docLenSum keeps avgDocLen arithmetic; the heaps decide what gets
-	// dropped at the cap. Loaded documents have no recorded tier — their
-	// metadata is rebuilt only when the journal is replayed over them — so
-	// they go in the lowest tier: they are both the oldest and the least
-	// identifiable, and leaving the heaps empty would send every eviction
-	// through the O(N) fallback scan instead.
+	// dropped at the cap. When meta is present, each document goes into
+	// the tier its recorded Priority maps to — the same tier it would
+	// have occupied in the live index. When meta is absent (old format),
+	// all documents fall to P4 and the first eviction cycle rebuilds
+	// tiers via the legacy O(N) path.
 	ix.docLenSum = 0
 	for id, l := range ix.docLen {
 		ix.docLenSum += l
-		ix.evictHeaps[3] = append(ix.evictHeaps[3], id)
+		tier := 3 // P4 fallback
+		if m, ok := ix.meta[id]; ok {
+			tier = tierForPriority(m.Priority)
+		}
+		ix.evictHeaps[tier] = append(ix.evictHeaps[tier], id)
 	}
-	heap.Init(&ix.evictHeaps[3])
+	for i := range ix.evictHeaps {
+		heap.Init(&ix.evictHeaps[i])
+	}
 	return nil
 }
 
@@ -426,12 +457,12 @@ func (ix *Index) Add(e Event) {
 // score: the event type and the source that produced it. Kept deliberately
 // tiny — this is held for every indexed document (up to MaxIndexDocs).
 type DocMeta struct {
-	Type   string
-	Source string
+	Type   string `json:"type"`
+	Source string `json:"source"`
 	// Priority is the classified tier, not the value stored on the event:
 	// dfmt_remember coerces agent-written events to p3 and the classifier
 	// re-elevates from tags, so this is the one that decides retention.
-	Priority Priority
+	Priority Priority `json:"priority"`
 }
 
 // Meta returns the type/source recorded for docID at index time. The zero
@@ -919,6 +950,21 @@ func priorityForTier(tier int) Priority {
 		return PriP3
 	default:
 		return PriP4
+	}
+}
+
+// tierForPriority converts a Priority to its evictHeaps index. Used by
+// UnmarshalJSON to rebuild tier heaps from persisted meta (CORE-5).
+func tierForPriority(pri Priority) int {
+	switch pri {
+	case PriP1:
+		return 0
+	case PriP2:
+		return 1
+	case PriP3:
+		return 2
+	default:
+		return 3
 	}
 }
 

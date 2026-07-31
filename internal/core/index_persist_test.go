@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -743,4 +744,118 @@ func TestIndexSetParamsEmpty(t *testing.T) {
 	idx := NewIndex()
 	// k1=0 or b=0 are valid (will use BM25 defaults)
 	idx.SetParams(IndexParams{})
+}
+
+// CORE-5/6/7: persist + reload must preserve meta (tier), reverse maps,
+// and survive a version mismatch by triggering needsRebuild.
+func TestPersistLoadPreservesMetaAndReverseMaps(t *testing.T) {
+	ix := NewIndex()
+	e1 := Event{
+		ID:       "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+		Type:     EvtDecision,
+		Priority: PriP1,
+		Source:   SrcCLI,
+		Data:     map[string]any{"message": "important decision"},
+	}
+	e2 := Event{
+		ID:       "01ARZ3NDEKTSV4RRFFQ69G5FAW",
+		Type:     EvtNote,
+		Priority: PriP4,
+		Source:   SrcCLI,
+		Data:     map[string]any{"message": "low priority note"},
+	}
+	ix.Add(e1)
+	ix.Add(e2)
+
+	tmpDir := t.TempDir()
+	indexPath := filepath.Join(tmpDir, "index.json")
+	if err := ix.Persist(indexPath); err != nil {
+		t.Fatalf("Persist: %v", err)
+	}
+
+	loaded, err := LoadIndex(indexPath)
+	if err != nil {
+		t.Fatalf("LoadIndex: %v", err)
+	}
+
+	// CORE-5: meta (including Priority) must survive the round-trip.
+	m1, ok := loaded.meta[e1.ID]
+	if !ok {
+		t.Fatal("CORE-5: meta for e1 missing after load")
+	}
+	if m1.Priority != PriP1 {
+		t.Errorf("CORE-5: loaded meta priority = %q, want %q", m1.Priority, PriP1)
+	}
+	m2, ok := loaded.meta[e2.ID]
+	if !ok {
+		t.Fatal("CORE-5: meta for e2 missing after load")
+	}
+	if m2.Priority != PriP4 {
+		t.Errorf("CORE-5: loaded meta priority = %q, want %q", m2.Priority, PriP4)
+	}
+
+	// CORE-5: eviction heaps must be rebuilt with correct tiers.
+	// e1 (P1) should be in evictHeaps[0], e2 (P4) in evictHeaps[3].
+	foundP1 := false
+	for _, id := range loaded.evictHeaps[0] {
+		if id == e1.ID {
+			foundP1 = true
+		}
+	}
+	if !foundP1 {
+		t.Error("CORE-5: e1 (P1) not in evictHeaps[0] after load")
+	}
+	foundP4 := false
+	for _, id := range loaded.evictHeaps[3] {
+		if id == e2.ID {
+			foundP4 = true
+		}
+	}
+	if !foundP4 {
+		t.Error("CORE-5: e2 (P4) not in evictHeaps[3] after load")
+	}
+
+	// CORE-6: reverse maps must survive the round-trip.
+	if len(loaded.docStems) == 0 {
+		t.Error("CORE-6: docStems empty after load")
+	}
+	if len(loaded.docTrigrams) == 0 {
+		t.Error("CORE-6: docTrigrams empty after load")
+	}
+
+	// CORE-7: version must be present in the persisted JSON.
+	raw, err := os.ReadFile(indexPath)
+	if err != nil {
+		t.Fatalf("read index file: %v", err)
+	}
+	if !strings.Contains(string(raw), `"v":2`) {
+		t.Error("CORE-7: persisted JSON missing version field")
+	}
+}
+
+// CORE-7: a version mismatch must cause LoadIndexWithCursor to signal
+// needsRebuild.
+func TestLoadIndexVersionMismatchTriggersRebuild(t *testing.T) {
+	tmpDir := t.TempDir()
+	indexPath := filepath.Join(tmpDir, "index.json")
+	cursorPath := filepath.Join(tmpDir, "index.cursor")
+
+	// Write a valid v1 index (old format).
+	old := `{"v":1,"stem_pl":{},"trigram_pl":{},"doc_len":{},"avg_doc_len":0,"total_docs":0}`
+	if err := os.WriteFile(indexPath, []byte(old), 0o600); err != nil {
+		t.Fatalf("write old index: %v", err)
+	}
+
+	cursor := `{"hi_ulid":"01ARZ3NDEKTSV4RRFFQ69G5FAV","token_ver":1,"total_docs":0,"avg_doc_len":0}`
+	if err := os.WriteFile(cursorPath, []byte(cursor), 0o600); err != nil {
+		t.Fatalf("write cursor: %v", err)
+	}
+
+	_, _, needsRebuild, err := LoadIndexWithCursor(indexPath, cursorPath)
+	if err != nil {
+		t.Fatalf("LoadIndexWithCursor: %v", err)
+	}
+	if !needsRebuild {
+		t.Fatal("CORE-7: version mismatch should trigger needsRebuild=true")
+	}
 }
