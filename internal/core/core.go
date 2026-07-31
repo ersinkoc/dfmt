@@ -35,20 +35,32 @@ const DefaultDurability = "batched"
 var ErrIndexVersionMismatch = errors.New("index format version mismatch")
 
 // Priority tiers.
+//
+// Deprecated aliases for the canonical set in event.go. New code should
+// use PriP1..PriP4 directly. These exist only so historical imports
+// compile without churn (CORE-8).
 const (
-	PriorityP1 Priority = "p1" // Critical: decisions, task outcomes
-	PriorityP2 Priority = "p2" // Important: file edits, git operations
-	PriorityP3 Priority = "p3" // Normal: shell commands, searches
-	PriorityP4 Priority = "p4" // Low: reads, minor events
+	PriorityP1 = PriP1
+	PriorityP2 = PriP2
+	PriorityP3 = PriP3
+	PriorityP4 = PriP4
 )
 
 // Source types.
+//
+// Deprecated aliases for the canonical set in event.go. New code should
+// use SrcCLI, SrcMCP, SrcShell, SrcFSWatch, SrcGitHook directly.
+// Note: the values here intentionally differ from the canonical names —
+// SourceHook="hook" vs SrcGitHook="githook", SourceFS="fs" vs
+// SrcFSWatch="fswatch". The canonical event.go values are what the
+// journal writes; these aliases are kept for backward compatibility
+// but should not be used for new event creation.
 const (
-	SourceCLI   Source = "cli"
-	SourceMCP   Source = "mcp"
+	SourceCLI          = SrcCLI
+	SourceMCP          = SrcMCP
+	SourceShell        = SrcShell
 	SourceHook  Source = "hook"
 	SourceFS    Source = "fs"
-	SourceShell Source = "shell"
 	SourceGit   Source = "git"
 )
 

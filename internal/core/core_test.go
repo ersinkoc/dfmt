@@ -1098,6 +1098,40 @@ func TestJournalErrors(t *testing.T) {
 	if ErrJournalNotFound.Error() != "journal not found" {
 		t.Errorf("ErrJournalNotFound = %q", ErrJournalNotFound.Error())
 	}
+	if ErrIndexVersionMismatch.Error() != "index format version mismatch" {
+		t.Errorf("ErrIndexVersionMismatch = %q", ErrIndexVersionMismatch.Error())
+	}
+}
+
+// CORE-8: the canonical Priority set in event.go must be the single source
+// of truth. Deprecated aliases in core.go must resolve to the same values.
+// All four tiers must be unique strings.
+func TestPriorityDomainExhaustiveness(t *testing.T) {
+	canonical := map[Priority]bool{
+		PriP1: true, PriP2: true, PriP3: true, PriP4: true,
+	}
+	if len(canonical) != 4 {
+		t.Fatalf("canonical Priority set has duplicates: %v", canonical)
+	}
+	// Deprecated aliases must resolve to canonical values.
+	if PriorityP1 != PriP1 || PriorityP2 != PriP2 || PriorityP3 != PriP3 || PriorityP4 != PriP4 {
+		t.Error("deprecated Priority aliases do not match canonical values (CORE-8)")
+	}
+}
+
+// CORE-8: the canonical Source set in event.go must be the single source
+// of truth. All values must be unique strings.
+func TestSourceDomainExhaustiveness(t *testing.T) {
+	canonical := map[Source]bool{
+		SrcMCP: true, SrcFSWatch: true, SrcGitHook: true, SrcShell: true, SrcCLI: true,
+	}
+	if len(canonical) != 5 {
+		t.Fatalf("canonical Source set has duplicates: %v", canonical)
+	}
+	// Deprecated aliases that share values must resolve correctly.
+	if SourceCLI != SrcCLI || SourceMCP != SrcMCP || SourceShell != SrcShell {
+		t.Error("deprecated Source aliases do not match canonical values (CORE-8)")
+	}
 }
 
 func TestJournalOptions(t *testing.T) {
