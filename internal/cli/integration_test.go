@@ -181,7 +181,7 @@ func TestRunDoctor_Integration(t *testing.T) {
 // Historically a runStop in-process test was unsafe: runStop's global
 // path reads ~/.dfmt/daemon.pid, which the in-process daemon populates
 // with THIS test process's PID, and the follow-up signalStopProcess(pid)
-// would then terminate the test runner. LIF-2 (stopGlobalDaemon's self-PID
+// would then terminate the test runner. LIF-6 (stopGlobalDaemon's self-PID
 // short-circuit) now guards this case, so the path no longer self-kills;
 // the regression is pinned by
 // TestStopGlobalDaemon_SelfPIDDoesNotSelfKill in daemon_cli_test.go. A

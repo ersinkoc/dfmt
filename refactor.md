@@ -75,7 +75,7 @@ defaulting to **stdout** in a process that speaks JSON-RPC over stdout.
 | 6 | XC-13 | Dead slog subsystem defaults to **stdout** inside the MCP process | `logging/logging.go:51` | ✅ FIXED `53bb962` |
 | 7 | CORE-1 | Journal rotation has no caller — a full journal stops recording forever | `core/journal.go:483` | ✅ FIXED `3f84aac` |
 | 8 | TRN-4 | `/api/*` bypasses bearer auth and streams any project's journal by query parameter | `transport/http.go:387` | ✅ FIXED `ef3bec2` |
-| 9 | LIF-1/2/3 | The daemon singleton protocol: the lock file is deleted while held, the listener binds before the lock, and nothing interlocks classify→spawn | `cli/daemon.go`, `daemon/daemon.go` | 🔵 LIF-3 FIXED `cc3935f`; LIF-1/2 pending |
+| 9 | LIF-1/2/3 | The daemon singleton protocol: the lock file is deleted while held, the listener binds before the lock, and nothing interlocks classify→spawn | `cli/daemon.go`, `daemon/daemon.go` | 🔵 LIF-1 FIXED `9c39050`; LIF-3 FIXED `cc3935f`; LIF-2 pending |
 | 10 | SBX-4 | The normalization pipeline never runs for `fetch` or `read` | `sandbox/fetch.go:305`, `read.go:132` | ✅ FIXED `f673758` |
 
 Findings 1–6 are each under an hour of work. Finding 1 makes the rest verifiable and should land first.
@@ -1468,7 +1468,7 @@ and the daemon-singleton protocol is enforced by *file-existence checks* rather 
 These four should be fixed together. Individually each looks like an edge case; together they are the reason a
 spawn race can leave the host with two daemons, or with none.
 
-### LIF-1 · `cleanupStaleGlobalDaemon` deletes `~/.dfmt/lock`, which breaks the flock invariant
+### LIF-1 · `cleanupStaleGlobalDaemon` deletes `~/.dfmt/lock`, which breaks the flock invariant ✅ FIXED `9c39050`
 `internal/cli/daemon.go:625-635`. **P0 · M**
 
 On Unix, `flock` binds to the **inode**, not the path. Deleting the lock file while a process holds it does not
@@ -1534,7 +1534,7 @@ Every `Client.Exec/Read/…/Stats` takes a `ctx` and silently ignores it. The co
 **Fix:** `http.NewRequestWithContext(ctx, …)` and derive the client timeout as `min(ctx deadline, timeout)`.
 A one-line change with a large behavioural win.
 
-### LIF-6 · `dfmt stop` force-kills an unverified PID
+### LIF-6 · `dfmt stop` force-kills an unverified PID 🔵 self-kill case FIXED `4368899`
 `internal/cli/daemon.go:1068-1104`. **P1 · S**
 
 The PID is read from the file and passed straight to `taskkill /PID N /T` — no liveness check, no cross-check

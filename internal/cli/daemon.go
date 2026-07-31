@@ -1091,7 +1091,7 @@ func stopGlobalDaemon() int {
 		return 1
 	}
 
-	// LIF-2: never stop ourselves. An in-process daemon (runMCP, or a
+	// LIF-6 (self-kill case): never stop ourselves. An in-process daemon (runMCP, or a
 	// test's PromoteInProcess) shares this process's PID, so signaling
 	// "the daemon" would signal us — and the forced-kill escalation is
 	// SIGKILL on Unix, which kills the host CLI / test binary. This is
@@ -1187,7 +1187,7 @@ func waitForGlobalExit(pid int, timeout time.Duration) {
 // index, releasing the lock cleanly. Force is only invoked after a graceful
 // attempt has timed out.
 func signalStopProcess(pid int, force bool) {
-	// LIF-2: never signal ourselves. An in-process daemon shares this
+	// LIF-6 (self-kill case): never signal ourselves. An in-process daemon shares this
 	// process's PID; taskkill /F or SIGKILL against it would terminate the
 	// host CLI / test binary. stopGlobalDaemon short-circuits the self case
 	// earlier, but keep the guard here so no caller can ever kill the

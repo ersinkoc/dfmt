@@ -27,6 +27,10 @@ Internal package shapes (`internal/...`) are NOT covered by SemVer.
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.7.4] — 2026-07-31
+
 A full read-through of the code base, in two passes.
 
 The first pass found controls that existed, looked implemented, and did
@@ -45,6 +49,22 @@ that outlives any ceiling at all
 ([ADR-0025](docs/adr/0025-async-exec-jobs.md)).
 
 ### Fixed
+
+- **The CLI could not find a TCP-bound global daemon on Linux.** Since
+  the config-defaults change (`transport.http.enabled=true`), a Linux
+  daemon binds TCP + a port file rather than the Unix socket, but the
+  client probed only the socket — it classified a healthy daemon as
+  "stuck" and every daemon-backed command against it failed (Windows
+  reads the port file and was unaffected). `globalDaemonTarget` now
+  probes the live socket first (dial-checked, so a stale socket falls
+  through) and falls back to the TCP port file.
+
+- **`dfmt stop` could kill its own process.** When the daemon ran
+  in-process — sharing the CLI / test binary's PID, which it writes to
+  the global PID file — the stop path's forced-kill escalation sent
+  SIGKILL to the host process (on Unix this killed the whole test
+  binary with no error). The stop path now refuses to signal its own
+  PID (the self-kill case of LIF-6).
 
 - **`dfmt_exec`'s timeout stopped nothing.** `exec.CommandContext`
   kills the process it started; `bash -c "a; b"` forks, so the
@@ -1851,7 +1871,9 @@ for v0.3.x:
   `privacy.allow_nonlocal_http` not wired — DFMT never
   phones home regardless.
 
-[Unreleased]: https://github.com/ersinkoc/dfmt/compare/v0.7.2...HEAD
+[Unreleased]: https://github.com/ersinkoc/dfmt/compare/v0.7.4...HEAD
+[0.7.4]: https://github.com/ersinkoc/dfmt/releases/tag/v0.7.4
+[0.7.3]: https://github.com/ersinkoc/dfmt/releases/tag/v0.7.3
 [0.7.2]: https://github.com/ersinkoc/dfmt/releases/tag/v0.7.2
 [0.7.1]: https://github.com/ersinkoc/dfmt/releases/tag/v0.7.1
 [0.7.0]: https://github.com/ersinkoc/dfmt/releases/tag/v0.7.0

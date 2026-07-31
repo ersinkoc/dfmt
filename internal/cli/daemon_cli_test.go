@@ -215,10 +215,10 @@ func TestStopGlobalDaemon_MissingPIDFile(t *testing.T) {
 // writes THIS process's PID into the global PID file, so `dfmt stop` used
 // to escalate to SIGKILL against the test binary itself — on ubuntu that
 // killed the whole internal/cli package with "signal: killed" and no
-// --- FAIL line, silently blocking the release. LIF-2 (stopGlobalDaemon)
-// now treats "the daemon is us" as already stopped: exit 0, clear the
-// pid/port/socket rendezvous files, and preserve the lock (LIF-1 — we
-// still hold the flock).
+// --- FAIL line, silently blocking the release. The LIF-6 self-PID guard
+// (stopGlobalDaemon) now treats "the daemon is us" as already stopped:
+// exit 0, clear the pid/port/socket rendezvous files, and preserve the
+// lock (LIF-1 — we still hold the flock).
 func TestStopGlobalDaemon_SelfPIDDoesNotSelfKill(t *testing.T) {
 	dir := withIsolatedGlobalDir(t)
 
