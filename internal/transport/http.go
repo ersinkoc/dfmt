@@ -823,8 +823,12 @@ func (s *HTTPServer) SetPortFile(path string) {
 // (LIF-3). When set, Start() creates the listener after acquiring the
 // singleton lock, preventing the bind-before-lock race that left a losing
 // daemon with a bound socket and no lock.
+//
+// socketPath is set here as well so tests and Stop cleanup see the target
+// path even before Start() runs — it is the same value Start will bind.
 func (s *HTTPServer) SetSocketBindPath(path string) {
 	s.socketBindPath = path
+	s.socketPath = path
 }
 
 // SetProjectPath sets the project path used to filter /api/daemons responses.

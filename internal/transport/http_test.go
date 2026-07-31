@@ -490,19 +490,24 @@ func TestResolveProxyTarget_ValidUnix(t *testing.T) {
 }
 
 func TestResolveProxyTarget_MultipleProjects(t *testing.T) {
-	if osutil.IsWindows() {
-		t.Skip("port-based lookup on Windows only")
-	}
 	registry := []map[string]any{
 		{"project_path": "/project1"},
-		{"project_path": "/project2", "port": float64(12345)},
+		// Both fields present so the test exercises the platform-appropriate
+		// lookup on either OS: Windows reads port, Unix reads socket_path.
+		{"project_path": "/project2", "port": float64(12345), "socket_path": "/tmp/dfmt-project2.sock"},
 	}
-	url, _, code, _ := resolveProxyTarget(registry, "/project2")
+	url, sock, code, _ := resolveProxyTarget(registry, "/project2")
 	if code != 0 {
 		t.Errorf("expected code=0, got code=%d", code)
 	}
-	if !strings.Contains(url, "12345") {
-		t.Errorf("expected url with port 12345, got %s", url)
+	if osutil.IsWindows() {
+		if !strings.Contains(url, "12345") {
+			t.Errorf("expected url with port 12345, got %s", url)
+		}
+	} else {
+		if sock != "/tmp/dfmt-project2.sock" {
+			t.Errorf("expected socket_path /tmp/dfmt-project2.sock, got %q", sock)
+		}
 	}
 }
 
