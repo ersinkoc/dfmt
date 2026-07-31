@@ -1,6 +1,7 @@
 package sandbox
 
 import (
+	"strings"
 	"testing"
 	"unicode/utf8"
 )
@@ -27,8 +28,7 @@ func encodeUTF16LE(s string) []byte {
 // U+FFFD and the agent saw replacement characters where the terminal had a
 // glyph.
 func TestDecodeUTF16LEHandlesSurrogatePairs(t *testing.T) {
-	cases := []string{
-		"plain ascii",
+	cases := []string{"plain ascii",
 		"Türkçe karakterler: çğıöşü",
 		"emoji: 🚀 done",
 		"mixed 日本語 and 𝄞 clef",
@@ -56,5 +56,37 @@ func TestDecodeUTF16LEUnpairedSurrogate(t *testing.T) {
 	}
 	if want := string(utf8.RuneError) + "A"; got != want {
 		t.Errorf("decode = %q, want %q", got, want)
+	}
+}
+
+// SBX-8 regression: short BOM-less UTF-16LE output (PowerShell / Git Bash
+// emitting `echo hi` = 8 bytes, 4 even-position NULs) must be decoded as
+// text, not misdetected as binary and replaced with a summary. The old
+// heuristic required >15 NULs over the first 100 bytes, which short output
+// never meets — the NULs then tripped CompactBinary's single-NUL threshold.
+func TestConvertUTF16LEToUTF8ShortBOMlessOutput(t *testing.T) {
+	for _, want := range []string{"hi", "Get-Date", "ok"} {
+		data := encodeUTF16LE(want)
+		if len(data) > 100 {
+			t.Fatalf("test input %q too long for the short-output case", want)
+		}
+		got := convertUTF16LEToUTF8(data)
+		if got != want {
+			t.Errorf("convertUTF16LEToUTF8(%d bytes) = %q, want %q (SBX-8)", len(data), got, want)
+		}
+	}
+}
+
+// SBX-8 companion through the full pipeline: after conversion, the decoded
+// text must NOT be flagged binary by CompactBinary, and NormalizeOutput must
+// not return the `(binary; ...)` summary.
+func TestNormalizeOutputShortUTF16LEIsNotBinary(t *testing.T) {
+	data := encodeUTF16LE("hi")
+	out := NormalizeOutput(string(data))
+	if strings.Contains(out, "(binary;") {
+		t.Fatalf("short UTF-16LE output misdetected as binary: %q", out)
+	}
+	if !strings.Contains(out, "hi") {
+		t.Errorf("decoded text missing from normalized output: %q", out)
 	}
 }

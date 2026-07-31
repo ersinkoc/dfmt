@@ -550,17 +550,33 @@ func convertUTF16LEToUTF8(data []byte) string {
 		return string(data)
 	}
 	// Heuristic fallback for BOM-less UTF-16LE (Git Bash on Windows).
-	// "More than 30% of even-position bytes are null over the first 100"
-	// is a Git-Bash signature; binary outputs rarely meet it.
+	// UTF-16LE is little-endian, so an ASCII char 'X' (U+00XX) renders as
+	// the byte pair [XX, 0x00] — the NUL sits at the ODD byte index, the
+	// ASCII at the even one. The old rule required >15 NULs over the first
+	// 100 bytes, so short output (`echo hi` = 8 bytes, NULs only at indices
+	// 1,3,5,7) never qualified, kept its NULs, and then tripped
+	// CompactBinary's single-NUL threshold — the agent got `(binary; ...)`
+	// instead of `hi` (SBX-8). The tighter shape test (>=2 NULs at odd
+	// positions, none at even positions) catches short output while staying
+	// specific: binary dumps whose NULs land at even positions still fall
+	// through.
 	isUTF16 := false
 	if len(data) >= 4 {
-		nullCount := 0
-		for i := 0; i < len(data) && i < 100; i += 2 {
+		n := len(data)
+		if n > 100 {
+			n = 100
+		}
+		evenNulls, oddNulls := 0, 0
+		for i := 0; i < n; i++ {
 			if data[i] == 0 {
-				nullCount++
+				if i%2 == 0 {
+					evenNulls++
+				} else {
+					oddNulls++
+				}
 			}
 		}
-		isUTF16 = nullCount > 15
+		isUTF16 = oddNulls >= 2 && evenNulls == 0
 	}
 
 	if !isUTF16 {

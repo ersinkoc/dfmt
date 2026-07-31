@@ -457,6 +457,13 @@ func NormalizeOutput(s string) string {
 	if s == "" {
 		return s
 	}
+	// UTF-16LE conversion must run BEFORE CompactBinary (SBX-8): short
+	// BOM-less UTF-16LE output (`echo hi` = 8 bytes) has NUL bytes that
+	// CompactBinary's single-NUL threshold would flag as binary. Converting
+	// first strips the NULs, so the body reaches CompactBinary as clean
+	// UTF-8 text. execImpl already does this at line 250; NormalizeOutput
+	// (which Fetch/Read now calls too, per SBX-4) must do the same.
+	s = convertUTF16LEToUTF8([]byte(s))
 	// Binary refusal runs first: if the body is non-UTF-8 (PNG, PDF,
 	// gzip, ELF, …) shipping the bytes as text wastes token budget
 	// AND breaks JSON-RPC encoding. Replace with a one-line summary
