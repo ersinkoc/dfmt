@@ -495,8 +495,10 @@ type globalDaemonStatus int
 
 const (
 	// globalDaemonDead: no live PID and no responsive listener. Spawn a
-	// new daemon after wiping any stale port/pid/lock files so the new
-	// daemon's writes don't shadow leftover bytes.
+	// new daemon after wiping any stale pid/port/socket files so the new
+	// daemon's writes don't shadow leftover bytes. The lock file is
+	// deliberately preserved (LIF-1, see cleanupStaleGlobalDaemon) so
+	// flock's inode contract holds across concurrent classify→spawn races.
 	globalDaemonDead globalDaemonStatus = iota
 	// globalDaemonRunning: PID is alive AND the listener accepts a fast
 	// dial. Connect; do not spawn.

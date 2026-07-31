@@ -89,30 +89,40 @@ func TestInspectGlobalDaemon_StuckOnLivePIDNoListener(t *testing.T) {
 }
 
 // TestCleanupStaleGlobalDaemon_RemovesAll exercises the wipe pass that
-// runs before a Dead-state spawn. Each of the four files we lay down
-// must be gone after the call; absence of any of them already (the
-// realistic crash-mid-shutdown case) must not produce an error.
+// runs before a Dead-state spawn. The stale pid/port/socket files we lay
+// down must be gone after the call; absence of any of them already (the
+// realistic crash-mid-shutdown case) must not produce an error. The lock
+// file is laid down too but must SURVIVE: LIF-1 (see cleanupStaleGlobalDaemon
+// in daemon.go) deliberately preserves it so flock's inode contract holds
+// across concurrent classify→spawn races.
 func TestCleanupStaleGlobalDaemon_RemovesAll(t *testing.T) {
 	dir := withIsolatedGlobalDir(t)
 
-	names := []string{
+	removed := []string{
 		project.GlobalPIDFileName,
 		project.GlobalPortFileName,
 		project.GlobalSocketName,
-		project.GlobalLockFileName,
 	}
-	for _, name := range names {
+	for _, name := range removed {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte("stale"), 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
+	// Planted to prove cleanup does NOT touch it (LIF-1).
+	lockPath := filepath.Join(dir, project.GlobalLockFileName)
+	if err := os.WriteFile(lockPath, []byte("stale"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 
 	cleanupStaleGlobalDaemon()
 
-	for _, name := range names {
+	for _, name := range removed {
 		if _, err := os.Stat(filepath.Join(dir, name)); !os.IsNotExist(err) {
 			t.Errorf("expected %s removed; stat err: %v", name, err)
 		}
+	}
+	if _, err := os.Stat(lockPath); err != nil {
+		t.Errorf("expected lock file preserved (LIF-1); stat err: %v", err)
 	}
 }
 
@@ -161,20 +171,26 @@ func TestEnsureGlobalDaemon_StuckSurfacesActionableError(t *testing.T) {
 // matters because the next real (non-test) call would otherwise spawn
 // a daemon whose port file write races with the leftover bytes — the
 // daemon writes atomically via safefs, but the dead-state cleanup
-// makes the post-spawn ~/.dfmt/ contain only fresh files.
+// makes the post-spawn ~/.dfmt/ contain only fresh files. The lock file
+// is planted too but must SURVIVE the cleanup pass (LIF-1).
 func TestEnsureGlobalDaemon_DeadCleansBeforeFallback(t *testing.T) {
 	dir := withIsolatedGlobalDir(t)
 
-	// Plant stale files; no PID, no listener → Dead state.
+	// Plant stale files; no PID, no listener → Dead state. pid/port are
+	// the stale state Dead-cleanup must wipe before the spawn branch.
 	stale := []string{
 		project.GlobalPIDFileName,
 		project.GlobalPortFileName,
-		project.GlobalLockFileName,
 	}
 	for _, name := range stale {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte("stale"), 0o600); err != nil {
 			t.Fatal(err)
 		}
+	}
+	// Planted to prove Dead-cleanup does NOT touch it (LIF-1).
+	lockPath := filepath.Join(dir, project.GlobalLockFileName)
+	if err := os.WriteFile(lockPath, []byte("stale"), 0o600); err != nil {
+		t.Fatal(err)
 	}
 
 	// In the test harness DFMT_DISABLE_AUTOSTART=1 (set by TestMain),
@@ -186,5 +202,8 @@ func TestEnsureGlobalDaemon_DeadCleansBeforeFallback(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(dir, name)); !os.IsNotExist(err) {
 			t.Errorf("expected %s removed by Dead-cleanup; stat err: %v", name, err)
 		}
+	}
+	if _, err := os.Stat(lockPath); err != nil {
+		t.Errorf("expected lock file preserved by Dead-cleanup (LIF-1); stat err: %v", err)
 	}
 }
