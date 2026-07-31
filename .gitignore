@@ -75,3 +75,8 @@ internal/cli/.config/
 internal/cli/.cursor/
 internal/cli/.gemini/
 internal/cli/.windsurf/
+
+.wrongstack/
+!/.wrongstack/
+/.wrongstack/*
+!/.wrongstack/project.json

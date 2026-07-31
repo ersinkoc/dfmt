@@ -54,6 +54,10 @@ const (
 	LevelOff
 )
 
+// levelDebug is the string form of LevelDebug used by parseLevel and the
+// Debugf prefix. Moved here from the deleted logging.go (XC-13).
+const levelDebug = "debug"
+
 var (
 	mu     sync.Mutex
 	out    io.Writer = os.Stderr

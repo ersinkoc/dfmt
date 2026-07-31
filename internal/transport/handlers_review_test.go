@@ -138,17 +138,95 @@ func TestStatsCacheNoCacheBypassReturnsFresh(t *testing.T) {
 		t.Fatalf("NoCache EventsTotal = %d, want 2 (cache bypass should surface new event)", fresh.EventsTotal)
 	}
 
-	// Side-check: the cached path still returns the *latest* result.
-	// The NoCache branch writes back to the cache, so the next default
-	// call should ALSO see EventsTotal=2 — not regress to the primed
-	// value of 1. This catches a hypothetical bug where NoCache reads
-	// fresh but never updates the shared cache.
+	// Side-check: NoCache does NOT update the shared cache (TRN-1 fix):
+	// a `no_cache: true` call must not poison the cache for another project.
+	// The next default call should still return the primed cached value.
 	again, err := h.Stats(ctx, StatsParams{})
 	if err != nil {
 		t.Fatalf("post-bypass cached Stats: %v", err)
 	}
-	if again.EventsTotal != 2 {
-		t.Fatalf("post-bypass cached EventsTotal = %d, want 2 (NoCache should also refresh shared cache)", again.EventsTotal)
+	if again.EventsTotal != 1 {
+		t.Fatalf("post-bypass cached EventsTotal = %d, want 1 (NoCache must not update shared cache — TRN-1)", again.EventsTotal)
+	}
+}
+
+// TestStatsCacheIsKeyedByProject covers TRN-1: in global-daemon mode one
+// Handlers serves every project, so the stats cache MUST be keyed by project
+// path. Without keying, a stats call for project B within statsTTL of a call
+// for project A returns A's numbers. The NoCache store must also be skipped
+// so a `no_cache: true` call for one project does not poison the cache for
+// another.
+func TestStatsCacheIsKeyedByProject(t *testing.T) {
+	prevTTL := statsTTL
+	statsTTL = 30 * time.Second
+	defer func() { statsTTL = prevTTL }()
+
+	tmpA := t.TempDir()
+	journalA, err := core.OpenJournal(filepath.Join(tmpA, "journal.jsonl"), core.JournalOptions{Durable: true})
+	if err != nil {
+		t.Fatalf("OpenJournal A: %v", err)
+	}
+	defer journalA.Close()
+
+	tmpB := t.TempDir()
+	journalB, err := core.OpenJournal(filepath.Join(tmpB, "journal.jsonl"), core.JournalOptions{Durable: true})
+	if err != nil {
+		t.Fatalf("OpenJournal B: %v", err)
+	}
+	defer journalB.Close()
+
+	// ProjA gets 1 event; projB gets 2 events.
+	mkEvent := func() core.Event {
+		return core.Event{
+			ID:       string(core.NewULID(time.Now())),
+			TS:       time.Now(),
+			Type:     core.EvtNote,
+			Priority: core.PriP3,
+			Source:   core.SrcCLI,
+		}
+	}
+	ctx := context.Background()
+	if err := journalA.Append(ctx, mkEvent()); err != nil {
+		t.Fatalf("Append A: %v", err)
+	}
+	if err := journalB.Append(ctx, mkEvent()); err != nil {
+		t.Fatalf("Append B1: %v", err)
+	}
+	if err := journalB.Append(ctx, mkEvent()); err != nil {
+		t.Fatalf("Append B2: %v", err)
+	}
+
+	h := NewHandlers(nil, nil, nil)
+	h.SetResourceFetcher(func(projectID string) (Bundle, error) {
+		switch projectID {
+		case "/projA":
+			return Bundle{Journal: journalA, ProjectPath: "/projA"}, nil
+		case "/projB":
+			return Bundle{Journal: journalB, ProjectPath: "/projB"}, nil
+		default:
+			return Bundle{}, errNoProject
+		}
+	})
+
+	ctxA := WithProjectID(ctx, "/projA")
+	ctxB := WithProjectID(ctx, "/projB")
+
+	// Prime the cache for project A.
+	respA, err := h.Stats(ctxA, StatsParams{})
+	if err != nil {
+		t.Fatalf("Stats A: %v", err)
+	}
+	if respA.EventsTotal != 1 {
+		t.Fatalf("Stats A EventsTotal = %d, want 1", respA.EventsTotal)
+	}
+
+	// Project B must NOT see A's cached result.
+	respB, err := h.Stats(ctxB, StatsParams{})
+	if err != nil {
+		t.Fatalf("Stats B: %v", err)
+	}
+	if respB.EventsTotal != 2 {
+		t.Fatalf("Stats B EventsTotal = %d, want 2 — cache returned project A's result (TRN-1)", respB.EventsTotal)
 	}
 }
 
@@ -192,6 +270,36 @@ func TestStatsCacheClonesMaps(t *testing.T) {
 	}
 	if _, leaked := second.EventsByType["poisoned"]; leaked {
 		t.Fatalf("cache returned a shared map; mutation by first caller leaked into second")
+	}
+}
+
+func TestStatsCacheCapBoundsProjectEntries(t *testing.T) {
+	h := NewHandlers(nil, nil, nil)
+	now := time.Now()
+	for i := 0; i < statsCacheCap; i++ {
+		h.statsCache[string(rune('a'+i))] = &statsCacheEntry{resp: &StatsResponse{}, at: now}
+	}
+
+	journal, err := core.OpenJournal(filepath.Join(t.TempDir(), "journal.jsonl"), core.JournalOptions{Durable: true})
+	if err != nil {
+		t.Fatalf("OpenJournal: %v", err)
+	}
+	defer journal.Close()
+	if err := journal.Append(context.Background(), core.Event{
+		ID: string(core.NewULID(time.Now())), TS: time.Now(),
+		Type: core.EvtNote, Priority: core.PriP3, Source: core.SrcCLI,
+	}); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	h.SetResourceFetcher(func(projectID string) (Bundle, error) {
+		return Bundle{Journal: journal, ProjectPath: "/new-project"}, nil
+	})
+
+	if _, err := h.Stats(WithProjectID(context.Background(), "/new-project"), StatsParams{}); err != nil {
+		t.Fatalf("Stats: %v", err)
+	}
+	if len(h.statsCache) > statsCacheCap {
+		t.Fatalf("stats cache len = %d, want <= %d", len(h.statsCache), statsCacheCap)
 	}
 }
 

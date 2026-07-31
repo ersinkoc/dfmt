@@ -92,13 +92,13 @@ func (h *Handlers) Stats(ctx context.Context, params StatsParams) (*StatsRespons
 	// "the number didn't change" as "DFMT is broken", and the 5-second
 	// staleness window makes that interpretation easy to fall into.
 	if !params.NoCache {
-		h.statsCacheMu.RLock()
-		if h.statsCache != nil && time.Since(h.statsCachedAt) < statsTTL {
-			cached := h.statsCache
-			h.statsCacheMu.RUnlock()
+		h.statsCacheMu.Lock()
+		if entry, ok := h.statsCache[bundle.ProjectPath]; ok && time.Since(entry.at) < statsTTL {
+			cached := entry.resp
+			h.statsCacheMu.Unlock()
 			return cloneStatsResponse(cached), nil
 		}
-		h.statsCacheMu.RUnlock()
+		h.statsCacheMu.Unlock()
 	}
 
 	stream, err := bundle.Journal.Stream(ctx, "")
@@ -199,10 +199,28 @@ func (h *Handlers) Stats(ctx context.Context, params StatsParams) (*StatsRespons
 		resp.SessionEnd = latest.Format(time.RFC3339)
 	}
 
-	h.statsCacheMu.Lock()
-	h.statsCache = resp
-	h.statsCachedAt = time.Now()
-	h.statsCacheMu.Unlock()
+	// Store the fresh result, keyed by project path. Skip the store when
+	// NoCache is set so a `no_cache: true` call for project A does not
+	// poison the cache for project B (TRN-1). Opportunistic eviction of
+	// expired entries bounds the map to statsCacheCap.
+	if !params.NoCache {
+		h.statsCacheMu.Lock()
+		if len(h.statsCache) >= statsCacheCap {
+			for k, e := range h.statsCache {
+				if time.Since(e.at) >= statsTTL {
+					delete(h.statsCache, k)
+				}
+			}
+		}
+		if len(h.statsCache) >= statsCacheCap {
+			for k := range h.statsCache {
+				delete(h.statsCache, k)
+				break
+			}
+		}
+		h.statsCache[bundle.ProjectPath] = &statsCacheEntry{resp: resp, at: time.Now()}
+		h.statsCacheMu.Unlock()
+	}
 
 	return cloneStatsResponse(resp), nil
 }

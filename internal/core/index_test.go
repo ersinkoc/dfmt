@@ -14,6 +14,7 @@ func TestNewIndex(t *testing.T) {
 	ix := NewIndex()
 	if ix == nil {
 		t.Fatal("NewIndex returned nil")
+		return
 	}
 	if ix.stemPL == nil {
 		t.Error("stemPL is nil")

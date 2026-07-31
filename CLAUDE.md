@@ -48,6 +48,8 @@ This repository is DFMT itself. When working on it, you are dogfooding the daemo
 
 **`dfmt mcp` is a pure proxy**: it is itself a long-lived process (the agent's MCP transport), and it uses `acquireBackendForLongRunner`, which *ensures* a detached daemon is running and connects to it as a client. It never adopts the daemon role — `acquireBackendForLongRunner` returns a nil `*daemon.Daemon` by construction. This is deliberate: under the old in-process self-promote path, the MCP subprocess became the daemon, so closing the agent's stdin killed the daemon for every other project on the host. An agent session therefore shows two processes (`dfmt mcp` + `dfmt daemon`) but still exactly **one daemon**.
 
+**The proxy dispatches concurrently** (`serveMCPStdio` in `internal/cli/mcp.go`). The stdio loop reads serially — there is one stdin — but hands each request to a bounded worker pool (16) and guards stdout with a mutex. It used to be `read → handle → write`, one at a time, so a single slow `dfmt_exec` froze every other dfmt tool in the session; a `dfmt_read` was observed waiting two minutes behind a running `go test`. JSON-RPC correlates by `id` and permits out-of-order responses, so ordering was never the constraint. Two rules: `initialize` runs inline (it mutates the session ID and is documented as preceding any tool call), and EOF waits for in-flight calls so no response is dropped mid-write. See [ADR-0023](docs/adr/0023-real-deadlines-concurrent-proxy-and-rpc-auth.md).
+
 **Test-binary short-circuit**: `acquireBackend` checks `isTestBinary()` and `DFMT_DISABLE_AUTOSTART=1`; either falls back to in-process promotion via `acquireBackendForLongRunner` so unit tests don't fork sibling processes (the test binary is not the dfmt binary).
 
 **Daemon identity — why an upgrade takes effect**: the daemon outlives the command that started it and holds the singleton lock, and liveness is a bare dial (`client.fastDialOK`), which *any* build satisfies. Without a version check, rebuilding and reinstalling dfmt did nothing — the old process kept answering, and because its replies were well-formed the skew showed up as silently wrong results rather than errors. (Observed: a May-15 binary served a v0.6.9 checkout and returned empty stdout for every exec.)
@@ -100,11 +102,23 @@ Three faces, same daemon:
 - HTTP JSON-RPC + dashboard at `/dashboard`.
 - Unix socket / loopback TCP — CLI ↔ daemon.
 
+**The HTTP server has no `WriteTimeout`, deliberately.** Go's write deadline is absolute from the moment request headers are read, so any value is a hard ceiling on handler duration. At 30 s it capped every tool call at 30 seconds while `dfmt_exec` advertises a 60 s default and clamps at `MaxExecTimeout` (300 s): `sleep 25` returned, `sleep 45` died with a bare `EOF` while the command kept running server-side, and `/api/stream` (SSE) was torn down every 30 seconds. Handlers bound themselves (exec/fetch clamps, request-context cancellation); `ReadHeaderTimeout` and `IdleTimeout` keep the protections that mattered. Do not reintroduce a write deadline — `TestHTTPServerHasNoWriteDeadline` pins it.
+
+**Bearer auth is enforced on `/` only.** The daemon always minted a token, wrote an *empty* one to the port file, and never checked the header — while clients faithfully sent it. On Windows the RPC transport is loopback TCP with no ACL, so `/` (exec/write/edit/fetch) was reachable by any local process. The token now goes into the 0600 port file and `wrapSecurity` compares it in constant time. Scope is narrow on purpose: the dashboard and the read-only `/api` endpoints it calls run in a browser with no token, and embedding one in an unauthenticated page would defeat the control. An empty `authToken` (no port file, or the Unix socket transport, which is guarded by file mode) skips the check.
+
 ### Sandbox (`internal/sandbox/`)
 
 Implements the seven tool primitives. Output is summarized, intent-matched against the BM25 index, and the raw bytes are stashed in `internal/content/` (the ephemeral content store). The default policy in `permissions.go::DefaultPolicy()` allows common dev tools (`git`, `npm`, `pnpm`, `yarn`, `bun`, `npx`/`pnpx`/`bunx`, `tsc`/`tsx`/`ts-node`, `vitest`/`jest`, `eslint`/`prettier`, `vite`/`next`/`webpack`, `make`, `pytest`, `cargo`, `go`, `node`, `python`, `deno`, basic Unix read-only) and denies destructive ones (`sudo`, `rm -rf /`, `curl|sh`). Operators add overrides in `.dfmt/permissions.yaml`. Every denial error ends with a `hint:` line naming the file to edit and the network classes that cannot be opened up (loopback, RFC1918, cloud metadata).
 
 **Allow-rule contract** (V-20). Exec allow rules use the form `allow:exec:<base-cmd> *` — the trailing space + `*` is what makes the boundary the end-of-token. Without it, `allow:exec:git*` would also match `git-shell`, `git-receive-pack`, etc. Always include ` *` on exec allows.
+
+**Exec deadlines kill the process tree** (`exec.go`, `spawn_unix.go`, `spawn_windows.go`). `exec.CommandContext` kills only the process it started, and `bash -c "a; b"` forks — so the grandchild survived the deadline AND kept the inherited stdout pipe open, which left `io.ReadAll` blocking until the command finished on its own. Measured with `Timeout: 3s`: returned at 20.7 s, `timed_out=false`, stdout discarded. `configureChildProc` now sets `Setpgid` on Unix; `killProcessTree` signals the group there and uses `taskkill /T /F` on Windows; `cmd.Cancel` is wired to it and `cmd.WaitDelay` (2 s) bounds `Wait` afterwards. On the timeout path the read error is deliberately tolerated — the bytes printed before the kill are what the agent needs — and `ExecResp.TimedOut` is set. Do not "clean up" that tolerated `readErr`: it is the partial-output path.
+
+**Glob is recursive** (`globexpand.go`). `filepath.Glob` has no `**` — a second `*` adds nothing to `filepath.Match`, so `**/*.go` matched exactly one level of depth and returned 2 of this repo's 278 Go files, silently. Patterns containing `**` go through a walker with doublestar semantics (`**/` is zero-or-more segments, so a root-level file matches); everything else keeps the cheaper stdlib path. The policy engine's `globToRegex` is NOT reused here — it compiles a leading `**/` to "at least one directory", which is correct for rules and wrong for a file search.
+
+**Edit refuses an ambiguous anchor** (`edit_write.go`). `strings.Replace(..., 1)` rewrote the first of N occurrences and reported success; the anchors an agent picks are exactly the text that repeats. `old_string` must now match once, or the call is refused with the occurrence count. `replace_all` opts into a sweep and the response reports `replacements`.
+
+**`dfmt_read` is line-oriented** (`read.go`). `Offset` is the 1-based first line (0 and 1 both mean the top), `Limit` is a line count, and the response carries `StartLine`/`EndLine`/`TotalLines`. They were bytes — a unit nothing else an agent uses speaks, which is why code reading kept falling back to the native Read tool. Two rules: line numbers are NOT prefixed onto the content (an anchor copied out of numbered text cannot match the file, so `dfmt_edit` would refuse it), and `TotalLines` is 0 when the scan stopped early, because a partial count presented as a total is indistinguishable from the truth and wrong. The scan streams, so a window deep inside a file larger than `MaxSandboxReadBytes` stays reachable.
 
 **Traversal exclusions** (`walkskip.go`). The Grep/Glob walkers prune build output, VCS internals, dependency trees, tool caches and `.dfmt` itself by directory basename, and skip binary files by sniffing a 512-byte prefix through `detectBinary` (one definition of "binary", shared with pipeline stage 1). Both are load-bearing, not tidiness: the walker was a bare `filepath.WalkDir` with no exclusions, and since `WalkDir` is lexical, `dist` was reached before `internal` — grepping `runtime` on this repo spent 58 of its 100 match slots inside `dist/dfmt.exe` and returned **nothing** from `internal/` or `cmd/`. Grep also matched its own `.dfmt/journal.jsonl`, which grows with every call.
 
@@ -138,6 +152,42 @@ Five ingestion paths feed the journal: MCP calls (live), CLI commands like `dfmt
 
 `dfmt_recall` rebuilds a markdown snapshot under a byte budget. Per-tier streaming with FIFO eviction — lower-priority content drops first when the budget tightens. Path interning (Refs table at the top of the snapshot + `[rN]` token references in events, kicks in at ≥3 occurrences) lives in `internal/retrieve/render_md.go` and is wired for `format=json` and `format=xml`, which route through `retrieve.SnapshotBuilder`. The **default markdown path is not interned** — it builds its lines inline in `handlers_recall.go` and never reaches the renderer. Wiring markdown is tracked on the roadmap (see `docs/ROADMAP.md`).
 
+Recall memoizes its rendered snapshot against the journal cursor, keyed by (project, budget, format). Invalidation is exact, not TTL-based: one appended event moves `Journal.Checkpoint` and the next call rebuilds. Two invariants — an **empty cursor is never cached** (it cannot distinguish two journal states, so a journal whose checkpoint does not advance would pin a stale snapshot forever), and **`SetRedactor` clears the cache** (snapshots were rendered through the old redactor while the cursor stayed put).
+
+### Async exec jobs (`internal/transport/exec_jobs.go`)
+
+`dfmt_exec` has three shapes: run-and-wait, `async:true` (submit, get a `job_id`), and `job_id` (poll, or `cancel:true` to stop). They are parameters on one tool because `tools/list` ships on every session start and a second tool object would pay for its own envelope before describing anything.
+
+Four properties are load-bearing:
+
+- **The worker runs under a detached context**, not the submitting request's — that one is done milliseconds later and would cancel the job at birth. It carries the project and session IDs forward so redaction and wire-dedup resolve identically for the job and its submitter.
+- **Async has its own semaphore** (2), separate from `execSem` (4). Sharing would let two hour-long jobs occupy half the interactive capacity.
+- **The job table refuses at the cap** (32) rather than evicting; dropping a running job to make room would hide the caller's leak behind a result that never arrives. Finished jobs are retained 30 minutes.
+- **Cancel reuses the deadline path**, so it kills the process tree (ADR-0023) rather than detaching from it, and waits `cancelSettleTimeout` (6s, covering `execWaitDelay` plus the journal tail) so one call can answer `canceled` instead of `running`.
+
+Note the ceiling split this introduced: `sandbox.MaxExecTimeout` (900s) is the SYNCHRONOUS policy applied by the transport, `MaxAsyncExecTimeout` (2h) the async one, and `sandbox.HardMaxExecTimeout` (2h) the sandbox's own backstop. `execImpl` must clamp to the hard one — clamping to `MaxExecTimeout` there silently cut every async job to fifteen minutes. See [ADR-0025](docs/adr/0025-async-exec-jobs.md).
+
+### Session memory retrieval (`dfmt_remember` → `dfmt_search` / `dfmt_recall`)
+
+Writing a memory was never the weak half; finding it again was. A journal is overwhelmingly automatic — 193 of 202 events on this repo were `tool.*` calls — and BM25 length-normalization favors those short documents over a long, information-dense note. Measured: a query for `timeout` returned six `tool.grep`/`tool.exec` hits and not the note that discussed timeouts at length.
+
+Three things follow from that, and they are the reason retrieval works now:
+
+- **Hits are labelled.** `SearchHit.Type`/`Source` are populated from `core.Index.meta` (a per-document `DocMeta`, non-persisted, rebuilt on load like excerpts). They were declared and never assigned, so a note looked exactly like the tool call beside it.
+- **`dfmt_search` takes a `type` filter.** `type: "note"` searches only what the agent deliberately recorded. Scoring is untouched: the corpus is lopsided, not the ranking, so the caller says which corpus it means instead of the code inventing a weight. Filtering happens after scoring, over-fetching `searchFilterOverFetch` candidates and capped at `searchFilterMaxCandidates`.
+- **Tags decide retention, so they are documented in the schema.** `summary`/`decision`/`strengths`/`ledger` → P2, `audit`/`finding`/`followup`/`preserve` → P3, everything else P4 (dropped first under budget). That vocabulary lives in `core.NewClassifier`'s seeded rules; the `tags` parameter description is the only place an agent can learn it.
+
+Note that `Recall` classifies each event (`classifier.Classify`) to pick its tier AND to label it. The stored `Priority` is not the effective one — `dfmt_remember` coerces every agent-written event to p3 (F-21) and the classifier re-elevates from tags — so rendering the stored value printed `[p3]` on lines sorted above `[p2]`.
+
+### Index retention (`internal/core/index.go`)
+
+At `MaxIndexDocs` (100k) the index evicts. Two rules there are load-bearing:
+
+- **Eviction is priority-first, age-second.** One min-heap per tier; the lowest-priority non-empty tier is drained first. The tier comes from the same `core.Classifier` Recall uses, so tags decide index retention exactly as they decide recall retention. The previous rule was age-only, which on a journal that is ~200:1 automatic events retired the earliest decisions while keeping every recent `tool.read` — and did it quietly, because the note stayed in the journal (so `dfmt_recall` still showed it) and only `dfmt_search` forgot. Documents restored from a persisted index have no tier and go in the lowest one.
+- **Removal is reverse-mapped.** `docStems` / `docTrigrams` record which terms a document contributed to; `docLenSum` keeps `avgDocLen` arithmetic; front deletion re-slices rather than memmoves. Removal used to walk every posting list and recompute `avgDocLen` over every document — per insert, once at the cap: 739 µs → 8.7 µs at a 2k cap, 6 215 µs → 13.3 µs at 20k (`BenchmarkAddAtCap` pins both).
+
+`removeFromPostingList` binary-searches on the assumption that posting lists are in ULID order (they are append-only in insertion order) and falls back to a linear scan on a miss — so an out-of-order list stays correct while getting slower. That is a silent performance cliff, not a bug, and it is how the first version of this change hid a full-index sweep behind a guard that always fired. Every test passed; only a CPU profile showed it. See [ADR-0024](docs/adr/0024-retention-ceilings-and-line-oriented-reads.md).
+
 ### MCP required-argument validation (`internal/transport/params_validate.go`)
 
 Every tool schema declares a `required` list, but nothing enforced it: `decodeRequiredParams` rejects only a wholly **absent** `arguments` object, so an object that merely omits the required field decoded to a zero value and the tool ran on it. `dfmt_exec` with no `code` handed an empty string to the shell, which exits 0 in ~25 ms having printed nothing, and the caller got `{"exit":0,"duration_ms":25,"timed_out":false}` — a successful-looking result, indistinguishable from a real command that printed nothing. An agent guessing the wrong argument name (`command` for `code`, `file` for `path`) got silence instead of a correction, and retrying the same wrong name never revealed it.
@@ -168,10 +218,13 @@ Everything else — HTML parser, BM25, Porter stemmer, MCP wire format, JSON-RPC
 
 ### Test coverage thresholds
 
+Executable targets live in `scripts/coverage-gate.go`; keep this table in sync with that script.
+CI currently runs the coverage gate informationally without `--strict` until the test-integrity cleanup is complete.
+
 - `internal/core`       ≥ 90 %
 - `internal/transport`  ≥ 85 %
-- `internal/daemon`    ≥ 75 %
-- `internal/cli`       ≥ 70 %
+- `internal/daemon`    ≥ 80 %
+- `internal/cli`       ≥ 75 %
 
 New functionality requires tests; bug fixes require regression tests.
 

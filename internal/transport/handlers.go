@@ -107,10 +107,63 @@ type Handlers struct {
 	// journal — at 10 MiB rotated max + active that's hundreds of ms per
 	// poll. Mirrors the TTL pattern used by MCPProtocol.compressionStats
 	// for its own per-tool aggregation.
-	statsCacheMu  sync.RWMutex
-	statsCache    *StatsResponse
-	statsCachedAt time.Time
+	//
+	// Keyed by bundle.ProjectPath so one project's numbers are never served
+	// for another in global-daemon mode (TRN-1). Bounded by statsCacheCap;
+	// eviction is TTL-based (expired entries are dropped on the next miss).
+	statsCacheMu sync.Mutex
+	statsCache   map[string]*statsCacheEntry
+
+	// recallCache memoises rendered snapshots against the journal cursor.
+	//
+	// Recall streams the ENTIRE journal on every call — every segment, every
+	// line unmarshalled, and every event signature-verified (a canonical
+	// re-marshal plus SHA-256 each). Nothing about that work changes between
+	// two calls with no new events, and an agent recalling twice in a turn,
+	// or two agents sharing a daemon, pays it twice.
+	//
+	// Keyed on (project, budget, format) and validated against the journal's
+	// checkpoint, so invalidation is exact rather than time-based: one new
+	// event changes the cursor and the next Recall rebuilds. A TTL would have
+	// been simpler and wrong in both directions — stale inside the window,
+	// needlessly cold outside it.
+	recallCacheMu sync.Mutex
+	recallCache   map[string]recallCacheEntry
+
+	// jobs holds async exec submissions (see exec_jobs.go). asyncSem is
+	// deliberately separate from execSem: sharing it would let two
+	// hour-long jobs occupy half the interactive capacity, so a quick
+	// `git status` would queue behind a migration.
+	jobsMu   sync.Mutex
+	jobs     map[string]*execJob
+	asyncSem chan struct{}
 }
+
+// recallCacheEntry is one memoised snapshot plus the journal cursor it was
+// built from.
+type recallCacheEntry struct {
+	cursor   string
+	snapshot string
+}
+
+// statsCacheEntry holds one project's memoised Stats result and the wall-clock
+// time it was computed, so the TTL check can decide freshness without
+// re-streaming the journal.
+type statsCacheEntry struct {
+	resp *StatsResponse
+	at   time.Time
+}
+
+// statsCacheCap bounds the project-keyed stats cache. Global-daemon mode
+// serves multiple projects from one Handlers; the cap prevents unbounded
+// growth when many distinct projects are polled. Eviction is opportunistic:
+// expired entries are dropped when encountered during a cache miss.
+const statsCacheCap = 16
+
+// recallCacheCap bounds the number of (project, budget, format) combinations
+// held. Small on purpose: callers use a handful of budgets, and a miss costs
+// only the work Recall would have done anyway.
+const recallCacheCap = 16
 
 // statsTTL is how long Stats() returns the memoised result before
 // re-streaming the journal. 5 seconds keeps the dashboard's poll loop cheap
@@ -172,14 +225,16 @@ var errNoProject = errors.New("no dfmt project — open dfmt from a project root
 // patterns) can call SetRedactor.
 func NewHandlers(index *core.Index, journal core.Journal, sb sandbox.Sandbox) *Handlers {
 	return &Handlers{
-		index:    index,
-		journal:  journal,
-		sandbox:  sb,
-		redactor: redact.NewRedactor(),
-		execSem:  make(chan struct{}, 4),
-		fetchSem: make(chan struct{}, 8),
-		readSem:  make(chan struct{}, 8),
-		writeSem: make(chan struct{}, 4),
+		index:      index,
+		journal:    journal,
+		sandbox:    sb,
+		redactor:   redact.NewRedactor(),
+		execSem:    make(chan struct{}, 4),
+		fetchSem:   make(chan struct{}, 8),
+		readSem:    make(chan struct{}, 8),
+		writeSem:   make(chan struct{}, 4),
+		asyncSem:   make(chan struct{}, asyncExecConcurrency),
+		statsCache: make(map[string]*statsCacheEntry),
 	}
 }
 
@@ -210,6 +265,42 @@ func (h *Handlers) SetRedactor(r *redact.Redactor) {
 	h.sentCache = nil
 	h.sentOrder = nil
 	h.sentMu.Unlock()
+	// Snapshots were rendered through the previous redactor; a new one may
+	// mask more (or differently), and a cached snapshot would keep serving
+	// the old masking under an unchanged journal cursor.
+	h.recallCacheMu.Lock()
+	h.recallCache = nil
+	h.recallCacheMu.Unlock()
+}
+
+// recallCached returns the memoised snapshot for key when it was built from
+// the given journal cursor.
+func (h *Handlers) recallCached(key, cursor string) (string, bool) {
+	h.recallCacheMu.Lock()
+	defer h.recallCacheMu.Unlock()
+	entry, ok := h.recallCache[key]
+	if !ok || entry.cursor != cursor {
+		return "", false
+	}
+	return entry.snapshot, true
+}
+
+// recallStore memoises a rendered snapshot. Eviction is a plain drop of an
+// arbitrary entry at the cap: the cache is an optimization, and every entry
+// is equally cheap to rebuild.
+func (h *Handlers) recallStore(key, cursor, snapshot string) {
+	h.recallCacheMu.Lock()
+	defer h.recallCacheMu.Unlock()
+	if h.recallCache == nil {
+		h.recallCache = make(map[string]recallCacheEntry, recallCacheCap)
+	}
+	if len(h.recallCache) >= recallCacheCap {
+		for k := range h.recallCache {
+			delete(h.recallCache, k)
+			break
+		}
+	}
+	h.recallCache[key] = recallCacheEntry{cursor: cursor, snapshot: snapshot}
 }
 
 // getRedactor returns the current redactor under read-lock so callers see a
@@ -902,15 +993,25 @@ func formatEventData(data map[string]any) string {
 		return " " + strings.Join(parts, " ")
 	}
 
-	// Default: use first few keys as summary
-	var keys []string
-	for k := range data {
-		keys = append(keys, k)
-	}
+	// Default: a few key=value pairs, in a DETERMINISTIC order.
+	//
+	// This loop used to iterate the map directly, so which three keys made
+	// it into a recall line — and in what order — changed between calls on
+	// identical data. Two costs, one of them specific to what this snapshot
+	// is for: the output could not be diffed across sessions, and because
+	// the snapshot is fed back to an agent as context, a reshuffled prefix
+	// invalidates its prompt cache on every recall. A context-discipline
+	// tool paying that tax on its own output is backwards.
+	//
+	// Ordering is by informativeness first, then alphabetical. Plain
+	// alphabetical alone would have been deterministic but worse: for a
+	// tool.exec event the keys are code/duration/exit/raw_bytes/…, so
+	// `message` — the thing a human or an agent actually reads — sorts last
+	// and fell off the three-key budget.
+	keys := orderedEventDataKeys(data)
 	if len(keys) == 0 {
 		return ""
 	}
-	// Show up to 3 key=value pairs
 	summary := ""
 	for i := 0; i < len(keys) && i < 3; i++ {
 		if summary != "" {
@@ -922,6 +1023,37 @@ func formatEventData(data map[string]any) string {
 		summary += " ..."
 	}
 	return " " + summary
+}
+
+// eventDataPreferredKeys are surfaced ahead of everything else when a recall
+// line has room for only a few fields. They are the ones that identify WHAT
+// an event was about; the rest (byte counts, durations, exit codes) describe
+// how it went and are recoverable from the journal when needed.
+var eventDataPreferredKeys = []string{"message", "subject", "path", "code", "intent", "error", "pattern", "url"}
+
+// orderedEventDataKeys returns data's keys with the preferred ones first (in
+// the order declared above) and the remainder sorted alphabetically, so the
+// same event always renders the same way.
+func orderedEventDataKeys(data map[string]any) []string {
+	if len(data) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(data))
+	seen := make(map[string]struct{}, len(data))
+	for _, k := range eventDataPreferredKeys {
+		if _, ok := data[k]; ok {
+			keys = append(keys, k)
+			seen[k] = struct{}{}
+		}
+	}
+	rest := make([]string, 0, len(data))
+	for k := range data {
+		if _, dup := seen[k]; !dup {
+			rest = append(rest, k)
+		}
+	}
+	sort.Strings(rest)
+	return append(keys, rest...)
 }
 
 // getInt extracts an integer from a map[string]any.

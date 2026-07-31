@@ -36,7 +36,7 @@ type reconnectingBackend struct {
 
 	// Collaborators are fields rather than direct package calls so tests can
 	// control the reconnect decision. Calling client.DaemonRunning and
-	// ensureGlobalDaemon directly made the behaviour depend on whatever
+	// ensureGlobalDaemon directly made the behavior depend on whatever
 	// daemon happened to be live on the developer's machine and on state
 	// other tests in this package leave behind (CWD changes, stray .dfmt
 	// dirs), which is not a property a unit test can pin.
@@ -151,69 +151,105 @@ func (errNoDaemonReachable) Error() string {
 // place rather than twelve.
 
 func (b *reconnectingBackend) Exec(ctx context.Context, p transport.ExecParams) (*transport.ExecResponse, error) {
-	return callRetrying(b, ctx, p, func(be transport.Backend) func(context.Context, transport.ExecParams) (*transport.ExecResponse, error) {
-		return be.Exec
-	})
+	return callRetrying(
+		b, ctx, p,
+		func(be transport.Backend) func(context.Context, transport.ExecParams) (*transport.ExecResponse, error) {
+			return be.Exec
+		},
+	)
 }
 
 func (b *reconnectingBackend) Read(ctx context.Context, p transport.ReadParams) (*transport.ReadResponse, error) {
-	return callRetrying(b, ctx, p, func(be transport.Backend) func(context.Context, transport.ReadParams) (*transport.ReadResponse, error) {
-		return be.Read
-	})
+	return callRetrying(
+		b, ctx, p,
+		func(be transport.Backend) func(context.Context, transport.ReadParams) (*transport.ReadResponse, error) {
+			return be.Read
+		},
+	)
 }
 
 func (b *reconnectingBackend) Fetch(ctx context.Context, p transport.FetchParams) (*transport.FetchResponse, error) {
-	return callRetrying(b, ctx, p, func(be transport.Backend) func(context.Context, transport.FetchParams) (*transport.FetchResponse, error) {
-		return be.Fetch
-	})
+	return callRetrying(
+		b, ctx, p,
+		func(be transport.Backend) func(context.Context, transport.FetchParams) (*transport.FetchResponse, error) {
+			return be.Fetch
+		},
+	)
 }
 
 func (b *reconnectingBackend) Glob(ctx context.Context, p transport.GlobParams) (*transport.GlobResponse, error) {
-	return callRetrying(b, ctx, p, func(be transport.Backend) func(context.Context, transport.GlobParams) (*transport.GlobResponse, error) {
-		return be.Glob
-	})
+	return callRetrying(
+		b, ctx, p,
+		func(be transport.Backend) func(context.Context, transport.GlobParams) (*transport.GlobResponse, error) {
+			return be.Glob
+		},
+	)
 }
 
 func (b *reconnectingBackend) Grep(ctx context.Context, p transport.GrepParams) (*transport.GrepResponse, error) {
-	return callRetrying(b, ctx, p, func(be transport.Backend) func(context.Context, transport.GrepParams) (*transport.GrepResponse, error) {
-		return be.Grep
-	})
+	return callRetrying(
+		b, ctx, p,
+		func(be transport.Backend) func(context.Context, transport.GrepParams) (*transport.GrepResponse, error) {
+			return be.Grep
+		},
+	)
 }
 
 func (b *reconnectingBackend) Edit(ctx context.Context, p transport.EditParams) (*transport.EditResponse, error) {
-	return callRetrying(b, ctx, p, func(be transport.Backend) func(context.Context, transport.EditParams) (*transport.EditResponse, error) {
-		return be.Edit
-	})
+	return callRetrying(
+		b, ctx, p,
+		func(be transport.Backend) func(context.Context, transport.EditParams) (*transport.EditResponse, error) {
+			return be.Edit
+		},
+	)
 }
 
 func (b *reconnectingBackend) Write(ctx context.Context, p transport.WriteParams) (*transport.WriteResponse, error) {
-	return callRetrying(b, ctx, p, func(be transport.Backend) func(context.Context, transport.WriteParams) (*transport.WriteResponse, error) {
-		return be.Write
-	})
+	return callRetrying(
+		b, ctx, p,
+		func(be transport.Backend) func(context.Context, transport.WriteParams) (*transport.WriteResponse, error) {
+			return be.Write
+		},
+	)
 }
 
-func (b *reconnectingBackend) Remember(ctx context.Context, p transport.RememberParams) (*transport.RememberResponse, error) {
-	return callRetrying(b, ctx, p, func(be transport.Backend) func(context.Context, transport.RememberParams) (*transport.RememberResponse, error) {
-		return be.Remember
-	})
+func (b *reconnectingBackend) Remember(
+	ctx context.Context,
+	p transport.RememberParams,
+) (*transport.RememberResponse, error) {
+	return callRetrying(
+		b, ctx, p,
+		func(be transport.Backend) func(context.Context, transport.RememberParams) (*transport.RememberResponse, error) {
+			return be.Remember
+		},
+	)
 }
 
 func (b *reconnectingBackend) Search(ctx context.Context, p transport.SearchParams) (*transport.SearchResponse, error) {
-	return callRetrying(b, ctx, p, func(be transport.Backend) func(context.Context, transport.SearchParams) (*transport.SearchResponse, error) {
-		return be.Search
-	})
+	return callRetrying(
+		b, ctx, p,
+		func(be transport.Backend) func(context.Context, transport.SearchParams) (*transport.SearchResponse, error) {
+			return be.Search
+		},
+	)
 }
 
 func (b *reconnectingBackend) Recall(ctx context.Context, p transport.RecallParams) (*transport.RecallResponse, error) {
-	return callRetrying(b, ctx, p, func(be transport.Backend) func(context.Context, transport.RecallParams) (*transport.RecallResponse, error) {
-		return be.Recall
-	})
+	return callRetrying(
+		b, ctx, p,
+		func(be transport.Backend) func(context.Context, transport.RecallParams) (*transport.RecallResponse, error) {
+			return be.Recall
+		},
+	)
 }
 
 func (b *reconnectingBackend) Stats(ctx context.Context, p transport.StatsParams) (*transport.StatsResponse, error) {
-	return callRetrying(b, ctx, p, func(be transport.Backend) func(context.Context, transport.StatsParams) (*transport.StatsResponse, error) {
-		return be.Stats
-	})
+	return callRetrying(
+		b, ctx, p,
+		func(be transport.Backend) func(context.Context, transport.StatsParams) (*transport.StatsResponse, error) {
+			return be.Stats
+		},
+	)
 }
 
 // StreamEvents is not retried. It hands back a channel whose lifetime

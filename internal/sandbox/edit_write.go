@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -77,13 +78,42 @@ func (s *SandboxImpl) Edit(ctx context.Context, req EditReq) (EditResp, error) {
 	}
 	content := string(data)
 
-	// Check if old string exists
-	if !strings.Contains(content, req.OldString) {
-		return EditResp{}, fmt.Errorf("old string not found in file: %s", pathHint(req.Path))
+	// An empty OldString would make strings.Replace insert at offset 0 (and
+	// makes strings.Count return len+1), so reject it before either matters.
+	// The transport-layer validator already refuses it; this covers direct
+	// callers of the sandbox API.
+	if req.OldString == "" {
+		return EditResp{}, errors.New("old_string must not be empty")
 	}
 
-	// Replace
+	// Occurrence count decides the edit, because "first match" is not a
+	// decision the caller made.
+	//
+	// The previous implementation was strings.Replace(..., 1): an OldString
+	// that appeared five times silently rewrote the topmost one and returned
+	// Success: true. Nothing in the response distinguished that from the edit
+	// the caller intended, and the anchor an agent picks (a common signature,
+	// an error string, a struct field name) is exactly the kind of text that
+	// repeats. Refusing an ambiguous edit turns a silent wrong-site rewrite
+	// into a message the caller can act on: extend the anchor, or say
+	// replace_all when a sweep is what was actually wanted.
+	occurrences := strings.Count(content, req.OldString)
+	switch {
+	case occurrences == 0:
+		return EditResp{}, fmt.Errorf("old string not found in file: %s", pathHint(req.Path))
+	case occurrences > 1 && !req.ReplaceAll:
+		return EditResp{}, fmt.Errorf(
+			"old string appears %d times in %s: include more surrounding context to identify "+
+				"one site, or set replace_all to rewrite every occurrence",
+			occurrences, pathHint(req.Path))
+	}
+
+	replacements := 1
 	newContent := strings.Replace(content, req.OldString, req.NewString, 1)
+	if req.ReplaceAll {
+		replacements = occurrences
+		newContent = strings.ReplaceAll(content, req.OldString, req.NewString)
+	}
 
 	// Write back, preserving original mode where possible. We re-stat instead
 	// of trusting WriteFileAtomic's perm arg (which only takes effect on
@@ -105,9 +135,14 @@ func (s *SandboxImpl) Edit(ctx context.Context, req EditReq) (EditResp, error) {
 		return EditResp{}, fmt.Errorf("write file: %w", err)
 	}
 
+	summary := fmt.Sprintf("Replaced string in %s", req.Path)
+	if replacements > 1 {
+		summary = fmt.Sprintf("Replaced %d occurrences in %s", replacements, req.Path)
+	}
 	return EditResp{
-		Success: true,
-		Summary: fmt.Sprintf("Replaced string in %s", req.Path),
+		Success:      true,
+		Summary:      summary,
+		Replacements: replacements,
 	}, nil
 }
 

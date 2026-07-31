@@ -10,8 +10,8 @@ import (
 // Regression tests for the client-side timeout cap.
 //
 // Every tool call went through one http.Client built with the client's
-// single `timeout` field, which is timeouts.RPC (5 s). The sandbox honours
-// DefaultExecTimeout (60 s), MaxExecTimeout (300 s), and the `timeout`
+// single `timeout` field, which is timeouts.RPC (5 s). The sandbox honors
+// DefaultExecTimeout (60 s), MaxExecTimeout (900 s), and the `timeout`
 // argument the MCP schema advertises as "Timeout in seconds. Default: 60" —
 // but the caller had already hung up at 5 s, so nothing slower than that was
 // reachable through the daemon regardless of what the caller asked for.
@@ -43,9 +43,9 @@ func TestExecRPCTimeoutDerivesFromCallerRequest(t *testing.T) {
 	}{
 		{"zero means the sandbox default", 0, sandboxDefaultExecTimeout + rpcHeadroom},
 		{"negative treated as default", -5, sandboxDefaultExecTimeout + rpcHeadroom},
-		{"honours an explicit request", 120, 120*time.Second + rpcHeadroom},
+		{"honors an explicit request", 120, 120*time.Second + rpcHeadroom},
 		{"clamped at the sandbox maximum", 9999, sandboxMaxExecTimeout + rpcHeadroom},
-		{"exactly the maximum", 300, sandboxMaxExecTimeout + rpcHeadroom},
+		{"exactly the maximum", 900, sandboxMaxExecTimeout + rpcHeadroom},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -88,8 +88,12 @@ func TestExecRPCTimeoutMatchesSandboxLimits(t *testing.T) {
 		t.Errorf("sandboxDefaultExecTimeout = %v, want 60s (sandbox.DefaultExecTimeout)",
 			sandboxDefaultExecTimeout)
 	}
-	if sandboxMaxExecTimeout != 300*time.Second {
-		t.Errorf("sandboxMaxExecTimeout = %v, want 300s (sandbox.MaxExecTimeout)",
+	// 900s, raised from 300s so a build or test suite fits in one call; see
+	// sandbox.MaxExecTimeout for the reasoning. These two constants are
+	// duplicated deliberately (client must not import the sandbox tree), so
+	// this assertion is the thing that keeps the duplication honest.
+	if sandboxMaxExecTimeout != 900*time.Second {
+		t.Errorf("sandboxMaxExecTimeout = %v, want 900s (sandbox.MaxExecTimeout)",
 			sandboxMaxExecTimeout)
 	}
 }

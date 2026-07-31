@@ -18,6 +18,7 @@ func TestNewFSWatcher(t *testing.T) {
 	}
 	if w == nil {
 		t.Fatal("NewFSWatcher returned nil")
+		return
 	}
 	if w.path != tmpDir {
 		t.Errorf("path = %s, want %s", w.path, tmpDir)

@@ -104,7 +104,7 @@ func TestValidate_LoggingFormatAllowlist(t *testing.T) {
 	if err := cfg.Validate(); err != nil {
 		t.Errorf("empty format: %v", err)
 	}
-	cfg.Logging.Format = "text"
+	cfg.Logging.Format = loggingFormatText
 	if err := cfg.Validate(); err != nil {
 		t.Errorf("text format: %v", err)
 	}
@@ -460,6 +460,7 @@ func TestLoadNonExistentProject(t *testing.T) {
 	}
 	if cfg == nil {
 		t.Fatal("Load returned nil config")
+		return
 	}
 	if cfg.Version != 1 {
 		t.Errorf("Default config should have version 1, got %d", cfg.Version)
@@ -502,7 +503,7 @@ func TestConfigFields(t *testing.T) {
 		t.Errorf("Logging.Level = %s, want 'warn'", cfg.Logging.Level)
 	}
 
-	if cfg.Logging.Format != "text" {
+	if cfg.Logging.Format != loggingFormatText {
 		t.Errorf("Logging.Format = %s, want 'text'", cfg.Logging.Format)
 	}
 }
@@ -511,8 +512,8 @@ func TestCaptureFSDefaults(t *testing.T) {
 	cfg := Default()
 	// capture.fs.watch was removed in ADR-0015 v0.4 cleanup; only the
 	// ignore filter is honored by the FSWatcher today.
-	if len(cfg.Capture.FS.Ignore) != 3 {
-		t.Errorf("Capture.FS.Ignore = %v, want 3 items", cfg.Capture.FS.Ignore)
+	if len(cfg.Capture.FS.Ignore) != 4 {
+		t.Errorf("Capture.FS.Ignore = %v, want 4 items", cfg.Capture.FS.Ignore)
 	}
 }
 
@@ -764,4 +765,30 @@ func TestMergeAllowsEmptyConfig(t *testing.T) {
 	if err := merge(cfg, configPath); err != nil {
 		t.Fatalf("empty config should be accepted, got %v", err)
 	}
+}
+
+// TestDefaultIgnoreIncludesDfmtDir covers CAP-5/XC-18: the Go-side default
+// capture ignore list MUST contain ".dfmt/**", or every journal append
+// triggers a filesystem event that feeds back into the journal — a
+// self-amplification loop the project has already paid for once.
+// The YAML template in defaults.go documents this requirement; this test
+// pins it in code so the Go default and the template cannot drift.
+func TestDefaultIgnoreIncludesDfmtDir(t *testing.T) {
+	cfg := Default()
+	if !containsGlob(cfg.Capture.FS.Ignore, ".dfmt/**") {
+		t.Errorf("Default().Capture.FS.Ignore = %v; missing \".dfmt/**\" — "+
+			"journal self-amplification loop (CAP-5)", cfg.Capture.FS.Ignore)
+	}
+	if !strings.Contains(DefaultConfigYAML(), ".dfmt/**") {
+		t.Error("DefaultConfigYAML() missing \".dfmt/**\" in the ignore list")
+	}
+}
+
+func containsGlob(list []string, want string) bool {
+	for _, g := range list {
+		if g == want {
+			return true
+		}
+	}
+	return false
 }

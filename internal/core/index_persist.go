@@ -86,8 +86,8 @@ func PersistIndex(index *Index, path string, hiULID string) error {
 	cursor := IndexCursor{
 		HiULID:    hiULID,
 		TokenVer:  TokenizerVersion,
-		TotalDocs: index.totalDocs,
-		AvgDocLen: index.avgDocLen,
+		TotalDocs: index.TotalDocs(),
+		AvgDocLen: index.AvgDocLen(),
 	}
 	return writeJSONAtomic(cursorPath, cursor)
 }

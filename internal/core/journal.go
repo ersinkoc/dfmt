@@ -396,6 +396,13 @@ func streamFile(ctx context.Context, path string, ch chan<- Event, foundFromPtr 
 			return true, nil
 		}
 	}
+	// A scan error truncates the segment silently otherwise: the loop just
+	// ends, the channel closes, and the caller cannot tell "end of journal"
+	// from "read failed halfway through". Same reasoning as the malformed-line
+	// warnings above (V-9) — a reader that drops history must say so.
+	if err := scanner.Err(); err != nil {
+		journalWarnf("warning: journal %s: read stopped early: %v\n", path, err)
+	}
 	return false, nil
 }
 
@@ -515,8 +522,22 @@ func (j *journalImpl) Rotate(ctx context.Context) error {
 	}
 
 	// Rename to journal.<ULID>.jsonl
+	//
+	// A failure here used to be terminal for the process: j.file was already
+	// closed above, so every subsequent Append wrote to a closed descriptor
+	// and the daemon stopped journaling until someone restarted it. The
+	// failure is not hypothetical on Windows, where an antivirus scanner or
+	// a backup agent holding the file makes Rename fail with a sharing
+	// violation. Reopen the active file so rotation degrades to "we kept
+	// appending to the same segment" — the journal stays intact and
+	// oversized, which is recoverable, instead of silently stopping.
 	newPath := fmt.Sprintf("%s.%s.jsonl", j.path, j.hiCursor)
 	if err := os.Rename(j.path, newPath); err != nil {
+		if f, reopenErr := os.OpenFile(j.path, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0o600); reopenErr == nil {
+			j.file = f
+		} else {
+			logging.Errorf("journal %s: rotation failed and the file could not be reopened: %v", j.path, reopenErr)
+		}
 		return fmt.Errorf("rename: %w", err)
 	}
 

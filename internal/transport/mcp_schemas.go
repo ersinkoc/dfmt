@@ -57,8 +57,22 @@ func schemaExec() MCPTool {
 				},
 				"timeout": map[string]any{
 					"type":        "integer",
-					"description": "Timeout in seconds. Default: 60",
+					"description": "Timeout in seconds (max 900; 7200 when async).",
 					"default":     60,
+				},
+				"async": map[string]any{
+					"type":        "boolean",
+					"description": "Submit and return a job_id immediately instead of waiting. For work longer than the sync ceiling.",
+					"default":     false,
+				},
+				"job_id": map[string]any{
+					"type":        "string",
+					"description": "Poll a job submitted with async. Returns status 'running' or the finished result.",
+				},
+				"cancel": map[string]any{
+					"type":        "boolean",
+					"description": "With job_id: stop that job (kills its whole process tree).",
+					"default":     false,
 				},
 			},
 			"required": []string{"code"},
@@ -83,12 +97,12 @@ func schemaRead() MCPTool {
 				},
 				"offset": map[string]any{
 					"type":        "integer",
-					"description": "Byte offset to start reading",
+					"description": "First line to return (1-based)",
 					"default":     0,
 				},
 				"limit": map[string]any{
 					"type":        "integer",
-					"description": "Maximum bytes to read",
+					"description": "Maximum number of lines",
 					"default":     0,
 				},
 				"return": map[string]any{
@@ -143,41 +157,41 @@ func schemaFetch() MCPTool {
 func schemaRemember() MCPTool {
 	return MCPTool{
 		Name:        mcpToolRemember,
-		Description: "Record an LLM interaction with token usage for session tracking",
+		Description: "Save a note/decision to session memory (survives compaction).",
 		InputSchema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"type": map[string]any{
 					"type":        "string",
-					"description": "Event type (use 'llm.response' for LLM calls, 'note' for notes)",
-					"default":     "llm.response",
+					"description": "'note' for memories, 'llm.response' for token stats.",
+					"default":     "note",
 				},
 				"input_tokens": map[string]any{
 					"type":        "integer",
-					"description": "Number of input tokens sent to LLM",
+					"description": "Input tokens sent.",
 				},
 				"output_tokens": map[string]any{
 					"type":        "integer",
-					"description": "Number of output tokens received from LLM",
+					"description": "Output tokens received.",
 				},
 				"cached_tokens": map[string]any{
 					"type":        "integer",
-					"description": "Number of cached tokens (prompt cache savings)",
+					"description": "Prompt-cache tokens.",
 				},
 				"model": map[string]any{
 					"type":        "string",
-					"description": "LLM model name (e.g., claude-opus-4-7, gpt-4o)",
+					"description": "Model name.",
 				},
 				"message": map[string]any{
 					"type":        "string",
-					"description": "Description or summary of the interaction",
+					"description": "The note: what a future session needs to know.",
 				},
 				"tags": map[string]any{
 					"type": "array",
 					"items": map[string]any{
 						"type": "string",
 					},
-					"description": "Tags for categorizing the event",
+					"description": "Retention: summary/decision/strengths/ledger→P2, audit/finding/followup/preserve→P3, else P4 (dropped first).",
 				},
 			},
 			"required": []string{"type"},
@@ -210,6 +224,10 @@ func schemaSearch() MCPTool {
 				"limit": map[string]any{
 					"type":        "integer",
 					"description": "Maximum results",
+				},
+				"type": map[string]any{
+					"type":        "string",
+					"description": "Filter by event type, e.g. 'note' to search only your own memories.",
 				},
 			},
 			"required": []string{"query"},
@@ -271,11 +289,11 @@ func schemaGrep() MCPTool {
 				},
 				"path": map[string]any{
 					"type":        "string",
-					"description": "Directory or file to scope the search to (relative to project root or absolute under it). Defaults to the project root.",
+					"description": "Directory or file to scope the search to. Defaults to the project root.",
 				},
 				"files": map[string]any{
 					"type":        "string",
-					"description": "Basename glob (e.g., *.go, *.txt). Applied per visited file under the search root.",
+					"description": "Basename glob (e.g. *.go) applied per visited file.",
 				},
 				"intent": map[string]any{
 					"type":        "string",
@@ -310,11 +328,16 @@ func schemaEdit() MCPTool {
 				},
 				"old_string": map[string]any{
 					"type":        "string",
-					"description": "The exact string to replace",
+					"description": "The exact string to replace. Must be unique in the file unless replace_all is set.",
 				},
 				"new_string": map[string]any{
 					"type":        "string",
 					"description": "The replacement string",
+				},
+				"replace_all": map[string]any{
+					"type":        "boolean",
+					"description": "Replace all occurrences.",
+					"default":     false,
 				},
 			},
 			"required": []string{"path", "old_string", "new_string"},

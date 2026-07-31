@@ -3,6 +3,7 @@ package transport
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -35,6 +36,26 @@ func (h *Handlers) Recall(ctx context.Context, params RecallParams) (_ *RecallRe
 	}
 	budget := h.recallBudget(params.Budget)
 	format := h.recallFormat(params.Format)
+
+	// Serve from cache when the journal has not moved. Checkpoint is the
+	// ULID of the last appended event, so "same cursor" means "same input"
+	// — the whole streaming, unmarshalling, signature-verifying, rendering
+	// pass below would produce byte-identical output. A Checkpoint error is
+	// not fatal: fall through and rebuild.
+	cacheKey := bundle.ProjectPath + "|" + strconv.Itoa(budget) + "|" + format
+	cursor, cursorErr := bundle.Journal.Checkpoint(ctx)
+	// An empty cursor is not a cache key. It means the journal has no
+	// appended events in this instance — true for a fresh journal, and true
+	// again immediately after a rotation — so it cannot distinguish two
+	// different journal states. Caching under it would make the cache
+	// permanently valid for any implementation whose checkpoint does not
+	// advance.
+	cacheable := cursorErr == nil && cursor != ""
+	if cacheable {
+		if cached, ok := h.recallCached(cacheKey, cursor); ok {
+			return &RecallResponse{Snapshot: cached, Format: format}, nil
+		}
+	}
 
 	// Per-tier streaming with FIFO eviction (closes review finding #7).
 	//
@@ -73,8 +94,18 @@ func (h *Handlers) Recall(ctx context.Context, params RecallParams) (_ *RecallRe
 	var buckets [4][]core.Event
 
 	for e := range stream {
+		// Classification decides the tier, so it must also decide the label.
+		// The rendered line used to print e.Priority — the value stored at
+		// write time — while the bucket came from Classify. Those disagree
+		// by design: dfmt_remember coerces every agent-written event to p3
+		// (F-21), and the classifier then elevates a note tagged `summary`
+		// or `decision` to p2. The snapshot therefore showed a "p3" line
+		// sorted above "p2" lines, which reads as a sorting bug and hides
+		// the one signal the tag vocabulary exists to produce.
+		effective := classifier.Classify(e)
+		e.Priority = effective
 		var idx int
-		switch classifier.Classify(e) {
+		switch effective {
 		case core.PriP1:
 			idx = 0
 		case core.PriP2:
@@ -105,7 +136,7 @@ func (h *Handlers) Recall(ctx context.Context, params RecallParams) (_ *RecallRe
 	// surface newest-first — matching the previous sort.Slice
 	// "TS.After" tiebreak.
 	sorted := make([]core.Event, 0, len(buckets[0])+len(buckets[1])+len(buckets[2])+len(buckets[3]))
-	for tier := 0; tier < 4; tier++ {
+	for tier := range 4 {
 		bucket := buckets[tier]
 		for i := len(bucket) - 1; i >= 0; i-- {
 			sorted = append(sorted, bucket[i])
@@ -176,6 +207,9 @@ func (h *Handlers) Recall(ctx context.Context, params RecallParams) (_ *RecallRe
 			selected = sorted[:selectedCount]
 		}
 		if len(selected) == 0 {
+			if cacheable {
+				h.recallStore(cacheKey, cursor, "{}")
+			}
 			return &RecallResponse{
 				Snapshot: "{}",
 				Format:   format,
@@ -198,6 +232,9 @@ func (h *Handlers) Recall(ctx context.Context, params RecallParams) (_ *RecallRe
 		}
 	}
 
+	if cacheable {
+		h.recallStore(cacheKey, cursor, snapshot)
+	}
 	return &RecallResponse{
 		Snapshot: snapshot,
 		Format:   format,

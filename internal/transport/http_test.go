@@ -676,16 +676,17 @@ func filepathJoin(dir, name string) string {
 	return dir + string(os.PathSeparator) + name
 }
 
-// TestHandleEmptyParamsAccepted: empty/absent params must NOT produce -32602.
-// Each method has nullable/optional fields, so a zero-value struct is a valid
-// request shape. This pins the boundary so a future change to decodeRPCParams
-// doesn't accidentally start rejecting empty params.
+// TestHandleEmptyParamsAccepted: empty/absent params must NOT produce -32602
+// for methods whose zero-value params are a valid request shape.
+//
+// dfmt.search is deliberately excluded: it has a required `query` field, so
+// empty params are now correctly rejected by validateParams (TRN-2).
 func TestHandleEmptyParamsAccepted(t *testing.T) {
 	idx := core.NewIndex()
 	handlers := NewHandlers(idx, nil, nil)
-	hs := NewHTTPServer("127.0.0.1:0", handlers)
+	hs := NewHTTPServer(loopbackEphemeral, handlers)
 
-	for _, method := range []string{"dfmt.search", "dfmt.recall", "dfmt.stats"} {
+	for _, method := range []string{"dfmt.recall", "dfmt.stats"} {
 		t.Run(method, func(t *testing.T) {
 			body, _ := json.Marshal(Request{
 				JSONRPC: "2.0",

@@ -134,7 +134,7 @@ func TestReconnectingBackendDoesNotRetryWhileDaemonIsAlive(t *testing.T) {
 }
 
 // The recovery path itself: the first call fails, the daemon is gone, and a
-// renewed connection succeeds on the retry. This is the behaviour that keeps
+// renewed connection succeeds on the retry. This is the behavior that keeps
 // an agent session alive across a daemon idle-exit.
 func TestReconnectingBackendRecoversOnRetry(t *testing.T) {
 	dead := &fakeBackend{failFor: 99}

@@ -44,10 +44,24 @@ func (s *SandboxImpl) Glob(ctx context.Context, req GlobReq) (GlobResp, error) {
 		return GlobResp{}, err
 	}
 
-	// Execute glob
-	matches, err := filepath.Glob(pattern)
-	if err != nil {
-		return GlobResp{}, fmt.Errorf("glob pattern: %w", err)
+	// Execute glob. `**` needs the recursive walker — filepath.Glob has no
+	// doublestar, so it silently answers `**/*.go` with the files at exactly
+	// one level of depth (2 of 278 on this repo). Patterns without `**` keep
+	// the cheaper stdlib path. See globexpand.go.
+	var (
+		matches []string
+		skipped walkSkipStats
+	)
+	if relSlash := filepath.ToSlash(rel); hasDoublestar(relSlash) {
+		matches, skipped, err = expandDoublestarGlob(absWd, relSlash)
+		if err != nil {
+			return GlobResp{}, fmt.Errorf("glob pattern: %w", err)
+		}
+	} else {
+		matches, err = filepath.Glob(pattern)
+		if err != nil {
+			return GlobResp{}, fmt.Errorf("glob pattern: %w", err)
+		}
 	}
 
 	// Filter to only files (not directories), drop anything the read policy
@@ -57,7 +71,6 @@ func (s *SandboxImpl) Glob(ctx context.Context, req GlobReq) (GlobResp, error) {
 	// Filtering is silent: callers are not told *which* paths were withheld,
 	// only that the result list is shorter than a raw glob would produce.
 	var files []string
-	var skipped walkSkipStats
 	for _, m := range matches {
 		fi, err := os.Stat(m)
 		if err != nil {

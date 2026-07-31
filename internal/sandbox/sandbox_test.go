@@ -397,8 +397,13 @@ func TestConstants(t *testing.T) {
 	if DefaultExecTimeout != 60*time.Second {
 		t.Errorf("DefaultExecTimeout = %v, want 60s", DefaultExecTimeout)
 	}
-	if MaxExecTimeout != 300*time.Second {
-		t.Errorf("MaxExecTimeout = %v, want 300s", MaxExecTimeout)
+	// Raised from 300s: a build or test suite is the normal shape of an
+	// agent-driven exec and routinely exceeds five minutes (this repo's own
+	// suite is ~9 minutes). The ceiling is a runaway guard, not a definition
+	// of a reasonable job. Keep in sync with client.sandboxMaxExecTimeout,
+	// which TestExecRPCTimeoutMatchesSandboxLimits pins from the other side.
+	if MaxExecTimeout != 900*time.Second {
+		t.Errorf("MaxExecTimeout = %v, want 900s", MaxExecTimeout)
 	}
 	if InlineThreshold != 4*1024 {
 		t.Errorf("InlineThreshold = %d, want 4096", InlineThreshold)
@@ -932,26 +937,30 @@ func TestSandboxReadLimitExceedsRemaining(t *testing.T) {
 	ctx := context.Background()
 
 	tmpFile := tmpDir + "/test_read_limit.txt"
-	if err := os.WriteFile(tmpFile, []byte("hello world"), 0644); err != nil {
+	if err := os.WriteFile(tmpFile, []byte("hello\nworld\n"), 0644); err != nil {
 		t.Fatalf("WriteFile failed: %v", err)
 	}
 	defer os.Remove(tmpFile)
 
-	// Limit exceeds remaining content
+	// Offset and Limit are LINES (they were bytes): start at line 2 and ask
+	// for far more lines than remain.
 	resp, err := sb.Read(ctx, ReadReq{
 		Path:   tmpFile,
-		Offset: 6,
-		Limit:  100, // "world" is only 5 chars, but limit is 100
+		Offset: 2,
+		Limit:  100,
 	})
 	if err != nil {
 		t.Fatalf("Read failed: %v", err)
 	}
 
-	if resp.Content != "world" {
-		t.Errorf("Content = %q, want 'world'", resp.Content)
+	if resp.Content != "world\n" {
+		t.Errorf("Content = %q, want %q", resp.Content, "world\n")
 	}
-	if resp.ReadBytes != 5 {
-		t.Errorf("ReadBytes = %d, want 5 (remaining chars)", resp.ReadBytes)
+	if resp.StartLine != 2 || resp.EndLine != 2 {
+		t.Errorf("window = %d-%d, want 2-2", resp.StartLine, resp.EndLine)
+	}
+	if resp.TotalLines != 2 {
+		t.Errorf("TotalLines = %d, want 2", resp.TotalLines)
 	}
 }
 
@@ -961,11 +970,13 @@ func TestSandboxReadWithOffsetAndLimit(t *testing.T) {
 	ctx := context.Background()
 
 	tmpFile := tmpDir + "/test_read_both.txt"
-	if err := os.WriteFile(tmpFile, []byte("0123456789"), 0644); err != nil {
+	body := "0\n1\n2\n3\n4\n5\n6\n7\n8\n9\n"
+	if err := os.WriteFile(tmpFile, []byte(body), 0644); err != nil {
 		t.Fatalf("WriteFile failed: %v", err)
 	}
 	defer os.Remove(tmpFile)
 
+	// Lines 2 through 4 of ten single-digit lines.
 	resp, err := sb.Read(ctx, ReadReq{
 		Path:   tmpFile,
 		Offset: 2,
@@ -975,11 +986,14 @@ func TestSandboxReadWithOffsetAndLimit(t *testing.T) {
 		t.Fatalf("Read failed: %v", err)
 	}
 
-	if resp.Content != "234" {
-		t.Errorf("Content = %q, want '234'", resp.Content)
+	if resp.Content != "1\n2\n3\n" {
+		t.Errorf("Content = %q, want lines 2-4", resp.Content)
 	}
-	if resp.Size != 10 {
-		t.Errorf("Size = %d, want 10 (full file)", resp.Size)
+	if resp.StartLine != 2 || resp.EndLine != 4 {
+		t.Errorf("window = %d-%d, want 2-4", resp.StartLine, resp.EndLine)
+	}
+	if resp.Size != int64(len(body)) {
+		t.Errorf("Size = %d, want %d (full file in bytes)", resp.Size, len(body))
 	}
 }
 

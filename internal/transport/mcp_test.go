@@ -23,10 +23,12 @@ func TestMCPProtocol_Handle_ToolsCall_NilHandlers(t *testing.T) {
 
 	if resp == nil {
 		t.Fatal("resp is nil")
+		return
 	}
 
 	if resp.Error == nil {
-		t.Error("expected error response for nil handlers")
+		t.Fatal("expected error response for nil handlers")
+		return
 	}
 
 	if resp.Error.Code != -32603 {
@@ -53,11 +55,13 @@ func TestMCPProtocol_Handle_ToolsCall_EmptyParams(t *testing.T) {
 
 	if resp == nil {
 		t.Fatal("resp is nil")
+		return
 	}
 
 	// Should error because handlers is nil
 	if resp.Error == nil {
-		t.Error("expected error response for nil handlers")
+		t.Fatal("expected error response for nil handlers")
+		return
 	}
 	if resp.Error.Code != -32603 {
 		t.Errorf("expected error code -32603, got %d", resp.Error.Code)
@@ -82,10 +86,12 @@ func TestMCPProtocol_Handle_ToolsCall_UnknownTool(t *testing.T) {
 
 	if resp == nil {
 		t.Fatal("resp is nil")
+		return
 	}
 
 	if resp.Error == nil {
-		t.Error("expected error response for unknown tool")
+		t.Fatal("expected error response for unknown tool")
+		return
 	}
 
 	if resp.Error.Code != -32601 {

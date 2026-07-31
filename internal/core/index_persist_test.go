@@ -405,9 +405,11 @@ func TestLoadIndexWithCursorSuccessPath(t *testing.T) {
 	}
 	if loaded == nil {
 		t.Fatal("loaded index should not be nil")
+		return
 	}
 	if cursor == nil {
 		t.Fatal("cursor should not be nil")
+		return
 	}
 	if loaded.totalDocs != ix.totalDocs {
 		t.Errorf("totalDocs mismatch: got %d, want %d", loaded.totalDocs, ix.totalDocs)

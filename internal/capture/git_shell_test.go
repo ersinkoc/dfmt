@@ -11,6 +11,7 @@ func TestNewGitCapture(t *testing.T) {
 	gc := NewGitCapture("/test/path")
 	if gc == nil {
 		t.Fatal("NewGitCapture returned nil")
+		return
 	}
 	if gc.projectPath != "/test/path" {
 		t.Errorf("projectPath = %s, want '/test/path'", gc.projectPath)
@@ -92,6 +93,7 @@ func TestNewShellCapture(t *testing.T) {
 	sc := NewShellCapture("/test/path")
 	if sc == nil {
 		t.Fatal("NewShellCapture returned nil")
+		return
 	}
 	if sc.projectPath != "/test/path" {
 		t.Errorf("projectPath = %s, want '/test/path'", sc.projectPath)

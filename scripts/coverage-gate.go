@@ -3,8 +3,9 @@
 // coverage-gate.go — package-level coverage threshold check.
 //
 // Reads a Go coverage profile, aggregates raw statement counts per package,
-// and compares each tracked package against the threshold documented in
-// CLAUDE.md / AGENTS.md.
+// and compares each tracked package against the executable targets below.
+// CLAUDE.md mirrors these values for contributors; this script is the
+// canonical source CI executes.
 //
 // Usage:
 //

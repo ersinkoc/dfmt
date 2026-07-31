@@ -16,10 +16,17 @@ import (
 func runExec(args []string) int {
 	var lang string
 	var intent string
+	var timeout int
+	var async, cancelJob bool
+	var jobID string
 
 	fs := flag.NewFlagSet("exec", flag.ContinueOnError)
 	fs.StringVar(&lang, "lang", "bash", "Language (bash, sh, node, python, etc.)")
 	fs.StringVar(&intent, "intent", "", "Intent for content filtering")
+	fs.IntVar(&timeout, "timeout", 0, "Timeout in seconds (default 60, max 900; 7200 with -async)")
+	fs.BoolVar(&async, "async", false, "Submit and print a job id instead of waiting")
+	fs.StringVar(&jobID, "job", "", "Poll a job submitted with -async")
+	fs.BoolVar(&cancelJob, "cancel", false, "With -job: stop that job")
 	if err := fs.Parse(args); err != nil {
 		if err == flag.ErrHelp {
 			return 0
@@ -27,12 +34,16 @@ func runExec(args []string) int {
 		return 2
 	}
 
-	if fs.NArg() == 0 {
+	// A -job call asks about an existing submission, so it carries no code.
+	if fs.NArg() == 0 && jobID == "" {
 		fmt.Fprintf(os.Stderr, "error: code required\n")
 		return 1
 	}
 
-	code := fs.Arg(0)
+	var code string
+	if fs.NArg() > 0 {
+		code = fs.Arg(0)
+	}
 
 	proj, err := getProject()
 	if err != nil {
@@ -60,6 +71,10 @@ func runExec(args []string) int {
 			Code:      code,
 			Lang:      lang,
 			Intent:    intent,
+			Timeout:   timeout,
+			Async:     async,
+			JobID:     jobID,
+			Cancel:    cancelJob,
 			ProjectID: proj,
 		})
 	} else {
@@ -94,6 +109,12 @@ func runExec(args []string) int {
 	if flagJSON {
 		fmt.Println(mustMarshalJSON(execResp))
 	} else {
+		// An async submission or a still-running poll has no output yet;
+		// printing nothing would leave the user with no handle to poll and
+		// no sign the command was accepted.
+		if execResp.Status != "" {
+			fmt.Printf("job %s: %s\n", execResp.JobID, execResp.Status)
+		}
 		if execResp.Summary != "" {
 			fmt.Print(execResp.Summary)
 		} else {
@@ -101,6 +122,9 @@ func runExec(args []string) int {
 		}
 		if execResp.Stderr != "" {
 			fmt.Fprintf(os.Stderr, "stderr: %s\n", execResp.Stderr)
+		}
+		if execResp.Error != "" {
+			fmt.Fprintf(os.Stderr, "error: %s\n", execResp.Error)
 		}
 	}
 
@@ -113,8 +137,8 @@ func runRead(args []string) int {
 
 	fs := flag.NewFlagSet("read", flag.ContinueOnError)
 	fs.StringVar(&intent, "intent", "", "Intent for content filtering")
-	fs.Int64Var(&offset, "offset", 0, "Byte offset")
-	fs.Int64Var(&limit, "limit", 0, "Max bytes to read")
+	fs.Int64Var(&offset, "offset", 0, "First line to return (1-based)")
+	fs.Int64Var(&limit, "limit", 0, "Max lines to read")
 	if err := fs.Parse(args); err != nil {
 		if err == flag.ErrHelp {
 			return 0

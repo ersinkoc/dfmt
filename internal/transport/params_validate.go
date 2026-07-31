@@ -51,10 +51,29 @@ func missingParam(tool, field string) error {
 		"%s: missing required argument %q", tool, field)}
 }
 
+// validateParams is the shared post-decode validation gate for transports
+// that do not use dispatchTool (socket and HTTP). It runs the same
+// validator-interface check dispatchTool does for MCP, so a missing
+// required argument surfaces as a ParamsError (-32602) instead of a
+// silent-success empty result. Returns nil for params types that do not
+// implement validator (StatsParams, RecallParams).
+func validateParams(params any) error {
+	if v, ok := params.(validator); ok {
+		return v.Validate()
+	}
+	return nil
+}
+
 // Validate reports a missing `code`. Empty-string counts as missing: an
 // empty command is never a meaningful request, and treating it as one is
 // exactly the silent-success bug this guards.
 func (p ExecParams) Validate() error {
+	// A job_id call asks about an existing job; `code` is not just optional
+	// there, it is meaningless. Requiring it would force callers to send a
+	// dummy command to poll their own submission.
+	if p.JobID != "" {
+		return nil
+	}
 	if p.Code == "" {
 		return missingParam("dfmt_exec", "code")
 	}

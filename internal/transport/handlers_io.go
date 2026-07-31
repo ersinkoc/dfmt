@@ -14,9 +14,11 @@ type ReadParams struct {
 	ProjectID string `json:"project_id,omitempty"`
 	Path      string `json:"path"`
 	Intent    string `json:"intent,omitempty"`
-	Offset    int64  `json:"offset,omitempty"`
-	Limit     int64  `json:"limit,omitempty"`
-	Return    string `json:"return,omitempty"`
+	// Offset and Limit are LINES: Offset is the 1-based first line to return
+	// (0 = from the top), Limit the number of lines. They were bytes.
+	Offset int64  `json:"offset,omitempty"`
+	Limit  int64  `json:"limit,omitempty"`
+	Return string `json:"return,omitempty"`
 }
 
 // ReadResponse is the response from sandbox file reading.
@@ -27,6 +29,11 @@ type ReadResponse struct {
 	Size      int64                  `json:"size"`
 	ReadBytes int64                  `json:"read_bytes"`
 	ContentID string                 `json:"content_id,omitempty"`
+	// The line window this response covers, so the agent can cite file:line
+	// and page forward without recounting. Omitted when zero.
+	StartLine  int `json:"start_line,omitempty"`
+	EndLine    int `json:"end_line,omitempty"`
+	TotalLines int `json:"total_lines,omitempty"`
 }
 
 // Read reads a file via the sandbox.
@@ -75,10 +82,13 @@ func (h *Handlers) Read(ctx context.Context, params ReadParams) (_ *ReadResponse
 			core.KeyReturnedBytes: len(sentUnchangedSummary),
 		})
 		return &ReadResponse{
-			Summary:   sentUnchangedSummary,
-			Size:      resp.Size,
-			ReadBytes: resp.ReadBytes,
-			ContentID: contentID,
+			Summary:    sentUnchangedSummary,
+			Size:       resp.Size,
+			ReadBytes:  resp.ReadBytes,
+			ContentID:  contentID,
+			StartLine:  resp.StartLine,
+			EndLine:    resp.EndLine,
+			TotalLines: resp.TotalLines,
 		}, nil
 	}
 
@@ -102,12 +112,15 @@ func (h *Handlers) Read(ctx context.Context, params ReadParams) (_ *ReadResponse
 
 	h.markSent(ctx, contentID)
 	return &ReadResponse{
-		Content:   redContent,
-		Summary:   summary,
-		Matches:   matches,
-		Size:      resp.Size,
-		ReadBytes: resp.ReadBytes,
-		ContentID: contentID,
+		Content:    redContent,
+		Summary:    summary,
+		Matches:    matches,
+		Size:       resp.Size,
+		ReadBytes:  resp.ReadBytes,
+		ContentID:  contentID,
+		StartLine:  resp.StartLine,
+		EndLine:    resp.EndLine,
+		TotalLines: resp.TotalLines,
 	}, nil
 }
 

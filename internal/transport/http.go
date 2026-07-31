@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -33,7 +34,8 @@ import (
 var ErrServerAlreadyRunning = errors.New("server already running")
 
 const (
-	jsonRPCVersion = "2.0"
+	jsonRPCVersion    = "2.0"
+	loopbackEphemeral = "127.0.0.1:0"
 	// methodXxx are the JSON-RPC method names accepted on the HTTP and socket
 	// transports. They use dot namespacing for historical reasons and remain
 	// stable for back-compat — any existing client posting `dfmt.exec` keeps
@@ -118,7 +120,7 @@ type PortFile struct {
 func ephemeralBind(bind string) string {
 	host, _, err := net.SplitHostPort(bind)
 	if err != nil || host == "" {
-		return "127.0.0.1:0"
+		return loopbackEphemeral
 	}
 	return net.JoinHostPort(host, "0")
 }
@@ -240,9 +242,29 @@ func (s *HTTPServer) Start(ctx context.Context) error {
 		Handler:           s.wrapSecurity(mux),
 		ReadTimeout:       30 * time.Second,
 		ReadHeaderTimeout: 5 * time.Second, // Slowloris guard
-		WriteTimeout:      30 * time.Second,
-		IdleTimeout:       60 * time.Second,
-		MaxHeaderBytes:    16 << 10, // 16 KiB — tighter than Go's 1 MiB default
+		// WriteTimeout is deliberately 0 (no deadline).
+		//
+		// http.Server's write deadline is absolute — it starts when the
+		// request headers are read, not when the handler starts writing —
+		// so any value here is a hard ceiling on how long a handler may
+		// take. At 30s it silently capped every tool call at 30 seconds
+		// while dfmt_exec's own schema advertises "Timeout in seconds.
+		// Default: 60" and the sandbox clamps at MaxExecTimeout (300s).
+		// Measured: `sleep 25` returned normally, `sleep 45` died with a
+		// bare EOF while the command kept running server-side — the agent
+		// could not tell a long build from a dead daemon. The same deadline
+		// tore down /api/stream (SSE) every 30 seconds, which is why the
+		// dashboard's live view kept reconnecting.
+		//
+		// What bounds a handler now is the handler itself: exec clamps to
+		// MaxExecTimeout, fetch to MaxFetchTimeout, and every RPC runs
+		// under the request context, which is canceled when the client
+		// hangs up. IdleTimeout still reaps idle keep-alive connections and
+		// ReadHeaderTimeout still covers the Slowloris case, so removing
+		// the write deadline costs no protection that was load-bearing.
+		WriteTimeout:   0,
+		IdleTimeout:    60 * time.Second,
+		MaxHeaderBytes: 16 << 10, // 16 KiB — tighter than Go's 1 MiB default
 	}
 
 	if s.portFile != "" && actualPort > 0 {
@@ -252,7 +274,12 @@ func (s *HTTPServer) Start(ctx context.Context) error {
 			return fmt.Errorf("generate auth token: %w", err)
 		}
 		s.authToken = token
-		if err := s.writePortFile(s.portFile, actualPort, ""); err != nil {
+		// The token goes INTO the port file (0600, owner-only) — that file is
+		// how a client learns it. Writing an empty string here, as this did
+		// before, meant the token existed only in the server's memory: no
+		// client could present it, so requiring it was impossible and the
+		// whole mechanism sat dead while `wrapSecurity` said "Auth disabled".
+		if err := s.writePortFile(s.portFile, actualPort, token); err != nil {
 			_ = ln.Close()
 			return fmt.Errorf("write port file: %w", err)
 		}
@@ -338,7 +365,31 @@ func (s *HTTPServer) wrapSecurity(next http.Handler) http.Handler {
 			return
 		}
 
-		// Auth disabled — all HTTP endpoints are publicly accessible.
+		// Bearer auth on the JSON-RPC endpoint.
+		//
+		// "/" is where exec, write, edit, and fetch live: reaching it is
+		// arbitrary code execution and arbitrary file access as the user
+		// running the daemon. On Windows the transport is loopback TCP,
+		// which has no ACL — every process on the host can connect, and the
+		// default policy is permissive by design. The token that closes
+		// that gap was already generated and handed to clients' request
+		// headers; the only missing piece was this check.
+		//
+		// Scope is deliberately just "/": the dashboard and the read-only
+		// /api endpoints it calls have no token to present (they run in a
+		// browser), and embedding one in an unauthenticated page would give
+		// it away to exactly the callers being excluded. Their posture is
+		// unchanged — same-origin plus Host validation.
+		//
+		// When authToken is empty the check is skipped, which keeps two
+		// legitimate cases working: a server constructed without a port
+		// file (tests, embedded use) and the Unix socket transport, whose
+		// access control is the socket's file mode.
+		if r.URL.Path == "/" && s.authToken != "" && !s.authorized(r) {
+			w.Header().Set("WWW-Authenticate", "Bearer")
+			http.Error(w, "unauthorized: present the token from the daemon's port file", http.StatusUnauthorized)
+			return
+		}
 
 		next.ServeHTTP(w, r)
 	})
@@ -576,6 +627,9 @@ func (s *HTTPServer) handleRemember(ctx context.Context, req Request) Response {
 	if r := decodeRPCParams(req, &params); r != nil {
 		return *r
 	}
+	if err := validateParams(params); err != nil {
+		return Response{JSONRPC: jsonRPCVersion, ID: req.ID, Error: &RPCError{Code: -32602, Message: err.Error()}}
+	}
 	ctx = WithProjectID(ctx, params.ProjectID)
 
 	resp, err := s.handlers.Remember(ctx, params)
@@ -593,6 +647,9 @@ func (s *HTTPServer) handleSearch(ctx context.Context, req Request) Response {
 	var params SearchParams
 	if r := decodeRPCParams(req, &params); r != nil {
 		return *r
+	}
+	if err := validateParams(params); err != nil {
+		return Response{JSONRPC: jsonRPCVersion, ID: req.ID, Error: &RPCError{Code: -32602, Message: err.Error()}}
 	}
 	ctx = WithProjectID(ctx, params.ProjectID)
 
@@ -612,6 +669,9 @@ func (s *HTTPServer) handleRecall(ctx context.Context, req Request) Response {
 	if r := decodeRPCParams(req, &params); r != nil {
 		return *r
 	}
+	if err := validateParams(params); err != nil {
+		return Response{JSONRPC: jsonRPCVersion, ID: req.ID, Error: &RPCError{Code: -32602, Message: err.Error()}}
+	}
 	ctx = WithProjectID(ctx, params.ProjectID)
 
 	resp, err := s.handlers.Recall(ctx, params)
@@ -629,6 +689,9 @@ func (s *HTTPServer) handleStats(ctx context.Context, req Request) Response {
 	var params StatsParams
 	if r := decodeRPCParams(req, &params); r != nil {
 		return *r
+	}
+	if err := validateParams(params); err != nil {
+		return Response{JSONRPC: jsonRPCVersion, ID: req.ID, Error: &RPCError{Code: -32602, Message: err.Error()}}
 	}
 	ctx = WithProjectID(ctx, params.ProjectID)
 
@@ -709,6 +772,21 @@ func (s *HTTPServer) writePortFile(path string, port int, token string) error {
 		return err
 	}
 	return nil
+}
+
+// authorized reports whether the request carries this server's bearer token.
+//
+// The comparison is constant-time: the token is a 32-byte random value, so a
+// timing oracle is a stretch, but the cost of getting it right is one call
+// and the cost of getting it wrong is the whole control.
+func (s *HTTPServer) authorized(r *http.Request) bool {
+	const prefix = "Bearer "
+	header := r.Header.Get("Authorization")
+	if len(header) <= len(prefix) || !strings.EqualFold(header[:len(prefix)], prefix) {
+		return false
+	}
+	presented := strings.TrimSpace(header[len(prefix):])
+	return subtle.ConstantTimeCompare([]byte(presented), []byte(s.authToken)) == 1
 }
 
 // generateToken generates a cryptographically secure random token for HTTP bearer auth.
@@ -1403,6 +1481,9 @@ func (s *HTTPServer) handleExec(ctx context.Context, req Request) Response {
 	if r := decodeRPCParams(req, &params); r != nil {
 		return *r
 	}
+	if err := validateParams(params); err != nil {
+		return Response{JSONRPC: jsonRPCVersion, ID: req.ID, Error: &RPCError{Code: -32602, Message: err.Error()}}
+	}
 	ctx = WithProjectID(ctx, params.ProjectID)
 
 	resp, err := s.handlers.Exec(ctx, params)
@@ -1429,6 +1510,9 @@ func (s *HTTPServer) handleRead(ctx context.Context, req Request) Response {
 	if r := decodeRPCParams(req, &params); r != nil {
 		return *r
 	}
+	if err := validateParams(params); err != nil {
+		return Response{JSONRPC: jsonRPCVersion, ID: req.ID, Error: &RPCError{Code: -32602, Message: err.Error()}}
+	}
 	ctx = WithProjectID(ctx, params.ProjectID)
 
 	resp, err := s.handlers.Read(ctx, params)
@@ -1446,6 +1530,9 @@ func (s *HTTPServer) handleFetch(ctx context.Context, req Request) Response {
 	var params FetchParams
 	if r := decodeRPCParams(req, &params); r != nil {
 		return *r
+	}
+	if err := validateParams(params); err != nil {
+		return Response{JSONRPC: jsonRPCVersion, ID: req.ID, Error: &RPCError{Code: -32602, Message: err.Error()}}
 	}
 	ctx = WithProjectID(ctx, params.ProjectID)
 
@@ -1465,6 +1552,9 @@ func (s *HTTPServer) handleGlob(ctx context.Context, req Request) Response {
 	if r := decodeRPCParams(req, &params); r != nil {
 		return *r
 	}
+	if err := validateParams(params); err != nil {
+		return Response{JSONRPC: jsonRPCVersion, ID: req.ID, Error: &RPCError{Code: -32602, Message: err.Error()}}
+	}
 	ctx = WithProjectID(ctx, params.ProjectID)
 
 	resp, err := s.handlers.Glob(ctx, params)
@@ -1482,6 +1572,9 @@ func (s *HTTPServer) handleGrep(ctx context.Context, req Request) Response {
 	var params GrepParams
 	if r := decodeRPCParams(req, &params); r != nil {
 		return *r
+	}
+	if err := validateParams(params); err != nil {
+		return Response{JSONRPC: jsonRPCVersion, ID: req.ID, Error: &RPCError{Code: -32602, Message: err.Error()}}
 	}
 	ctx = WithProjectID(ctx, params.ProjectID)
 
@@ -1501,6 +1594,9 @@ func (s *HTTPServer) handleEdit(ctx context.Context, req Request) Response {
 	if r := decodeRPCParams(req, &params); r != nil {
 		return *r
 	}
+	if err := validateParams(params); err != nil {
+		return Response{JSONRPC: jsonRPCVersion, ID: req.ID, Error: &RPCError{Code: -32602, Message: err.Error()}}
+	}
 	ctx = WithProjectID(ctx, params.ProjectID)
 
 	resp, err := s.handlers.Edit(ctx, params)
@@ -1518,6 +1614,9 @@ func (s *HTTPServer) handleWrite(ctx context.Context, req Request) Response {
 	var params WriteParams
 	if r := decodeRPCParams(req, &params); r != nil {
 		return *r
+	}
+	if err := validateParams(params); err != nil {
+		return Response{JSONRPC: jsonRPCVersion, ID: req.ID, Error: &RPCError{Code: -32602, Message: err.Error()}}
 	}
 	ctx = WithProjectID(ctx, params.ProjectID)
 

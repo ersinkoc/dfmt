@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/ersinkoc/dfmt/internal/osutil"
 )
@@ -74,6 +75,11 @@ func (s *SandboxImpl) Exec(ctx context.Context, req ExecReq) (ExecResp, error) {
 			if isEnvAssignment(part) {
 				continue
 			}
+			partForPolicy := stripExeSuffixFromLeadingWord(part)
+			if ok, reason := s.policy.EvaluateReason("exec", partForPolicy); !ok && reason == ReasonExplicitDeny {
+				return ExecResp{}, fmt.Errorf("%w: %s: %s\n%s",
+					ErrPolicyDenied, cmd, denyReasonText(reason), policyDenyHint("exec"))
+			}
 			partBase := extractBaseCommand(part)
 			if !s.policy.Evaluate("exec", partBase) {
 				return ExecResp{}, fmt.Errorf("%w: %s: part '%s' not allowed\n%s", ErrPolicyDenied, cmd, part, policyDenyHint("exec"))
@@ -117,12 +123,17 @@ func (s *SandboxImpl) execImpl(ctx context.Context, req ExecReq, rt Runtime) (Ex
 	var cmd *exec.Cmd
 	var err error
 
+	// The clamp here is the sandbox's own hard ceiling. Per-call policy
+	// (60s default, 900s for a synchronous call, longer for an async job)
+	// is the transport's decision and arrives already resolved in
+	// req.Timeout; clamping to MaxExecTimeout here would have overridden it
+	// and capped async jobs at the synchronous limit.
 	timeout := req.Timeout
 	if timeout == 0 {
 		timeout = DefaultExecTimeout
 	}
-	if timeout > MaxExecTimeout {
-		timeout = MaxExecTimeout
+	if timeout > HardMaxExecTimeout {
+		timeout = HardMaxExecTimeout
 	}
 
 	start := time.Now()
@@ -150,8 +161,30 @@ func (s *SandboxImpl) execImpl(ctx context.Context, req ExecReq, rt Runtime) (Ex
 	// Windows: give the child its own (invisible) console. Without this a
 	// detached daemon — the normal production configuration — spawns children
 	// that wedge before running a single instruction. No-op elsewhere.
-	// See spawn_windows.go for the full failure analysis.
+	// Unix: put the child in its own process group so the whole tree can be
+	// signaled as one. See spawn_windows.go / spawn_unix.go.
 	configureChildProc(cmd)
+
+	// Deadline enforcement, in two parts, because killing the direct child is
+	// not enough on any platform:
+	//
+	//  1. Cancel kills the process TREE, not just the shell. `bash -c "a; b"`
+	//     forks, so CommandContext's default (Process.Kill on the leader)
+	//     left the grandchild alive — and, worse, holding the inherited
+	//     stdout pipe.
+	//  2. WaitDelay bounds how long Wait blocks once the deadline has fired.
+	//     A descendant that survives the kill (unkillable, or spawned into
+	//     another job) keeps the pipe open; without WaitDelay the io.ReadAll
+	//     below blocks until that descendant exits on its own.
+	//
+	// Together these are what make req.Timeout real. Pre-fix, an exec with
+	// Timeout=3s against `sleep 20` returned after 20.7s with timed_out=false:
+	// the deadline fired on schedule, killed bash, and then the read sat on
+	// the orphaned `sleep`'s copy of the pipe for the full 20 seconds. Every
+	// layer above (client RPC deadline, HTTP write deadline) then reported a
+	// transport error instead of the sandbox's own timeout verdict.
+	cmd.Cancel = func() error { return killProcessTree(cmd) }
+	cmd.WaitDelay = execWaitDelay
 
 	// F-10: bound the in-memory subprocess buffer at MaxRawBytes via a
 	// streamed read on StdoutPipe + LimitReader, so a `find / -name "*"`
@@ -180,14 +213,35 @@ func (s *SandboxImpl) execImpl(ctx context.Context, req ExecReq, rt Runtime) (Ex
 	// status is what matters.
 	_, _ = io.Copy(io.Discard, stdout)
 	waitErr := cmd.Wait()
+
+	// Did our own deadline fire? Distinguish it from caller cancellation:
+	// only DeadlineExceeded is the sandbox's "your command ran too long"
+	// verdict, and only that one is reported to the agent as timed_out.
+	timedOut := errors.Is(ctx.Err(), context.DeadlineExceeded)
+
 	if readErr != nil {
-		return ExecResp{}, readErr
+		// On the timeout path WaitDelay closes the pipes out from under the
+		// read, so readErr is expected (os.ErrClosed) and `out` still holds
+		// everything the command printed before the deadline. Surfacing the
+		// error instead would throw away exactly the partial output the
+		// agent needs to understand what the command was doing when it hung.
+		if !timedOut {
+			return ExecResp{}, readErr
+		}
 	}
 	exitCode := 0
 	if waitErr != nil {
-		if exitErr, ok := waitErr.(*exec.ExitError); ok {
+		var exitErr *exec.ExitError
+		switch {
+		case errors.As(waitErr, &exitErr):
 			exitCode = exitErr.ExitCode()
-		} else {
+		case timedOut:
+			// exec.ErrWaitDelay (a descendant outlived the grace period) and
+			// context errors both land here. The command did not report an
+			// exit status of its own; -1 is the conventional "killed, no
+			// status" marker and pairs with timed_out=true.
+			exitCode = -1
+		default:
 			return ExecResp{}, waitErr
 		}
 	}
@@ -238,6 +292,15 @@ func (s *SandboxImpl) execImpl(ctx context.Context, req ExecReq, rt Runtime) (Ex
 	if errw.Truncated() {
 		stderrText += "\n(stderr truncated at " + strconv.Itoa(MaxRawBytes) + " bytes)"
 	}
+	if timedOut {
+		// Say so on the channel that explains a bad exit. `timed_out` is a
+		// bool the agent may not read; this line is unmissable and names the
+		// budget that was exceeded, so the retry can raise it deliberately.
+		if stderrText != "" && !strings.HasSuffix(stderrText, "\n") {
+			stderrText += "\n"
+		}
+		stderrText += fmt.Sprintf("(timed out after %s; process tree killed)", timeout)
+	}
 
 	return ExecResp{
 		Exit:       exitCode,
@@ -248,6 +311,7 @@ func (s *SandboxImpl) execImpl(ctx context.Context, req ExecReq, rt Runtime) (Ex
 		Summary:    filtered.Summary,
 		Vocabulary: filtered.Vocabulary,
 		DurationMs: int(time.Since(start).Milliseconds()),
+		TimedOut:   timedOut,
 	}, nil
 }
 
@@ -507,37 +571,35 @@ func convertUTF16LEToUTF8(data []byte) string {
 
 // decodeUTF16LE converts UTF-16LE bytes to UTF-8 without re-checking the
 // BOM. Callers are responsible for stripping any BOM before calling.
+//
+// Surrogate pairs are decoded as pairs. Encoding each 16-bit unit
+// independently (what this did before) emits two 3-byte sequences for the
+// halves of one character — CESU-8, not UTF-8 — so every astral-plane rune
+// arrived broken: emoji in a test runner's output, and any CJK extension-B
+// character in a path. encoding/json then substituted U+FFFD, and the agent
+// saw replacement characters where the terminal had shown a glyph.
 func decodeUTF16LE(data []byte) string {
-
-	// Convert UTF-16LE to UTF-8
 	var result strings.Builder
 	for i := 0; i+1 < len(data); i += 2 {
-		lo := data[i]
-		hi := data[i+1]
-		if hi == 0 && lo < 0x80 {
-			// True ASCII: one byte in UTF-8 as well.
-			//
-			// The `lo < 0x80` half was missing, so this branch also caught
-			// U+0080–U+00FF and wrote the raw byte instead of encoding it.
-			// Every Latin-1 character — ç ö ü ş é ñ — came out as an invalid
-			// UTF-8 byte, which encoding/json then replaced with U+FFFD.
-			// Turkish output from a Windows Git Bash arrived mangled; the
-			// general path below already handled these correctly.
-			result.WriteByte(lo)
-		} else {
-			// UTF-16 code point - convert to UTF-8
-			r := uint16(hi)<<8 | uint16(lo)
-			if r < 0x80 {
-				result.WriteByte(byte(r))
-			} else if r < 0x800 {
-				result.WriteByte(0xC0 | byte(r>>6))
-				result.WriteByte(0x80 | byte(r&0x3F))
-			} else {
-				result.WriteByte(0xE0 | byte(r>>12))
-				result.WriteByte(0x80 | byte((r>>6)&0x3F))
-				result.WriteByte(0x80 | byte(r&0x3F))
+		r := rune(uint16(data[i+1])<<8 | uint16(data[i]))
+
+		// High surrogate followed by a low surrogate: one code point.
+		if r >= 0xD800 && r <= 0xDBFF && i+3 < len(data) {
+			next := rune(uint16(data[i+3])<<8 | uint16(data[i+2]))
+			if next >= 0xDC00 && next <= 0xDFFF {
+				result.WriteRune(0x10000 + (r-0xD800)<<10 + (next - 0xDC00))
+				i += 2 // consume the low half too (loop adds the other 2)
+				continue
 			}
 		}
+		// An unpaired surrogate is not a valid code point. WriteRune would
+		// silently substitute U+FFFD, which is the right outcome but worth
+		// naming: the input is malformed UTF-16 at this position.
+		if r >= 0xD800 && r <= 0xDFFF {
+			result.WriteRune(utf8.RuneError)
+			continue
+		}
+		result.WriteRune(r)
 	}
 	return result.String()
 }

@@ -58,26 +58,13 @@ linters:
         linters:
           - errcheck
         source: 'fmt\.(Fprint|Fprintf|Fprintln)\('
-      # Logging helper: Init in package init is intentionally best-effort
-      - path: internal/logging/logging\.go$
-        linters:
-          - errcheck
-        source: 'Init\('
-      # Logging writer: best-effort write
-      - path: internal/logging/logging\.go$
-        linters:
-          - errcheck
-        source: 'w\.Write\('
+
       # Sandbox permissions: temp file cleanup is best-effort
       - path: internal/sandbox/(permissions|policy|glob|shell|exec|read|fetch|glob_grep|edit_write)\.go$
         linters:
           - errcheck
         source: 'defer os\.Remove|tmpfile\.(Close|Sync)\(|os\.Remove\(tmpName\)'
-      # Logging: best-effort closer close
-      - path: internal/logging/logging\.go$
-        linters:
-          - errcheck
-        source: 'closer\.Close\('
+
       # Registry: best-effort defer close
       - path: internal/project/registry\.go$
         linters:

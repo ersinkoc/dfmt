@@ -14,6 +14,7 @@ import (
 )
 
 const durabilityBatched = "batched"
+const loggingFormatText = "text"
 
 const maxConfigBytes = 64 << 10
 
@@ -169,7 +170,7 @@ func Default() *Config {
 	// FSWatcher wire-up is opt-in: set capture.fs.enabled=true in the
 	// project config to start indexing file-system activity.
 	c.Capture.FS.Enabled = false
-	c.Capture.FS.Ignore = []string{".git/**", "node_modules/**", "__pycache__/**"}
+	c.Capture.FS.Ignore = []string{".dfmt/**", ".git/**", "node_modules/**", "__pycache__/**"}
 	c.Capture.FS.DebounceMS = 500
 
 	// Storage defaults
@@ -206,7 +207,7 @@ func Default() *Config {
 	// default (LevelWarn). Operators wanting the chattier baseline set
 	// `logging.level: info` in YAML or DFMT_LOG=info in env.
 	c.Logging.Level = "warn"
-	c.Logging.Format = "text"
+	c.Logging.Format = loggingFormatText
 
 	return c
 }
@@ -390,7 +391,7 @@ func (c *Config) Validate() error {
 	// no-op'd by the logging package; reject at config load so the
 	// surprise doesn't ship.
 	switch c.Logging.Format {
-	case "", "text":
+	case "", loggingFormatText:
 	default:
 		return fmt.Errorf(
 			"logging.format must be \"text\" (or empty); JSON output is on the v0.4 roadmap, got %q",

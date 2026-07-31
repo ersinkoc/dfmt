@@ -16,7 +16,18 @@ import (
 // If a future change needs to push past this cap, raise the constant
 // deliberately rather than letting the size drift.
 func TestToolsListBytesUnderBudget(t *testing.T) {
-	const toolsListMaxBytes = 6 * 1024
+	// Raised from 6 KiB to 6.75 KiB — the first deliberate raise, for the
+	// async exec surface (`async`, `job_id`, `cancel` plus the timeout
+	// note): ~420 bytes for a capability that has no other way to be
+	// discovered. The alternative, a separate dfmt_job tool, would have
+	// cost more: a second tool object carries its own name, description,
+	// and schema envelope.
+	//
+	// The rule this constant encodes has not changed: raise it for a new
+	// capability, never to absorb prose drift. Every earlier addition in
+	// this pass (replace_all, search's type filter, the tag vocabulary,
+	// line-oriented read) was paid for by trimming elsewhere.
+	const toolsListMaxBytes = 6912
 
 	p := NewMCPProtocol(&Handlers{})
 	resp, err := p.handleToolsList(&MCPRequest{ID: 1, Method: "tools/list"})

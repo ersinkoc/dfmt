@@ -27,6 +27,202 @@ Internal package shapes (`internal/...`) are NOT covered by SemVer.
 
 ## [Unreleased]
 
+A full read-through of the code base, in two passes.
+
+The first pass found controls that existed, looked implemented, and did
+not hold — the same failure shape as 0.7.3's, with no error anywhere to
+notice them by
+([ADR-0023](docs/adr/0023-real-deadlines-concurrent-proxy-and-rpc-auth.md)).
+
+The second found limits that held perfectly well and were set against
+the wrong thing: an index that forgot its most valuable events first, a
+five-minute ceiling on nine-minute work, and a read tool that spoke a
+unit nothing else uses
+([ADR-0024](docs/adr/0024-retention-ceilings-and-line-oriented-reads.md)).
+
+The third closed the one gap the second deliberately left open: work
+that outlives any ceiling at all
+([ADR-0025](docs/adr/0025-async-exec-jobs.md)).
+
+### Fixed
+
+- **`dfmt_exec`'s timeout stopped nothing.** `exec.CommandContext`
+  kills the process it started; `bash -c "a; b"` forks, so the
+  grandchild survived the deadline and kept the inherited stdout pipe
+  open, leaving the read blocked until the command finished on its
+  own. Measured with `Timeout: 3s`: returned at **20.7 s**,
+  `timed_out=false`, and the output printed before the kill was
+  discarded. The deadline now kills the whole process tree (`Setpgid`
+  + `kill(-pgid)` on Unix, `taskkill /T /F` on Windows), `WaitDelay`
+  bounds `Wait` afterwards, partial output survives, and `timed_out`
+  is finally set — it had been `false` on every call ever made.
+
+- **Every tool call was capped at 30 seconds by the HTTP server.**
+  `WriteTimeout` is absolute from request-header time, so it bounded
+  handler duration regardless of the timeout the agent asked for
+  (`dfmt_exec` advertises 60 s by default, 300 s max). `sleep 25`
+  returned; `sleep 45` died with a bare `EOF` while the command kept
+  running server-side. The same deadline killed the dashboard's SSE
+  stream every 30 seconds. Removing it makes the sandbox's own
+  `MaxExecTimeout` the real ceiling — see the Changed section, where
+  that ceiling is raised to 900 s so a build or test suite fits. Past
+  it, a job now fails as a clean `timed_out` verdict with partial
+  output rather than a bare `EOF`.
+
+- **`dfmt_glob` did not recurse.** `filepath.Glob` has no `**` — the
+  second star adds nothing to `filepath.Match` — so `**/*.go` matched
+  exactly one level of depth and returned **2 of this repo's 278 Go
+  files**, silently, while the tool schema advertised that very
+  pattern. Recursive patterns now walk with doublestar semantics
+  (`**/` is zero-or-more segments, so root-level files match);
+  non-`**` patterns keep the stdlib path unchanged.
+
+- **`dfmt_edit` silently edited the first of N matches.** The
+  implementation was `strings.Replace(..., 1)`, and the anchors an
+  agent picks — an error string, a field name, a repeated call — are
+  exactly the text that repeats. An `old_string` that is not unique is
+  now refused with its occurrence count; `replace_all` opts into a
+  sweep and the response reports `replacements`.
+
+- **One slow tool call froze the whole MCP session.** The stdio loop
+  was `read → handle → write`, one request at a time; a `dfmt_read`
+  was observed waiting more than two minutes behind a running
+  `go test`. Requests are still read serially but dispatched to a
+  bounded worker pool with a mutex-guarded writer.
+
+- **The RPC endpoint never checked the token it minted.** The daemon
+  generated a 32-byte bearer token, wrote an *empty* string into the
+  port file, and ignored the `Authorization` header its own clients
+  were sending. On Windows the transport is loopback TCP with no ACL,
+  so `/` — exec, write, edit, fetch — was reachable by any process on
+  the host. The token is now published in the 0600 port file and
+  verified in constant time on `/`. The dashboard and read-only `/api`
+  endpoints are unchanged (a browser has no token to present).
+
+- **`dfmt_remember` wrote fine and retrieved badly.** The write path
+  was sound (journal + index + redaction + signature), but nothing
+  about retrieval favoured a deliberate note over the automatic tool
+  events around it — 193 of 202 events in this repo's own journal.
+  `SearchHit.Type` and `SearchHit.Source` were declared on the wire
+  struct and never assigned, so every hit arrived unlabelled; tool
+  events carried an excerpt of their own type name (`"tool.grep"`)
+  because only `data["path"]` was consulted; and a query for
+  `timeout` returned six tool events and *not* the note that
+  discusses timeouts at length, because BM25 length normalization
+  favors short documents and the corpus is almost entirely short
+  documents. Hits now carry type and source, excerpts fall back to
+  the command/pattern/URL the event recorded, and `dfmt_search`
+  accepts a `type` filter (`type: "note"` searches only your own
+  memories). The scoring itself is unchanged — the corpus is
+  lopsided, not the ranking — so the fix is to let the caller say
+  which corpus it means rather than to invent a weight.
+
+- **The tag vocabulary that governs retention was undocumented at the
+  point of use.** `summary`/`decision`/`strengths`/`ledger` elevate a
+  note to P2 and `audit`/`finding`/`followup`/`preserve` to P3, which
+  decides what survives a tight recall budget — but the `tags`
+  parameter said only "Tags for categorizing the event", and the tool
+  description advertised `dfmt_remember` as a token-telemetry
+  recorder. Both now say what they do, within the `tools/list` byte
+  budget.
+
+- **Recall labelled events with the wrong priority.** The tier came
+  from the classifier, the printed `[pN]` came from the stored value,
+  and `dfmt_remember` coerces every agent-written event to p3 — so a
+  note elevated to P2 by its tags rendered as `[p3]` sorted above
+  `[p2]` lines, which reads as a sorting bug and hides the one signal
+  the tag vocabulary exists to produce.
+
+- **`dfmt_remember` was missing from the tool-call metrics.** Every
+  other tool records duration and errors (ADR-0018); the hole was
+  exactly where session memory is written.
+
+### Added
+
+- **Async exec jobs.** `dfmt_exec {code, async: true}` submits and
+  returns a `job_id` immediately; `{job_id}` polls it; `{job_id,
+  cancel: true}` stops it. For work no synchronous ceiling fits — a
+  migration, a soak test, a watch build — where the alternative was
+  raising the timeout until it stopped bounding anything. Jobs run at
+  their own concurrency (2, separate from the interactive exec slots so
+  a `git status` never queues behind an hour-long job), are capped at
+  32 outstanding with a 30-minute retention on finished ones, and are
+  canceled on daemon shutdown rather than left as subprocesses nobody
+  owns. Cancel goes through the same tree-kill as a timeout: verified
+  end to end, a canceled `sleep 120; echo … > file` leaves no file.
+  Also available from the CLI: `dfmt exec -async`, `-job`, `-cancel`.
+
+  Async is parameters on `dfmt_exec` rather than a separate tool
+  because `tools/list` is paid on every session start and "run a
+  command" is one capability whose result you may want now or later.
+  This is the first deliberate raise of the tools/list byte budget
+  (6 KiB → 6.75 KiB); every other addition in this release was paid for
+  by trimming.
+
+### Changed
+
+- **`dfmt_read` takes lines, not bytes.** `offset` is now the 1-based
+  first line (0 and 1 both mean the top) and `limit` a line count, and
+  the response reports `start_line` / `end_line` / `total_lines`. Bytes
+  are a unit nothing else an agent works with uses — stack traces,
+  editors, review comments and DFMT's own `matches[].line` all speak
+  lines — so reading a function that starts "around line 400" meant
+  guessing an offset and getting back something you could not cite.
+  Line numbers are deliberately NOT prefixed onto the content: an agent
+  that copies an anchor out of numbered text builds an `old_string`
+  that cannot match the file. `total_lines` is 0 when the read stopped
+  early, because a partial count presented as the total is worse than
+  silence. Deep windows stay reachable in files larger than the read
+  ceiling. This changes the meaning of two existing arguments; see
+  [ADR-0024](docs/adr/0024-retention-ceilings-and-line-oriented-reads.md).
+
+- **`MaxExecTimeout` raised from 300 s to 900 s.** With the transport
+  cap gone (above), 300 s became the real ceiling — below the length of
+  ordinary work. This repository's own `go test ./...` takes ~531 s. A
+  runaway is still bounded: the deadline kills the whole process tree,
+  four exec slots, and the caller's own timeout is usually far lower.
+  A job that outlives even this now has an async job handle instead of
+  a larger constant — see Added.
+
+### Performance
+
+- **The index forgot from the wrong end.** At `MaxIndexDocs` eviction
+  popped the smallest ULID — the oldest document, whatever it was. On a
+  journal that is 193 automatic tool events to 1 deliberate note, that
+  retires the earliest decisions while keeping every recent
+  `tool.read`. Quietly: the note stays in the journal so `dfmt_recall`
+  still shows it, and only `dfmt_search` forgets. Eviction now drains
+  the lowest-priority tier first, oldest-first within a tier, using the
+  same classifier (and therefore the same tag vocabulary) that recall
+  uses.
+
+- **Removing one document scanned the whole index.** `removeLocked`
+  walked every stem and trigram posting list and recomputed
+  `avgDocLen` over every document — per insert, once at the cap. With
+  per-document reverse maps, a running length sum, and front-deletion
+  by re-slicing: **739 µs → 8.7 µs** at a 2 000-document cap and
+  **6 215 µs → 13.3 µs** at 20 000. Cost growth for a 10× larger index
+  went from 8.4× to 1.5×.
+
+- **Recall re-read the entire journal on every call**, unmarshalling
+  every line and recomputing every event signature, even when nothing
+  had been appended since the last one. Snapshots are now memoised
+  against the journal cursor — exact invalidation, not a TTL.
+
+### Fixed
+
+- **Smaller correctness fixes.** Recall lines rendered event fields in
+  map-iteration order, so identical data produced different output on
+  every call — undiffable, and it invalidated the agent's prompt cache
+  on a tool whose entire job is context economy; ordering is now
+  deterministic and prefers identifying fields (`message`, `path`)
+  over byte counts. A failed journal rotation left the file handle
+  closed, so every later append failed until the daemon restarted; it
+  now reopens. UTF-16 surrogate pairs (emoji, astral-plane CJK) from a
+  Windows shell were encoded as CESU-8 and arrived as replacement
+  characters. A truncated journal read no longer ends the stream
+  silently.
+
 ## [0.7.3] — 2026-07-30
 
 Four fixes. Two of them made a tool return confident, well-formed,
@@ -1495,7 +1691,7 @@ wiring (ADR-0014) land in this build. No wire-format changes.
 Patch release. The v0.2.0 binaries shipped before a Linux-only
 security regression and a CI-toolchain mismatch were diagnosed
 under WSL; v0.2.1 republishes the same feature set with both
-closed. No wire-format or behaviour changes for end users on
+closed. No wire-format or behavior changes for end users on
 Windows or macOS — Linux operators should upgrade.
 
 ### Security
@@ -1524,7 +1720,7 @@ Windows or macOS — Linux operators should upgrade.
   the target file's, so a `0o444` file inside a `0o755` parent is
   still atomically replaceable by its owner. The test now also
   locks the parent directory to `0o555` (and restores it in a
-  `defer` so `t.TempDir` cleanup can remove it). Windows behaviour
+  `defer` so `t.TempDir` cleanup can remove it). Windows behavior
   is unchanged.
 - **CI: golangci-lint v2.4.0 → v2.11.4** — v2.4.0 was built with
   go1.25 and panicked inside `go/types.(*Checker).initFiles` with

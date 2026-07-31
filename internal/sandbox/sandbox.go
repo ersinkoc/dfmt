@@ -50,11 +50,17 @@ type ExecResp struct {
 }
 
 // ReadReq is a request to read a file.
+//
+// Offset and Limit are LINES, not bytes: Offset is the 1-based first line to
+// return (0 and 1 both mean the top of the file) and Limit is how many lines
+// to return (0 = as many as fit). They were byte quantities, which is a unit
+// nothing else in an agent's world uses — stack traces, editors, review
+// comments and Matches[].Line all speak lines.
 type ReadReq struct {
 	Path   string // File path
 	Intent string // Intent for content filtering
-	Offset int64  // Byte offset to start reading
-	Limit  int64  // Maximum bytes to read
+	Offset int64  // 1-based first line to return (0 = from the top)
+	Limit  int64  // Maximum number of lines to return (0 = unlimited)
 	Return string // "auto" | "raw" | "summary" | "search"
 }
 
@@ -69,6 +75,15 @@ type ReadResp struct {
 	Matches    []ContentMatch // Intent-matched excerpts
 	Size       int64          // Total file size
 	ReadBytes  int64          // Bytes actually read
+	// StartLine/EndLine are the 1-based inclusive line range returned, so a
+	// caller can cite file:line without counting newlines itself. Both 0
+	// when the requested window lies past the end of the file.
+	StartLine int
+	EndLine   int
+	// TotalLines is the file's line count, or 0 when the read stopped early
+	// (line limit or byte ceiling) and the true total was never established.
+	// Reporting a partial count as the total would be worse than silence.
+	TotalLines int
 }
 
 // FetchReq is a request to fetch a URL.
@@ -156,12 +171,20 @@ type EditReq struct {
 	Path      string `json:"path"`       // File path
 	OldString string `json:"old_string"` // String to replace
 	NewString string `json:"new_string"` // Replacement string
+	// ReplaceAll opts into replacing every occurrence. Without it an
+	// OldString that appears more than once is refused — see Edit for why
+	// "replace the first one" is the wrong default.
+	ReplaceAll bool `json:"replace_all,omitempty"`
 }
 
 // EditResp is the response from an edit operation.
 type EditResp struct {
 	Success bool   `json:"success"`
 	Summary string `json:"summary"`
+	// Replacements is how many occurrences were rewritten. Always 1 unless
+	// ReplaceAll was set; surfaced so a caller can tell a broad replace_all
+	// from the single edit it may have expected.
+	Replacements int `json:"replacements,omitempty"`
 }
 
 // WriteReq is a request to write a file.
@@ -180,7 +203,54 @@ type WriteResp struct {
 const DefaultExecTimeout = 60 * time.Second
 
 // MaxExecTimeout is the maximum allowed execution timeout.
-const MaxExecTimeout = 300 * time.Second
+//
+// 15 minutes, raised from 5. The ceiling exists to stop a runaway command
+// from pinning an exec slot forever, not to define what counts as a
+// reasonable job — and at 300 s it was doing the latter: this repository's
+// own `go test ./...` takes ~9 minutes, so the tool that exists to replace
+// Bash could not run the project's test suite. A build, a test suite, or a
+// container image pull is the normal shape of an agent-driven exec, and
+// none of them fit in five minutes on a cold cache.
+//
+// What still bounds a runaway: the deadline is enforced against the whole
+// process tree (see execImpl), the caller's own `timeout` argument is
+// usually far lower, execSem caps concurrent execs at 4, and a timed-out
+// call now returns a clean verdict with partial output rather than hanging.
+//
+// Deliberately NOT solved here: a job that outlives even this — a long
+// migration, a soak test — needs an async job handle (submit, poll, fetch
+// output), which is a new MCP tool, a job store, and a cancellation story.
+// That is a feature with its own ADR, not a constant.
+const MaxExecTimeout = 900 * time.Second
+
+// HardMaxExecTimeout is the absolute ceiling the sandbox enforces, as
+// opposed to MaxExecTimeout, which is the policy ceiling the transport
+// applies to SYNCHRONOUS calls.
+//
+// The two differ because the reasons differ. A synchronous call is capped at
+// 15 minutes because something is holding an RPC open and an exec slot with
+// it. An async job (transport/exec_jobs.go) holds neither — it was submitted
+// and answered — so the only thing bounding it is "a job that hangs must not
+// live forever". Two hours covers a migration or a soak test.
+//
+// Without this split the sandbox's own clamp silently capped async jobs at
+// the synchronous ceiling: the job context allowed two hours, execImpl cut
+// it to 900s, and the feature quietly did not do the one thing it exists for.
+const HardMaxExecTimeout = 2 * time.Hour
+
+// execWaitDelay is how long Wait may keep blocking after the deadline has
+// fired and the process tree has been killed. It exists for the descendant
+// that survives the kill — a process in another session, or one wedged in
+// uninterruptible I/O — because such a descendant still holds the inherited
+// stdout pipe, and an unbounded Wait would sit on it for as long as that
+// process lives. Past this grace period os/exec closes the pipes and Wait
+// returns exec.ErrWaitDelay, so the caller gets its partial output and its
+// timed_out verdict on schedule.
+//
+// 2s is generous for "did the kill land": a tree that has been SIGKILLed or
+// TerminateProcess'd closes its handles in milliseconds. The cost of the
+// window is only paid on the timeout path.
+const execWaitDelay = 2 * time.Second
 
 // DefaultFetchTimeout is the default HTTP fetch timeout when the caller
 // does not supply one (the inner sandbox Fetch also defaults to 30s).

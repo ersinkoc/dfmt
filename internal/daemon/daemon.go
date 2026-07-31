@@ -672,6 +672,13 @@ func (d *Daemon) Stop(ctx context.Context) error {
 			_ = d.fswatcher.Stop(ctx)
 		}
 
+		// (3a) Cancel async exec jobs. They are process-local by design, so
+		// a job that outlived the daemon would be a subprocess nobody owns
+		// and nobody can poll — canceling kills its whole process tree.
+		if d.handlers != nil {
+			d.handlers.StopJobs()
+		}
+
 		// (3b) Stop the default-project index tail before closing the
 		// journal. closeExtraProjects handles the same dance for
 		// per-project caches; this branch covers the legacy single-

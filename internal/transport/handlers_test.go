@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -375,8 +376,18 @@ func (m *mockJournal) Stream(ctx context.Context, from string) (<-chan core.Even
 	return ch, nil
 }
 
+// Checkpoint returns the last appended event's ID, like journalImpl does.
+// It used to return "" unconditionally, which made every consumer that keys
+// off the cursor — Recall's snapshot cache among them — look like it worked
+// while actually comparing "" to "": a cache that never invalidated passed
+// its own invalidation test.
 func (m *mockJournal) Checkpoint(ctx context.Context) (string, error) {
-	return "", nil
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(m.events) == 0 {
+		return "", nil
+	}
+	return m.events[len(m.events)-1].ID, nil
 }
 
 func (m *mockJournal) Rotate(ctx context.Context) error {
@@ -415,6 +426,7 @@ func TestHandlersSearch(t *testing.T) {
 	}
 	if resp == nil {
 		t.Fatal("SearchResponse is nil")
+		return
 	}
 	if resp.Layer != "" {
 		t.Errorf("resp.Layer = %s, want ''", resp.Layer)
@@ -1291,6 +1303,31 @@ func TestSocketServerDispatch(t *testing.T) {
 	}
 }
 
+// TestSocketServerDispatchRejectsEmptyExecCode covers TRN-2: the socket
+// transport MUST call Validate() on params that implement the validator
+// interface, so dfmt_exec with no `code` gets a -32602 instead of running
+// an empty command that exits 0 and looks like success.
+func TestSocketServerDispatchRejectsEmptyExecCode(t *testing.T) {
+	handlers := NewHandlers(core.NewIndex(), &mockJournal{}, nil)
+	ss := NewSocketServer("/tmp/test.sock", handlers)
+
+	req := &Request{
+		JSONRPC: jsonRPCVersion,
+		Method:  methodExec,
+		Params:  json.RawMessage(`{}`),
+		ID:      1,
+	}
+
+	_, err := ss.dispatch(context.Background(), req)
+	if err == nil {
+		t.Fatal("dispatch with empty exec code should return validation error, got nil")
+	}
+	var pe *ParamsError
+	if !errors.As(err, &pe) {
+		t.Fatalf("dispatch error = %v, want ParamsError", err)
+	}
+}
+
 func TestSocketServerDispatchSearch(t *testing.T) {
 	idx := core.NewIndex()
 	idx.Add(core.Event{
@@ -1751,7 +1788,7 @@ func TestCodecWriteResponseSetVersion(t *testing.T) {
 
 func TestHTTPServerStartAlreadyRunning(t *testing.T) {
 	handlers := &Handlers{}
-	hs := NewHTTPServer("127.0.0.1:0", handlers)
+	hs := NewHTTPServer(loopbackEphemeral, handlers)
 
 	hs.mu.Lock()
 	hs.running = true
@@ -2106,7 +2143,7 @@ func TestHTTPServerStop(t *testing.T) {
 
 // TestHTTPServerStartWithNilListener tests that Start with nil listener doesn't panic.
 func TestHTTPServerStartWithNilListener(t *testing.T) {
-	hs := NewHTTPServer("127.0.0.1:0", nil)
+	hs := NewHTTPServer(loopbackEphemeral, nil)
 	hs.listener = nil // ensure nil listener path
 
 	// With nil listener and bind on loopback, Start should succeed
@@ -2525,6 +2562,7 @@ func TestHandlersSearchNilIndex(t *testing.T) {
 	}
 	if resp == nil {
 		t.Fatal("resp is nil")
+		return
 	}
 	if resp.Results != nil {
 		t.Error("Results should be nil when index is nil")
@@ -2763,6 +2801,7 @@ func TestHandlersCloneStatsResponseFull(t *testing.T) {
 	got := cloneStatsResponse(src)
 	if got == nil {
 		t.Fatal("cloneStatsResponse returned nil")
+		return
 	}
 	if got == src {
 		t.Error("cloneStatsResponse should return a new pointer")

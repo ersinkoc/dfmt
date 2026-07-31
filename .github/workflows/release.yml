@@ -9,7 +9,26 @@ permissions:
   contents: write
 
 jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      # Keep this release gate in this workflow instead of relying on the
+      # separate CI workflow: GitHub Actions cannot express `needs` across
+      # workflows, and tag pushes must not publish binaries before tests pass.
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Setup Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: "1.26"
+          cache: true
+
+      - name: Test
+        shell: bash
+        run: go test -count=1 -timeout=5m ./...
+
   release:
+    needs: test
     runs-on: ubuntu-latest
     steps:
       # Third-party actions pinned by full 40-char SHA. softprops/action-gh-release
