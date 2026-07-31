@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -206,6 +207,51 @@ func TestStopGlobalDaemon_MissingPIDFile(t *testing.T) {
 	}
 	if code := stopGlobalDaemon(); code != 1 {
 		t.Errorf("want 1 (error code), got %d", code)
+	}
+}
+
+// TestStopGlobalDaemon_SelfPIDDoesNotSelfKill is the v0.7.4 release-gate
+// regression. An in-process daemon (runMCP / a test's PromoteInProcess)
+// writes THIS process's PID into the global PID file, so `dfmt stop` used
+// to escalate to SIGKILL against the test binary itself — on ubuntu that
+// killed the whole internal/cli package with "signal: killed" and no
+// --- FAIL line, silently blocking the release. LIF-2 (stopGlobalDaemon)
+// now treats "the daemon is us" as already stopped: exit 0, clear the
+// pid/port/socket rendezvous files, and preserve the lock (LIF-1 — we
+// still hold the flock).
+func TestStopGlobalDaemon_SelfPIDDoesNotSelfKill(t *testing.T) {
+	dir := withIsolatedGlobalDir(t)
+
+	// Port file present so the global stop path is taken; PID file points
+	// at this very process; socket + lock also present.
+	files := map[string]string{
+		project.GlobalPortFileName: "12345\n",
+		project.GlobalPIDFileName:  fmt.Sprintf("%d\n", os.Getpid()),
+		project.GlobalSocketName:   "stale",
+		project.GlobalLockFileName: "held",
+	}
+	for name, content := range files {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if code := stopGlobalDaemon(); code != 0 {
+		t.Fatalf("stopGlobalDaemon with self PID: want 0, got %d", code)
+	}
+
+	for _, name := range []string{
+		project.GlobalPIDFileName,
+		project.GlobalPortFileName,
+		project.GlobalSocketName,
+	} {
+		if _, err := os.Stat(filepath.Join(dir, name)); !os.IsNotExist(err) {
+			t.Errorf("expected %s removed; stat err: %v", name, err)
+		}
+	}
+	// LIF-1: the lock must survive — we are a live daemon still holding it.
+	if _, err := os.Stat(filepath.Join(dir, project.GlobalLockFileName)); err != nil {
+		t.Errorf("expected lock preserved (LIF-1); stat err: %v", err)
 	}
 }
 

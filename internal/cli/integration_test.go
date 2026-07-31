@@ -169,12 +169,15 @@ func TestRunDoctor_Integration(t *testing.T) {
 	}
 }
 
-// TestRunStop_Integration is NOT safe to add as an in-process test:
-// runStop's global path reads ~/.dfmt/daemon.pid, which the
-// in-process daemon populates with THIS test process's PID. The
-// follow-up signalStopProcess(pid) would then terminate the test
-// runner. The global stop flow can only be covered with a real
-// subprocess daemon — out of scope for unit tests.
+// Historically a runStop in-process test was unsafe: runStop's global
+// path reads ~/.dfmt/daemon.pid, which the in-process daemon populates
+// with THIS test process's PID, and the follow-up signalStopProcess(pid)
+// would then terminate the test runner. LIF-2 (stopGlobalDaemon's self-PID
+// short-circuit) now guards this case, so the path no longer self-kills;
+// the regression is pinned by
+// TestStopGlobalDaemon_SelfPIDDoesNotSelfKill in daemon_cli_test.go. A
+// full runStop-against-a-real-subprocess test remains out of scope for
+// unit tests.
 
 // TestEnsureGlobalDaemon_DisableAutostart pins the env-var short-circuit:
 // when DFMT_DISABLE_AUTOSTART=1 is set (TestMain default) and the
