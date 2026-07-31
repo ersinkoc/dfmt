@@ -407,6 +407,28 @@ func buildEnv(extra map[string]string) []string {
 			"LOCALAPPDATA=" + os.Getenv("LOCALAPPDATA"),
 			"USERPROFILE=" + os.Getenv("USERPROFILE"),
 		}
+		// SBX-9: these are required by Windows subsystems. SystemRoot is
+		// needed by Winsock initialization and the CryptoAPI; COMSPEC is
+		// required by anything that shells out; PATHEXT is how .bat/.cmd
+		// resolution works; WINDIR is checked by various installers and
+		// system tools; APPDATA and ProgramData are needed by apps that
+		// store per-user or per-machine data. Without them Python's
+		// socket/ssl, ping, and much of .NET fail.
+		for _, kv := range []struct{ k, v string }{
+			{"APPDATA", os.Getenv("APPDATA")},
+			{"COMSPEC", os.Getenv("COMSPEC")},
+			{"PATHEXT", os.Getenv("PATHEXT")},
+			{"SYSTEMROOT", os.Getenv("SYSTEMROOT")},
+			{"WINDIR", os.Getenv("WINDIR")},
+			{"ProgramData", os.Getenv("ProgramData")},
+			{"ProgramFiles", os.Getenv("ProgramFiles")},
+			{"NUMBER_OF_PROCESSORS", os.Getenv("NUMBER_OF_PROCESSORS")},
+			{"PROCESSOR_ARCHITECTURE", os.Getenv("PROCESSOR_ARCHITECTURE")},
+		} {
+			if kv.v != "" {
+				env = append(env, kv.k+"="+kv.v)
+			}
+		}
 		if home := os.Getenv("USERPROFILE"); home != "" {
 			env = append(env, "HOME="+home)
 		}

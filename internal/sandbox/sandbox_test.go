@@ -834,6 +834,37 @@ func TestBuildEnv(t *testing.T) {
 	}
 }
 
+// SBX-9 regression: Windows children must receive SystemRoot, COMSPEC,
+// PATHEXT, WINDIR, APPDATA and related system vars. Without SystemRoot
+// Winsock/CryptoAPI fail; without PATHEXT .bat/.cmd resolution breaks.
+func TestBuildEnvWindowsSystemVars(t *testing.T) {
+	if !osutil.IsWindows() {
+		t.Skip("Windows-only test")
+	}
+	env := buildEnv(nil)
+	envMap := make(map[string]string)
+	for _, kv := range env {
+		parts := strings.SplitN(kv, "=", 2)
+		if len(parts) == 2 {
+			envMap[parts[0]] = parts[1]
+		}
+	}
+	required := []string{"SYSTEMROOT", "COMSPEC", "PATHEXT", "WINDIR", "APPDATA"}
+	for _, key := range required {
+		val := envMap[key]
+		osVal := os.Getenv(key)
+		if osVal == "" {
+			continue // not set on this host; skip
+		}
+		if val == "" {
+			t.Errorf("SBX-9: buildEnv missing %s (host has %q)", key, osVal)
+		}
+		if val != osVal {
+			t.Errorf("SBX-9: buildEnv %s = %q, want %q", key, val, osVal)
+		}
+	}
+}
+
 func TestWriteTempFile(t *testing.T) {
 	tmpDir := t.TempDir()
 	origTmpDir := os.TempDir()
