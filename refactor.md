@@ -131,7 +131,7 @@ costs a directory glob on every `Stream` call.
 maintenance tick. Add an integration test that appends past the cap and asserts both a rotated segment and a
 successful subsequent write. Surface `ErrJournalFull` as a doctor row for the case where rotation itself fails.
 
-### CORE-2 · The content store is write-only: unbounded disk growth, unresolvable `content_id` **[verified]** 🔵 DECIDED: in-memory TTL (Wave 5)
+### CORE-2 · The content store is write-only: unbounded disk growth, unresolvable `content_id` **[verified]** ✅ FIXED `017eaaf` (ADR-0027, in-memory only)
 `internal/content/store.go` — `GetChunk:236`, `GetChunkSet:259`, `GetChunks:298`, `PruneExpired:281`,
 `LoadChunkSet:433`, `Close:468`. **P0 · M**
 
@@ -150,7 +150,7 @@ loader and a bounded sweep, making the persisted store real; or (b) drop persist
 in-memory with a default TTL, and stop advertising `content_id` as a retrieval handle.
 
 ### CORE-3 · Persisted chunk sets never contain their chunks
-`internal/content/store.go:180-205`, `:414-430`. **P0 · S**
+`internal/content/store.go:180-205`, `:414-430`. **P0 · S** ✅ FIXED `017eaaf` (ADR-0027, persistence removed)
 
 `PutChunkSet` snapshots and persists the set **before** any chunk exists; `stashContent` then calls
 `PutChunk`, which appends to the in-memory `set.Chunks` and never re-persists. Only `Close()` rewrites the
