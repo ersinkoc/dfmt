@@ -273,6 +273,36 @@ func TestStatsCacheClonesMaps(t *testing.T) {
 	}
 }
 
+func TestStatsCacheCapBoundsProjectEntries(t *testing.T) {
+	h := NewHandlers(nil, nil, nil)
+	now := time.Now()
+	for i := 0; i < statsCacheCap; i++ {
+		h.statsCache[string(rune('a'+i))] = &statsCacheEntry{resp: &StatsResponse{}, at: now}
+	}
+
+	journal, err := core.OpenJournal(filepath.Join(t.TempDir(), "journal.jsonl"), core.JournalOptions{Durable: true})
+	if err != nil {
+		t.Fatalf("OpenJournal: %v", err)
+	}
+	defer journal.Close()
+	if err := journal.Append(context.Background(), core.Event{
+		ID: string(core.NewULID(time.Now())), TS: time.Now(),
+		Type: core.EvtNote, Priority: core.PriP3, Source: core.SrcCLI,
+	}); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	h.SetResourceFetcher(func(projectID string) (Bundle, error) {
+		return Bundle{Journal: journal, ProjectPath: "/new-project"}, nil
+	})
+
+	if _, err := h.Stats(WithProjectID(context.Background(), "/new-project"), StatsParams{}); err != nil {
+		t.Fatalf("Stats: %v", err)
+	}
+	if len(h.statsCache) > statsCacheCap {
+		t.Fatalf("stats cache len = %d, want <= %d", len(h.statsCache), statsCacheCap)
+	}
+}
+
 // TestRecallBoundsBufferedEvents pins finding #7's resolution: Recall
 // must not buffer the entire journal into memory. With more events than
 // the smallest tier cap, the function still returns successfully and
