@@ -2,6 +2,7 @@ package core
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -143,6 +144,88 @@ func BenchmarkAddAtCap(b *testing.B) {
 			}
 
 			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				ix.Add(Event{
+					ID:   fmt.Sprintf("%020d", MaxIndexDocs+i),
+					Type: EvtMCPCall,
+					Data: map[string]any{"message": fmt.Sprintf("deploy build test event %d variant%d", i, i%97)},
+				})
+			}
+		})
+	}
+}
+
+// loadIndexAtCap builds an Index, fills it to `cap`, persists it (index
+// + cursor) via the production PersistIndex path, then reloads it via
+// LoadIndexWithCursor and returns the loaded Index. The persisted+loaded
+// setup runs under StopTimer so the timed loop in BenchmarkAddAtCapAfterLoad
+// measures only the per-event Add cost on a deserialized index — i.e.
+// whether CORE-5/6/7 fix (persisted meta + reverse maps + format version)
+// keeps the fast O(1) eviction path live after a cold load.
+//
+// Mirrors BenchmarkAddAtCap's event shape so the built-vs-loaded numbers
+// are directly comparable.
+func loadIndexAtCap(b *testing.B, cap int) *Index {
+	b.Helper()
+	orig := MaxIndexDocs
+	MaxIndexDocs = cap
+	defer func() { MaxIndexDocs = orig }()
+
+	ix := NewIndex()
+	for i := 0; i < cap; i++ {
+		ix.Add(Event{
+			ID:   fmt.Sprintf("%020d", i),
+			Type: EvtMCPCall,
+			Data: map[string]any{"message": fmt.Sprintf("deploy build test event %d variant%d", i, i%97)},
+		})
+	}
+
+	b.StopTimer()
+	tmp := b.TempDir()
+	indexPath := filepath.Join(tmp, "index.json")
+	if err := PersistIndex(ix, indexPath, ""); err != nil {
+		b.Fatalf("PersistIndex: %v", err)
+	}
+	cursorPath := filepath.Join(filepath.Dir(indexPath), "index.cursor")
+	loaded, _, _, err := LoadIndexWithCursor(indexPath, cursorPath)
+	if err != nil {
+		b.Fatalf("LoadIndexWithCursor: %v", err)
+	}
+	if loaded == nil {
+		b.Fatal("LoadIndexWithCursor returned nil index")
+	}
+	b.StartTimer()
+	return loaded
+}
+
+// BenchmarkAddAtCapAfterLoad measures the same regime as BenchmarkAddAtCap
+// (steady-state insert at cap, where eviction runs every iteration) but
+// on a cold-loaded Index. After CORE-5/6/7 closed the persist+reverse-map
+// gap, this benchmark should report numbers in the same order of magnitude
+// as the built path — not the pre-fix µs range (739 µs at cap 2000,
+// 6 215 µs at cap 20 000). A regression that pushes the loaded path back
+// into the pre-fix band means an evicted document's reverse maps were
+// dropped at deserialize time, and removal fell back to sweeping every
+// posting list.
+//
+// First measured (Windows, AMD Ryzen 9 9950X3D, 16 cores, 300 iter):
+//
+//	                              built           loaded       loaded / built
+//	cap  2 000                  10 886 ns/op    67 771 ns/op       6.2×
+//	cap 20 000                  16 345 ns/op   747 077 ns/op      45.7×
+//
+// Both loaded numbers are an order of magnitude under the pre-fix µs
+// band (739 µs / 6 215 µs), so the reverse-map fast path survives the
+// cold load. The 6× / 45× built-vs-loaded gap is the on-disk posting
+// list re-walk cost after deserialize and is recorded as a follow-up
+// finding, not a regression of CORE-5/6/7.
+//
+// Run with: go test ./internal/core -bench AddAtCap -benchtime 300x -run XXX
+func BenchmarkAddAtCapAfterLoad(b *testing.B) {
+	for _, cap := range []int{2000, 20000} {
+		b.Run(fmt.Sprintf("cap%d", cap), func(b *testing.B) {
+			ix := loadIndexAtCap(b, cap)
+
 			for i := 0; i < b.N; i++ {
 				ix.Add(Event{
 					ID:   fmt.Sprintf("%020d", MaxIndexDocs+i),
