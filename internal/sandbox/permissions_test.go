@@ -1416,6 +1416,41 @@ func TestBackgroundOperatorPolicyDenies(t *testing.T) {
 // TestChainedCommandExplicitDenyChecksFullPart covers SBX-1: explicit deny
 // rules with arguments must match every shell-chain part's full command text,
 // not just the part's base command.
+// SBX-2: on case-insensitive filesystems (Windows), path deny rules must
+// match regardless of casing. `deny:read:secrets/**` must catch both
+// `secrets/API_KEY` and `Secrets/API_KEY`.
+func TestCaseInsensitivePathRuleMatch(t *testing.T) {
+	if !osutil.IsWindows() {
+		t.Skip("Windows (case-insensitive FS) test")
+	}
+
+	policy := Policy{
+		Version: 1,
+		Allow:   []Rule{{Op: "read", Text: "**"}},
+		Deny:    []Rule{{Op: "read", Text: "secrets/**"}},
+	}
+	policy.CompileAll()
+
+	cases := []struct {
+		path string
+		want bool
+	}{
+		{"secrets/API_KEY", false}, // exact case
+		{"Secrets/API_KEY", false}, // directory capitalized
+		{"SECRETS/API_KEY", false}, // all caps directory
+		{"src/main.go", true},      // unrelated path
+		// Note: nested capitalized parent (Configs/secrets/key) is NOT caught
+		// by a flat `secrets/**` rule — `**` does anchor at root. Use
+		// `**/secrets/**` to match nested.
+	}
+	for _, tc := range cases {
+		got := policy.Evaluate("read", tc.path)
+		if got != tc.want {
+			t.Errorf("Evaluate(read, %q) = %v, want %v", tc.path, got, tc.want)
+		}
+	}
+}
+
 func TestChainedCommandExplicitDenyChecksFullPart(t *testing.T) {
 	policy := DefaultPolicy()
 	policy.Deny = append(policy.Deny, Rule{Op: "exec", Text: "sudo *"})

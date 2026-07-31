@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"github.com/ersinkoc/dfmt/internal/osutil"
 )
 
 const (
@@ -45,10 +47,17 @@ type Rule struct {
 // "slower," not "wrong."
 func (r *Rule) Compile() {
 	var pattern string
+	text := r.Text
 	if r.Op == "exec" {
-		pattern = globToRegexShell(r.Text)
+		pattern = globToRegexShell(text)
 	} else {
-		pattern = globToRegex(strings.ReplaceAll(r.Text, `\`, "/"))
+		// SBX-2: case-insensitive filesystems fold path components at
+		// the OS level. Lowercase both the pattern and the input text
+		// on Windows so deny rules match regardless of casing.
+		if osutil.IsWindows() {
+			text = strings.ToLower(text)
+		}
+		pattern = globToRegex(strings.ReplaceAll(text, `\`, "/"))
 	}
 	re, err := regexp.Compile(pattern)
 	if err != nil {
@@ -76,6 +85,15 @@ func (r Rule) Match(op, text string) bool {
 		text = strings.ToLower(text)
 	} else {
 		text = strings.ReplaceAll(text, `\`, "/")
+		// SBX-2: case-insensitive filesystems (Windows, macOS default)
+		// treat `Secrets/` and `secrets/` as the same path. Lowercase
+		// both so a deny rule `deny:read:secrets/**` catches `Secrets/`
+		// without the operator having to write every casing. The compiled
+		// regex was already lowercased at Compile time for non-exec ops
+		// on these platforms, so the comparison is symmetric.
+		if osutil.IsWindows() {
+			text = strings.ToLower(text)
+		}
 	}
 	return r.re.MatchString(text)
 }
