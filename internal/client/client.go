@@ -207,7 +207,11 @@ func NewClient(projectPath string) (*Client, error) {
 // fields a Client should use to dial the host-wide daemon. The address
 // can be empty when no port file or socket file exists yet — the
 // caller decides whether to spawn a global daemon or fall back to
-// legacy. The token is empty on Unix (Unix socket has no bearer token).
+// legacy. On Unix it prefers a live Unix socket (dial-checked, so a
+// stale socket file is ignored) and falls back to the TCP port file
+// when the daemon bound TCP (transport.http.enabled + a bind address);
+// the returned token is then the port-file bearer token, empty for a
+// socket daemon.
 func globalDaemonTarget() (address, token, network, socketPath string) {
 	if osutil.IsWindows() {
 		network = "tcp"
@@ -219,7 +223,27 @@ func globalDaemonTarget() (address, token, network, socketPath string) {
 		// No port file → no running global daemon. Address empty.
 		return "", "", network, socketPath
 	}
+	// Unix: the global daemon binds a Unix socket when transport.http is
+	// disabled, but binds TCP + a port file when transport.http.enabled is
+	// true with a non-empty bind address (the default since the config-
+	// defaults fix, 82ea8db). Probe the socket first (dial-based, so a stale
+	// socket left by a crashed daemon falls through rather than shadowing a
+	// live TCP daemon), then fall back to the port file so the client finds
+	// the daemon whichever transport it chose. Before this fallback a TCP-
+	// bound global daemon was invisible on Linux — DaemonRunning probed only
+	// the socket, classified the daemon "stuck", and every daemon-backed
+	// command returned 1. That is what broke the v0.7.4 release gate's in-
+	// process integration tests on ubuntu while Windows (which reads the port
+	// file) stayed green.
 	socketPath = project.GlobalSocketPath()
+	if fastDialOK(netUnix, socketPath) {
+		return socketPath, "", netUnix, socketPath
+	}
+	if port, t, err := readPortFile(project.GlobalPortPath()); err == nil && port > 0 {
+		return fmt.Sprintf("127.0.0.1:%d", port), t, "tcp", ""
+	}
+	// Neither rendezvous exists yet; return the canonical socket target so
+	// callers see an empty-daemon address and a dial fails cleanly.
 	return socketPath, "", netUnix, socketPath
 }
 

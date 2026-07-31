@@ -1398,6 +1398,11 @@ func TestRunCaptureEnvCwd(t *testing.T) {
 }
 
 func TestRunCaptureShellWithArgsOps(t *testing.T) {
+	// Isolate the global dir: this test asserts the daemon-unavailable path
+	// (capture must return 1 when no daemon is reachable). Without isolation
+	// a global daemon leaked by an earlier test in the package is reachable
+	// and capture succeeds, making the assertion order-dependent.
+	withIsolatedGlobalDir(t)
 	tmpDir := t.TempDir()
 	os.MkdirAll(tmpDir+"/.dfmt", 0755)
 

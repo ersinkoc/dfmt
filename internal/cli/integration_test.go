@@ -33,8 +33,17 @@ func setupInProcessDaemon(t *testing.T) string {
 	flagProject = proj
 	t.Setenv("DFMT_PROJECT", proj)
 
+	// In-process daemons must use the Unix socket transport, not the TCP
+	// default: these tests were written against the auth-free socket
+	// rendezvous and must stay deterministic regardless of the
+	// transport.http.enabled default. Pin socket-only so a config-default
+	// change can't silently switch them onto the HTTP/bearer-token path.
+	cfg := config.Default()
+	cfg.Transport.HTTP.Enabled = false
+	cfg.Transport.Socket.Enabled = true
+
 	ctx := context.Background()
-	d, err := daemon.PromoteInProcess(ctx, config.Default())
+	d, err := daemon.PromoteInProcess(ctx, cfg)
 	if err != nil {
 		t.Fatalf("promote: %v", err)
 	}
@@ -101,8 +110,8 @@ func TestRunTask_Integration(t *testing.T) {
 }
 
 // TestRunList_Integration covers the full runList code path with a
-// daemon up. The synthetic-row-for-global-daemon branch triggers
-// because we wrote a port file via the in-process daemon.
+// daemon up. The synthetic-row-for-global-daemon branch is exercised
+// against the running in-process daemon's global socket rendezvous.
 func TestRunList_Integration(t *testing.T) {
 	_ = setupInProcessDaemon(t)
 	if code := runList(nil); code != 0 {
