@@ -1413,6 +1413,36 @@ func TestBackgroundOperatorPolicyDenies(t *testing.T) {
 	}
 }
 
+// TestChainedCommandExplicitDenyChecksFullPart covers SBX-1: explicit deny
+// rules with arguments must match every shell-chain part's full command text,
+// not just the part's base command.
+func TestChainedCommandExplicitDenyChecksFullPart(t *testing.T) {
+	policy := DefaultPolicy()
+	policy.Deny = append(policy.Deny, Rule{Op: "exec", Text: "sudo *"})
+	policy.CompileAll()
+
+	sb := NewSandbox(t.TempDir())
+	sb.policy = policy
+
+	cases := []string{
+		"sudo whoami",
+		"true && sudo whoami",
+		"true; sudo whoami",
+		"true | sudo whoami",
+		"true && /usr/bin/sudo whoami",
+		"git status; /definitely/not/sudo whoami",
+		"true && sudo.exe whoami",
+		"(sudo whoami)",
+		"$(sudo whoami)",
+	}
+	for _, cmd := range cases {
+		_, err := sb.Exec(context.Background(), ExecReq{Code: cmd, Lang: "bash"})
+		if !errors.Is(err, ErrPolicyDenied) {
+			t.Fatalf("Exec(%q) error = %v, want ErrPolicyDenied", cmd, err)
+		}
+	}
+}
+
 // TestBackgroundOperatorRedirectionPreserved asserts the fix did not break
 // `&<digit>` redirection fragments — `cmd 2>&1` must still parse cleanly so
 // `isRedirectionOperand` can recognize the `&1` segment instead of treating

@@ -75,6 +75,11 @@ func (s *SandboxImpl) Exec(ctx context.Context, req ExecReq) (ExecResp, error) {
 			if isEnvAssignment(part) {
 				continue
 			}
+			partForPolicy := stripExeSuffixFromLeadingWord(part)
+			if ok, reason := s.policy.EvaluateReason("exec", partForPolicy); !ok && reason == ReasonExplicitDeny {
+				return ExecResp{}, fmt.Errorf("%w: %s: %s\n%s",
+					ErrPolicyDenied, cmd, denyReasonText(reason), policyDenyHint("exec"))
+			}
 			partBase := extractBaseCommand(part)
 			if !s.policy.Evaluate("exec", partBase) {
 				return ExecResp{}, fmt.Errorf("%w: %s: part '%s' not allowed\n%s", ErrPolicyDenied, cmd, part, policyDenyHint("exec"))
