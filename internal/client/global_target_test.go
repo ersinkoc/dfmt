@@ -52,6 +52,10 @@ func TestGlobalDaemonTarget_UnixTCPFallback(t *testing.T) {
 	if err != nil {
 		t.Fatalf("listen socket: %v", err)
 	}
+	// GlobalSocketPath may resolve outside t.TempDir (hashed fallback under
+	// userRuntimeDir for long paths, e.g. macOS $TMPDIR), so remove the
+	// socket explicitly rather than relying on temp-dir cleanup.
+	t.Cleanup(func() { os.Remove(socketPath) })
 	addr, token, network, sp = globalDaemonTarget()
 	if network != netUnix || addr != socketPath || token != "" || sp != socketPath {
 		t.Fatalf("live socket: got (%q,%q,%q,%q), want (%q,\"\",unix,%q)",
@@ -63,6 +67,9 @@ func TestGlobalDaemonTarget_UnixTCPFallback(t *testing.T) {
 	// instead of letting the dead socket shadow the live TCP daemon.
 	ln.(*net.UnixListener).SetUnlinkOnClose(false)
 	_ = ln.Close() // leaves the socket file behind with no listener
+	if _, err := os.Stat(socketPath); err != nil {
+		t.Fatalf("stale socket file should still exist: %v", err)
+	}
 	addr, token, network, sp = globalDaemonTarget()
 	if network != "tcp" || addr != "127.0.0.1:41999" || token != "sekrit" || sp != "" {
 		t.Fatalf("stale socket: got (%q,%q,%q,%q), want (127.0.0.1:41999,sekrit,tcp,\"\")",
