@@ -204,6 +204,15 @@ func (ix *Index) TotalDocs() int {
 	return ix.totalDocs
 }
 
+// AvgDocLen returns the average document length under read-lock.
+// Used by PersistIndex so the cursor file is written from a locked read,
+// not a bare field access that races with concurrent Add/Remove.
+func (ix *Index) AvgDocLen() float64 {
+	ix.mu.RLock()
+	defer ix.mu.RUnlock()
+	return ix.avgDocLen
+}
+
 // indexJSON is the JSON-serializable form of Index.
 type indexJSON struct {
 	StemPL    map[string]*PostingList `json:"stem_pl"`

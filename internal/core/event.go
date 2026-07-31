@@ -96,6 +96,12 @@ type Event struct {
 	Sig      string         `json:"sig"`
 }
 
+// sigError is the sentinel ComputeSig returns when CanonicalJSON fails.
+// It is deliberately non-hex so it can never collide with a real 8-byte
+// hex signature, and Validate explicitly rejects it — a marshal failure
+// must not produce a shared signature that validates on read (CORE-12).
+const sigError = "sig-error"
+
 // ComputeSig computes the signature of the event.
 // It uses the first 16 hex chars of SHA-256 of the canonical JSON.
 func (e *Event) ComputeSig() string {
@@ -104,7 +110,10 @@ func (e *Event) ComputeSig() string {
 	e2.Sig = ""
 
 	// Use custom canonical marshaler
-	data, _ := CanonicalJSON(e2)
+	data, err := CanonicalJSON(e2)
+	if err != nil {
+		return sigError
+	}
 	h := sha256.Sum256(data)
 	return hex.EncodeToString(h[:8]) // first 16 hex chars (8 bytes)
 }
@@ -172,6 +181,9 @@ func canonicalize(v any) any {
 func (e *Event) Validate() bool {
 	if e.Sig == "" {
 		return true // pre-fix event, accept without verification
+	}
+	if e.Sig == sigError {
+		return false // marshal failed; signature is meaningless (CORE-12)
 	}
 	return e.Sig == e.ComputeSig()
 }
