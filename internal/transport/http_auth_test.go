@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -97,13 +98,15 @@ func TestRPCEndpointAcceptsPortFileToken(t *testing.T) {
 	}
 }
 
-// The dashboard and the read-only endpoints it calls have no token to
-// present — they run in a browser. Gating them would break the dashboard
-// without protecting anything that isn't already read-only.
+// The dashboard pages and health probes stay open — they are served from the
+// same origin and carry no token. But the /api/* data endpoints now require
+// the bearer token (TRN-4): they stream the full journal of any project
+// named in the query string, including tool.exec code fields and remembered
+// notes, and on Windows loopback TCP has no ACL.
 func TestDashboardAndHealthStayOpen(t *testing.T) {
 	base, _ := startAuthTestServer(t)
 
-	for _, path := range []string{"/dashboard", "/healthz", "/api/stats"} {
+	for _, path := range []string{"/dashboard", "/healthz"} {
 		resp, err := http.Get(base + path)
 		if err != nil {
 			t.Fatalf("GET %s: %v", path, err)
@@ -112,6 +115,66 @@ func TestDashboardAndHealthStayOpen(t *testing.T) {
 		if resp.StatusCode == http.StatusUnauthorized {
 			t.Errorf("GET %s = 401, want it reachable without a token", path)
 		}
+	}
+}
+
+// TestAPIRoutesRejectMissingToken covers TRN-4: /api/* must require the
+// bearer token just like "/", because it streams any project's journal.
+func TestAPIRoutesRejectMissingToken(t *testing.T) {
+	base, _ := startAuthTestServer(t)
+
+	for _, path := range []string{"/api/stats", "/api/daemons"} {
+		resp, err := http.Get(base + path)
+		if err != nil {
+			t.Fatalf("GET %s: %v", path, err)
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusUnauthorized {
+			t.Errorf("GET %s without token = %d, want 401 (TRN-4)", path, resp.StatusCode)
+		}
+	}
+}
+
+// TestAPIRoutesAcceptPortFileToken verifies the token published in the port
+// file unlocks the /api/* endpoints (the dashboard receives it injected
+// into its served JS).
+func TestAPIRoutesAcceptPortFileToken(t *testing.T) {
+	base, token := startAuthTestServer(t)
+
+	req, err := http.NewRequest(http.MethodGet, base+"/api/stats", nil)
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode == http.StatusUnauthorized {
+		t.Fatal("GET /api/stats with port-file token = 401, want reachable")
+	}
+}
+
+// TestDashboardJSServesInjectedToken verifies the dashboard JS carries the
+// bearer token when the server is in port-file mode, so the dashboard's
+// /api/* fetches can authenticate (TRN-4).
+func TestDashboardJSServesInjectedToken(t *testing.T) {
+	base, _ := startAuthTestServer(t)
+
+	resp, err := http.Get(base + "/dashboard.js")
+	if err != nil {
+		t.Fatalf("GET dashboard.js: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	jsBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read dashboard.js: %v", err)
+	}
+	js := string(jsBytes)
+	want := "DFMT_AUTH_TOKEN"
+	if !strings.Contains(js, want) {
+		t.Fatalf("dashboard.js does not contain injected %q — the dashboard cannot authenticate /api/* calls", want)
 	}
 }
 

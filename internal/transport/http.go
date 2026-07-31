@@ -380,7 +380,7 @@ func (s *HTTPServer) wrapSecurity(next http.Handler) http.Handler {
 			return
 		}
 
-		// Bearer auth on the JSON-RPC endpoint.
+		// Bearer auth on the JSON-RPC endpoint and the /api/* read endpoints.
 		//
 		// "/" is where exec, write, edit, and fetch live: reaching it is
 		// arbitrary code execution and arbitrary file access as the user
@@ -390,17 +390,18 @@ func (s *HTTPServer) wrapSecurity(next http.Handler) http.Handler {
 		// that gap was already generated and handed to clients' request
 		// headers; the only missing piece was this check.
 		//
-		// Scope is deliberately just "/": the dashboard and the read-only
-		// /api endpoints it calls have no token to present (they run in a
-		// browser), and embedding one in an unauthenticated page would give
-		// it away to exactly the callers being excluded. Their posture is
-		// unchanged — same-origin plus Host validation.
+		// /api/* (stats, stream, proxy, daemons) is read-only but streams
+		// the full journal of any project named in the query string —
+		// including tool.exec code fields and remembered notes — so the
+		// same bearer token is required there (TRN-4). The dashboard
+		// receives the token injected into its served JS, which only the
+		// same authenticated origin can fetch.
 		//
 		// When authToken is empty the check is skipped, which keeps two
 		// legitimate cases working: a server constructed without a port
 		// file (tests, embedded use) and the Unix socket transport, whose
 		// access control is the socket's file mode.
-		if r.URL.Path == "/" && s.authToken != "" && !s.authorized(r) {
+		if s.authToken != "" && (r.URL.Path == "/" || strings.HasPrefix(r.URL.Path, "/api/")) && !s.authorized(r) {
 			w.Header().Set("WWW-Authenticate", "Bearer")
 			http.Error(w, "unauthorized: present the token from the daemon's port file", http.StatusUnauthorized)
 			return
@@ -869,9 +870,18 @@ func (s *HTTPServer) handleDashboard(w http.ResponseWriter, r *http.Request) {
 
 // handleDashboardJS serves the dashboard's JavaScript from an external file so
 // CSP can use the simple `script-src 'self'` directive.
+//
+// When the server has an auth token (port-file mode), it is injected as a
+// const at the top of the served JS so the dashboard's /api/* calls carry
+// Authorization. Only the same authenticated origin can fetch this file, and
+// the token is already readable from the 0600 port file — this hands it to
+// nobody who could not already read it (TRN-4).
 func (s *HTTPServer) handleDashboardJS(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
+	if s.authToken != "" {
+		_, _ = fmt.Fprintf(w, "const DFMT_AUTH_TOKEN = %q;\n", s.authToken)
+	}
 	_, _ = w.Write([]byte(DashboardJS))
 }
 

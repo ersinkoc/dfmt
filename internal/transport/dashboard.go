@@ -122,6 +122,17 @@ select:focus { outline: none; border-color: #00d4ff; }
 const DashboardJS = `(function() {
 var errorEl, loadingEl, statsEl, refreshBtn, projectSelect, daemonBadge;
 
+// authHeaders returns the Authorization header when a token was injected
+// into this script by handleDashboardJS (port-file mode). Without a token
+// (Unix socket transport, embedded servers) the header is omitted entirely.
+function authHeaders(extra) {
+  var h = extra || {};
+  if (typeof DFMT_AUTH_TOKEN !== 'undefined' && DFMT_AUTH_TOKEN) {
+    h['Authorization'] = 'Bearer ' + DFMT_AUTH_TOKEN;
+  }
+  return h;
+}
+
 function showError(msg) {
   errorEl.textContent = msg;
   errorEl.style.display = 'block';
@@ -200,7 +211,7 @@ function renderChart(containerId, data) {
 
 async function loadDaemons() {
   try {
-    var resp = await fetch('/api/all-daemons');
+    var resp = await fetch('/api/all-daemons', {headers: authHeaders()});
     var daemons = await resp.json();
     projectSelect.innerHTML = '';
     if (!daemons || daemons.length === 0) {
@@ -235,7 +246,7 @@ async function loadStatsForProject(projectPath) {
     // global-mode flow.
     var resp = await fetch('/api/stats', {
       method: 'POST',
-      headers: {'Content-Type': 'application/json'},
+      headers: authHeaders({'Content-Type': 'application/json'}),
       body: JSON.stringify({
         jsonrpc: '2.0',
         method: 'dfmt.stats',
@@ -276,7 +287,7 @@ async function loadStats() {
   try {
     var resp = await fetch('/api/stats', {
       method: 'POST',
-      headers: {'Content-Type': 'application/json'},
+      headers: authHeaders({'Content-Type': 'application/json'}),
       body: JSON.stringify({jsonrpc: '2.0', method: 'dfmt.stats', params: {}, id: 1})
     });
     var data = await resp.json();
