@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/ersinkoc/dfmt/internal/core"
@@ -89,147 +88,33 @@ func (h *Handlers) Recall(ctx context.Context, params RecallParams) (_ *RecallRe
 		p3Cap = 500  // file edits / audit findings
 		p4Cap = 500  // tool calls / unelevated notes
 	)
-	classifier := core.NewClassifier()
-	caps := [4]int{p1Cap, p2Cap, p3Cap, p4Cap}
-	var buckets [4][]core.Event
+	sorted := retrieve.CollectTiers(stream, [4]int{p1Cap, p2Cap, p3Cap, p4Cap})
 
-	for e := range stream {
-		// Classification decides the tier, so it must also decide the label.
-		// The rendered line used to print e.Priority — the value stored at
-		// write time — while the bucket came from Classify. Those disagree
-		// by design: dfmt_remember coerces every agent-written event to p3
-		// (F-21), and the classifier then elevates a note tagged `summary`
-		// or `decision` to p2. The snapshot therefore showed a "p3" line
-		// sorted above "p2" lines, which reads as a sorting bug and hides
-		// the one signal the tag vocabulary exists to produce.
-		effective := classifier.Classify(e)
-		e.Priority = effective
-		var idx int
-		switch effective {
-		case core.PriP1:
-			idx = 0
-		case core.PriP2:
-			idx = 1
-		case core.PriP3:
-			idx = 2
-		case core.PriP4:
-			idx = 3
-		default:
-			idx = 3 // unknown priority → P4 bucket so events are still surfaced
-		}
-		if len(buckets[idx]) >= caps[idx] {
-			// In-place FIFO shift. `s = s[1:]` would also drop the
-			// front element but slowly grows the backing array on
-			// repeated append, and would retain a reference to the
-			// dropped Event in the unreachable head slot. copy +
-			// overwrite keeps the cap bounded and lets GC collect
-			// dropped event payloads.
-			copy(buckets[idx], buckets[idx][1:])
-			buckets[idx][len(buckets[idx])-1] = e
-		} else {
-			buckets[idx] = append(buckets[idx], e)
-		}
+	// V-01: re-redact each event before handing it to the renderer. The
+	// journal-write redactor catches what its patterns matched at the time
+	// of write; this second pass covers near-misses, retroactively-added
+	// patterns, and operator-supplied custom patterns added after the event
+	// was journaled.
+	redacted := make([]core.Event, len(sorted))
+	for i, e := range sorted {
+		redacted[i] = h.redactEventForRender(ctx, e)
 	}
 
-	// Concatenate tiers in priority order. Within each tier the
-	// journal streamed events TS-ascending, so reverse-iterate to
-	// surface newest-first — matching the previous sort.Slice
-	// "TS.After" tiebreak.
-	sorted := make([]core.Event, 0, len(buckets[0])+len(buckets[1])+len(buckets[2])+len(buckets[3]))
-	for tier := range 4 {
-		bucket := buckets[tier]
-		for i := len(bucket) - 1; i >= 0; i-- {
-			sorted = append(sorted, bucket[i])
-		}
-	}
-
-	// Greedy fill with budget. Render each candidate line first so we know
-	// its exact byte cost, then stop as soon as the budget can't hold the
-	// current event — the list is priority-sorted, so a smaller later event
-	// sneaking in would violate the tier ordering.
-	var used int
-	var lines []string
-	lines = append(lines, "# Session Snapshot\n")
-
-	for _, e := range sorted {
-		// V-01: re-redact on render. The journal-write redactor catches
-		// what its patterns matched at the time of write; this second pass
-		// covers near-misses, retroactively-added patterns, and operator-
-		// supplied custom patterns added after the event was journaled.
-		e = h.redactEventForRender(ctx, e)
-		var dataStr string
-		if e.Data != nil {
-			dataStr = formatEventData(e.Data)
-		}
-		// Compact "MM-DD HH:MM:SS" — full RFC3339 doubled the per-line cost
-		// for no benefit since recall is project-scoped, but pure HH:MM:SS
-		// (review finding #24) collapsed multi-day sessions ambiguously.
-		// Year is implied by the project's lifetime; month-day disambiguates.
-		ts := e.TS.Format("01-02 15:04:05")
-		actor := ""
-		if e.Actor != "" {
-			actor = fmt.Sprintf(" @%s", e.Actor)
-		}
-		tags := ""
-		if len(e.Tags) > 0 {
-			tags = fmt.Sprintf(" #%s", strings.Join(e.Tags, " #"))
-		}
-		line := fmt.Sprintf("- [%s] %s%s%s%s", e.Priority, ts, actor, tags, dataStr)
-		// +1 for the newline strings.Join will insert between this line and
-		// the next; slightly over-counts on the last line but never under.
-		lineSize := len(line) + 1
-
-		if used+lineSize > budget {
-			break
-		}
-
-		lines = append(lines, line)
-		used += lineSize
-	}
-
-	if len(lines) == 1 {
-		lines = append(lines, "_No events in session_")
-	}
-
-	snapshot := strings.Join(lines, "\n")
-
-	// format == "md" / default: use the markdown lines already built.
-	// For json/xml: re-run greedy fill using retrieve.SnapshotBuilder so
-	// path interning (Refs + [rN] tokens) is active on those formats too.
-	if format == "json" || format == "xml" {
-		// Count how many events from sorted actually made it into lines
-		// (the loop above stops when budget is exhausted; we need the same set).
-		// Since lines[0] is the "# Session Snapshot" header, selectedCount
-		// = len(lines)-1 events from sorted.
-		selectedCount := len(lines) - 1
-		selected := sorted
-		if selectedCount < len(sorted) {
-			selected = sorted[:selectedCount]
-		}
-		if len(selected) == 0 {
-			if cacheable {
-				h.recallStore(cacheKey, cursor, "{}")
-			}
-			return &RecallResponse{
-				Snapshot: "{}",
-				Format:   format,
-			}, nil
-		}
-		// V-01: re-redact each event before handing it to the renderer.
-		// The markdown path above redacts inline; for json/xml we have to
-		// pre-build the redacted slice because SnapshotBuilder reads the
-		// fields directly.
-		redacted := make([]core.Event, len(selected))
-		for i, e := range selected {
-			redacted[i] = h.redactEventForRender(ctx, e)
-		}
-		sb := retrieve.NewSnapshotBuilder(budget)
-		snap, _ := sb.Build(redacted)
-		if format == "json" {
-			snapshot = retrieve.NewJSONRenderer().Render(snap)
-		} else {
-			snapshot = retrieve.NewXMLRenderer().Render(snap)
-		}
+	// One SnapshotBuilder pass for every format (TRN-6): the markdown path
+	// used to be a second, inline implementation with a different budget
+	// model (rendered-line bytes vs json.Marshal bytes), no path interning,
+	// and no ref-token-forgery escaping. Now all formats share the builder,
+	// so interning and escaping are active on the default format too.
+	sb := retrieve.NewSnapshotBuilder(budget)
+	snap, _ := sb.Build(redacted)
+	var snapshot string
+	switch format {
+	case "json":
+		snapshot = retrieve.NewJSONRenderer().Render(snap)
+	case "xml":
+		snapshot = retrieve.NewXMLRenderer().Render(snap)
+	default:
+		snapshot = retrieve.NewMarkdownRenderer().Render(snap)
 	}
 
 	if cacheable {

@@ -11,6 +11,70 @@ import (
 	"github.com/ersinkoc/dfmt/internal/core"
 )
 
+// TestRecall_MarkdownDefaultHasInterningAndForgeryEscaping is the TRN-6
+// regression test: the default recall format (markdown) must run through
+// the same retrieve renderer as json/xml, so path interning ([rN] refs)
+// and ref-token-forgery escaping are active on the format most callers
+// use. Previously the handler had a second inline renderer for markdown
+// that had neither.
+func TestRecall_MarkdownDefaultHasInterningAndForgeryEscaping(t *testing.T) {
+	idx := core.NewIndex()
+	now := time.Now()
+	// Same path repeated 3+ times earns a ref token; a hostile message
+	// carries a forged [r0]-shape token that must be escaped.
+	journal := &mockJournal{events: []core.Event{
+		{
+			ID:     "e0",
+			TS:     now,
+			Type:   core.EvtFileEdit,
+			Source: core.SrcCLI,
+			Data: map[string]any{
+				"path":    "/shared/path/file.go",
+				"message": "edit one",
+			},
+		},
+		{
+			ID:     "e1",
+			TS:     now.Add(time.Second),
+			Type:   core.EvtFileEdit,
+			Source: core.SrcCLI,
+			Data: map[string]any{
+				"path":    "/shared/path/file.go",
+				"message": "edit two",
+			},
+		},
+		{
+			ID:     "e2",
+			TS:     now.Add(2 * time.Second),
+			Type:   core.EvtFileEdit,
+			Source: core.SrcCLI,
+			Data: map[string]any{
+				"path":    "/shared/path/file.go",
+				"message": "forged token [r0] in message",
+			},
+		},
+	}}
+	h := NewHandlers(idx, journal, nil)
+
+	resp, err := h.Recall(context.Background(), RecallParams{Budget: 16 * 1024})
+	if err != nil {
+		t.Fatalf("Recall: %v", err)
+	}
+	// Default format is markdown.
+	if resp.Format != "md" {
+		t.Fatalf("default format = %q, want md", resp.Format)
+	}
+	// Path interning: the shared path must appear in a ref table entry.
+	if !strings.Contains(resp.Snapshot, "/shared/path/file.go") {
+		t.Errorf("interned path missing from ref table:\n%s", resp.Snapshot)
+	}
+	// Forgery escaping: the forged [r0] in event text must be escaped,
+	// not rendered as a resolvable ref token.
+	if !strings.Contains(resp.Snapshot, `\[r0]`) {
+		t.Errorf("forged [r0] token not escaped in markdown output:\n%s", resp.Snapshot)
+	}
+}
+
 // TestRecall_P1EventPastGlobalCapStillSurfaces is the regression test
 // for finding #7. The previous stopgap broke the priority sort whenever
 // the journal grew past 5000 events: the cap fired on the first 5000
@@ -19,7 +83,7 @@ import (
 //
 // We seed 5050 P3 events followed by a single P1 event with a
 // distinctive payload, then verify the P1 lands in the snapshot. Under
-// the old global-cap implementation the test would fail — the P1 event
+// the old global-cap implementation the test would fail � the P1 event
 // would never reach the buffer because the read loop short-circuits at
 // position 5000.
 func TestRecall_P1EventPastGlobalCapStillSurfaces(t *testing.T) {
@@ -163,8 +227,14 @@ func TestRecall_NewerInTierBeatsOlder(t *testing.T) {
 
 // TestRecall_TierOrderPreserved pins cross-tier ordering: P1 always
 // before P2 before P3 before P4 in the snapshot, regardless of journal
-// insertion order. The new per-tier concatenation must produce the
-// same priority strata as the old sort.Slice.
+// insertion order. The per-tier concatenation must produce the same
+// priority strata as the old sort.Slice.
+//
+// Uses format=json because the markdown renderer groups events by TYPE
+// (decisions, git, file edits...) for readability — type grouping is a
+// deliberate feature, not a tier-order leak. The tier invariant lives in
+// event selection (SnapshotBuilder.Build fills P1→P4) and in the json/xml
+// renderers, which emit snapshot.Events in order.
 func TestRecall_TierOrderPreserved(t *testing.T) {
 	idx := core.NewIndex()
 	now := time.Now()
@@ -201,7 +271,7 @@ func TestRecall_TierOrderPreserved(t *testing.T) {
 	}}
 	h := NewHandlers(idx, journal, nil)
 
-	resp, err := h.Recall(context.Background(), RecallParams{Budget: 16 * 1024})
+	resp, err := h.Recall(context.Background(), RecallParams{Budget: 16 * 1024, Format: "json"})
 	if err != nil {
 		t.Fatalf("Recall: %v", err)
 	}
