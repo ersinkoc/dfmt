@@ -396,18 +396,32 @@ func TestWriteFileAtomic_CleanupOnRenameError(t *testing.T) {
 	if osutil.IsWindows() {
 		t.Skip("Windows rename into directory succeeds, unlike Unix EXDEV")
 	}
-	// When rename fails (e.g. target is a directory), temp file must be removed
+	// When rename fails (e.g. target is a directory), temp file must be removed.
+	// The TARGET must be the directory itself: renaming a file onto an existing
+	// directory fails on Unix (EISDIR/ENOTDIR), whereas renaming onto a
+	// nonexistent path inside a directory succeeds — the old version of this
+	// test joined file.txt under a pre-created subdir, so the rename had no
+	// reason to fail and the test failed on Linux.
 	tmp := t.TempDir()
-	// Pre-create the target as a directory so rename fails
 	targetDir := filepath.Join(tmp, "subdir")
 	if err := os.MkdirAll(targetDir, 0755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	path := filepath.Join(targetDir, "file.txt")
 
-	err := WriteFileAtomic(tmp, path, []byte("data"), 0600)
+	err := WriteFileAtomic(tmp, targetDir, []byte("data"), 0600)
 	if err == nil {
 		t.Error("WriteFileAtomic should fail when target is a directory")
+	}
+
+	// The temp file must not linger in tmp after the failed rename.
+	entries, err := os.ReadDir(tmp)
+	if err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".safefs-") {
+			t.Errorf("temp file %q left behind after failed rename", e.Name())
+		}
 	}
 }
 
