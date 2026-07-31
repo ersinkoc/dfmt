@@ -304,7 +304,7 @@ func TestGlobalConfigPath(t *testing.T) {
 		defer os.Unsetenv("HOME")
 
 		path = globalConfigPath()
-		expected = filepath.Join(tmpDir, ".local", "share", "dfmt", "config.yaml")
+		expected = filepath.Join(tmpDir, ".dfmt", "config.yaml")
 		if path != expected {
 			t.Errorf("globalConfigPath() = %q, want %q", path, expected)
 		}

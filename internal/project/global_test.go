@@ -96,9 +96,17 @@ func TestGlobalSocketPathFallbackOnLongHome(t *testing.T) {
 	longPath := filepath.Join(tmp, longDir)
 	t.Setenv("DFMT_GLOBAL_DIR", longPath)
 	got := GlobalSocketPath()
-	// Should contain the sha256-hashed fallback name, not the direct join
-	if len(got) <= len(longPath)+len(GlobalSocketName)+5 {
-		t.Errorf("GlobalSocketPath fallback: got %q, expected hashed fallback", got)
+	// The fallback redirects the socket into the short runtime dir with a
+	// hashed name, so it must (a) carry the hashed prefix and (b) NOT be
+	// joined to the long global dir. The old assertion compared lengths
+	// assuming the fallback is longer than the direct join — false: the
+	// fallback exists precisely because the direct join is too long for
+	// UNIX_PATH_MAX, and the runtime dir is short.
+	if !strings.Contains(got, "dfmt-global-") {
+		t.Errorf("GlobalSocketPath fallback: got %q, expected hashed fallback name", got)
+	}
+	if strings.Contains(got, longPath) {
+		t.Errorf("GlobalSocketPath fallback: got %q, still joined to the long global dir", got)
 	}
 }
 
