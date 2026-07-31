@@ -257,22 +257,31 @@ func (s *Store) PruneExpired() int {
 	return len(dropped)
 }
 
-// GetChunks retrieves all chunks in a chunk set.
+// GetChunks retrieves all chunks in a chunk set. Same lazy-expiry as
+// GetChunk and GetChunkSet — an expired parent is reaped instead of
+// having its chunks returned, so all three lookup paths agree on what
+// counts as "live".
 func (s *Store) GetChunks(parentID string) ([]*Chunk, bool) {
 	s.mu.RLock()
-	defer s.mu.RUnlock()
-
 	set, ok := s.sets[parentID]
 	if !ok {
+		s.mu.RUnlock()
 		return nil, false
 	}
-
+	if s.expired(set, time.Now()) {
+		s.mu.RUnlock()
+		s.mu.Lock()
+		s.dropSetLocked(parentID)
+		s.mu.Unlock()
+		return nil, false
+	}
 	chunks := make([]*Chunk, 0, len(set.Chunks))
 	for _, id := range set.Chunks {
 		if chunk, ok := s.chunks[id]; ok {
 			chunks = append(chunks, chunk)
 		}
 	}
+	s.mu.RUnlock()
 	return chunks, true
 }
 

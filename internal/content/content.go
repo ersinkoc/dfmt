@@ -10,5 +10,7 @@ package content
 //   - Store: A bounded, LRU-evicted store for chunks (default 64 MB)
 //   - Summarizer: Produces human-readable summaries with warnings and top phrases
 //
-// Chunks are ephemeral by default (daemon lifetime); optional persistence
-// writes them to .dfmt/content/ as gzipped JSONL.
+// Chunks are process-lifetime only (per ADR-0027): the store is
+// in-memory with a configurable DefaultChunkTTL, sets are reaped
+// lazily on Get* (or eagerly via PruneExpired), and LRU eviction
+// bounds resident bytes to MaxSize.

@@ -357,7 +357,7 @@ func (d *Daemon) defaultResourcesView() *ProjectResources {
 //   - sandbox.LoadPolicyMerged for project-local permissions.yaml,
 //     warnings logged.
 //   - sandbox.NewSandboxWithPolicy with cfg.Exec.PathPrepend.
-//   - content.NewStore at .dfmt/content/, soft-fail with warning.
+//   - content.NewStore (in-memory, per ADR-0027), soft-fail with warning.
 //   - redact.LoadProjectRedactor for project-local redact.yaml,
 //     warnings logged.
 //

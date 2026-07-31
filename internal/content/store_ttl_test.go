@@ -128,6 +128,47 @@ func TestStore_GetChunkEvictsViaParent(t *testing.T) {
 	}
 }
 
+// TestStore_GetChunksEvictsViaParent verifies that GetChunks honours the
+// same TTL invariant as GetChunk / GetChunkSet: an expired parent set
+// is reaped and the caller sees a miss, instead of receiving stale
+// chunk bodies.
+func TestStore_GetChunksEvictsViaParent(t *testing.T) {
+	s, err := NewStore(StoreOptions{})
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	parent := &ChunkSet{
+		ID:      "parent",
+		Created: time.Now().Add(-time.Hour),
+		TTL:     time.Millisecond, // already expired
+	}
+	if err := s.PutChunkSet(parent); err != nil {
+		t.Fatal(err)
+	}
+	chunk := &Chunk{
+		ID:       "c1",
+		ParentID: "parent",
+		Body:     "hello",
+		Kind:     ChunkKindText,
+		Created:  time.Now(),
+	}
+	if err := s.PutChunk(chunk); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := s.GetChunks("parent"); ok {
+		t.Error("GetChunks with expired parent must miss; instead it returned hits")
+	}
+	// Both chunk and parent must be reaped.
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if _, present := s.chunks["c1"]; present {
+		t.Error("chunk should be reaped along with its expired parent")
+	}
+	if _, present := s.sets["parent"]; present {
+		t.Error("parent set should be reaped on lazy prune")
+	}
+}
+
 // TestStore_PruneExpiredCountsDropped verifies the bulk prune helper.
 func TestStore_PruneExpiredCountsDropped(t *testing.T) {
 	s, err := NewStore(StoreOptions{})
