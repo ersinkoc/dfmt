@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -109,9 +108,7 @@ func TestHandlersStashContentPutChunkSetError(t *testing.T) {
 // uses the dedupCache to return the same ID for identical content, even when
 // no session is attached, and that the content store operations work end-to-end.
 func TestHandlersStashContentDedupWithRealStore(t *testing.T) {
-	tmp := t.TempDir()
 	store, err := content.NewStore(content.StoreOptions{
-		Path:    filepath.Join(tmp, "content"),
 		MaxSize: 1 << 20,
 	})
 	if err != nil {
@@ -2864,9 +2861,7 @@ func TestHandlersRedactDataNested(t *testing.T) {
 
 // TestHandlersStashContentEmptyBody tests stashContent with empty body.
 func TestHandlersStashContentEmptyBody(t *testing.T) {
-	tmp := t.TempDir()
 	store, err := content.NewStore(content.StoreOptions{
-		Path:    filepath.Join(tmp, "content"),
 		MaxSize: 1 << 20,
 	})
 	if err != nil {

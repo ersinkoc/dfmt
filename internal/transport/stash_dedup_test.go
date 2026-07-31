@@ -1,22 +1,21 @@
 package transport
 
 import (
-	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/ersinkoc/dfmt/internal/content"
 )
 
-// newStashTestHandlers spins up a Handlers with a real on-disk content store
-// so dedup behavior can be observed end-to-end (PutChunkSet/PutChunk are
-// mock-resistant — they enforce ID validation and persist on disk).
-// Returns the Handlers and the store so tests can pass the store
-// explicitly through stashContent (the global-mode signature).
+// newStashTestHandlers spins up a Handlers with a real in-memory content
+// store so dedup behavior can be observed end-to-end (PutChunkSet/PutChunk
+// are mock-resistant — they enforce ID validation, TTL stamping, and
+// size-cap eviction against the live store map). Returns the Handlers
+// and the store so tests can pass the store explicitly through
+// stashContent (the global-mode signature).
 func newStashTestHandlers(t *testing.T) (*Handlers, *content.Store) {
 	t.Helper()
 	store, err := content.NewStore(content.StoreOptions{
-		Path:    filepath.Join(t.TempDir(), "content"),
 		MaxSize: 1 << 20,
 	})
 	if err != nil {
@@ -143,8 +142,8 @@ func TestStashContent_NoStoreReturnsEmpty(t *testing.T) {
 // follow-up "give me content_id X" lookup would 404.
 func TestStashContent_CrossProjectKeysIsolated(t *testing.T) {
 	h, _ := newStashTestHandlers(t)
-	storeA, errA := content.NewStore(content.StoreOptions{Path: filepath.Join(t.TempDir(), "a"), MaxSize: 1 << 20})
-	storeB, errB := content.NewStore(content.StoreOptions{Path: filepath.Join(t.TempDir(), "b"), MaxSize: 1 << 20})
+	storeA, errA := content.NewStore(content.StoreOptions{MaxSize: 1 << 20})
+	storeB, errB := content.NewStore(content.StoreOptions{MaxSize: 1 << 20})
 	if errA != nil || errB != nil {
 		t.Fatalf("NewStore: %v %v", errA, errB)
 	}

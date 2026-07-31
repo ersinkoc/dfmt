@@ -457,10 +457,11 @@ func loadProjectResources(projectPath string, fallbackCfg *config.Config) (*Proj
 		logging.Warnf("redact for %s: %s", projectPath, w)
 	}
 
-	// Ephemeral content store. Soft-fail mirrors Daemon.New.
+	// Ephemeral content store. Per ADR-0027 the store is in-memory only;
+	// we no longer create `<dfmtDir>/content/` and pass no path to
+	// NewStore. Soft-fail mirrors Daemon.New.
 	var store *content.Store
-	contentDir := filepath.Join(dfmtDir, "content")
-	if s, cerr := content.NewStore(content.StoreOptions{Path: contentDir}); cerr == nil {
+	if s, cerr := content.NewStore(content.StoreOptions{}); cerr == nil {
 		store = s
 	} else {
 		logging.Warnf("create content store for %s: %v", projectPath, cerr)

@@ -187,9 +187,10 @@ func New(projectPath string, cfg *config.Config) (*Daemon, error) {
 	)
 
 	// Wire ephemeral content store so sandbox output can be stashed for recall.
-	// Failure here is non-fatal — handlers gracefully degrade to excerpt-only.
-	contentDir := filepath.Join(dfmtDir, "content")
-	if store, cerr := content.NewStore(content.StoreOptions{Path: contentDir}); cerr == nil {
+	// Per ADR-0027 the store is in-memory only — no `<dfmtDir>/content/`
+	// directory is created and no path is passed to NewStore. Failure here
+	// is non-fatal — handlers gracefully degrade to excerpt-only.
+	if store, cerr := content.NewStore(content.StoreOptions{}); cerr == nil {
 		handlers.SetContentStore(store)
 	} else {
 		logging.Warnf("create content store: %v", cerr)

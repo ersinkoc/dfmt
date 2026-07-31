@@ -2,7 +2,6 @@ package transport
 
 import (
 	"context"
-	"path/filepath"
 	"testing"
 
 	"github.com/ersinkoc/dfmt/internal/content"
@@ -17,7 +16,6 @@ import (
 func newWireDedupHandlers(t *testing.T, sb *stubSandbox) *Handlers {
 	t.Helper()
 	store, err := content.NewStore(content.StoreOptions{
-		Path:    filepath.Join(t.TempDir(), "content"),
 		MaxSize: 1 << 20,
 	})
 	if err != nil {

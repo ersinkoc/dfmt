@@ -15,7 +15,7 @@ See [ADR-0000](0000-adr-process.md) for the process governing how ADRs are writt
 | [0004](0004-stdlib-only-deps.md) | Stdlib-First Dependency Policy | Accepted | Only `stdlib`, `x/sys`, `x/crypto`, `yaml.v3`. Everything else bundled. |
 | [0005](0005-multi-source-capture.md) | Multi-Source Capture Layer | Accepted | MCP + FS + git + shell + CLI, all independent. Agent-agnostic baseline. |
 | [0006](0006-sandbox-scope.md) | Sandboxed Tool Execution In Scope | Accepted | Reverses earlier NG4. Sandbox is first-class alongside session memory. |
-| [0007](0007-content-store-separation.md) | Content Store ≠ Event Journal | Accepted | Two distinct stores with shared index infrastructure; different lifecycles. |
+| [0007](0007-content-store-separation.md) | Content Store ≠ Event Journal | Superseded (persistence half) by [0027](0027-content-store-in-memory-ttl.md) | Two distinct stores with shared index infrastructure; different lifecycles. |
 | [0008](0008-html-parser.md) | Bundled HTML Parser | Accepted | ~350 lines bundled; don't take `x/net/html` dependency. |
 | [0009](0009-cross-call-content-dedup.md) | Cross-Call Content Dedup | Accepted | Strip payload to `content_id` + `(unchanged)` summary when the same body was emitted earlier in the daemon's lifetime. |
 | [0010](0010-structured-output-awareness.md) | Structured-Output Awareness | Accepted | `NormalizeOutput` detects JSON bodies and drops a small noise-field set (`created_at`, `*_url`, `_links`, `etag`, `node_id`). |
@@ -31,12 +31,15 @@ See [ADR-0000](0000-adr-process.md) for the process governing how ADRs are writt
 | [0020](0020-mcp-proxy-and-cleanup.md) | MCP Subprocess as Daemon Proxy + v0.5.0 Cleanup | Accepted | `dfmt mcp` becomes a thin proxy via the new `transport.Backend` interface and `client.ClientBackend` adapter — no more duplicate journal/index handles. Adds per-project FSWatcher, `dfmt.drop_project` RPC for `dfmt remove` cache eviction, LRU eviction in `extraProjects`, and live SSE tail (`?follow=true`). Removes `dfmt daemon --legacy`. |
 | [0022](0022-daemon-identity-and-resilient-proxy.md) | Daemon Build Identity and a Self-Healing MCP Proxy | Accepted | The global daemon publishes `~/.dfmt/daemon.json` (`version`, `pid`, `exe`, `exe_fingerprint`) and is restarted when its build no longer matches the invoking CLI — the fingerprint half catching a rebuild at an unchanged tag. `cli.reconnectingBackend` keeps `dfmt mcp` alive across a daemon idle-exit by re-ensuring the daemon and retrying once, gated on a liveness probe rather than error-string parsing so only a vanished daemon is retryable. |
 | [0021](0021-single-binary-self-promotion.md) | Single Binary, Self-Promoting Daemon | Accepted | Every `dfmt` subcommand self-promotes when no daemon is running. v0.6.0–v0.6.1: `acquireBackend` + in-process `daemon.PromoteInProcess`. v0.6.2: terminal-detach helper decided against. **v0.6.3 reversal**: short-lived commands now spawn a detached daemon child via `startGlobalDaemonBackground` (single spawn site, platform-specific detach via `setsid` / `DETACHED_PROCESS`), connect as client, and exit; daemon persists in background. `runMCP` keeps in-process promotion via `acquireBackendForLongRunner`. One `dfmt.exe` in steady state. |
+| [0025](0025-async-exec-jobs.md) | Async Exec Jobs | Accepted | Async exec is parameters on `dfmt_exec` (`async`, `job_id`, `cancel`), not a separate tool. Process-local job store (32 outstanding, 30 min retention, refuses past the cap), runs on a 2-slot async semaphore separate from the interactive `execSem` (4). |
+| [0027](0027-content-store-in-memory-ttl.md) | Content Store is In-Memory with a Default TTL | Accepted | The content store (`internal/content/store.go`) drops on-disk persistence; `StoreOptions.Path`, `LoadChunkSet`, `Store.Close()`, and the gzip writer are removed. Storage stays in-memory with `DefaultChunkTTL` stamping; `.dfmt/content/` is no longer created. Supersedes the persistence half of ADR-0007; the "separate from events" half still holds. |
 
 ## Superseded Decisions
 
 | # | Title | Superseded By | Note |
 | --- | --- | --- | --- |
 | [0001](0001-per-project-daemon.md) | Per-Project Daemon Model | [0019](0019-global-daemon.md) | Operational pain (multiple daemons in `tasklist`, fragmented dashboard URLs, stacked cold-start cost) reversed the original decision. v0.4.0 ships the global model with a one-command migration. |
+| [0007](0007-content-store-separation.md) | Separate Content Store from Event Journal | [0027](0027-content-store-in-memory-ttl.md) | The "separate from events" half still holds; the optional on-disk persistence to `<proj>/.dfmt/content/<set-id>.json.gz` was write-only in production (no reader, no sweep, no `Close()`) and produced unbounded disk growth. ADR-0027 makes the store in-memory only with `DefaultChunkTTL` stamping. |
 
 ## Writing a New ADR
 

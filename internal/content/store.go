@@ -1,12 +1,7 @@
 package content
 
 import (
-	"compress/gzip"
-	"encoding/json"
 	"fmt"
-	"io"
-	"os"
-	"path/filepath"
 	"regexp"
 	"sort"
 	"sync"
@@ -15,23 +10,18 @@ import (
 	"github.com/ersinkoc/dfmt/internal/core"
 )
 
-// maxDecompressedChunkSetBytes caps how much the gzip reader is allowed to
-// emit when LoadChunkSet decodes a persisted ChunkSet (V-10). The on-disk
-// file is daemon-write-only (0o600) so this is defense-in-depth against
-// a future write path or operator-side mistake; legitimate ChunkSets sit
-// well under this ceiling because the store's own MaxSize bound caps
-// per-chunk and total-store sizes much lower.
-const maxDecompressedChunkSetBytes = 64 << 20 // 64 MiB
-
 // chunkIDPattern restricts chunk/chunk-set IDs to an ASCII-safe shape so a
-// caller cannot smuggle '..', '/', '\\', or drive letters into a filesystem
-// path via LoadChunkSet / persistChunkSet. Letters, digits, dash, and
-// underscore are permitted — production callers supply ULIDs, but the
-// intra-process API also accepts human-readable test IDs.
+// caller cannot smuggle control characters or wire-injection bytes into
+// log lines, dashboard renders, or other surfaces that surface IDs in
+// text. Letters, digits, dash, and underscore are permitted — production
+// callers supply ULIDs, but the intra-process API also accepts
+// human-readable test IDs. Persistence used to be the threat model here
+// (path-traversal into the on-disk store); ADR-0027 removed that path,
+// and the pattern now defends against log/display injection instead.
 var chunkIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
 
-// validateID rejects any chunk or chunk-set ID that would escape the store
-// directory.
+// validateID rejects any chunk or chunk-set ID that would not survive a
+// safe text surface (log line, JSON map key, dashboard render).
 func validateID(id string) error {
 	if !chunkIDPattern.MatchString(id) {
 		return fmt.Errorf("invalid content id %q: must match %s", id, chunkIDPattern)
@@ -75,32 +65,35 @@ type ChunkSet struct {
 	TTL     time.Duration `json:"ttl"`
 }
 
-// Store manages the content chunk storage.
+// Store manages the content chunk storage in memory. Per ADR-0027 there is
+// no on-disk persistence; the store is process-lifetime only and reaps
+// sets lazily on Get* (when their TTL has passed) or eagerly via
+// PruneExpired.
 type Store struct {
 	mu         sync.RWMutex
 	chunks     map[string]*Chunk
 	sets       map[string]*ChunkSet
 	maxSize    int64         // Maximum size in bytes
 	curSize    int64         // Current size in bytes
-	defaultTTL time.Duration // 0 = no expiry (persist forever); >0 = ephemeral
-	path       string
+	defaultTTL time.Duration // 0 = no expiry (sticky); >0 = ephemeral, ages every incoming set
 }
 
-// StoreOptions configures the content store.
+// StoreOptions configures the content store. As of ADR-0027 there is no
+// persistence knob: the store is always in-memory.
 type StoreOptions struct {
-	Path    string
 	MaxSize int64 // Maximum size in bytes (default 64 MB)
 	// DefaultChunkTTL, when >0, stamps every PutChunkSet that arrives with
 	// TTL==0 so it expires after this duration. Existing logic treats
-	// TTL>0 as ephemeral (no disk persist), so an opt-in default makes
-	// the in-memory chunk store self-cleaning over a long agent session
-	// without breaking the persistent-by-default behavior callers rely
-	// on. Default 0 keeps backward compatibility.
+	// TTL>0 as ephemeral, so an opt-in default makes the in-memory chunk
+	// store self-cleaning over a long agent session without breaking the
+	// "I want this sticky" path — callers can still set TTL to a sentinel
+	// value or leave it zero to opt out. Default 0 keeps the set
+	// immortal-in-memory until LRU eviction drops it under memory
+	// pressure.
 	DefaultChunkTTL time.Duration
-	PersistTTL      time.Duration
 }
 
-// NewStore creates a new content store.
+// NewStore creates a new in-memory content store.
 func NewStore(opt StoreOptions) (*Store, error) {
 	if opt.MaxSize == 0 {
 		opt.MaxSize = 64 * 1024 * 1024 // 64 MB default
@@ -111,18 +104,7 @@ func NewStore(opt StoreOptions) (*Store, error) {
 		sets:       make(map[string]*ChunkSet),
 		maxSize:    opt.MaxSize,
 		defaultTTL: opt.DefaultChunkTTL,
-		path:       opt.Path,
 	}
-
-	if opt.Path != "" {
-		// 0700 to match the parent .dfmt directory and the journal file's
-		// permissions — content store holds redacted-but-still-sensitive
-		// tool output and should not be readable by other local users.
-		if err := os.MkdirAll(opt.Path, 0o700); err != nil {
-			return nil, fmt.Errorf("create content dir: %w", err)
-		}
-	}
-
 	return s, nil
 }
 
@@ -167,16 +149,10 @@ func (s *Store) PutChunk(chunk *Chunk) error {
 	return nil
 }
 
-// PutChunkSet stores a chunk set. Disk persistence runs without the write
-// lock held so a slow/failing content dir doesn't wedge readers.
-//
-// When the store's DefaultChunkTTL is non-zero and the incoming set has
-// TTL==0, we stamp the default. This is what keeps long sessions from
-// accumulating stale stash entries: every Exec/Read/Fetch creates a set
-// that expires after DefaultChunkTTL and gets reaped by PruneExpired (or
-// by lazy-prune on the next Get*). Callers that want a truly persistent
-// set still set TTL explicitly to a sentinel value; callers that already
-// pass TTL>0 are unaffected.
+// PutChunkSet stores a chunk set in memory. When the store's
+// DefaultChunkTTL is non-zero and the incoming set has TTL==0, we stamp
+// the default so long sessions don't accumulate stale stash entries; sets
+// with explicit TTL are left untouched (caller intent wins).
 func (s *Store) PutChunkSet(set *ChunkSet) error {
 	if err := validateID(set.ID); err != nil {
 		return err
@@ -187,26 +163,13 @@ func (s *Store) PutChunkSet(set *ChunkSet) error {
 		set.TTL = s.defaultTTL
 	}
 	s.sets[set.ID] = set
-	path := s.path
-	shouldPersist := path != "" && set.TTL == 0
-	// Snapshot a copy under the lock so the subsequent disk write cannot race
-	// with a concurrent mutation of set.Chunks via PutChunk.
-	var snap ChunkSet
-	if shouldPersist {
-		snap = *set
-		snap.Chunks = append([]string(nil), set.Chunks...)
-	}
 	s.mu.Unlock()
-
-	if shouldPersist {
-		return persistChunkSetToDisk(path, &snap)
-	}
 	return nil
 }
 
 // expired reports whether set has crossed its TTL window. TTL==0 means
-// the set is persistent and never expires from the in-memory store.
-// Callers must hold at least the read lock; this function does not lock.
+// the set is sticky and never expires from the in-memory store. Callers
+// must hold at least the read lock; this function does not lock.
 func (s *Store) expired(set *ChunkSet, now time.Time) bool {
 	if set == nil || set.TTL == 0 {
 		return false
@@ -399,96 +362,6 @@ func (s *Store) evict() error {
 	}
 	delete(s.sets, oldest.ID)
 
-	return nil
-}
-
-// persistChunkSet writes a chunk set to disk using the store's root path.
-// Kept for internal callers that already hold the lock and want the original
-// behavior; new call sites should use persistChunkSetToDisk with a snapshot.
-func (s *Store) persistChunkSet(set *ChunkSet) error {
-	return persistChunkSetToDisk(s.path, set)
-}
-
-// persistChunkSetToDisk gzip-encodes set at rootPath/<id>.json.gz. The caller
-// owns concurrency: pass a snapshot if the set may mutate.
-func persistChunkSetToDisk(rootPath string, set *ChunkSet) error {
-	if err := validateID(set.ID); err != nil {
-		return err
-	}
-	path := filepath.Join(rootPath, set.ID+".json.gz")
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-
-	gz := gzip.NewWriter(f)
-	defer gz.Close()
-
-	enc := json.NewEncoder(gz)
-	return enc.Encode(set)
-}
-
-// LoadChunkSet loads a chunk set from disk.
-func (s *Store) LoadChunkSet(id string) (*ChunkSet, error) {
-	if err := validateID(id); err != nil {
-		return nil, err
-	}
-	path := filepath.Join(s.path, id+".json.gz")
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-
-	gz, err := gzip.NewReader(f)
-	if err != nil {
-		f.Close()
-		return nil, err
-	}
-
-	// V-10: cap decompressed bytes as defense-in-depth against zip-bomb
-	// behavior. The store is daemon-write-only on a 0o600 file so a
-	// malicious payload requires the daemon process to be already
-	// compromised, but the cost of a 64-MiB ceiling is zero for any
-	// legitimate ChunkSet (chunks are bounded by the store's own
-	// MaxSize and never approach this floor in practice).
-	var set ChunkSet
-	if err := json.NewDecoder(io.LimitReader(gz, maxDecompressedChunkSetBytes)).Decode(&set); err != nil {
-		gz.Close()
-		f.Close()
-		return nil, err
-	}
-	gz.Close()
-	f.Close()
-	return &set, nil
-}
-
-// Close closes the store and persists all chunk sets.
-func (s *Store) Close() error {
-	// Snapshot what needs to be persisted under the lock, then release it
-	// before the gzip+disk work — same pattern as PutChunkSet. Holding
-	// s.mu across N disk writes would block every concurrent reader for
-	// the entire flush.
-	s.mu.Lock()
-	path := s.path
-	var snaps []*ChunkSet
-	if path != "" {
-		for _, set := range s.sets {
-			if set.TTL == 0 {
-				c := *set
-				c.Chunks = append([]string(nil), set.Chunks...)
-				snaps = append(snaps, &c)
-			}
-		}
-	}
-	s.mu.Unlock()
-
-	for _, snap := range snaps {
-		if err := persistChunkSetToDisk(path, snap); err != nil {
-			return err
-		}
-	}
 	return nil
 }
 

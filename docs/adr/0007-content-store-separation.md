@@ -2,11 +2,20 @@
 
 | Field | Value |
 | --- | --- |
-| Status | Accepted |
+| Status | Superseded by ADR-0027 |
 | Date | 2026-04-20 |
 | Deciders | Ersin Koç |
 | Supersedes | — |
-| Related | ADR-0003, ADR-0006 |
+| Related | ADR-0003, ADR-0006, ADR-0027 |
+
+> **Note 2026-07-31:** ADR-0027 replaces the persistence half of this
+> decision. The "content lives in a separate store from events"
+> separation holds, but the optional on-disk persistence to
+> `<proj>/.dfmt/content/<set-id>.json.gz` is removed — that path was
+> write-only in production (no reader, no sweep, no `Close()`) and
+> produced unbounded disk growth. The store is now in-memory only
+> with a configurable default TTL. The original decision text is
+> preserved below for historical reference.
 
 ## Context
 
