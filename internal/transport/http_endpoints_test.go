@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/ersinkoc/dfmt/internal/core"
+	"github.com/ersinkoc/dfmt/internal/osutil"
 	"github.com/ersinkoc/dfmt/internal/sandbox"
 )
 
@@ -855,5 +856,52 @@ func TestHTTPHandleAPIProxy_MissingTargetPath(t *testing.T) {
 	}
 	if resp.Error == nil {
 		t.Error("expected error in response for missing target_project_path")
+	}
+}
+
+// TestForwardProxyOverUnixSendsNewlineTerminatedFrame covers TRN-5: the
+// proxy must append '\n' to the JSON-RPC frame so the target daemon's
+// readCappedLine codec dispatches immediately. Without it the target waits
+// forever and the proxy deadlocks until the daemon's read-idle timeout.
+func TestForwardProxyOverUnixSendsNewlineTerminatedFrame(t *testing.T) {
+	if osutil.IsWindows() {
+		t.Skip("Unix-only test")
+	}
+
+	// Start a real SocketServer that the proxy will connect to.
+	handlers := NewHandlers(core.NewIndex(), &mockJournal{}, nil)
+	socketDir := t.TempDir()
+	socketPath := filepath.Join(socketDir, "proxy-test.sock")
+	ss := NewSocketServer(socketPath, handlers)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := ss.Start(ctx); err != nil {
+		t.Fatalf("SocketServer.Start: %v", err)
+	}
+	defer ss.Stop(context.Background())
+
+	// Build a minimal JSON-RPC request without a trailing newline
+	// (mirroring what json.Marshal produces in handleAPIProxy).
+	body, _ := json.Marshal(struct {
+		JSONRPC string `json:"jsonrpc"`
+		Method  string `json:"method"`
+		Params  any    `json:"params"`
+		ID      int    `json:"id"`
+	}{"2.0", "stats", StatsParams{}, 1})
+
+	rec := httptest.NewRecorder()
+	forwardProxyOverUnix(ctx, rec, socketPath, body)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("response code = %d, want 200", rec.Code)
+	}
+	// The response must contain valid JSON-RPC (not an empty body from a
+	// timed-out deadlock).
+	var resp Response
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode proxy response: %v (body=%q)", err, rec.Body.String())
+	}
+	if resp.JSONRPC != "2.0" {
+		t.Errorf("proxy response jsonrpc = %q, want 2.0", resp.JSONRPC)
 	}
 }
