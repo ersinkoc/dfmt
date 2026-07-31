@@ -107,9 +107,12 @@ type Handlers struct {
 	// journal — at 10 MiB rotated max + active that's hundreds of ms per
 	// poll. Mirrors the TTL pattern used by MCPProtocol.compressionStats
 	// for its own per-tool aggregation.
-	statsCacheMu  sync.RWMutex
-	statsCache    *StatsResponse
-	statsCachedAt time.Time
+	//
+	// Keyed by bundle.ProjectPath so one project's numbers are never served
+	// for another in global-daemon mode (TRN-1). Bounded by statsCacheCap;
+	// eviction is TTL-based (expired entries are dropped on the next miss).
+	statsCacheMu sync.Mutex
+	statsCache   map[string]*statsCacheEntry
 
 	// recallCache memoises rendered snapshots against the journal cursor.
 	//
@@ -142,6 +145,20 @@ type recallCacheEntry struct {
 	cursor   string
 	snapshot string
 }
+
+// statsCacheEntry holds one project's memoised Stats result and the wall-clock
+// time it was computed, so the TTL check can decide freshness without
+// re-streaming the journal.
+type statsCacheEntry struct {
+	resp *StatsResponse
+	at   time.Time
+}
+
+// statsCacheCap bounds the project-keyed stats cache. Global-daemon mode
+// serves multiple projects from one Handlers; the cap prevents unbounded
+// growth when many distinct projects are polled. Eviction is opportunistic:
+// expired entries are dropped when encountered during a cache miss.
+const statsCacheCap = 16
 
 // recallCacheCap bounds the number of (project, budget, format) combinations
 // held. Small on purpose: callers use a handful of budgets, and a miss costs
@@ -208,15 +225,16 @@ var errNoProject = errors.New("no dfmt project — open dfmt from a project root
 // patterns) can call SetRedactor.
 func NewHandlers(index *core.Index, journal core.Journal, sb sandbox.Sandbox) *Handlers {
 	return &Handlers{
-		index:    index,
-		journal:  journal,
-		sandbox:  sb,
-		redactor: redact.NewRedactor(),
-		execSem:  make(chan struct{}, 4),
-		fetchSem: make(chan struct{}, 8),
-		readSem:  make(chan struct{}, 8),
-		writeSem: make(chan struct{}, 4),
-		asyncSem: make(chan struct{}, asyncExecConcurrency),
+		index:      index,
+		journal:    journal,
+		sandbox:    sb,
+		redactor:   redact.NewRedactor(),
+		execSem:    make(chan struct{}, 4),
+		fetchSem:   make(chan struct{}, 8),
+		readSem:    make(chan struct{}, 8),
+		writeSem:   make(chan struct{}, 4),
+		asyncSem:   make(chan struct{}, asyncExecConcurrency),
+		statsCache: make(map[string]*statsCacheEntry),
 	}
 }
 
