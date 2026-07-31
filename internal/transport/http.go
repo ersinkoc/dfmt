@@ -84,15 +84,16 @@ const (
 
 // HTTPServer is an HTTP server for the transport layer.
 type HTTPServer struct {
-	bind        string
-	portFile    string
-	socketPath  string // For Unix socket cleanup
-	listener    net.Listener
-	ownListener bool // true if Start() created the listener (so Stop may close it)
-	handlers    *Handlers
-	server      *http.Server
-	mu          sync.Mutex
-	running     bool
+	bind           string
+	portFile       string
+	socketPath     string // For Unix socket cleanup
+	socketBindPath string // When non-empty, Start() creates a Unix socket listener here (LIF-3)
+	listener       net.Listener
+	ownListener    bool // true if Start() created the listener (so Stop may close it)
+	handlers       *Handlers
+	server         *http.Server
+	mu             sync.Mutex
+	running        bool
 	// doneCh is closed by Stop so the shutdown-watcher goroutine exits even
 	// when the Start ctx is never canceled (common: daemon passes a fresh
 	// stopCtx to Stop). Without this the watcher goroutine leaks for every
@@ -158,6 +159,20 @@ func (s *HTTPServer) Start(ctx context.Context) error {
 	var ownListener bool
 	if s.listener != nil {
 		ln = s.listener
+	} else if s.socketBindPath != "" {
+		// Deferred Unix socket bind (LIF-3): NewGlobal stores the path instead
+		// of binding the listener at construction time, so Start runs after the
+		// singleton lock and the loser does not leave a bound socket behind.
+		l, err := ListenUnixSocket(s.socketBindPath)
+		if err != nil {
+			return fmt.Errorf("create socket listener: %w", err)
+		}
+		if cerr := os.Chmod(s.socketBindPath, 0o700); cerr != nil {
+			logging.Warnf("chmod socket: %v", cerr)
+		}
+		ln = l
+		ownListener = true
+		s.socketPath = s.socketBindPath
 	} else {
 		l, err := net.Listen("tcp", s.bind)
 		if err != nil {
@@ -801,6 +816,14 @@ func generateToken() (string, error) {
 // SetPortFile sets the path to write the chosen port.
 func (s *HTTPServer) SetPortFile(path string) {
 	s.portFile = path
+}
+
+// SetSocketBindPath sets the Unix socket path to bind lazily during Start()
+// (LIF-3). When set, Start() creates the listener after acquiring the
+// singleton lock, preventing the bind-before-lock race that left a losing
+// daemon with a bound socket and no lock.
+func (s *HTTPServer) SetSocketBindPath(path string) {
+	s.socketBindPath = path
 }
 
 // SetProjectPath sets the project path used to filter /api/daemons responses.
