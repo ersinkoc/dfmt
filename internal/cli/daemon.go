@@ -614,7 +614,7 @@ func restartStaleGlobalDaemon(pid int) bool {
 	return true
 }
 
-// cleanupStaleGlobalDaemon removes ~/.dfmt/{daemon.pid,port,daemon.sock,lock}
+// cleanupStaleGlobalDaemon removes ~/.dfmt/{daemon.pid,port,daemon.sock}
 // after we've confirmed via inspectGlobalDaemon that no daemon is running and
 // no PID is alive. Safe to call only on globalDaemonDead state — Windows has
 // released the file handles by the time the process is gone, and Unix flock
@@ -622,13 +622,21 @@ func restartStaleGlobalDaemon(pid int) bool {
 // already gone, perms) are absorbed because the caller already knows the
 // daemon is dead and the spawn-and-rebind that follows will surface any
 // real permission problem with a clearer error than "remove failed".
+//
+// LIF-1: the lock file is deliberately NOT removed. flock operates on the
+// file's inode; deleting the lock file while a process still holds the flock
+// creates a new inode on the next open, and the new daemon's flock succeeds
+// on the new inode even though the old process's flock is still valid on the
+// old (unlinked) inode. This is the exact race that defeats the singleton
+// guarantee when two CLI invocations both classify "dead" and one's cleanup
+// deletes the lock file out from under the other's in-flight spawn.
 func cleanupStaleGlobalDaemon() {
 	dir := project.GlobalDir()
 	for _, name := range []string{
 		project.GlobalPIDFileName,
 		project.GlobalPortFileName,
 		project.GlobalSocketName,
-		project.GlobalLockFileName,
+		// LIF-1: do NOT remove GlobalLockFileName — see comment above.
 	} {
 		_ = os.Remove(filepath.Join(dir, name))
 	}
@@ -1051,7 +1059,9 @@ func runStop(args []string) int {
 	}
 
 	_ = os.Remove(pidPath)
-	_ = os.Remove(filepath.Join(proj, ".dfmt", "lock"))
+	// LIF-1: do NOT remove the lock file. The daemon's Stop() already
+	// releases the flock via fd close; deleting the file breaks the inode
+	// contract that makes flock work as a singleton gate.
 	_ = os.Remove(project.SocketPath(proj))
 
 	fmt.Printf("Daemon stopped for %s\n", proj)
