@@ -169,16 +169,18 @@ it (with a removal ADR):
 
 ### Wire compat freeze
 
-- [ ] **MCP wire-shape regression suite** — golden-file
+- [x] **MCP wire-shape regression suite** (`TestMCPToolSchemaContract`:
+  parameter names and `required` per tool) — golden-file
   fixtures for every `tools/call` shape (request +
   response). Any change after v1.0 ought to fail this suite
   before it can land, forcing the ADR + major-bump
   conversation.
-- [ ] **JSONL event regression suite** — same idea for
+- [x] **JSONL event regression suite** (`TestEventSignatureIsStable`,
+  `TestJournalReadsAPinnedLine`) — same idea for
   `journal.jsonl` lines. Ensures we cannot accidentally
   break backwards-compatible replay of older project
   journals on a v1.x daemon.
-- [ ] **CLI flag inventory** — `dfmt --help` golden-file
+- [x] **CLI flag inventory** (`TestCLIFlagInventory`) — `dfmt --help` golden-file
   test for every subcommand so a removed or renamed flag
   shows up in CI.
 
