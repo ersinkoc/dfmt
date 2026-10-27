@@ -500,6 +500,10 @@ func (ix *Index) Excerpt(docID string) string {
 	return ix.excerpts[docID]
 }
 
+// EventExcerpt is buildExcerpt for callers outside the index: the same
+// short, rune-safe summary dfmt_search returns, for any event.
+func EventExcerpt(e Event) string { return buildExcerpt(e) }
+
 // buildExcerpt picks the most informative ~80-byte snippet for an
 // event. Preference order: message → path → type+actor. Rune-aligned
 // truncation keeps non-ASCII (Turkish, CJK) snippets valid UTF-8 so

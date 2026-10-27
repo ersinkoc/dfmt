@@ -459,19 +459,29 @@ func runTail(args []string) int {
 		return 1
 	}
 
+	// Each line names what happened. It used to print the stored priority,
+	// the time, tags and a `path` field only — so a note came out as
+	// "[p3] <time> #decision": no type, no text, and p3 where the tag makes
+	// it p2 (dfmt_remember stores p3; the classifier decides, as in recall).
+	classifier := core.NewClassifier()
+	enc := json.NewEncoder(os.Stdout)
 	count := 0
 	for e := range events {
-		dataStr := ""
-		if e.Data != nil {
-			if path, ok := e.Data["path"].(string); ok {
-				dataStr = " " + path
+		if flagJSON {
+			_ = enc.Encode(e) // NDJSON, one event per line
+		} else {
+			tags := ""
+			if len(e.Tags) > 0 {
+				tags = " #" + strings.Join(e.Tags, " #")
 			}
+			summary := core.EventExcerpt(e)
+			if summary == string(e.Type) {
+				summary = ""
+			} else {
+				summary = " " + strings.TrimPrefix(summary, string(e.Type)+" ")
+			}
+			fmt.Printf("[%s] %s %s%s%s\n", classifier.Classify(e), e.TS.Format(time.RFC3339), e.Type, tags, summary)
 		}
-		tags := ""
-		if len(e.Tags) > 0 {
-			tags = fmt.Sprintf(" #%s", strings.Join(e.Tags, " #"))
-		}
-		fmt.Printf("[%s] %s%s%s\n", e.Priority, e.TS.Format(time.RFC3339), tags, dataStr)
 		count++
 		if limit > 0 && count >= limit {
 			return 0

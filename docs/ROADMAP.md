@@ -78,13 +78,13 @@ The CLAUDE.md / AGENTS.md targets drifted out of compliance:
 | `internal/core` | 90.7 % | ≥ 90 % | ✅ |
 | `internal/transport` | 90.0 % | ≥ 85 % | ✅ |
 | `internal/daemon` | 83.4 % | ≥ 80 % | ✅ |
-| `internal/cli` | 69.7 % | ≥ 75 % | **−5.3 pp** |
+| `internal/cli` | 75.6 % | ≥ 75 % | ✅ |
 
 (Measured 2026-10-27 with `go test -cover` on Linux.)
 
-- [ ] **`internal/cli` ≥ 75 %**. The `dispatch.go` split
-  enables targeted unit tests per subcommand. Existing
-  integration tests stay; new tests go after the split.
+- [x] **`internal/cli` ≥ 75 %** (75.6 %). All four packages pass
+  `scripts/coverage-gate.go --strict` on Linux; flipping CI to
+  `--strict` needs the same check on the Windows/macOS legs.
 - [x] **`internal/daemon` ≥ 80 %** (83.4 %).
 - [x] **`internal/transport` ≥ 85 %** (90.0 %).
 

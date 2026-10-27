@@ -27,9 +27,12 @@ func toolProject(t *testing.T) string {
 	if err := os.WriteFile(filepath.Join(proj, "a.go"), []byte("package a\n// needle here\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	prev := flagProject
+	prev, prevJSON := flagProject, flagJSON
 	flagProject = proj
-	t.Cleanup(func() { flagProject = prev })
+	// Other tests in this package run Dispatch with --json, which sets the
+	// global and never clears it; start from text mode regardless of order.
+	flagJSON = false
+	t.Cleanup(func() { flagProject, flagJSON = prev, prevJSON })
 	t.Chdir(proj)
 
 	// The test binary never spawns a daemon (acquireBackend refuses to
@@ -126,5 +129,59 @@ func TestCLIToolRoundTrip(t *testing.T) {
 	out = captureStdout(t, func() { _ = Dispatch([]string{"stats"}) })
 	if !strings.Contains(out, `"events_total"`) {
 		t.Errorf("stats --json output %q", out)
+	}
+}
+
+// TestCLIMemoryRoundTrip drives the memory commands end to end: a note
+// written with remember must come back through search, recall and tail.
+func TestCLIMemoryRoundTrip(t *testing.T) {
+	toolProject(t)
+	run := func(args ...string) (int, string) {
+		var code int
+		out := captureStdout(t, func() { code = Dispatch(args) })
+		return code, out
+	}
+
+	if code, _ := run("remember", "-tags", "decision", "-data", `{"message":"chose the zebra plan"}`,
+		"-input-tokens", "10", "-output-tokens", "5", "-cached-tokens", "2", "-model", "m"); code != 0 {
+		t.Fatalf("remember returned %d", code)
+	}
+	if code, out := run("search", "-type", "note", "zebra"); code != 0 || !strings.Contains(out, "zebra") {
+		t.Errorf("search: code %d out %q", code, out)
+	}
+	if code, out := run("recall", "-budget", "8192"); code != 0 || !strings.Contains(out, "zebra") {
+		t.Errorf("recall md: code %d out %q", code, out)
+	}
+	for _, f := range []string{"json", "xml"} {
+		if code, out := run("recall", "-format", f); code != 0 || !strings.Contains(out, "zebra") {
+			t.Errorf("recall %s: code %d", f, code)
+		}
+	}
+	// tail used to print "[p3] <time> #decision" for this note: no type, no
+	// text, and the stored priority instead of the classified one.
+	if code, out := run("tail", "-limit", "5"); code != 0 || !strings.Contains(out, "zebra") ||
+		!strings.Contains(out, "[p2]") || !strings.Contains(out, " note ") {
+		t.Errorf("tail: code %d out %q", code, out)
+	}
+	if code, out := run("stats"); code != 0 || out == "" {
+		t.Errorf("stats: code %d", code)
+	}
+	if code, _ := run("task", "write the docs"); code != 0 {
+		t.Errorf("task returned %d", code)
+	}
+	if code, out := run("read", "a.go"); code != 0 || !strings.Contains(out, "needle") {
+		t.Errorf("read: code %d out %q", code, out)
+	}
+	if code, out := run("exec", "-intent", "listing", "ls"); code != 0 || !strings.Contains(out, "a.go") {
+		t.Errorf("exec: code %d out %q", code, out)
+	}
+
+	prevJSON := flagJSON
+	flagJSON = true
+	defer func() { flagJSON = prevJSON }()
+	for _, args := range [][]string{{"search", "zebra"}, {"read", "a.go"}, {"exec", "ls"}, {"tail", "-limit", "1"}} {
+		if code, out := run(args...); code != 0 || !strings.Contains(out, "{") {
+			t.Errorf("%v --json: code %d out %q", args, code, out)
+		}
 	}
 }

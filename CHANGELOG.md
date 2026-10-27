@@ -42,6 +42,11 @@ Internal package shapes (`internal/...`) are NOT covered by SemVer.
   bytes and a success message. The second argument is now the content, `-`
   reads stdin, and a call with no content source is refused (truncate on
   purpose with `-content ""`).
+- **`dfmt tail` printed neither what happened nor the real priority.** A
+  note came out as `[p3] <time> #decision`: no event type, no text (only a
+  `path` field was ever shown), and the stored priority rather than the
+  classified one. Lines now read `[p2] <time> note #decision chose …`,
+  and `--json` emits one event per line instead of being ignored.
 
 ## [0.9.1] — 2026-10-27
 
