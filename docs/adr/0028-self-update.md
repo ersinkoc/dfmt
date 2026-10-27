@@ -33,6 +33,11 @@ Add `dfmt update` (alias `self-update`), implemented in
 - **Source.** `GET https://api.github.com/repos/ersinkoc/dfmt/releases/latest`
   (or `/releases/tags/<tag>` with `--version`), then the
   `dfmt-<goos>-<goarch>[.exe]` asset — the names `release.yml` builds.
+  When the API refuses (403/429: 60 unauthenticated requests an hour per
+  IP, shared behind NAT), it falls back to github.com: the
+  `/releases/latest` redirect names the tag, and assets are fetched from
+  `/releases/download/<tag>/<name>`. Verification is unchanged. No token
+  is read or sent.
 - **Verification.** The asset must match its line in the release's
   `sha256sums.txt`. A missing checksums file or line is a refusal, not a
   warning. The candidate is then executed once with `--version` and must

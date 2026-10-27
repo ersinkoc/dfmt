@@ -27,7 +27,13 @@ Internal package shapes (`internal/...`) are NOT covered by SemVer.
 
 ## [Unreleased]
 
-Nothing yet.
+### Fixed
+
+- **`dfmt update` failed with a bare "HTTP 403".** GitHub's API allows 60
+  unauthenticated requests an hour per IP, shared by everyone behind the
+  same NAT, so the limit is routinely exhausted. The update now falls
+  back to github.com's release pages, which have no such limit; the
+  checksum verification is the same.
 
 ## [0.9.0] — 2026-10-27
 

@@ -148,3 +148,39 @@ func assertNoTempLeft(t *testing.T, dir string) {
 		}
 	}
 }
+
+// The API's unauthenticated limit (60/h per IP, shared behind NAT) is
+// routine. A 403 there must fall back to github.com: the latest-release
+// redirect names the tag, assets sit at fixed download URLs.
+func TestFetchReleaseFallsBackWhenRateLimited(t *testing.T) {
+	asset := AssetName(runtime.GOOS, runtime.GOARCH)
+	mux := http.NewServeMux()
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	mux.HandleFunc("/repos/", func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, `{"message":"API rate limit exceeded"}`, http.StatusForbidden)
+	})
+	mux.HandleFunc("/"+Repo+"/releases/latest", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/"+Repo+"/releases/tag/v9.9.9", http.StatusFound)
+	})
+	prevAPI, prevWeb := APIBase, WebBase
+	APIBase, WebBase = srv.URL, srv.URL
+	t.Cleanup(func() { APIBase, WebBase = prevAPI, prevWeb })
+
+	rel, err := FetchRelease(context.Background(), http.DefaultClient, "")
+	if err != nil {
+		t.Fatalf("FetchRelease: %v", err)
+	}
+	if rel.Tag != "v9.9.9" {
+		t.Errorf("tag = %q, want v9.9.9 from the redirect", rel.Tag)
+	}
+	want := srv.URL + "/" + Repo + "/releases/download/v9.9.9/" + asset
+	if rel.Assets[asset] != want || rel.Assets["sha256sums.txt"] == "" {
+		t.Errorf("assets = %v, want %s and sha256sums.txt", rel.Assets, want)
+	}
+
+	rel, err = FetchRelease(context.Background(), http.DefaultClient, "v1.2.3")
+	if err != nil || rel.Tag != "v1.2.3" {
+		t.Errorf("by tag = %+v, %v", rel, err)
+	}
+}

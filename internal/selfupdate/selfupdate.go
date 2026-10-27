@@ -36,6 +36,10 @@ const Repo = "ersinkoc/dfmt"
 // server; production never changes it.
 var APIBase = "https://api.github.com"
 
+// WebBase is the github.com root, used when the API refuses to answer.
+// A var for the same reason as APIBase.
+var WebBase = "https://github.com"
+
 // maxAssetBytes bounds a download. A release binary is ~10 MB; anything
 // far beyond that is not a dfmt binary.
 const maxAssetBytes = 128 << 20
@@ -52,7 +56,25 @@ type Release struct {
 
 // FetchRelease returns the release for tag, or the latest release when
 // tag is empty.
+//
+// The API allows 60 unauthenticated requests an hour per IP, shared by
+// everyone behind one NAT, so a 403/429 is routine rather than exotic.
+// It then falls back to github.com itself: /releases/latest redirects to
+// the tag, and assets live at fixed /releases/download/<tag>/<name> URLs.
+// The checksum verification downstream is identical either way.
 func FetchRelease(ctx context.Context, client *http.Client, tag string) (*Release, error) {
+	rel, err := fetchReleaseAPI(ctx, client, tag)
+	if errors.Is(err, errRateLimited) {
+		return fetchReleaseWeb(ctx, client, tag)
+	}
+	return rel, err
+}
+
+// errRateLimited marks an API refusal that the web fallback can route
+// around.
+var errRateLimited = errors.New("GitHub API rate limit exceeded")
+
+func fetchReleaseAPI(ctx context.Context, client *http.Client, tag string) (*Release, error) {
 	endpoint := APIBase + "/repos/" + Repo + "/releases/latest"
 	if tag != "" {
 		endpoint = APIBase + "/repos/" + Repo + "/releases/tags/" + url.PathEscape(tag)
@@ -72,6 +94,9 @@ func FetchRelease(ctx context.Context, client *http.Client, tag string) (*Releas
 			return nil, fmt.Errorf("no release %s", tag)
 		}
 		return nil, errors.New("no published release")
+	}
+	if resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusTooManyRequests {
+		return nil, errRateLimited
 	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("query releases: HTTP %d", resp.StatusCode)
@@ -95,6 +120,50 @@ func FetchRelease(ctx context.Context, client *http.Client, tag string) (*Releas
 		rel.Assets[a.Name] = a.URL
 	}
 	return rel, nil
+}
+
+// fetchReleaseWeb resolves a release without the API. Only the assets
+// this host needs are listed: the web pages carry no machine-readable
+// asset list, and a missing one surfaces as a 404 on download.
+func fetchReleaseWeb(ctx context.Context, client *http.Client, tag string) (*Release, error) {
+	if tag == "" {
+		var err error
+		if tag, err = latestTagWeb(ctx, client); err != nil {
+			return nil, err
+		}
+	}
+	base := WebBase + "/" + Repo + "/releases/download/" + url.PathEscape(tag) + "/"
+	asset := AssetName(runtime.GOOS, runtime.GOARCH)
+	return &Release{Tag: tag, Assets: map[string]string{
+		asset:          base + asset,
+		checksumsAsset: base + checksumsAsset,
+	}}, nil
+}
+
+// latestTagWeb reads the tag from the redirect github.com/<repo>/releases/latest
+// answers with (…/releases/tag/<tag>), without following it.
+func latestTagWeb(ctx context.Context, client *http.Client) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, WebBase+"/"+Repo+"/releases/latest", nil)
+	if err != nil {
+		return "", err
+	}
+	noFollow := *client
+	noFollow.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	resp, err := noFollow.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("query releases: %w", err)
+	}
+	_ = resp.Body.Close()
+	loc := resp.Header.Get("Location")
+	_, tag, ok := strings.Cut(loc, "/releases/tag/")
+	if resp.StatusCode/100 != 3 || !ok || tag == "" {
+		return "", fmt.Errorf("%w, and github.com did not name the latest release (HTTP %d)",
+			errRateLimited, resp.StatusCode)
+	}
+	if t, err := url.PathUnescape(tag); err == nil {
+		tag = t
+	}
+	return tag, nil
 }
 
 // AssetName is the release asset built for goos/goarch.
