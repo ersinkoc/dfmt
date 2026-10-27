@@ -98,9 +98,13 @@ func (s *SandboxImpl) Glob(ctx context.Context, req GlobReq) (GlobResp, error) {
 	var contentMatches []ContentMatch
 	keywords := ExtractKeywords(req.Intent)
 	if len(keywords) > 0 && len(files) > 0 {
-		// Read first few files to find intent matches
+		// Read first few files to find intent matches. Bounded three ways,
+		// like Grep: a file budget (an intent that matches nothing used to
+		// read the whole tree, holding a readSem slot), the per-file size
+		// cap, and the caller's context.
+		scanned := 0
 		for _, f := range files {
-			if len(contentMatches) >= 10 {
+			if len(contentMatches) >= 10 || scanned >= maxGlobIntentFiles || ctx.Err() != nil {
 				break
 			}
 			fullPath := filepath.Join(absWd, f)
@@ -116,10 +120,14 @@ func (s *SandboxImpl) Glob(ctx context.Context, req GlobReq) (GlobResp, error) {
 			// Binary bodies would come back through MatchContent as
 			// ContentMatch lines — the same high-entropy garbage the
 			// Grep walker was emitting, on a path that bypasses it.
+			if info, ierr := os.Stat(fullPath); ierr != nil || info.Size() > maxGrepFileBytes {
+				continue
+			}
 			if isBinaryPath(fullPath) {
 				skipped.binary++
 				continue
 			}
+			scanned++
 			data, err := os.ReadFile(fullPath)
 			if err != nil {
 				continue
@@ -249,6 +257,10 @@ func grepFileLines(s *SandboxImpl, pattern *regexp.Regexp, path, rel, absWd stri
 	}
 	return matches, true
 }
+
+// maxGlobIntentFiles bounds how many matched files a Glob with an intent
+// reads looking for intent hits.
+const maxGlobIntentFiles = 200
 
 // maxGrepContextLines caps GrepReq.Context. Context multiplies the
 // response by up to 2N+1 lines per match across 100 matches; a caller

@@ -82,6 +82,10 @@ Internal package shapes (`internal/...`) are NOT covered by SemVer.
   included, while the body was redacted. Credentials and security-policy
   noise (CSP, HSTS, Report-To, …) are dropped, values are capped at 512
   bytes, and the rest goes through the redactor like the body.
+- **`dfmt_glob` with an intent read matched files without bounds** — no
+  size cap, no file budget, no cancellation — so `**/*` with an intent that
+  matched nothing read the whole tree. It now scans at most 200 files,
+  skips files over Grep's size cap, and stops on cancellation.
 
 ## [0.9.0] — 2026-10-27
 
