@@ -109,6 +109,13 @@ Internal package shapes (`internal/...`) are NOT covered by SemVer.
   source (observed on a window of `journal.go` with an em dash) and
   grep/glob skipped such files silently — `docs/adr/0010-…` in this repo.
   A cut-short trailing rune is now trimmed before the check.
+- **The index tail re-parsed the whole journal every 3 seconds**, for every
+  loaded project, idle or not: `Stream` opened every segment from the top,
+  decoded each line and recomputed its signature just to find the cursor.
+  An idle tick is now one `stat`; a busy one skips rotated segments that
+  end before the cursor (falling back to a full pass if a segment name
+  misleads) and reads pre-cursor lines by id only. 30k events in three
+  segments: 152.8 ms → 0.59 ms per tick.
 
 ## [0.9.0] — 2026-10-27
 

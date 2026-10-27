@@ -72,6 +72,11 @@ type ProjectResources struct {
 	// from the journal beginning".
 	lastIndexedID atomic.Pointer[string]
 
+	// tailSeen is the active journal's size+mtime as of the last complete
+	// tail pass. An unchanged fingerprint means nothing was appended, so
+	// the pass is skipped without opening the journal at all.
+	tailSeen atomic.Pointer[journalFingerprint]
+
 	// tailStop cancels the index-tail goroutine on Close. Set by
 	// startIndexTail; safe to call even when nil (CancelFunc is
 	// idempotent).
@@ -530,8 +535,10 @@ var indexTailInterval = 3 * time.Second
 //
 // Why polling instead of fsnotify: the journal is a single file that
 // rotates infrequently; a 3 s poll Reads only the tail bytes since
-// the last cursor (Stream "from" skips past the matching ID), so the
-// per-tick cost on an idle project is one stat + one short read.
+// the last cursor, and an idle tick is one stat: tailOnce compares the
+// active file's size+mtime with the last complete pass and returns early.
+// A tick with new bytes skips rotated segments that end before the cursor
+// and reads pre-cursor lines by id only (core.Journal.Stream).
 // fsnotify would shave the latency at the cost of a platform-specific
 // dependency that this codebase avoids (ADR-0004 stdlib-only). When
 // agent-perceptible latency becomes an issue we revisit.
@@ -597,6 +604,13 @@ func (r *ProjectResources) catchUpIndex() bool {
 // best-effort and must never wedge the daemon. Reports whether the
 // stream could be opened.
 func (r *ProjectResources) tailOnce(ctx context.Context) bool {
+	// Idle fast path: one stat. Before it, every 3 s tick re-read and
+	// re-decoded the whole journal (Stream walks every segment from the top
+	// to find the cursor), per loaded project, forever.
+	fp, fpOK := statJournal(filepath.Join(r.ProjectPath, ".dfmt", "journal.jsonl"))
+	if seen := r.tailSeen.Load(); fpOK && seen != nil && *seen == fp {
+		return true
+	}
 	from := ""
 	if cur := r.lastIndexedID.Load(); cur != nil {
 		from = *cur
@@ -619,7 +633,29 @@ func (r *ProjectResources) tailOnce(ctx context.Context) bool {
 		id := newest
 		r.lastIndexedID.Store(&id)
 	}
+	// Record the fingerprint taken BEFORE streaming, and only for a pass
+	// that ran to the end: bytes appended mid-pass change the file after
+	// the stat, so the next tick sees a new fingerprint and reads them.
+	if fpOK && ctx.Err() == nil {
+		r.tailSeen.Store(&fp)
+	}
 	return true
+}
+
+// journalFingerprint identifies the active journal's on-disk state. The
+// journal is append-only, so any append changes the size, and a rotation
+// replaces the file (new mtime, new size).
+type journalFingerprint struct {
+	size    int64
+	modTime int64
+}
+
+func statJournal(path string) (journalFingerprint, bool) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return journalFingerprint{}, false
+	}
+	return journalFingerprint{size: info.Size(), modTime: info.ModTime().UnixNano()}, true
 }
 
 // stopIndexTail cancels the tail goroutine if running and waits for

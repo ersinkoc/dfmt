@@ -2,6 +2,7 @@ package core
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -10,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -312,21 +314,69 @@ func (j *journalImpl) Stream(ctx context.Context, from string) (<-chan Event, er
 			}
 		}()
 		foundFrom := from == ""
-		for _, seg := range segments {
-			done, err := streamFile(ctx, seg, ch, &foundFrom, from)
-			if err != nil {
-				// Skip an unreadable segment but continue with the rest —
-				// a single corrupt rotated file shouldn't black out all
-				// subsequent history.
-				continue
-			}
-			if done {
+		// First pass skips rotated segments that end before the cursor.
+		// A tail polls with the newest indexed ID every few seconds, and
+		// re-reading years of rotated history just to find that ID was the
+		// dominant idle cost of a daemon serving several projects.
+		if !foundFrom {
+			if streamSegments(ctx, segmentsAfter(segments, from), ch, &foundFrom, from) || foundFrom {
 				return
 			}
+			// The cursor was not where the segment names said it would be
+			// (they are the last APPENDED id, and concurrent appends can
+			// land out of order). Nothing was emitted — emission starts
+			// only after the cursor — so a full pass is still exact.
 		}
+		streamSegments(ctx, segments, ch, &foundFrom, from)
 	}()
 
 	return ch, nil
+}
+
+// streamSegments streams each file in order; it reports true when ctx
+// cancellation stopped it.
+func streamSegments(ctx context.Context, segs []string, ch chan<- Event, foundFrom *bool, from string) bool {
+	for _, seg := range segs {
+		done, err := streamFile(ctx, seg, ch, foundFrom, from)
+		if err != nil {
+			// Skip an unreadable segment but continue with the rest —
+			// a single corrupt rotated file shouldn't black out all
+			// subsequent history.
+			continue
+		}
+		if done {
+			return true
+		}
+	}
+	return false
+}
+
+// segmentsAfter drops rotated segments whose name — the id of the last
+// event appended to them — sorts before from: the cursor cannot be in them
+// if ids were appended in order. The active file (last) is always kept.
+// IDs are fixed-width and time-prefixed, so string order is time order.
+func segmentsAfter(segments []string, from string) []string {
+	if len(segments) <= 1 {
+		return segments
+	}
+	out := make([]string, 0, len(segments))
+	for _, seg := range segments[:len(segments)-1] {
+		if id := rotatedSegmentID(seg); id == "" || id >= from {
+			out = append(out, seg)
+		}
+	}
+	return append(out, segments[len(segments)-1])
+}
+
+// rotatedSegmentID extracts <id> from "journal.jsonl.<id>.jsonl"; "" when
+// the name has another shape (kept, never skipped).
+func rotatedSegmentID(path string) string {
+	name := filepath.Base(path)
+	name = strings.TrimSuffix(name, ".jsonl")
+	if i := strings.LastIndexByte(name, '.'); i >= 0 {
+		return name[i+1:]
+	}
+	return ""
 }
 
 // journalSegments returns the chronological list of journal files for active
@@ -370,6 +420,20 @@ func streamFile(ctx context.Context, path string, ch chan<- Event, foundFromPtr 
 		line := scanner.Bytes()
 		if len(line) == 0 {
 			continue
+		}
+
+		// Before the cursor, a line only needs its id. Decoding it and
+		// recomputing its signature (what Validate does) on every poll is
+		// what made an idle tail cost a full journal parse every tick.
+		// Events marshal with "id" first; any other shape falls through
+		// to the full decode below.
+		if !*foundFromPtr {
+			if id, ok := leadingEventID(line); ok {
+				if id == from {
+					*foundFromPtr = true
+				}
+				continue
+			}
 		}
 
 		// V-10: depth-checked decode. The journal is operator-trust-bounded
@@ -666,4 +730,19 @@ func (j *journalImpl) scanLastID() error {
 		return fmt.Errorf("seek end: %w", err)
 	}
 	return nil
+}
+
+// leadingEventID returns the id of a journal line shaped {"id":"<id>",…},
+// the shape json.Marshal gives core.Event. ok is false for anything else.
+func leadingEventID(line []byte) (string, bool) {
+	const prefix = `{"id":"`
+	if !bytes.HasPrefix(line, []byte(prefix)) {
+		return "", false
+	}
+	rest := line[len(prefix):]
+	end := bytes.IndexByte(rest, '"')
+	if end < 0 {
+		return "", false
+	}
+	return string(rest[:end]), true
 }

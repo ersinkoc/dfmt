@@ -193,6 +193,10 @@ Three things follow from that, and they are the reason retrieval works now:
 
 Note that `Recall` classifies each event (`classifier.Classify`) to pick its tier AND to label it. The stored `Priority` is not the effective one — `dfmt_remember` coerces every agent-written event to p3 (F-21) and the classifier re-elevates from tags — so rendering the stored value printed `[p3]` on lines sorted above `[p2]`.
 
+### Index tail (`internal/daemon/projectres.go::tailOnce`, `core.Journal.Stream`)
+
+Each loaded project polls its journal every 3 s. That used to mean a full parse each tick — `Stream` walked every segment from the top, decoding and signature-checking every line, to find the cursor. Now: an unchanged active file (size+mtime from the last *complete* pass, taken before streaming) returns after one `stat`; rotated segments whose name (the last *appended* id) sorts before the cursor are skipped, with a full second pass if the cursor was not found — names can mislead under out-of-order appends, and nothing is emitted before the cursor so the retry is exact; pre-cursor lines are matched by their leading `{"id":"…"` and never decoded. 152.8 ms → 0.59 ms per tick on 30k events in three segments. Rotated segments are still never deleted (retention is a roadmap item).
+
 ### Index retention (`internal/core/index.go`)
 
 At `MaxIndexDocs` (100k) the index evicts. Two rules there are load-bearing:
