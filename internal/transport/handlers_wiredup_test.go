@@ -263,3 +263,40 @@ func TestWireDedup_NoSessionFallsBackToDefault(t *testing.T) {
 		t.Errorf("default bucket should still dedupe; got %q", second.Content)
 	}
 }
+
+// TestWireDedup_ExcerptedReplyIsNotMarkedSent: a reply that carried only
+// summary/matches did not give the agent the content, so a second call with
+// a different intent must get its own excerpts, not "(unchanged)". ADR-0009
+// names "the same page from three angles" as a dedup case — calls two and
+// three returned nothing useful.
+func TestWireDedup_ExcerptedReplyIsNotMarkedSent(t *testing.T) {
+	body := "big body the agent never saw in full\n"
+	sb := &stubSandbox{
+		readResp: sandbox.ReadResp{
+			RawContent: body,
+			Summary:    "1 line",
+			Matches:    []sandbox.ContentMatch{{Text: "big body", Line: 1}},
+			Excerpted:  true,
+		},
+		execResp: sandbox.ExecResp{RawStdout: body, Summary: "1 line", Excerpted: true},
+	}
+	h := newWireDedupHandlers(t, sb)
+	ctx := context.Background()
+
+	for i, intent := range []string{"first angle", "second angle"} {
+		r, err := h.Read(ctx, ReadParams{Path: "big.txt", Intent: intent})
+		if err != nil {
+			t.Fatalf("Read %d: %v", i, err)
+		}
+		if r.Summary == sentUnchangedSummary || len(r.Matches) == 0 {
+			t.Errorf("Read %d (%s) was deduped against an excerpt-only reply: %+v", i, intent, r)
+		}
+		e, err := h.Exec(ctx, ExecParams{Code: "cat big.txt", Intent: intent})
+		if err != nil {
+			t.Fatalf("Exec %d: %v", i, err)
+		}
+		if e.Summary == sentUnchangedSummary {
+			t.Errorf("Exec %d (%s) was deduped against an excerpt-only reply", i, intent)
+		}
+	}
+}

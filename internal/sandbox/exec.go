@@ -303,6 +303,7 @@ func (s *SandboxImpl) execImpl(ctx context.Context, req ExecReq, rt Runtime) (Ex
 	return ExecResp{
 		Exit:       exitCode,
 		Stdout:     filtered.Body,
+		Excerpted:  !filtered.Complete,
 		RawStdout:  output,
 		Stderr:     stderrText,
 		Matches:    filtered.Matches,

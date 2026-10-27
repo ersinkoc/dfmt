@@ -359,6 +359,7 @@ func (s *SandboxImpl) Fetch(ctx context.Context, req FetchReq) (FetchResp, error
 		Status:     resp.StatusCode,
 		Headers:    headers,
 		Body:       filtered.Body,
+		Excerpted:  !filtered.Complete,
 		RawBody:    rawBody,
 		Matches:    filtered.Matches,
 		Summary:    filtered.Summary,

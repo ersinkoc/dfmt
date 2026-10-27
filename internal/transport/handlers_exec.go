@@ -195,7 +195,12 @@ func (h *Handlers) runExec(ctx context.Context, bundle Bundle, params ExecParams
 		core.KeyReturnedBytes: returnedBytes,
 	})
 
-	h.markSent(ctx, contentID)
+	// Only content the agent received whole may be answered with
+	// "(unchanged)" later: after a summary/matches-only reply, a second
+	// call with a different intent must get its own excerpts.
+	if !resp.Excerpted {
+		h.markSent(ctx, contentID)
+	}
 	return &ExecResponse{
 		Exit:       resp.Exit,
 		Stdout:     stdout,

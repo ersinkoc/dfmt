@@ -148,6 +148,7 @@ func (s *SandboxImpl) Read(ctx context.Context, req ReadReq) (ReadResp, error) {
 
 	return ReadResp{
 		Content:    filtered.Body,
+		Excerpted:  !filtered.Complete,
 		RawContent: content,
 		Matches:    filtered.Matches,
 		Summary:    filtered.Summary,

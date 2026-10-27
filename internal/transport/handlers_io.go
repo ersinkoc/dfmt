@@ -110,7 +110,12 @@ func (h *Handlers) Read(ctx context.Context, params ReadParams) (_ *ReadResponse
 		core.KeyReturnedBytes: returnedBytes,
 	})
 
-	h.markSent(ctx, contentID)
+	// Only content the agent received whole may be answered with
+	// "(unchanged)" later: after a summary/matches-only reply, a second
+	// call with a different intent must get its own excerpts.
+	if !resp.Excerpted {
+		h.markSent(ctx, contentID)
+	}
 	return &ReadResponse{
 		Content:    redContent,
 		Summary:    summary,
@@ -272,7 +277,12 @@ func (h *Handlers) Fetch(ctx context.Context, params FetchParams) (_ *FetchRespo
 		core.KeyReturnedBytes: returnedBytes,
 	})
 
-	h.markSent(ctx, contentID)
+	// Only content the agent received whole may be answered with
+	// "(unchanged)" later: after a summary/matches-only reply, a second
+	// call with a different intent must get its own excerpts.
+	if !resp.Excerpted {
+		h.markSent(ctx, contentID)
+	}
 	return &FetchResponse{
 		Status:     resp.Status,
 		Headers:    resp.Headers,

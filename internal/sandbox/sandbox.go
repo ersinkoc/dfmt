@@ -47,6 +47,11 @@ type ExecResp struct {
 	Vocabulary []string       // Distinctive terms
 	DurationMs int            // Execution duration in milliseconds
 	TimedOut   bool           // True if execution timed out
+	// Excerpted is true when the client body is absent or only a snippet
+	// (summary/matches/tail), i.e. the agent did NOT receive the whole
+	// content. Wire dedup must not answer a later call with "(unchanged)"
+	// for content the agent never had. Never sent to the client.
+	Excerpted bool
 }
 
 // ReadReq is a request to read a file.
@@ -84,6 +89,11 @@ type ReadResp struct {
 	// (line limit or byte ceiling) and the true total was never established.
 	// Reporting a partial count as the total would be worse than silence.
 	TotalLines int
+	// Excerpted is true when the client body is absent or only a snippet
+	// (summary/matches/tail), i.e. the agent did NOT receive the whole
+	// content. Wire dedup must not answer a later call with "(unchanged)"
+	// for content the agent never had. Never sent to the client.
+	Excerpted bool
 }
 
 // FetchReq is a request to fetch a URL.
@@ -110,6 +120,11 @@ type FetchResp struct {
 	Matches    []ContentMatch // Intent-matched excerpts
 	Vocabulary []string       // Distinctive terms
 	TimedOut   bool           // True if fetch timed out
+	// Excerpted is true when the client body is absent or only a snippet
+	// (summary/matches/tail), i.e. the agent did NOT receive the whole
+	// content. Wire dedup must not answer a later call with "(unchanged)"
+	// for content the agent never had. Never sent to the client.
+	Excerpted bool
 }
 
 // ContentMatch represents an intent-matched excerpt. Score is intentionally

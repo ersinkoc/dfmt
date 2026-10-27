@@ -54,6 +54,11 @@ Internal package shapes (`internal/...`) are NOT covered by SemVer.
   kept and the rest discarded with no marker, so a long `go test -v` lost
   its PASS/FAIL verdict. Stdout now keeps head and tail, with an in-band
   `(N bytes omitted)` marker and a note on stderr.
+- **Wire dedup answered `(unchanged)` for content the agent never had.**
+  Every reply marked its content_id as sent, including summary/matches-only
+  replies to large bodies, so re-reading the same file or page with a
+  different intent returned nothing. Only a reply that carried the whole
+  body is remembered now.
 
 ## [0.9.0] — 2026-10-27
 

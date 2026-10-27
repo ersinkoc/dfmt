@@ -310,6 +310,10 @@ type FilteredOutput struct {
 	Summary    string         // human-readable summary
 	Matches    []ContentMatch // intent-matched excerpts
 	Vocabulary []string       // distinctive-term vocabulary
+	// Complete is true when Body is the whole content, not the tail
+	// snippet the big tier falls back to. Wire dedup keys on it: only a
+	// complete body may later be answered with "(unchanged)".
+	Complete bool
 }
 
 // ApplyReturnPolicy is the single source of truth for how sandbox tools
@@ -343,6 +347,7 @@ func ApplyReturnPolicy(content, intent, returnMode string) FilteredOutput {
 	switch returnMode {
 	case "raw":
 		out.Body = content
+		out.Complete = true
 		return out
 	case "search":
 		if len(keywords) > 0 {
@@ -379,6 +384,7 @@ func ApplyReturnPolicy(content, intent, returnMode string) FilteredOutput {
 		contentTokens := ApproxTokens(content)
 		if contentTokens <= InlineTokenThreshold {
 			out.Body = content
+			out.Complete = true
 			return out
 		}
 		// Mid-tier: handful of matches + short vocab. Big-tier: 10/20
