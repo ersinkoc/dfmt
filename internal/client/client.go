@@ -284,7 +284,7 @@ func (c *Client) Remember(ctx context.Context, params transport.RememberParams) 
 	if params.ProjectID == "" {
 		params.ProjectID = c.projectID
 	}
-	body, err := c.doHTTP("/", transport.Request{
+	body, err := c.doHTTP(ctx, "/", transport.Request{
 		Method: "remember",
 		Params: mustMarshal(params),
 		ID:     1,
@@ -315,7 +315,7 @@ func (c *Client) Search(ctx context.Context, params transport.SearchParams) (*tr
 	if params.ProjectID == "" {
 		params.ProjectID = c.projectID
 	}
-	body, err := c.doHTTP("/", transport.Request{
+	body, err := c.doHTTP(ctx, "/", transport.Request{
 		Method: "search",
 		Params: mustMarshal(params),
 		ID:     1,
@@ -346,7 +346,7 @@ func (c *Client) Recall(ctx context.Context, params transport.RecallParams) (*tr
 	if params.ProjectID == "" {
 		params.ProjectID = c.projectID
 	}
-	body, err := c.doHTTP("/", transport.Request{
+	body, err := c.doHTTP(ctx, "/", transport.Request{
 		Method: "recall",
 		Params: mustMarshal(params),
 		ID:     1,
@@ -467,6 +467,15 @@ func DaemonRunning(projectPath string) bool {
 		return true
 	}
 
+	// An empty path asks about the global daemon only (LIF-10). Falling
+	// through would build `.dfmt/port` and `.dfmt/daemon.sock` relative to
+	// the CWD — answering "yes" about some project's legacy daemon, and
+	// letting the stale-PID cleanup below delete that project's pid file
+	// during a global probe.
+	if projectPath == "" {
+		return false
+	}
+
 	// Step 2: legacy per-project endpoint. Same shape as pre-Phase-2
 	// — read the port file (Windows) or build the socket path (Unix)
 	// and dial. A v0.3.x daemon that survived `setup --refresh` lands
@@ -549,7 +558,7 @@ func (c *Client) Stats(ctx context.Context, params transport.StatsParams) (*tran
 		params.ProjectID = c.projectID
 	}
 	// Use HTTP since daemon exposes HTTP endpoint
-	body, err := c.doHTTP("/api/stats", transport.Request{
+	body, err := c.doHTTP(ctx, "/api/stats", transport.Request{
 		Method: "stats",
 		Params: mustMarshal(params),
 		ID:     1,
@@ -589,7 +598,7 @@ func (c *Client) DropProject(ctx context.Context, projectPath string) (*transpor
 		return nil, fmt.Errorf("DropProject: projectPath required")
 	}
 	params := transport.DropProjectParams{ProjectID: projectPath}
-	body, err := c.doHTTP("/", transport.Request{
+	body, err := c.doHTTP(ctx, "/", transport.Request{
 		Method: "drop_project",
 		Params: mustMarshal(params),
 		ID:     1,
@@ -616,7 +625,7 @@ func (c *Client) Exec(ctx context.Context, params transport.ExecParams) (*transp
 	if params.ProjectID == "" {
 		params.ProjectID = c.projectID
 	}
-	body, err := c.doHTTPTimeout("/", transport.Request{
+	body, err := c.doHTTPTimeout(ctx, "/", transport.Request{
 		Method: "exec",
 		Params: mustMarshal(params),
 		ID:     1,
@@ -647,7 +656,7 @@ func (c *Client) Read(ctx context.Context, params transport.ReadParams) (*transp
 	if params.ProjectID == "" {
 		params.ProjectID = c.projectID
 	}
-	body, err := c.doHTTPTimeout("/", transport.Request{
+	body, err := c.doHTTPTimeout(ctx, "/", transport.Request{
 		Method: "read",
 		Params: mustMarshal(params),
 		ID:     1,
@@ -678,7 +687,7 @@ func (c *Client) Fetch(ctx context.Context, params transport.FetchParams) (*tran
 	if params.ProjectID == "" {
 		params.ProjectID = c.projectID
 	}
-	body, err := c.doHTTPTimeout("/", transport.Request{
+	body, err := c.doHTTPTimeout(ctx, "/", transport.Request{
 		Method: "fetch",
 		Params: mustMarshal(params),
 		ID:     1,
@@ -709,7 +718,7 @@ func (c *Client) Glob(ctx context.Context, params transport.GlobParams) (*transp
 	if params.ProjectID == "" {
 		params.ProjectID = c.projectID
 	}
-	body, err := c.doHTTPTimeout("/", transport.Request{
+	body, err := c.doHTTPTimeout(ctx, "/", transport.Request{
 		Method: "glob",
 		Params: mustMarshal(params),
 		ID:     1,
@@ -740,7 +749,7 @@ func (c *Client) Grep(ctx context.Context, params transport.GrepParams) (*transp
 	if params.ProjectID == "" {
 		params.ProjectID = c.projectID
 	}
-	body, err := c.doHTTPTimeout("/", transport.Request{
+	body, err := c.doHTTPTimeout(ctx, "/", transport.Request{
 		Method: "grep",
 		Params: mustMarshal(params),
 		ID:     1,
@@ -771,7 +780,7 @@ func (c *Client) Edit(ctx context.Context, params transport.EditParams) (*transp
 	if params.ProjectID == "" {
 		params.ProjectID = c.projectID
 	}
-	body, err := c.doHTTPTimeout("/", transport.Request{
+	body, err := c.doHTTPTimeout(ctx, "/", transport.Request{
 		Method: "edit",
 		Params: mustMarshal(params),
 		ID:     1,
@@ -802,7 +811,7 @@ func (c *Client) Write(ctx context.Context, params transport.WriteParams) (*tran
 	if params.ProjectID == "" {
 		params.ProjectID = c.projectID
 	}
-	body, err := c.doHTTPTimeout("/", transport.Request{
+	body, err := c.doHTTPTimeout(ctx, "/", transport.Request{
 		Method: "write",
 		Params: mustMarshal(params),
 		ID:     1,
@@ -865,8 +874,8 @@ const (
 // for metadata calls whose cost is bounded by the daemon's own work —
 // stats, search, recall, remember. Calls that run user-supplied work must
 // use doHTTPTimeout with a deadline derived from that work.
-func (c *Client) doHTTP(method string, req transport.Request) ([]byte, error) {
-	return c.doHTTPTimeout(method, req, c.timeout)
+func (c *Client) doHTTP(ctx context.Context, method string, req transport.Request) ([]byte, error) {
+	return c.doHTTPTimeout(ctx, method, req, c.timeout)
 }
 
 // doHTTPTimeout is doHTTP with an explicit per-call deadline.
@@ -882,7 +891,14 @@ func (c *Client) doHTTP(method string, req transport.Request) ([]byte, error) {
 // server-side and the client reported "context deadline exceeded", which
 // reads as a hung command; running a build or a test suite through
 // dfmt_exec was simply impossible, with no error naming the real limit.
-func (c *Client) doHTTPTimeout(method string, req transport.Request, timeout time.Duration) ([]byte, error) {
+//
+// ctx cancels the request (LIF-5): it used to be accepted by every RPC
+// method and dropped, so Ctrl-C in the MCP proxy and MCP
+// notifications/cancelled could never abort a running call.
+func (c *Client) doHTTPTimeout(ctx context.Context, method string, req transport.Request, timeout time.Duration) ([]byte, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	body, err := json.Marshal(req)
 	if err != nil {
 		return nil, err
@@ -905,7 +921,7 @@ func (c *Client) doHTTPTimeout(method string, req transport.Request, timeout tim
 		url = fmt.Sprintf("http://%s%s", c.address, method)
 	}
 
-	httpReq, err := http.NewRequest("POST", url, bytes.NewReader(body))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
@@ -930,8 +946,42 @@ func (c *Client) doHTTPTimeout(method string, req transport.Request, timeout tim
 	if int64(len(result)) > maxRPCResponseBytes {
 		return nil, fmt.Errorf("rpc response too large: exceeds %d bytes", maxRPCResponseBytes)
 	}
+	if err := checkRPCStatus(resp.StatusCode, result); err != nil {
+		return nil, err
+	}
 
 	return result, nil
+}
+
+// ErrUnauthorized reports that the daemon rejected the bearer token —
+// typically one read from the port file of a daemon that has since
+// restarted with a new one.
+var ErrUnauthorized = errors.New("daemon rejected the auth token")
+
+// checkRPCStatus turns a non-JSON HTTP failure into an error that names
+// its cause (LIF-9). The body used to go straight to json.Unmarshal, so a
+// 401 surfaced as `invalid character 'u' looking for beginning of value`.
+// JSON-RPC errors the daemon sends with a 4xx status still carry a JSON
+// body and pass through to the caller's decoder.
+func checkRPCStatus(code int, body []byte) error {
+	if code >= 200 && code < 300 {
+		return nil
+	}
+	switch code {
+	case http.StatusUnauthorized, http.StatusForbidden:
+		return fmt.Errorf("%w (HTTP %d): the daemon restarted or was replaced; re-run the command, or `dfmt stop` and retry",
+			ErrUnauthorized, code)
+	case http.StatusNotFound:
+		return fmt.Errorf("daemon does not serve this endpoint (HTTP 404): it is probably an older dfmt; run `dfmt stop` and retry")
+	}
+	if trimmed := bytes.TrimSpace(body); len(trimmed) > 0 && trimmed[0] == '{' {
+		return nil
+	}
+	snippet := bytes.TrimSpace(body)
+	if len(snippet) > 200 {
+		snippet = snippet[:200]
+	}
+	return fmt.Errorf("daemon returned HTTP %d: %s", code, snippet)
 }
 
 func mustMarshal(v any) json.RawMessage {

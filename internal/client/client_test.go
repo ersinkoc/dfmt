@@ -2842,3 +2842,35 @@ func TestClientConnectToUnixSocketRefused(t *testing.T) {
 		t.Error("Connect should fail when nothing accepting")
 	}
 }
+
+// LIF-10: DaemonRunning("") is a global probe. It must not answer about a
+// legacy daemon of whatever project the CWD is, nor delete that project's
+// pid file.
+func TestDaemonRunningEmptyPathIgnoresCWDProject(t *testing.T) {
+	if os.PathSeparator == '\\' {
+		t.Skip("uses a Unix socket")
+	}
+	proj := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(proj, ".dfmt"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ln, err := net.Listen("unix", project.SocketPath(proj))
+	if err != nil {
+		t.Skipf("listen: %v", err)
+	}
+	defer ln.Close()
+	pidFile := filepath.Join(proj, ".dfmt", "daemon.pid")
+	if err := os.WriteFile(pidFile, []byte("999999999"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(proj)
+
+	if DaemonRunning("") {
+		t.Error(`DaemonRunning("") reported the CWD project's legacy daemon as the global one`)
+	}
+	ln.Close()
+	_ = DaemonRunning("")
+	if _, err := os.Stat(pidFile); err != nil {
+		t.Errorf("global probe deleted the CWD project's pid file: %v", err)
+	}
+}

@@ -1,6 +1,7 @@
 package client
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -66,7 +67,7 @@ func TestDoHTTP_SendsSessionHeader(t *testing.T) {
 		sessionID: "test-session-zzz",
 	}
 
-	if _, err := c.doHTTP("/dfmt.stats", transport.Request{JSONRPC: "2.0", Method: "dfmt.stats", ID: 1}); err != nil {
+	if _, err := c.doHTTP(context.Background(), "/dfmt.stats", transport.Request{JSONRPC: "2.0", Method: "dfmt.stats", ID: 1}); err != nil {
 		t.Fatalf("doHTTP: %v", err)
 	}
 	if capturedHeader != "test-session-zzz" {
@@ -100,7 +101,7 @@ func TestDoHTTP_OmitsHeaderWhenSessionEmpty(t *testing.T) {
 		sessionID: "",
 	}
 
-	if _, err := c.doHTTP("/dfmt.stats", transport.Request{JSONRPC: "2.0", Method: "dfmt.stats", ID: 1}); err != nil {
+	if _, err := c.doHTTP(context.Background(), "/dfmt.stats", transport.Request{JSONRPC: "2.0", Method: "dfmt.stats", ID: 1}); err != nil {
 		t.Fatalf("doHTTP: %v", err)
 	}
 	if headerPresent {
