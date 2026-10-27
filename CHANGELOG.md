@@ -137,6 +137,18 @@ Internal package shapes (`internal/...`) are NOT covered by SemVer.
   absolute project root (`.dfmt/` or `.git/`), never `/` or the home
   directory — the daemon creates `.dfmt/` in whatever it is given and makes
   it the sandbox root. ADR-0029.
+- **A long-lived `dfmt mcp` went dead after the daemon was replaced.** A new
+  daemon mints a new auth token; the proxy kept sending the old one, and
+  since the daemon was alive the reconnect logic never retried, so every
+  tool call returned `HTTP 401` until the MCP server was reconnected by
+  hand (hit while upgrading this repo's own daemon). A 401 is rejected
+  before any handler runs, so the proxy now rebuilds its client and retries
+  once.
+- **`dfmt stop` force-killed a busy daemon on Linux/macOS.** It waited 5 s
+  after SIGINT while the daemon may take its 10 s shutdown grace, so a
+  daemon with an exec in flight was SIGKILLed mid-Stop (losing `index.gob`)
+  on every upgrade. It now waits up to 15 s, returning as soon as the
+  process exits; Windows keeps the short wait.
 
 ## [0.9.0] — 2026-10-27
 

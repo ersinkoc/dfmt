@@ -24,6 +24,16 @@ const (
 	// matches closeExtraProjects" — per projectres.go:108 comment.
 	PerProjectShutdown = 5 * time.Second
 
+	// GracefulStop is how long `dfmt stop` (and the upgrade restart) waits
+	// for the global daemon to exit after SIGINT before escalating to a
+	// forced kill, on platforms where the graceful signal works. It covers
+	// the daemon's default shutdown grace (10 s) plus one project's wind-
+	// down. The wait used to be RPC (5 s) — shorter than the daemon is
+	// allowed to take — so a daemon with an exec in flight was SIGKILLed
+	// mid-Stop, losing its index.gob, on every upgrade. Polling returns as
+	// soon as the process is gone, so a quick stop still takes ~100 ms.
+	GracefulStop = 15 * time.Second
+
 	// StatsTTL is how long Stats() returns the memoised result before
 	// re-streaming the journal. 5s keeps the dashboard's poll loop cheap.
 	StatsTTL = 5 * time.Second

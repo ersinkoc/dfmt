@@ -73,7 +73,7 @@ Invariants:
 - `acquireBackend` calls `ensureGlobalDaemon()` **unconditionally** — do not re-add a `if !client.DaemonRunning(...)` guard around it. A stale daemon *is* running, so that guard skips the version check on precisely the path that matters.
 - Compute the verdict once via `readGlobalDaemonInfo().Current`, never by comparing versions ad-hoc at a call site — that is how `doctor` could report "fine" about a daemon the next command was about to restart.
 
-On Windows the graceful stop cannot work for a `DETACHED_PROCESS` daemon (no console, so nothing can deliver a console control event), so `stopGlobalDaemon` waits 5 s and force-kills. That is expected and survivable: the journal is append-only and its reader already tolerates a truncated trailing line. The cost is a lost `index.gob` cache, rebuilt by journal replay on next start, once per upgrade.
+On Windows the graceful stop cannot work for a `DETACHED_PROCESS` daemon (no console, so nothing can deliver a console control event), so `stopGlobalDaemon` waits 5 s and force-kills. Elsewhere it waits `timeouts.GracefulStop` (15 s, covering the daemon's 10 s shutdown grace); a 5 s wait there SIGKILLed busy daemons mid-Stop. That is expected and survivable: the journal is append-only and its reader already tolerates a truncated trailing line. The cost is a lost `index.gob` cache, rebuilt by journal replay on next start, once per upgrade.
 
 `readGlobalDaemonInfo()` (`internal/cli/daemon.go`) is the single reader for "what is serving this host"; `status`, `list`, `dashboard`, and `doctor` all go through it so they cannot report different PIDs for the same process.
 
@@ -86,7 +86,8 @@ On Windows the graceful stop cannot work for a `DETACHED_PROCESS` daemon (no con
 Two rules there are load-bearing:
 
 - **Never parse the error to decide whether to retry.** Dial failures are wrapped, platform- and locale-specific strings. The wrapper instead asks `client.DaemonRunning` — the condition it can actually fix. If a daemon is reachable, the error came from the call and is returned untouched.
-- **Only a vanished daemon is retryable.** `dfmt_exec` and `dfmt_write` are not idempotent; retrying a policy denial or a failing command would double the side effects the first attempt already had. `StreamEvents` is exempt from retry entirely (re-subscribing would restart the event position).
+- **A replaced daemon is retryable too** — `client.ErrUnauthorized` (401/403, checked with `errors.Is`) means the daemon restarted with a new token; the request was refused in `wrapSecurity` before any handler ran, so one retry with a rebuilt client is safe. Without it, every call after an upgrade restart returned 401 for the rest of the session.
+- **Otherwise only a vanished daemon is retryable.** `dfmt_exec` and `dfmt_write` are not idempotent; retrying a policy denial or a failing command would double the side effects the first attempt already had. `StreamEvents` is exempt from retry entirely (re-subscribing would restart the event position).
 
 Both mechanisms are recorded in [ADR-0022](docs/adr/0022-daemon-identity-and-resilient-proxy.md).
 

@@ -25,6 +25,7 @@ import (
 	"github.com/ersinkoc/dfmt/internal/logging"
 	"github.com/ersinkoc/dfmt/internal/osutil"
 	"github.com/ersinkoc/dfmt/internal/project"
+	"github.com/ersinkoc/dfmt/internal/timeouts"
 	"github.com/ersinkoc/dfmt/internal/transport"
 	"github.com/ersinkoc/dfmt/internal/version"
 )
@@ -1180,7 +1181,7 @@ func stopGlobalDaemon() int {
 
 	signalStopProcess(pid, false)
 	fmt.Printf("Sent stop signal to global daemon (PID %d)\n", pid)
-	waitForGlobalExit(pid, rpcTimeout)
+	waitForGlobalExit(pid, gracefulStopWait())
 
 	if isProcessRunning(pid) {
 		fmt.Printf("Global daemon still running after graceful stop; escalating to forced kill\n")
@@ -1405,4 +1406,15 @@ func runList(args []string) int {
 		}
 	}
 	return 0
+}
+
+// gracefulStopWait is how long to wait for the daemon to exit on its own.
+// On Windows a DETACHED_PROCESS daemon has no console to receive the
+// graceful event, so waiting longer only delays the forced kill that has
+// to follow anyway; elsewhere the daemon is given its full shutdown grace.
+func gracefulStopWait() time.Duration {
+	if osutil.IsWindows() {
+		return rpcTimeout
+	}
+	return timeouts.GracefulStop
 }
