@@ -3,8 +3,10 @@ package cli
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
+	"github.com/ersinkoc/dfmt/internal/client"
 	"github.com/ersinkoc/dfmt/internal/core"
 	"github.com/ersinkoc/dfmt/internal/transport"
 )
@@ -206,5 +208,35 @@ func TestReconnectingBackendDelegatesEveryMethod(t *testing.T) {
 				t.Errorf("err = %v, want the inner backend's error (proof of delegation)", err)
 			}
 		})
+	}
+}
+
+// unauthorizedBackend answers every Exec like a daemon that restarted with
+// a new token.
+type unauthorizedBackend struct{ fakeBackend }
+
+func (u *unauthorizedBackend) Exec(context.Context, transport.ExecParams) (*transport.ExecResponse, error) {
+	u.calls++
+	return nil, fmt.Errorf("%w (HTTP 401): the daemon restarted", client.ErrUnauthorized)
+}
+
+// TestReconnectingBackendRecoversFromReplacedDaemon: after the daemon was
+// replaced (upgrade restart), the proxy kept the old token and every call
+// got 401 for the rest of the session, because the daemon was alive and
+// only a vanished one was retried. Observed live in this repo's own session.
+func TestReconnectingBackendRecoversFromReplacedDaemon(t *testing.T) {
+	stale := &unauthorizedBackend{}
+	live := &fakeBackend{}
+	b := newReconnectingBackend(t.TempDir(), stale)
+	b.daemonAlive = func(string) bool { return true } // the NEW daemon is up
+	b.ensure = func() error { return nil }
+	b.dial = func(string) transport.Backend { return live }
+
+	resp, err := b.Exec(context.Background(), transport.ExecParams{Code: "echo hi"})
+	if err != nil {
+		t.Fatalf("Exec after token change: %v", err)
+	}
+	if resp.Stdout != "ok" || stale.calls != 1 || live.calls != 1 {
+		t.Errorf("resp=%+v stale=%d live=%d, want one retry on the fresh client", resp, stale.calls, live.calls)
 	}
 }

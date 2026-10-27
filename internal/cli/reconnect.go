@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"sync"
 
 	"github.com/ersinkoc/dfmt/internal/client"
@@ -131,6 +132,20 @@ func callRetrying[P any, R any](
 	resp, err := pick(be)(ctx, params)
 	if err == nil {
 		return resp, nil
+	}
+	// A replaced daemon is retryable too. It mints a new auth token on
+	// start, and this long-lived client still sends the old one, so after
+	// an upgrade restart (or any respawn by another dfmt command) every
+	// call was refused with 401 for the rest of the session — the daemon
+	// IS alive, so the check below never let it reconnect. The rejection
+	// happens in wrapSecurity before any handler runs, so the request had
+	// no side effects and one retry with a re-read token is safe. The test
+	// is on the typed error, never its text.
+	if errors.Is(err, client.ErrUnauthorized) {
+		if fresh := b.renew(); fresh != nil {
+			return pick(fresh)(ctx, params)
+		}
+		return resp, err
 	}
 	// Only a vanished daemon is retryable. A policy denial, a bad path, or a
 	// failing command must surface immediately and unchanged — retrying them
