@@ -444,3 +444,25 @@ func TestSuggestToolchainDirs_DelegatesToHelper(t *testing.T) {
 
 // silence unused import on platforms where strings doesn't get hit.
 var _ = strings.HasPrefix
+
+// CAP-1: an enabled capture.fs on a platform without a watcher is a
+// failing doctor row, not silence.
+func TestFSCaptureCheck(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, ".dfmt"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if ok, _ := fsCaptureCheck(dir, false); !ok {
+		t.Error("capture.fs off must pass whatever the platform")
+	}
+	cfg := "version: 1\ncapture:\n  fs:\n    enabled: true\n"
+	if err := os.WriteFile(filepath.Join(dir, ".dfmt", "config.yaml"), []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if ok, msg := fsCaptureCheck(dir, false); ok || !strings.Contains(msg, "no filesystem watcher") {
+		t.Errorf("enabled without a watcher = %v, %q; want a failing row", ok, msg)
+	}
+	if ok, _ := fsCaptureCheck(dir, true); !ok {
+		t.Error("enabled with a watcher must pass")
+	}
+}

@@ -5,6 +5,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -85,9 +86,23 @@ func NewFSWatcher(path string, ignore []string, debounceMs int) (*FSWatcher, err
 	}
 	if initWatcher != nil {
 		initWatcher(w)
+	} else {
+		unsupportedOnce.Do(func() {
+			logging.Warnf("capture.fs.enabled is set, but dfmt has no filesystem watcher on %s; "+
+				"file changes are not captured", runtime.GOOS)
+		})
 	}
 	return w, nil
 }
+
+// unsupportedOnce limits the no-watcher warning to one per process; the
+// daemon builds a watcher per loaded project.
+var unsupportedOnce sync.Once
+
+// WatcherSupported reports whether this platform has a filesystem watcher
+// (Linux inotify, Windows polling). Elsewhere — macOS — an enabled
+// capture.fs used to be a silent no-op (CAP-1).
+func WatcherSupported() bool { return initWatcher != nil }
 
 // addWatchedPath records a directory that now has a live watcher. Called by
 // platform-specific watchDir implementations after a successful add.

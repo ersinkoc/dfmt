@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ersinkoc/dfmt/internal/capture"
 	"github.com/ersinkoc/dfmt/internal/client"
 	"github.com/ersinkoc/dfmt/internal/config"
 	"github.com/ersinkoc/dfmt/internal/daemon"
@@ -175,6 +176,9 @@ func coreChecks(p doctorPaths) []doctorCheck {
 				return false, "config nil"
 			}
 			return true, fmt.Sprintf("durability=%s", cfg.Storage.Durability)
+		}},
+		{"Filesystem capture", func() (bool, string) {
+			return fsCaptureCheck(p.dir, capture.WatcherSupported())
 		}},
 		{".dfmt directory", func() (bool, string) {
 			fi, err := os.Stat(p.dfmtDir)
@@ -1062,4 +1066,19 @@ func goToolchainAtLeast(version string, wantMajor, wantMinor, wantPatch int) boo
 		return min > wantMinor
 	}
 	return patch >= wantPatch
+}
+
+// fsCaptureCheck reports capture.fs against what this platform can do.
+// With no watcher (macOS) an enabled capture.fs captured nothing and said
+// nothing (CAP-1); doctor is where the operator looks for that.
+func fsCaptureCheck(dir string, supported bool) (bool, string) {
+	cfg, err := config.Load(dir)
+	if err != nil || cfg == nil || !cfg.Capture.FS.Enabled {
+		return true, "(off)"
+	}
+	if !supported {
+		return false, fmt.Sprintf("capture.fs.enabled is set, but there is no filesystem watcher on %s; "+
+			"file changes are not captured", runtime.GOOS)
+	}
+	return true, "on"
 }
