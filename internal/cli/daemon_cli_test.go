@@ -455,7 +455,7 @@ func TestStripGlobalFlags_RemovesProjectWithValue(t *testing.T) {
 	t.Cleanup(func() {
 		flagProject = prevProject
 		if hadEnv {
-			os.Setenv("DFMT_PROJECT", prevEnv)
+			t.Setenv("DFMT_PROJECT", prevEnv)
 		} else {
 			os.Unsetenv("DFMT_PROJECT")
 		}

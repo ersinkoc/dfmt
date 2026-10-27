@@ -229,6 +229,11 @@ const (
 	// AgentTarget and never deletes or restores the file — the user owns
 	// everything else in it, including changes made after setup.
 	FileKindAgentConfig = "agent-config"
+
+	// FileKindGitHook: a git hook from `dfmt install-hooks`. Uninstall
+	// removes it only while it still carries GitHookMarker, and moves back
+	// the user's hook it displaced (UninstallGitHook).
+	FileKindGitHook = "git-hook"
 )
 
 // FileEntry records a file written by setup.

@@ -87,12 +87,26 @@ func runInstallHooks(args []string) int {
 		return 1
 	}
 
-	hooksDir := filepath.Join(proj, ".git", "hooks")
-	if err := os.MkdirAll(hooksDir, 0755); err != nil {
+	hooksDir, err := setup.GitHooksDir(proj)
+	if errors.Is(err, setup.ErrHooksManaged) {
+		// husky, lefthook, a shared hooks dir: those files are tracked in
+		// the repo or owned by a hook manager. Say what to add instead of
+		// writing hooks git would never run from .git/hooks.
+		fmt.Fprintf(os.Stderr, "Git hooks in this repository run from %s (core.hooksPath), which dfmt does not modify.\n", hooksDir)
+		fmt.Fprintln(os.Stderr, "To record commits, add this line to your post-commit hook there:")
+		fmt.Fprintf(os.Stderr, "  %s\n", gitCommitCaptureLine)
+		return 1
+	}
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		return 1
 	}
 
+	m, err := setup.LoadManifest()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: load manifest: %v\n", err)
+		return 1
+	}
 	hooks := []string{"post-commit", "post-checkout", "pre-push"}
 	for _, hook := range hooks {
 		content := readHookFile("git-" + hook + ".sh")
@@ -103,16 +117,29 @@ func runInstallHooks(args []string) int {
 		// Hooks use 'dfmt' from PATH (not pinned to a specific binary)
 		content = installHookContent(content, "")
 		dst := filepath.Join(hooksDir, hook)
-		if err := os.WriteFile(dst, []byte(content), 0755); err != nil {
-			fmt.Fprintf(os.Stderr, "error: writing %s: %v\n", dst, err)
+		// Manifest row first, as for agent configs: a failed save must not
+		// leave a hook that uninstall cannot find.
+		m.AddFile(setup.FileEntry{Path: dst, Agent: "git", Version: "1", Kind: setup.FileKindGitHook})
+		if err := setup.SaveManifest(m); err != nil {
+			fmt.Fprintf(os.Stderr, "error: save manifest: %v\n", err)
 			return 1
 		}
-		fmt.Printf("Installed %s\n", hook)
+		action, err := setup.InstallGitHook(hooksDir, hook, content)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: %s: %v\n", hook, err)
+			return 1
+		}
+		fmt.Printf("%s: %s\n", hook, action)
 	}
 
 	fmt.Println("Git hooks installed")
 	return 0
 }
+
+// gitCommitCaptureLine is the one line a hook-manager-owned post-commit
+// hook needs to record commits.
+const gitCommitCaptureLine = `command -v dfmt >/dev/null && ` +
+	`dfmt capture git commit "$(git rev-parse HEAD)" "$(git log -1 --format=%s)" 2>/dev/null &`
 
 // installHookContent keeps hooks using dfmt from PATH.
 // The dfmtBin parameter is ignored — hooks always use 'dfmt' from PATH.
@@ -620,6 +647,13 @@ func runSetupUninstall() int {
 				continue
 			}
 			fmt.Printf("stripped DFMT block: %s\n", f.Path)
+
+		case setup.FileKindGitHook:
+			if err := setup.UninstallGitHook(f.Path); err != nil {
+				fmt.Fprintf(os.Stderr, "error removing git hook %s: %v\n", f.Path, err)
+				continue
+			}
+			fmt.Printf("removed git hook: %s\n", f.Path)
 
 		case setup.FileKindAgentConfig:
 			target, ok := setup.AgentTargetFor(f.Agent)

@@ -2,6 +2,13 @@
 # DFMT git post-commit hook
 # Records git commit events to the DFMT journal
 
+# Run the hook this one took the place of (moved aside by
+# `dfmt install-hooks`), with the same arguments and stdin. Its failure is
+# this hook's failure, so a pre-push check the user relied on still blocks.
+if [ -x "$0.pre-dfmt" ]; then
+    "$0.pre-dfmt" "$@" || exit $?
+fi
+
 # Get the commit hash
 COMMIT_HASH=$(git rev-parse HEAD 2>/dev/null)
 if [ -z "$COMMIT_HASH" ]; then

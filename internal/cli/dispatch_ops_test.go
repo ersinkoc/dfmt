@@ -437,7 +437,7 @@ func TestCheckInstructionBlockStalenessNoManifest(t *testing.T) {
 
 func TestCheckInstructionBlockStalenessEmptyManifest(t *testing.T) {
 	tmpDir := t.TempDir()
-	os.Setenv("XDG_DATA_HOME", tmpDir)
+	t.Setenv("XDG_DATA_HOME", tmpDir)
 	defer func() { os.Unsetenv("XDG_DATA_HOME") }()
 
 	manifestDir := tmpDir + "/dfmt"
@@ -835,8 +835,8 @@ func TestConfigureClaudeCodeBackupFailure(t *testing.T) {
 	os.MkdirAll(readOnlyDir, 0555)
 
 	// Patch the home dir via environment
-	os.Setenv("HOME", tmpDir)
-	os.Setenv("USERPROFILE", tmpDir)
+	t.Setenv("HOME", tmpDir)
+	t.Setenv("USERPROFILE", tmpDir)
 	defer func() {
 		os.Unsetenv("HOME")
 		os.Unsetenv("USERPROFILE")
@@ -866,7 +866,7 @@ func TestRunSetupVerifyMissingFilesOps(t *testing.T) {
 
 	// Isolate manifest to this test's temp dir so previous tests' manifests
 	// don't pollute the global ~/.dfmt/setup-manifest.json
-	os.Setenv("XDG_DATA_HOME", tmpDir)
+	t.Setenv("XDG_DATA_HOME", tmpDir)
 	defer os.Unsetenv("XDG_DATA_HOME")
 
 	manifestDir := filepath.Join(tmpDir, "dfmt")

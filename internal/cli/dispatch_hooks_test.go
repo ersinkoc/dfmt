@@ -98,9 +98,9 @@ func TestCheckInstructionBlockStaleness_NoManifest(t *testing.T) {
 	t.Setenv("USERPROFILE", tmp)
 	t.Setenv("XDG_DATA_HOME", tmp)
 	t.Cleanup(func() {
-		os.Setenv("HOME", prevHome)
-		os.Setenv("USERPROFILE", prevUserprofile)
-		os.Setenv("XDG_DATA_HOME", prevXDG)
+		t.Setenv("HOME", prevHome)
+		t.Setenv("USERPROFILE", prevUserprofile)
+		t.Setenv("XDG_DATA_HOME", prevXDG)
 	})
 
 	defer func() {

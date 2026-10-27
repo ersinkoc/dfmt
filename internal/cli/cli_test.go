@@ -1427,7 +1427,7 @@ func TestRunSetupUninstallEmptyManifest(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	// Override manifest path to temp
-	os.Setenv("XDG_DATA_HOME", tmpDir)
+	t.Setenv("XDG_DATA_HOME", tmpDir)
 	defer os.Unsetenv("XDG_DATA_HOME")
 
 	// Create empty manifest dir
@@ -1449,7 +1449,7 @@ func TestRunSetupUninstallWithFiles(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	// Override manifest path
-	os.Setenv("XDG_DATA_HOME", tmpDir)
+	t.Setenv("XDG_DATA_HOME", tmpDir)
 	defer os.Unsetenv("XDG_DATA_HOME")
 
 	// Create manifest dir
@@ -1479,7 +1479,7 @@ func TestRunSetupUninstallWithFiles(t *testing.T) {
 func TestRunSetupVerifyEmptyManifest(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	os.Setenv("XDG_DATA_HOME", tmpDir)
+	t.Setenv("XDG_DATA_HOME", tmpDir)
 	defer os.Unsetenv("XDG_DATA_HOME")
 
 	manifestDir := filepath.Join(tmpDir, "dfmt")
@@ -1496,7 +1496,7 @@ func TestRunSetupVerifyEmptyManifest(t *testing.T) {
 func TestRunSetupVerifyMissingFiles(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	os.Setenv("XDG_DATA_HOME", tmpDir)
+	t.Setenv("XDG_DATA_HOME", tmpDir)
 	defer os.Unsetenv("XDG_DATA_HOME")
 
 	manifestDir := filepath.Join(tmpDir, "dfmt")
@@ -1521,7 +1521,7 @@ func TestRunSetupVerifyMissingFiles(t *testing.T) {
 func TestRunSetupVerifyAllPresent(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	os.Setenv("XDG_DATA_HOME", tmpDir)
+	t.Setenv("XDG_DATA_HOME", tmpDir)
 	defer os.Unsetenv("XDG_DATA_HOME")
 
 	manifestDir := filepath.Join(tmpDir, "dfmt")
@@ -1567,7 +1567,7 @@ func TestConfigureAgentClaudeCode(t *testing.T) {
 	home := tmpDir
 
 	// Override home for this test
-	os.Setenv("HOME", home)
+	t.Setenv("HOME", home)
 	defer os.Unsetenv("HOME")
 
 	// Create .claude directory
@@ -1600,7 +1600,7 @@ func TestConfigureClaudeCodeNewDir(t *testing.T) {
 	tmpDir := t.TempDir()
 	home := tmpDir
 
-	os.Setenv("HOME", home)
+	t.Setenv("HOME", home)
 	defer os.Unsetenv("HOME")
 
 	// Create non-existent .claude path
@@ -1636,7 +1636,7 @@ func TestConfigureClaudeCodeExisting(t *testing.T) {
 	tmpDir := t.TempDir()
 	home := tmpDir
 
-	os.Setenv("HOME", home)
+	t.Setenv("HOME", home)
 	defer os.Unsetenv("HOME")
 
 	// Pre-create .claude directory
@@ -1960,9 +1960,9 @@ func TestConfigureClaudeCodeInvalidHome(t *testing.T) {
 
 	// Set HOME to a path that cannot be used
 	if os.PathSeparator == '\\' {
-		os.Setenv("USERPROFILE", "/invalid/path")
+		t.Setenv("USERPROFILE", "/invalid/path")
 	} else {
-		os.Setenv("HOME", "/invalid/path")
+		t.Setenv("HOME", "/invalid/path")
 	}
 
 	agent := setup.Agent{
@@ -1977,11 +1977,11 @@ func TestConfigureClaudeCodeInvalidHome(t *testing.T) {
 	// Restore
 	if os.PathSeparator == '\\' {
 		if origProfile != "" {
-			os.Setenv("USERPROFILE", origProfile)
+			t.Setenv("USERPROFILE", origProfile)
 		}
 	} else {
 		if origHome != "" {
-			os.Setenv("HOME", origHome)
+			t.Setenv("HOME", origHome)
 		}
 	}
 
@@ -2040,7 +2040,7 @@ func TestRunSetupAbort(t *testing.T) {
 
 	// Override HOME to make detection find our hook files
 	origHome := os.Getenv("HOME")
-	os.Setenv("HOME", tmpDir)
+	t.Setenv("HOME", tmpDir)
 	defer os.Setenv("HOME", origHome)
 
 	// Mock user home dir by creating the structure
@@ -2490,7 +2490,7 @@ func TestRunSetupConfigureAgentError(t *testing.T) {
 
 	// Set HOME so agent detection finds something
 	origHome := os.Getenv("HOME")
-	os.Setenv("HOME", tmpDir)
+	t.Setenv("HOME", tmpDir)
 	defer os.Setenv("HOME", origHome)
 
 	// Create hook files
@@ -2511,7 +2511,7 @@ func TestRunSetupDryRunWithAgents(t *testing.T) {
 	os.WriteFile(hooksDir+"/bash.sh", []byte("#!/bin/bash\n"), 0644)
 
 	origHome := os.Getenv("HOME")
-	os.Setenv("HOME", tmpDir)
+	t.Setenv("HOME", tmpDir)
 	defer os.Setenv("HOME", origHome)
 
 	flagProject = tmpDir
@@ -3022,7 +3022,7 @@ func TestRunSetupWithVerifyAndUninstall(t *testing.T) {
 func TestRunSetupUninstallWithManifestLoadError(t *testing.T) {
 	// Set manifest path to something that will fail to load
 	flagProject = "/nonexistent/project"
-	os.Setenv("XDG_DATA_HOME", "/invalid/path/that/cannot/exist/12345")
+	t.Setenv("XDG_DATA_HOME", "/invalid/path/that/cannot/exist/12345")
 	defer os.Unsetenv("XDG_DATA_HOME")
 
 	code := Dispatch([]string{"setup", "--uninstall"})
@@ -3034,7 +3034,7 @@ func TestRunSetupUninstallWithManifestLoadError(t *testing.T) {
 func TestRunSetupUninstallWithFileRemovalError(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	os.Setenv("XDG_DATA_HOME", tmpDir)
+	t.Setenv("XDG_DATA_HOME", tmpDir)
 	defer os.Unsetenv("XDG_DATA_HOME")
 
 	manifestDir := filepath.Join(tmpDir, "dfmt")
@@ -3206,7 +3206,7 @@ func TestRunMCPWithDaemonRunningAndSocketError(t *testing.T) {
 func TestRunSetupUninstallXDGDataHome(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	os.Setenv("XDG_DATA_HOME", tmpDir)
+	t.Setenv("XDG_DATA_HOME", tmpDir)
 	defer os.Unsetenv("XDG_DATA_HOME")
 
 	manifestDir := filepath.Join(tmpDir, "dfmt")
@@ -3263,14 +3263,14 @@ func TestRunSetupWithManifestLoadError(t *testing.T) {
 	os.MkdirAll(hooksDir, 0755)
 
 	origHome := os.Getenv("HOME")
-	os.Setenv("HOME", tmpDir)
+	t.Setenv("HOME", tmpDir)
 	defer os.Setenv("HOME", origHome)
 
 	// Create hook file so agent is detected
 	os.WriteFile(hooksDir+"/bash.sh", []byte("#!/bin/bash\n"), 0644)
 
 	// Set invalid XDG_DATA_HOME so manifest loading fails
-	os.Setenv("XDG_DATA_HOME", "/invalid/path/that/cannot/exist")
+	t.Setenv("XDG_DATA_HOME", "/invalid/path/that/cannot/exist")
 	defer os.Unsetenv("XDG_DATA_HOME")
 
 	flagProject = tmpDir
@@ -3297,7 +3297,7 @@ func TestRunSetupDetectAgentsFails(t *testing.T) {
 
 	// Override HOME to an invalid path so detection fails
 	origHome := os.Getenv("HOME")
-	os.Setenv("HOME", "/nonexistent/home/path")
+	t.Setenv("HOME", "/nonexistent/home/path")
 	defer os.Setenv("HOME", origHome)
 
 	flagProject = tmpDir
@@ -3599,7 +3599,7 @@ func TestRunRecallWithSmallBudget(t *testing.T) {
 func TestRunSetupUninstallWithEmptyFilesList(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	os.Setenv("XDG_DATA_HOME", tmpDir)
+	t.Setenv("XDG_DATA_HOME", tmpDir)
 	defer os.Unsetenv("XDG_DATA_HOME")
 
 	manifestDir := filepath.Join(tmpDir, "dfmt")
@@ -3622,7 +3622,7 @@ func TestRunSetupUninstallWithEmptyFilesList(t *testing.T) {
 func TestRunSetupUninstallWithXDGDataHomeSet(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	os.Setenv("XDG_DATA_HOME", tmpDir)
+	t.Setenv("XDG_DATA_HOME", tmpDir)
 	defer os.Unsetenv("XDG_DATA_HOME")
 
 	manifestDir := filepath.Join(tmpDir, "dfmt")
@@ -3654,7 +3654,7 @@ func TestRunSetupUninstallWithXDGDataHomeSet(t *testing.T) {
 func TestRunSetupVerifyWithMixedFiles(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	os.Setenv("XDG_DATA_HOME", tmpDir)
+	t.Setenv("XDG_DATA_HOME", tmpDir)
 	defer os.Unsetenv("XDG_DATA_HOME")
 
 	manifestDir := filepath.Join(tmpDir, "dfmt")
@@ -3683,7 +3683,7 @@ func TestRunSetupVerifyWithMixedFiles(t *testing.T) {
 func TestRunSetupVerifyWithAllFilesPresent(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	os.Setenv("XDG_DATA_HOME", tmpDir)
+	t.Setenv("XDG_DATA_HOME", tmpDir)
 	defer os.Unsetenv("XDG_DATA_HOME")
 
 	manifestDir := filepath.Join(tmpDir, "dfmt")
@@ -3895,7 +3895,7 @@ func TestRunSetupWithDryRun(t *testing.T) {
 
 	// Override HOME to make detection find our files
 	origHome := os.Getenv("HOME")
-	os.Setenv("HOME", tmpDir)
+	t.Setenv("HOME", tmpDir)
 	defer os.Setenv("HOME", origHome)
 
 	flagProject = tmpDir
@@ -4053,7 +4053,7 @@ func TestRunConfigWithMissingProject(t *testing.T) {
 func TestRunSetupVerifyWithEmptyManifest(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	os.Setenv("XDG_DATA_HOME", tmpDir)
+	t.Setenv("XDG_DATA_HOME", tmpDir)
 	defer os.Unsetenv("XDG_DATA_HOME")
 
 	manifestDir := filepath.Join(tmpDir, "dfmt")
@@ -4081,7 +4081,7 @@ func TestRunSetupVerifyWithEmptyManifest(t *testing.T) {
 func TestRunSetupUninstallWithEmptyManifestFiles(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	os.Setenv("XDG_DATA_HOME", tmpDir)
+	t.Setenv("XDG_DATA_HOME", tmpDir)
 	defer os.Unsetenv("XDG_DATA_HOME")
 
 	manifestDir := filepath.Join(tmpDir, "dfmt")
@@ -4542,7 +4542,7 @@ func TestRunSetupConfigureAgentsFlow(t *testing.T) {
 func TestRunSetupVerifyAllFilesPresent(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	os.Setenv("XDG_DATA_HOME", tmpDir)
+	t.Setenv("XDG_DATA_HOME", tmpDir)
 	defer func() { os.Unsetenv("XDG_DATA_HOME") }()
 
 	manifestDir := filepath.Join(tmpDir, "dfmt")
@@ -4570,7 +4570,7 @@ func TestRunSetupVerifyAllFilesPresent(t *testing.T) {
 func TestRunSetupUninstallNormalFlow(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	os.Setenv("XDG_DATA_HOME", tmpDir)
+	t.Setenv("XDG_DATA_HOME", tmpDir)
 	defer func() { os.Unsetenv("XDG_DATA_HOME") }()
 
 	manifestDir := filepath.Join(tmpDir, "dfmt")
@@ -4692,14 +4692,14 @@ func TestGetProjectReadsEnv(t *testing.T) {
 	t.Cleanup(func() {
 		flagProject = prevFlag
 		if hadEnv {
-			os.Setenv("DFMT_PROJECT", prevEnv)
+			t.Setenv("DFMT_PROJECT", prevEnv)
 		} else {
 			os.Unsetenv("DFMT_PROJECT")
 		}
 	})
 	flagProject = ""
 	tmp := t.TempDir()
-	os.Setenv("DFMT_PROJECT", tmp)
+	t.Setenv("DFMT_PROJECT", tmp)
 	got, err := getProject()
 	if err != nil {
 		t.Fatalf("getProject() error: %v", err)
