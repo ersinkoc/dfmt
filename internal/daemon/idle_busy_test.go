@@ -70,4 +70,13 @@ func TestIdleMonitorSparesInFlightWork(t *testing.T) {
 	if d.running.Load() {
 		t.Error("daemon never idle-exited after the job finished")
 	}
+	// running flips false when Stop STARTS; Done closes when it has
+	// finished. Returning earlier let TempDir's cleanup race the idle
+	// Stop's index persist (macOS CI: "unlinkat .dfmt: directory not
+	// empty").
+	select {
+	case <-d.Done():
+	case <-time.After(15 * time.Second):
+		t.Error("idle Stop never finished")
+	}
 }
