@@ -64,6 +64,12 @@ jobs:
         if: matrix.os == 'ubuntu-latest' && matrix.go == '1.26'
         run: go run scripts/coverage-gate.go cover.out
 
+      - name: Coverage detail (internal/cli, temporary)
+        # Temporary: CI measures internal/cli ~3 points below an identical
+        # local run; dump per-function numbers to find the difference.
+        if: matrix.os == 'ubuntu-latest' && matrix.go == '1.26'
+        run: go tool cover -func=cover.out | grep '/internal/cli/'
+
       - name: Race detector (non-blocking)
         # Run with -race only on Linux + the newer Go. Race is a v1.0 hard
         # requirement (see ROADMAP.md § CI hardening); start non-blocking

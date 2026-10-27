@@ -284,10 +284,14 @@ func TestCLIDashboardWithoutDaemon(t *testing.T) {
 	flagProject, flagJSON = proj, false
 	t.Cleanup(func() { flagProject, flagJSON = prev, prevJSON })
 
-	var code int
-	out := captureStdout(t, func() { code = Dispatch([]string{"dashboard"}) })
-	if code == 0 && strings.Contains(out, "http://127.0.0.1") {
-		t.Errorf("dashboard printed a URL with no daemon running: %q", out)
+	// The legacy registry is process-wide and other tests leave rows in it
+	// (on Windows it is not under the dirs isolated above), so assert only
+	// about THIS project: no URL may be offered for it.
+	out := captureStdout(t, func() { _ = Dispatch([]string{"dashboard"}) })
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, "http") && strings.Contains(line, proj) {
+			t.Errorf("dashboard offered a URL for a project with no daemon: %q", line)
+		}
 	}
 	if lookupDashboardURL(proj) != "" {
 		t.Error("lookupDashboardURL found a URL with no daemon")

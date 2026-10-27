@@ -87,7 +87,7 @@ func TestGitHooksDirPlainRepo(t *testing.T) {
 	}
 	want, _ := filepath.EvalSymlinks(filepath.Join(repo, ".git", "hooks"))
 	got, _ := filepath.EvalSymlinks(dir)
-	if runtime.GOOS != "windows" && got != want {
+	if runtime.GOOS != goosWindows && got != want {
 		t.Errorf("hooks dir = %s, want %s", dir, want)
 	}
 }

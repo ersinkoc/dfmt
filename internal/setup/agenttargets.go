@@ -42,6 +42,9 @@ const (
 // live under the editor's globalStorage for that ID.
 const clineExtensionID = "saoudrizwan.claude-dev"
 
+// goosWindows is runtime.GOOS on Windows.
+const goosWindows = "windows"
+
 // dfmtServerName is the key (or `name`) the dfmt entry is stored under.
 const dfmtServerName = "dfmt"
 
@@ -140,7 +143,7 @@ func LegacyAgentConfigPath(agentID string) string {
 // vscodeUserDir is VS Code's default-profile user directory.
 func vscodeUserDir(home string) string {
 	switch runtime.GOOS {
-	case "windows":
+	case goosWindows:
 		return filepath.Join(appDataDir(home), "Code", "User")
 	case "darwin":
 		return filepath.Join(home, "Library", "Application Support", "Code", "User")
@@ -154,7 +157,7 @@ func vscodeUserDir(home string) string {
 
 // devinConfigDir is Devin's user configuration directory.
 func devinConfigDir(home string) string {
-	if runtime.GOOS == "windows" {
+	if runtime.GOOS == goosWindows {
 		return filepath.Join(appDataDir(home), "devin")
 	}
 	return filepath.Join(home, ".config", "devin")
@@ -162,7 +165,7 @@ func devinConfigDir(home string) string {
 
 // zedConfigDir is the directory holding Zed's user settings.json.
 func zedConfigDir(home string) string {
-	if runtime.GOOS == "windows" {
+	if runtime.GOOS == goosWindows {
 		return filepath.Join(appDataDir(home), "Zed")
 	}
 	if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" && runtime.GOOS != "darwin" {

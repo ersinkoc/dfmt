@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -13,6 +14,11 @@ import (
 // The tests named after it (TestConsumeFSWatchEvents/Redacted) construct a
 // daemon and never Start it, so the consumer had no coverage at all.
 func TestDefaultProjectFSWatchJournalsChanges(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		// Watcher latency is platform-specific (macOS CI missed a 5 s
+		// window); inotify on Linux is the deterministic case.
+		t.Skip("fs watcher timing is only deterministic on Linux")
+	}
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, ".dfmt"), 0o700); err != nil {
 		t.Fatal(err)
