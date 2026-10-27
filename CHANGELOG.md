@@ -142,6 +142,13 @@ Most of it was found by driving the built binary end to end.
   back to `.dfmt/daemon.sock` relative to the CWD, so inside a project
   with a legacy per-project daemon it reported that daemon as the global
   one, and could delete that project's `daemon.pid`.
+- **Uninstall left Claude Code running dfmt's hooks.** `setup
+  --uninstall` and `dfmt remove` did not touch the hooks and permissions
+  dfmt merges into `~/.claude/settings.json` and
+  `<project>/.claude/settings.json`, so after dfmt was gone Claude Code
+  still ran `dfmt hook claude-code pretooluse` before every Bash, Read and
+  Edit call. Both now remove dfmt's entries and keep the user's own; a
+  file dfmt created and that holds nothing else is deleted.
 - **The Linux filesystem watcher allocated ~4 MB per directory.** With
   `capture.fs` enabled, a 500-directory repository took ~2 GB of memory;
   the read buffer is now 64 KiB.

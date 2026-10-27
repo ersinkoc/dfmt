@@ -1240,7 +1240,7 @@ to stop is open on `~/.claude/settings.json` and `<proj>/.claude/settings.json`.
 
 **Fix:** replace all four bodies with `safefs.WriteFileAtomic` — a net deletion of ~70 lines.
 
-### SET-4 · Uninstall leaves live hooks behind
+### SET-4 · Uninstall leaves live hooks behind ✅ FIXED (StripClaudeSettings in uninstall and RemoveProject; git hooks via CAP-7; `.dfmt/` stays for `dfmt remove`)
 `AddFile` is called from three sites; four categories of written state are untracked. **P1 · M**
 
 | Written by | Path | On uninstall |
