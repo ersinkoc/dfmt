@@ -102,6 +102,11 @@ that way, not by reading code, and none of them showed up as an error.
   `TestMain` now isolates the working directory as it already did HOME.
 - The Claude Code detection tests no longer fail on machines with
   Claude Code installed (they found the real binary on `PATH`).
+- `go test -race ./...` is clean. Four tests had raced since 0.7.x: the
+  daemon's background index rebuild and index tail read state off the
+  daemon from inside their goroutines (now captured before the goroutine
+  starts), a test leaked an index tail into later tests, and two
+  transport tests shared non-thread-safe fakes across goroutines.
 
 ## [0.7.4] — 2026-07-31
 

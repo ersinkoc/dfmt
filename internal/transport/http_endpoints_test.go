@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -484,7 +485,7 @@ func TestHTTPHandleAPIStream_LiveTail(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 	defer cancel()
 	req := httptest.NewRequest(http.MethodGet, "/api/stream?follow=true", nil).WithContext(ctx)
-	rec := httptest.NewRecorder()
+	rec := &syncRecorder{rec: httptest.NewRecorder()}
 
 	done := make(chan struct{})
 	go func() {
@@ -495,7 +496,7 @@ func TestHTTPHandleAPIStream_LiveTail(t *testing.T) {
 	// Wait for the historical replay to land in the recorder body.
 	deadline := time.Now().Add(500 * time.Millisecond)
 	for time.Now().Before(deadline) {
-		if strings.Contains(rec.Body.String(), "01HISTORIC") {
+		if strings.Contains(rec.String(), "01HISTORIC") {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
@@ -515,7 +516,7 @@ func TestHTTPHandleAPIStream_LiveTail(t *testing.T) {
 	deadline = time.Now().Add(500 * time.Millisecond)
 	saw := false
 	for time.Now().Before(deadline) {
-		if strings.Contains(rec.Body.String(), "01LIVETAIL_XPLT9") {
+		if strings.Contains(rec.String(), "01LIVETAIL_XPLT9") {
 			saw = true
 			break
 		}
@@ -523,10 +524,44 @@ func TestHTTPHandleAPIStream_LiveTail(t *testing.T) {
 	}
 	if !saw {
 		t.Errorf("live tail did not surface post-replay event; SSE body=%q",
-			rec.Body.String())
+			rec.String())
 	}
 	cancel()
 	<-done
+}
+
+// syncRecorder lets a test poll a response body while the handler is
+// still writing it from another goroutine; httptest.ResponseRecorder
+// alone is not safe for that.
+type syncRecorder struct {
+	mu  sync.Mutex
+	rec *httptest.ResponseRecorder
+}
+
+func (r *syncRecorder) Header() http.Header { return r.rec.Header() }
+
+func (r *syncRecorder) Write(b []byte) (int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.rec.Write(b)
+}
+
+func (r *syncRecorder) WriteHeader(code int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.rec.WriteHeader(code)
+}
+
+func (r *syncRecorder) Flush() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.rec.Flush()
+}
+
+func (r *syncRecorder) String() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.rec.Body.String()
 }
 
 func TestHTTPHandleAPIStream_MethodNotAllowed(t *testing.T) {

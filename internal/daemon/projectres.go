@@ -551,6 +551,9 @@ func (r *ProjectResources) startIndexTail(parent context.Context) {
 	ctx, cancel := context.WithCancel(parent)
 	r.tailStop = cancel
 	r.tailWG.Add(1)
+	// Read the interval here, not inside the goroutine: it is a package
+	// var tests shorten, and a tail outliving its test raced that write.
+	interval := indexTailInterval
 	go func() {
 		defer r.tailWG.Done()
 		defer func() {
@@ -558,7 +561,7 @@ func (r *ProjectResources) startIndexTail(parent context.Context) {
 				logging.Errorf("index tail panic for %s recovered: %v", r.ProjectPath, rec)
 			}
 		}()
-		ticker := time.NewTicker(indexTailInterval)
+		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for {
 			select {

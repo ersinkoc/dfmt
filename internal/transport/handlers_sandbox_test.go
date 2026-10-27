@@ -803,7 +803,9 @@ func (b *blockingSandbox) Write(ctx context.Context, req sandbox.WriteReq) (sand
 	case <-ctx.Done():
 		return sandbox.WriteResp{}, ctx.Err()
 	}
-	return b.stubSandbox.Write(ctx, req)
+	// Answer without delegating: stubSandbox.Write records lastWriteReq,
+	// and this sandbox is called from several goroutines at once.
+	return b.writeResp, b.writeErr
 }
 
 // TestHandlers_Write_DoesNotJournalRawContent covers F-11: the tool.write log

@@ -339,7 +339,9 @@ func TestResourcesLoadsProjectOwnConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resources(extra): %v", err)
 	}
-	defer func() { _ = r.Journal.Close() }()
+	// closeExtraProjects stops the index tail before closing the journal;
+	// closing the journal alone leaked the tail into later tests.
+	defer d.closeExtraProjects()
 
 	if r.Config == nil {
 		t.Fatal("extra project resources have nil Config")

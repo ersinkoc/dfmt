@@ -582,7 +582,7 @@ func (d *Daemon) Start(ctx context.Context) error {
 		if d.needsRebuild {
 			d.rebuildCtx, d.rebuildStop = context.WithCancel(context.Background())
 			d.wg.Add(1)
-			go d.rebuildIndexAsync()
+			go d.rebuildIndexAsync(d.journal, d.index)
 		}
 
 		// Start idle monitor
@@ -783,7 +783,11 @@ func (d *Daemon) Stop(ctx context.Context) error {
 // journal. Cancellation via d.rebuildCtx lets Stop interrupt a slow rebuild
 // without leaking a goroutine. Panic recovery here matches the synchronous
 // path in New() — a corrupt event must not crash the daemon.
-func (d *Daemon) rebuildIndexAsync() {
+//
+// journal and index are passed in rather than read off d inside the
+// goroutine: they are captured on Start's goroutine, so nothing that
+// later reassigns d.journal (Stop's teardown, test seams) races the read.
+func (d *Daemon) rebuildIndexAsync(journal core.Journal, index *core.Index) {
 	defer d.wg.Done()
 	defer func() {
 		if r := recover(); r != nil {
@@ -791,7 +795,7 @@ func (d *Daemon) rebuildIndexAsync() {
 		}
 	}()
 
-	hiID, err := core.RebuildIndexFromJournalInto(d.rebuildCtx, d.journal, d.index)
+	hiID, err := core.RebuildIndexFromJournalInto(d.rebuildCtx, journal, index)
 	if err != nil {
 		// Cancellation is expected on shutdown; only surface real errors.
 		// rebuildComplete stays false so Stop knows the persisted cursor
@@ -802,7 +806,7 @@ func (d *Daemon) rebuildIndexAsync() {
 		}
 		return
 	}
-	if perr := core.PersistIndex(d.index, d.indexPath, hiID); perr != nil {
+	if perr := core.PersistIndex(index, d.indexPath, hiID); perr != nil {
 		logging.Warnf("persist rebuilt index: %v", perr)
 	}
 	d.rebuildComplete.Store(true)
