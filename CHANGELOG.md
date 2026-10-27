@@ -27,6 +27,8 @@ Internal package shapes (`internal/...`) are NOT covered by SemVer.
 
 ## [Unreleased]
 
+## [0.9.1] — 2026-10-27
+
 ### Fixed
 
 - **`dfmt update` failed with a bare "HTTP 403".** GitHub's API allows 60
@@ -2262,7 +2264,8 @@ for v0.3.x:
   `privacy.allow_nonlocal_http` not wired — DFMT never
   phones home regardless.
 
-[Unreleased]: https://github.com/ersinkoc/dfmt/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/ersinkoc/dfmt/compare/v0.9.1...HEAD
+[0.9.1]: https://github.com/ersinkoc/dfmt/releases/tag/v0.9.1
 [0.9.0]: https://github.com/ersinkoc/dfmt/releases/tag/v0.9.0
 [0.8.0]: https://github.com/ersinkoc/dfmt/releases/tag/v0.8.0
 [0.7.4]: https://github.com/ersinkoc/dfmt/releases/tag/v0.7.4
