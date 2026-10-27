@@ -27,6 +27,8 @@ Internal package shapes (`internal/...`) are NOT covered by SemVer.
 
 ## [Unreleased]
 
+## [0.9.2] — 2026-10-27
+
 ### Added
 
 - **`storage.journal_keep_segments`** (ADR-0030): with N > 0, each journal
@@ -2293,7 +2295,8 @@ for v0.3.x:
   `privacy.allow_nonlocal_http` not wired — DFMT never
   phones home regardless.
 
-[Unreleased]: https://github.com/ersinkoc/dfmt/compare/v0.9.1...HEAD
+[Unreleased]: https://github.com/ersinkoc/dfmt/compare/v0.9.2...HEAD
+[0.9.2]: https://github.com/ersinkoc/dfmt/releases/tag/v0.9.2
 [0.9.1]: https://github.com/ersinkoc/dfmt/releases/tag/v0.9.1
 [0.9.0]: https://github.com/ersinkoc/dfmt/releases/tag/v0.9.0
 [0.8.0]: https://github.com/ersinkoc/dfmt/releases/tag/v0.8.0
