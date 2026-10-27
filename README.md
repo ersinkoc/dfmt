@@ -92,6 +92,17 @@ three cross-cutting passes (per-agent wire-up, instruction-block
 staleness, and sandbox PATH visibility) and prints a one-line fix per
 failure.
 
+**Updating.** `dfmt update` replaces the binary in place with the latest
+release (`--check` to only look, `--version vX.Y.Z` to pick one). The
+download is verified against the release's `sha256sums.txt` and run once
+before it replaces anything; the running daemon is stopped so the next
+command uses the new code. dfmt never checks for updates on its own.
+
+**The daemon goes away when unused.** It exits after
+`lifecycle.idle_timeout` (default `30m`) with no calls and starts again
+on the next command; set it in `~/.dfmt/config.yaml`, `0` to keep it
+running.
+
 ## Why use it
 
 **Token savings.** On the workloads in `dfmt-bench tokensaving`, dfmt

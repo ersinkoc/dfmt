@@ -7,6 +7,7 @@ import (
 
 	"github.com/ersinkoc/dfmt/internal/osutil"
 	"github.com/ersinkoc/dfmt/internal/project"
+	"github.com/ersinkoc/dfmt/internal/selfupdate"
 )
 
 // Dispatch routes subcommands.
@@ -18,6 +19,12 @@ func Dispatch(args []string) int {
 
 	cmd := args[0]
 	remaining := stripGlobalFlags(args[1:])
+
+	// A Windows self-update leaves the replaced binary at <exe>.old while
+	// it is still running; the next invocation can delete it.
+	if exe, err := selfupdate.Executable(); err == nil {
+		selfupdate.CleanupOld(exe)
+	}
 
 	switch cmd {
 	case "init":
@@ -52,6 +59,8 @@ func Dispatch(args []string) int {
 		return runStats(remaining)
 	case "dashboard":
 		return runDashboard(remaining)
+	case "update", "self-update":
+		return runUpdate(remaining)
 	case "tail":
 		return runTail(remaining)
 	case "shell-init":
@@ -109,6 +118,7 @@ Usage:
   dfmt config get/set <key>     Get/set config
   dfmt stats                     Show session stats
   dfmt dashboard [--open]        Print/open the live web dashboard URL
+  dfmt update [--check]          Update this binary to the latest release
   dfmt tail                      Stream events
   dfmt shell-init <shell>        Print shell integration
   dfmt install-hooks            Install git hooks

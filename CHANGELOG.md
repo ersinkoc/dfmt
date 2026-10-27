@@ -27,7 +27,31 @@ Internal package shapes (`internal/...`) are NOT covered by SemVer.
 
 ## [Unreleased]
 
-Nothing yet.
+### Added
+
+- **`dfmt update`** (alias `self-update`) replaces the binary in place
+  with the latest GitHub release, or `--version vX.Y.Z`; `--check` only
+  reports. The download must match the release's `sha256sums.txt` and is
+  run once with `--version` before it replaces anything, so a failed or
+  interrupted update leaves the working binary untouched. The running
+  daemon is stopped afterwards so the next command uses the new code.
+  Agent configs keep working because the path does not change. dfmt
+  never checks for updates on its own; builds from a checkout need
+  `--force`. See [ADR-0028](docs/adr/0028-self-update.md).
+
+### Fixed
+
+- **Idle daemons never exited.** After `lifecycle.idle_timeout` the
+  daemon stopped serving — listener closed, PID and port files removed —
+  but the process waited for a signal that never came and stayed resident
+  until reboot, invisible to `dfmt stop` and `dfmt list`. Every day of use
+  left more of them behind. The process now exits, and it finishes its
+  cleanup first (it used to exit mid-shutdown, leaving `daemon.pid` and
+  `daemon.json` for a daemon that no longer existed).
+
+  Orphans left by earlier versions are not found automatically. On
+  Linux/macOS, `pkill -f 'dfmt daemon --global'` removes them, the live
+  daemon included; it restarts on the next command.
 
 ## [0.8.1] — 2026-10-27
 

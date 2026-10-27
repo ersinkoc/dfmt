@@ -75,6 +75,10 @@ On Windows the graceful stop cannot work for a `DETACHED_PROCESS` daemon (no con
 
 `readGlobalDaemonInfo()` (`internal/cli/daemon.go`) is the single reader for "what is serving this host"; `status`, `list`, `dashboard`, and `doctor` all go through it so they cannot report different PIDs for the same process.
 
+**Idle-exit must end the process.** The idle monitor calls `Daemon.Stop`; the foreground loop (`serveUntilStopped`) must then return from main. It used to wait for a signal only, so every idle-exited daemon stayed resident forever — no listener, PID/port files gone, unreachable by `dfmt stop`. And `Daemon.Done()` must close when Stop has *finished* (`stoppedCh`), not when it starts (`shutdownCh`, which background goroutines watch): with the early channel the process exited mid-Stop and left `daemon.pid`/`daemon.json` behind. `TestE2E_IdleDaemonExits` (cmd/dfmt, drives the built binary) pins both.
+
+**Self-update is user-initiated only** (`dfmt update`, `internal/selfupdate`, [ADR-0028](docs/adr/0028-self-update.md)): latest GitHub release asset `dfmt-<goos>-<goarch>`, verified against the release's `sha256sums.txt` (a missing line is a refusal), executed once with `--version` before the rename-swap in the binary's own directory (Windows renames the running exe to `.old`; `Dispatch` deletes it next run). Builds from a checkout are not release tags and need `--force`. Never add a background update check — dfmt makes no network calls on its own.
+
 **The MCP proxy self-heals** (`internal/cli/reconnect.go`). `dfmt mcp` resolved its backend once at startup and never revalidated it, so when the daemon idle-exited at 30 minutes — and agent sessions routinely idle longer — every subsequent tool call returned a raw dial error for the rest of the session, recoverable only by reconnecting the MCP server by hand. `reconnectingBackend` re-runs `ensureGlobalDaemon`, rebuilds the client, and retries once.
 
 Two rules there are load-bearing:
