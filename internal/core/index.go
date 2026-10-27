@@ -363,6 +363,19 @@ func (ix *Index) Add(e Event) {
 
 	id := e.ID
 	if _, exists := ix.docLen[id]; exists {
+		// Excerpts are not persisted; they come back when the journal is
+		// re-streamed after a load. But every document of a loaded index
+		// already exists, so returning here unconditionally meant they
+		// never came back: every search after a restart with a persisted
+		// index returned hits with no excerpt.
+		if _, ok := ix.excerpts[id]; !ok {
+			if ex := buildExcerpt(e); ex != "" {
+				if ix.excerpts == nil {
+					ix.excerpts = make(map[string]string)
+				}
+				ix.excerpts[id] = ex
+			}
+		}
 		return
 	}
 

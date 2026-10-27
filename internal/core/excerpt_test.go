@@ -127,3 +127,32 @@ func TestIndex_Excerpt_NotPersisted(t *testing.T) {
 		t.Errorf("post-unmarshal excerpt should be empty until re-Add")
 	}
 }
+
+// TestIndex_Excerpt_RebuiltOnReAddAfterLoad pins the other half of the
+// non-persistence contract: re-streaming the journal into a loaded index
+// restores the excerpts. Add returned early for any ID already indexed —
+// which is every document of a loaded index — so after a restart with a
+// persisted index, search hits came back with no excerpt at all.
+func TestIndex_Excerpt_RebuiltOnReAddAfterLoad(t *testing.T) {
+	ev := Event{ID: "evt7", TS: time.Now(), Type: "note", Data: map[string]any{"message": "restored after load"}}
+	ix := NewIndex()
+	ix.Add(ev)
+	data, err := ix.MarshalJSON()
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	loaded := NewIndex()
+	if err := loaded.UnmarshalJSON(data); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	before := loaded.SearchBM25("restored", 5)
+
+	loaded.Add(ev)
+
+	if got := loaded.Excerpt("evt7"); got != "restored after load" {
+		t.Errorf("excerpt after re-Add = %q, want it rebuilt", got)
+	}
+	if after := loaded.SearchBM25("restored", 5); len(after) != len(before) {
+		t.Errorf("re-Add changed the posting lists: %d hits before, %d after", len(before), len(after))
+	}
+}
