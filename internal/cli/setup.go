@@ -1001,7 +1001,7 @@ func configureClaudeCode(_ setup.Agent) error {
 }
 
 // configureAgentTarget splices the dfmt server into the config file the
-// agent actually reads (setup.AgentTargetFor). Before 0.8.1 every agent but
+// agent actually reads (setup.AgentTargetFor). Before 0.9.0 every agent but
 // Claude Code got `<dir>/mcp.json`, which only Cursor reads; that legacy
 // file is cleaned up here so it does not linger as a decoy.
 func configureAgentTarget(agentID string) error {

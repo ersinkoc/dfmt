@@ -49,7 +49,7 @@ Add `dfmt update` (alias `self-update`), implemented in
   afterwards so the next command starts the new one; ADR-0022's
   fingerprint check would also catch it, one command later.
 - **Ordering.** Only `vX.Y.Z` tags are releases. A build from a checkout
-  (`v0.8.1-3-gabc`, `dev-…`) is refused unless `--force`, because it cannot
+  (`v0.9.0-3-gabc`, `dev-…`) is refused unless `--force`, because it cannot
   be ordered against a release and is usually ahead of the latest one.
   Without `--version`, an equal or older release is "up to date".
 

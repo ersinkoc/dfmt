@@ -11,7 +11,7 @@ import (
 // Agent IDs used across the codebase.
 //
 // The roster tracks agents that are maintained and reachable today. Three
-// were dropped in 0.8.1: Gemini CLI (stopped serving individual accounts on
+// were dropped in 0.9.0: Gemini CLI (stopped serving individual accounts on
 // 2026-06-18; Google's successor is Antigravity), Windsurf (renamed Devin
 // Desktop on 2026-06-02; same product, new config location), and
 // Continue.dev (frozen read-only after its team joined Cursor in 2026-06).

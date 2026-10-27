@@ -15,15 +15,15 @@ import (
 )
 
 func TestParseVersionAndLess(t *testing.T) {
-	for _, s := range []string{"v0.8.1-3-gabc1234", "dev-abc", "0.8.1", "v1.2", "v1.2.x", ""} {
+	for _, s := range []string{"v0.9.0-3-gabc1234", "dev-abc", "0.9.0", "v1.2", "v1.2.x", ""} {
 		if _, ok := ParseVersion(s); ok {
 			t.Errorf("ParseVersion(%q) ok, want rejected (not a release tag)", s)
 		}
 	}
-	a, _ := ParseVersion("v0.8.1")
+	a, _ := ParseVersion("v0.9.0")
 	b, _ := ParseVersion("v0.10.0")
 	if !a.Less(b) || b.Less(a) || a.Less(a) {
-		t.Errorf("ordering wrong: v0.8.1 < v0.10.0 must hold numerically, not lexically")
+		t.Errorf("ordering wrong: v0.9.0 < v0.10.0 must hold numerically, not lexically")
 	}
 }
 

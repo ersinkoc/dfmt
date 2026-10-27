@@ -11,7 +11,7 @@ import (
 )
 
 // Each agent must be configured in the file it actually reads, under the
-// key it actually reads. Before 0.8.1 these tests asserted that
+// key it actually reads. Before 0.9.0 these tests asserted that
 // `<dir>/mcp.json` existed for every agent — pinning a file only Cursor
 // reads, so seven of nine agents were "configured" without ever seeing dfmt.
 

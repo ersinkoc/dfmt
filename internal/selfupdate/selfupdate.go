@@ -159,7 +159,7 @@ func VerifyChecksum(sums []byte, name string, data []byte) error {
 type Version struct{ Major, Minor, Patch int }
 
 // ParseVersion parses a release tag. ok is false for anything that is not
-// exactly vX.Y.Z — notably the `v0.8.1-3-gabc` / `dev-…` strings of builds
+// exactly vX.Y.Z — notably the `v0.9.0-3-gabc` / `dev-…` strings of builds
 // made from a checkout, which are not releases and cannot be ordered
 // against one.
 func ParseVersion(s string) (v Version, ok bool) {

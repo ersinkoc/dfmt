@@ -27,6 +27,24 @@ Internal package shapes (`internal/...`) are NOT covered by SemVer.
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.9.0] — 2026-10-27
+
+Self-update, daemons that go away when unused, agent wire-up that reaches
+the agents, and an agent roster that matches what is maintained today.
+Most of it was found by driving the built binary end to end.
+
+**Upgrade notes:**
+
+- Re-run `dfmt setup` once. Agents configured by 0.8.0 (other than Claude
+  Code and Cursor) were written to files they do not read; setup now
+  writes their real config and removes the old files.
+- Earlier versions leave idle daemons resident (see Fixed). On
+  Linux/macOS, `pkill -f 'dfmt daemon --global'` clears them; the daemon
+  restarts on the next command.
+- From this release on, `dfmt update` does the upgrade.
+
 ### Added
 
 - **`dfmt update`** (alias `self-update`) replaces the binary in place
@@ -48,22 +66,6 @@ Internal package shapes (`internal/...`) are NOT covered by SemVer.
   left more of them behind. The process now exits, and it finishes its
   cleanup first (it used to exit mid-shutdown, leaving `daemon.pid` and
   `daemon.json` for a daemon that no longer existed).
-
-  Orphans left by earlier versions are not found automatically. On
-  Linux/macOS, `pkill -f 'dfmt daemon --global'` removes them, the live
-  daemon included; it restarts on the next command.
-
-## [0.8.1] — 2026-10-27
-
-Agent wire-up that reaches the agents, an agent roster that matches what
-is maintained today, and two daemon-lifecycle gaps found by driving the
-built binary end to end.
-
-**Upgrade note:** re-run `dfmt setup` once. Agents configured by 0.8.0
-(other than Claude Code and Cursor) were written to files they do not
-read; setup now writes their real config and removes the old files.
-
-### Fixed
 
 - **`dfmt setup` configured seven of nine agents in files they never
   read.** Every agent except Claude Code got `<dir>/mcp.json` with an
@@ -2039,8 +2041,8 @@ for v0.3.x:
   `privacy.allow_nonlocal_http` not wired — DFMT never
   phones home regardless.
 
-[Unreleased]: https://github.com/ersinkoc/dfmt/compare/v0.8.1...HEAD
-[0.8.1]: https://github.com/ersinkoc/dfmt/releases/tag/v0.8.1
+[Unreleased]: https://github.com/ersinkoc/dfmt/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/ersinkoc/dfmt/releases/tag/v0.9.0
 [0.8.0]: https://github.com/ersinkoc/dfmt/releases/tag/v0.8.0
 [0.7.4]: https://github.com/ersinkoc/dfmt/releases/tag/v0.7.4
 [0.7.3]: https://github.com/ersinkoc/dfmt/releases/tag/v0.7.3
