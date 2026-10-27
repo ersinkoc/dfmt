@@ -91,6 +91,10 @@ Internal package shapes (`internal/...`) are NOT covered by SemVer.
   tool-heavy journal BM25 fills those with short tool events. The type
   restriction now applies inside the index, before top-K selection;
   ranking within the type is unchanged.
+- **One oversized event emptied `dfmt_recall`.** Selection stops at the
+  first event that does not fit (tier order), so a long newest decision
+  note larger than the budget produced an empty snapshot. A truncated
+  copy, marked in-band, now fills the remaining budget before the stop.
 
 ## [0.9.0] — 2026-10-27
 

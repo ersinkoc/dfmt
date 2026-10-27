@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"unicode/utf8"
 
 	"github.com/ersinkoc/dfmt/internal/core"
 )
@@ -106,7 +107,16 @@ func (sb *SnapshotBuilder) Build(events []core.Event) (*Snapshot, error) {
 		for _, e := range tiered[tier] {
 			es := sb.eventSize(e)
 			if size+es > sb.budget {
-				// Stop entirely: tier order is the invariant.
+				// Stop entirely: tier order is the invariant. But first
+				// try to fit a truncated copy of this event. Stopping
+				// outright meant one long newest decision note larger
+				// than the remaining budget produced an EMPTY snapshot —
+				// recall returned nothing exactly when the most important
+				// event was the most detailed one.
+				if te, tsize, ok := sb.truncateToFit(e, sb.budget-size); ok {
+					selected = append(selected, te)
+					size += tsize
+				}
 				return &Snapshot{
 					Events:   selected,
 					ByteSize: size,
@@ -167,4 +177,52 @@ func (sb *SnapshotBuilder) eventSize(e core.Event) int {
 		return 1 << 30
 	}
 	return len(data)
+}
+
+// minTruncatedEventBytes is the least remaining budget worth spending on a
+// truncated event; below it the snapshot just ends, as before.
+const minTruncatedEventBytes = 256
+
+// truncatedMarker ends a string field that truncateToFit shortened.
+const truncatedMarker = "… (truncated for recall budget)"
+
+// truncateToFit returns a copy of e whose longest string fields are cut so
+// the whole event fits in room bytes. ok is false when room is too small or
+// no string field can be cut far enough. The journal is untouched — only
+// the recall copy is shortened, and it says so in-band.
+func (sb *SnapshotBuilder) truncateToFit(e core.Event, room int) (core.Event, int, bool) {
+	if room < minTruncatedEventBytes || len(e.Data) == 0 {
+		return e, 0, false
+	}
+	data := make(map[string]any, len(e.Data))
+	for k, v := range e.Data {
+		data[k] = v
+	}
+	te := e
+	te.Data = data
+	for range 4 { // a few passes: JSON escaping makes one cut approximate
+		size := sb.eventSize(te)
+		if size <= room {
+			return te, size, true
+		}
+		key, longest := "", 0
+		for k, v := range data {
+			if str, isStr := v.(string); isStr && len(str) > longest {
+				key, longest = k, len(str)
+			}
+		}
+		keep := longest - (size - room) - len(truncatedMarker)
+		if key == "" || keep <= 0 {
+			return e, 0, false
+		}
+		str := data[key].(string)
+		for keep > 0 && !utf8.RuneStart(str[keep]) {
+			keep--
+		}
+		data[key] = str[:keep] + truncatedMarker
+	}
+	if size := sb.eventSize(te); size <= room {
+		return te, size, true
+	}
+	return e, 0, false
 }

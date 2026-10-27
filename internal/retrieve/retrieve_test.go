@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/ersinkoc/dfmt/internal/core"
 )
@@ -668,5 +669,40 @@ func TestSnapshotBuilderZeroBudget(t *testing.T) {
 	// No event should fit in 0 budget
 	if len(snap.Events) != 0 {
 		t.Logf("Expected 0 events for zero budget, got %d", len(snap.Events))
+	}
+}
+
+// TestSnapshotBuilderTruncatesOversizedTopEvent: selection stopped at the
+// first event that did not fit, so a single long newest decision note
+// larger than the budget yielded an empty snapshot. It now ships a
+// truncated copy, marked as such, and still stops there (tier order).
+func TestSnapshotBuilderTruncatesOversizedTopEvent(t *testing.T) {
+	sb := NewSnapshotBuilder(1024)
+	now := time.Now()
+	events := []core.Event{
+		{ID: "big", TS: now, Type: core.EvtDecision, Priority: core.PriP1,
+			Data: map[string]any{"message": "chose X because " + strings.Repeat("ğ reason ", 400)}},
+		{ID: "small", TS: now.Add(-time.Minute), Type: core.EvtNote, Priority: core.PriP4,
+			Data: map[string]any{"message": "later"}},
+	}
+	snap, err := sb.Build(events)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(snap.Events) != 1 || snap.Events[0].ID != "big" {
+		t.Fatalf("events = %+v, want only the truncated top event", snap.Events)
+	}
+	msg := snap.Events[0].Data["message"].(string)
+	if !strings.HasSuffix(msg, truncatedMarker) || !strings.HasPrefix(msg, "chose X") {
+		t.Errorf("message not truncated in-band: %q", msg)
+	}
+	if !utf8.ValidString(msg) {
+		t.Error("truncation split a rune")
+	}
+	if snap.ByteSize > 1024 {
+		t.Errorf("ByteSize = %d, over budget", snap.ByteSize)
+	}
+	if events[0].Data["message"].(string) == msg {
+		t.Error("the caller's event was mutated")
 	}
 }
