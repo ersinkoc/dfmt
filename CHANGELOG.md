@@ -29,6 +29,12 @@ Internal package shapes (`internal/...`) are NOT covered by SemVer.
 
 ### Fixed
 
+- **An older `dfmt mcp` restarted a newer daemon.** Any version mismatch
+  counted as stale, so every agent session left open across an upgrade
+  replaced the freshly upgraded daemon on its next reconnect, killing
+  other sessions' in-flight work. Only a daemon *older* than the client is
+  restarted now.
+
 - **`storage.compress_rotated` did nothing.** It was accepted, defaulted to
   `true` and documented, while rotation never compressed a segment. Rotated
   segments are now gzipped (`journal.jsonl.<id>.jsonl.gz`, written via a

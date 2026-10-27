@@ -64,19 +64,14 @@ jobs:
         if: matrix.os == 'ubuntu-latest' && matrix.go == '1.26'
         run: go run scripts/coverage-gate.go cover.out --strict
 
-      - name: Race detector (non-blocking)
-        # Run with -race only on Linux + the newer Go. Race is a v1.0 hard
-        # requirement (see ROADMAP.md § CI hardening); start non-blocking
-        # so a freshly-surfaced race doesn't immediately gate merges
-        # before there's a triage queue. Bump to a required step before
-        # tagging v1.0.
+      - name: Race detector
+        # Blocking on Linux + the newer Go: the whole module is race-clean
+        # (verified with go1.26.6), so a new race is a regression.
         if: matrix.os == 'ubuntu-latest' && matrix.go == '1.26'
-        continue-on-error: true
         run: go test -race ./...
 
   lint:
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - name: Setup Go

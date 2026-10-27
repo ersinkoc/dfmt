@@ -231,3 +231,27 @@ func TestIdentityFileRemovedPathIsTheGlobalOne(t *testing.T) {
 		t.Error("ReadIdentity: ok = true after removal, want false")
 	}
 }
+
+// TestVersionAcceptable: only an OLDER daemon is stale. An exact match was
+// required, so a previous-release `dfmt mcp` restarted a freshly upgraded
+// daemon on reconnect, killing other sessions' in-flight work.
+func TestVersionAcceptable(t *testing.T) {
+	for _, tc := range []struct {
+		daemon, client string
+		want           bool
+	}{
+		{"v0.9.2", "v0.9.2", true},
+		{"v0.9.2", "v0.9.1", true},                        // newer daemon serves an older client
+		{"v0.9.1", "v0.9.2", false},                       // older daemon is stale
+		{"v0.10.0", "v0.9.9", true},                       // numeric, not lexical
+		{"v0.9.2-3-gabc1234", "v0.9.2", true},             // commits past the tag are newer
+		{"v0.9.2", "v0.9.2-3-gabc1234", false},            // and the tag itself older
+		{"v0.9.2-3-gabc1234", "v0.9.2-3-gdef5678", false}, // same position, other build
+		{"dev-abc", "v0.9.2", false},                      // unparsable: exact only
+		{"v0.9.2", "", true},                              // unstamped client (SameVersion)
+	} {
+		if got := VersionAcceptable(tc.daemon, tc.client); got != tc.want {
+			t.Errorf("VersionAcceptable(%q, %q) = %v, want %v", tc.daemon, tc.client, got, tc.want)
+		}
+	}
+}

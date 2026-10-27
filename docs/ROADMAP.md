@@ -97,10 +97,9 @@ measure with the CI toolchain.)
 ### CI hardening
 
 - [x] **PR-time CI**: `ci.yml` runs on every push to `main` and
-  every PR — tests on Linux/macOS/Windows plus golangci-lint.
-  Lint and the macOS leg are still `continue-on-error`.
-- [ ] **Race detector** blocking: it runs on Linux but is
-  `continue-on-error`; macOS is not covered.
+  every PR — tests on Linux/macOS/Windows plus golangci-lint
+  (blocking). The macOS leg is still `continue-on-error`.
+- [x] **Race detector** blocking on Linux. macOS is not covered.
 - [x] **Coverage gate** enforcing the targets above (`--strict`).
 
 ### Config-schema hygiene (carry-over from v0.3)

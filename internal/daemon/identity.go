@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -93,7 +94,7 @@ func buildFingerprint(path string) string {
 // staleness signal no matter how the client was stamped, and it is the only
 // signal that exists during same-version development.
 func (i Identity) IsCurrent(clientVersion string) bool {
-	if !SameVersion(i.Version, clientVersion) {
+	if !VersionAcceptable(i.Version, clientVersion) {
 		return false
 	}
 	if i.ExeFingerprint == "" || i.Exe == "" {
@@ -175,4 +176,62 @@ func SameVersion(daemonVersion, clientVersion string) bool {
 		return true
 	}
 	return d == c
+}
+
+// VersionAcceptable reports whether a client at clientVersion should keep
+// using a daemon at daemonVersion: the same build (SameVersion), or a
+// NEWER release. Only an older daemon is stale.
+//
+// An exact match used to be required, so a long-lived `dfmt mcp` from the
+// previous release — every agent session open across an upgrade — judged
+// the freshly upgraded daemon stale and restarted it on its next reconnect,
+// killing whatever the other sessions had in flight (observed while
+// installing 0.9.2: a 0.9.1 proxy replaced the 0.9.2 daemon that `dfmt
+// status` had just started). A newer daemon serves an older client; the
+// reverse is what the restart exists for. Versions that do not parse
+// (dev strings) keep the exact comparison.
+func VersionAcceptable(daemonVersion, clientVersion string) bool {
+	if SameVersion(daemonVersion, clientVersion) {
+		return true
+	}
+	d, dok := parseBuildVersion(daemonVersion)
+	c, cok := parseBuildVersion(clientVersion)
+	if !dok || !cok {
+		return false
+	}
+	for k := range d {
+		if d[k] != c[k] {
+			return d[k] > c[k]
+		}
+	}
+	return false // same position, different build (e.g. another branch)
+}
+
+// parseBuildVersion reads "vMAJOR.MINOR.PATCH" with an optional
+// git-describe suffix "-N-gSHA" (N commits past the tag) into
+// {major, minor, patch, N}.
+func parseBuildVersion(s string) ([4]int, bool) {
+	var v [4]int
+	s = strings.TrimPrefix(strings.TrimSpace(s), "v")
+	base, rest, hasRest := strings.Cut(s, "-")
+	parts := strings.Split(base, ".")
+	if len(parts) != 3 {
+		return v, false
+	}
+	for i, p := range parts {
+		n, err := strconv.Atoi(p)
+		if err != nil || n < 0 {
+			return v, false
+		}
+		v[i] = n
+	}
+	if hasRest {
+		ahead, sha, ok := strings.Cut(rest, "-")
+		n, err := strconv.Atoi(ahead)
+		if !ok || err != nil || n < 0 || !strings.HasPrefix(sha, "g") {
+			return v, false
+		}
+		v[3] = n
+	}
+	return v, true
 }

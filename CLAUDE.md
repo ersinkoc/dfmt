@@ -60,7 +60,7 @@ So the global daemon publishes `~/.dfmt/daemon.json` — `{version, pid, exe, ex
 
 `IsCurrent` checks **two independent** staleness signals, because they catch different failures:
 
-1. **Version skew** — one installed release replaced by another.
+1. **Version skew** — the daemon is an *older* release than the client (`daemon.VersionAcceptable`). A newer daemon is kept: an exact-match rule let every previous-release `dfmt mcp` left open across an upgrade restart the freshly upgraded daemon on its next reconnect, killing other sessions' in-flight work.
 2. **Fingerprint skew** — the daemon's own binary overwritten on disk while it kept running (`exe_fingerprint` is `"<modtime-unixnano>:<size>"` of `exe`, re-statted on each check). This is the one that matters when working on DFMT itself: a contributor rebuilds many times at the same tag, and a version-only check would compare equal every time while the daemon kept serving the code they just replaced. Deliberately mtime+size, not a hash — the question is "was this replaced", not "is it authentic", and hashing a 13 MB binary before every command would cost far more than it tells us.
 
 Invariants:
