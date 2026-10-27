@@ -140,7 +140,7 @@ Two rules there:
 - **Directory pruning never applies to the search root.** `path: "dist"` means the agent asked for build output; the exclusions are a default, not a prohibition. Binary skipping *is* unconditional — an executable's string table is unusable however explicitly it was requested.
 - **Report the exclusions.** `walkSkipStats.note()` appends `(skipped N ignored dirs, M binary)` to the summary. A silent skip is indistinguishable from "no matches there", which is how this hid for so long. Do not "clean up" that note.
 
-The list is hardcoded basenames mirroring `capture.fs.ignore` (the fs watcher's ignore set — same knowledge, two consumers). Honoring `.gitignore` instead is the principled version; see `docs/ROADMAP.md`, and it needs an ADR.
+The list is hardcoded basenames mirroring `capture.fs.ignore` (the fs watcher's ignore set — same knowledge, two consumers). On top of it the walkers honor `.gitignore` (ADR-0031, `gitignore.go`): `.git/info/exclude`, the root's and every nested `.gitignore`, gitignore(5) semantics with a stdlib matcher. Same two rules: an ignored *search root* is searched (the request is explicit), and the skips are counted (`N gitignored`).
 
 The sandbox runs an 8-stage **`NormalizeOutput` pipeline** before responses reach the policy filter (`internal/sandbox/intent.go`):
 

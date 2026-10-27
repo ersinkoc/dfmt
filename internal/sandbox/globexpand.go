@@ -63,6 +63,8 @@ func expandDoublestarGlob(absWd, relPattern string) ([]string, walkSkipStats, er
 	// full-tree traversal the pattern could never have matched anyway.
 	root := filepath.Join(absWd, filepath.FromSlash(staticPrefix(relPattern)))
 
+	ig := walkGitIgnore(absWd, root)
+
 	var matches []string
 	walkErr := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -76,12 +78,19 @@ func expandDoublestarGlob(absWd, relPattern string) ([]string, walkSkipStats, er
 		if d.IsDir() {
 			// Never prune the root itself: the caller walked here on purpose.
 			if path == root {
+				ig.loadDir(path)
 				return nil
 			}
 			if shouldSkipDir(d.Name()) && !patternNamesSegment(relPattern, d.Name()) {
 				skipped.dirs++
 				return fs.SkipDir
 			}
+			if rel, rerr := filepath.Rel(absWd, path); rerr == nil && ig.ignored(rel, true) &&
+				!patternNamesSegment(relPattern, d.Name()) {
+				skipped.gitignored++
+				return fs.SkipDir
+			}
+			ig.loadDir(path)
 			return nil
 		}
 		if !d.Type().IsRegular() {
@@ -89,6 +98,10 @@ func expandDoublestarGlob(absWd, relPattern string) ([]string, walkSkipStats, er
 		}
 		rel, rerr := filepath.Rel(absWd, path)
 		if rerr != nil {
+			return nil
+		}
+		if ig.ignored(rel, false) {
+			skipped.gitignored++
 			return nil
 		}
 		if !re.MatchString(filepath.ToSlash(rel)) {

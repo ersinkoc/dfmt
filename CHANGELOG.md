@@ -27,6 +27,14 @@ Internal package shapes (`internal/...`) are NOT covered by SemVer.
 
 ## [Unreleased]
 
+### Added
+
+- **`dfmt_grep` and `**` globs honor `.gitignore`** (ADR-0031): the root's,
+  `.git/info/exclude`, and nested ones, with gitignore(5) semantics
+  (negation, anchoring, `**`, directory-only rules). The built-in skip list
+  stays. Searching a gitignored directory by `path` still searches it, and
+  the summary counts what was skipped (`N gitignored`).
+
 ### Fixed
 
 - **An older `dfmt mcp` restarted a newer daemon.** Any version mismatch

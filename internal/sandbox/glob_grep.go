@@ -353,6 +353,7 @@ func (s *SandboxImpl) Grep(ctx context.Context, req GrepReq) (GrepResp, error) {
 	totalFiles := 0
 	var skipped walkSkipStats
 	contextLines := min(max(req.Context, 0), maxGrepContextLines)
+	ig := walkGitIgnore(absWd, searchRoot)
 	walkErr := filepath.WalkDir(searchRoot, func(path string, d fs.DirEntry, werr error) error {
 		// A canceled call (client gone, deadline) must stop walking; a
 		// whole-tree grep otherwise kept a readSem slot until it finished.
@@ -376,6 +377,13 @@ func (s *SandboxImpl) Grep(ctx context.Context, req GrepReq) (GrepResp, error) {
 				skipped.dirs++
 				return filepath.SkipDir
 			}
+			if path != searchRoot {
+				if rel, rerr := filepath.Rel(absWd, path); rerr == nil && ig.ignored(rel, true) {
+					skipped.gitignored++
+					return filepath.SkipDir
+				}
+			}
+			ig.loadDir(path)
 			return nil
 		}
 		// Lexical containment: refuse paths whose textual form escapes
@@ -384,6 +392,10 @@ func (s *SandboxImpl) Grep(ctx context.Context, req GrepReq) (GrepResp, error) {
 		// is what actually closes the renamed-symlink-leaf bypass.
 		rel, rerr := filepath.Rel(absWd, path)
 		if rerr != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return nil
+		}
+		if ig.ignored(rel, false) {
+			skipped.gitignored++
 			return nil
 		}
 		// Files glob: basename-only by design — agents asking for "*.go"

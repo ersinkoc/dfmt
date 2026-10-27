@@ -180,12 +180,13 @@ func isBinaryPath(path string) bool {
 // matches, which is the failure mode that let build output masquerade
 // as "no results in source" for so long.
 type walkSkipStats struct {
-	dirs   int // directories pruned by name
-	binary int // files skipped by content sniff
-	large  int // files skipped by maxGrepFileBytes
+	dirs       int // directories pruned by name
+	gitignored int // directories and files excluded by .gitignore
+	binary     int // files skipped by content sniff
+	large      int // files skipped by maxGrepFileBytes
 }
 
-func (w walkSkipStats) any() bool { return w.dirs+w.binary+w.large > 0 }
+func (w walkSkipStats) any() bool { return w.dirs+w.gitignored+w.binary+w.large > 0 }
 
 // note renders a compact, human-readable suffix for a result summary.
 // Empty when nothing was skipped, so the common case adds no tokens.
@@ -200,6 +201,10 @@ func (w walkSkipStats) note() string {
 		if w.dirs != 1 {
 			out += "s"
 		}
+		sep = ", "
+	}
+	if w.gitignored > 0 {
+		out += sep + itoa(w.gitignored) + " gitignored"
 		sep = ", "
 	}
 	if w.binary > 0 {

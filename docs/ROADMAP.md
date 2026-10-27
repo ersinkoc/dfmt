@@ -121,13 +121,7 @@ list (`defaultSkipDirs` in `internal/sandbox/walkskip.go`)
 after build output was found eating the match cap. That fixed
 the bleeding but it is a curated guess, not a contract:
 
-- [ ] **Honor `.gitignore`.** The repo already knows what is
-  not source; a skip list re-states it by hand and drifts from
-  it. Needs an in-tree matcher (stdlib-only — no
-  `go-gitignore`), so it needs an ADR. Non-trivial: nested
-  ignore files, negation (`!`), directory-vs-file semantics,
-  and the walker must stay O(1) per directory or it trades one
-  cost for another.
+- [x] **Honor `.gitignore`** — ADR-0031.
 - [ ] **Make the list configurable.** A `sandbox.exclude` key,
   merged with (not replacing) the defaults. Note
   `capture.fs.ignore` already exists for the fs watcher and
