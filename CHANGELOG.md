@@ -97,6 +97,32 @@ Most of it was found by driving the built binary end to end.
   file existed.** An agent with `.cursorrules` or `GEMINI.md` from
   `dfmt init` but no MCP server read "✓ 1 file(s) in place".
 
+- **`dfmt install-hooks` overwrote the user's own git hooks.** An
+  existing `post-commit` / `post-checkout` / `pre-push` (hand-written,
+  husky, lefthook) was replaced with no backup. It is now moved to
+  `<hook>.pre-dfmt` and run first by dfmt's hook with the same arguments
+  and stdin; its failure still fails the hook, so a blocking `pre-push`
+  keeps blocking. Uninstall removes dfmt's hooks (only while they still
+  carry dfmt's marker) and moves the originals back. Also:
+  - The hooks directory comes from `git rev-parse --git-path hooks`, so
+    worktrees and submodules (where `.git` is a file) work instead of
+    failing with "not a directory".
+  - With `core.hooksPath` set (husky, lefthook), dfmt no longer writes
+    hooks git never runs and reports success; it leaves the managed
+    directory alone and prints the one line to add.
+  - Hooks are recorded in the setup manifest, so uninstall no longer
+    leaves them firing after dfmt is gone.
+- **`dfmt_read` turned CRLF into LF**, so any multi-line anchor copied
+  out of a Windows-style file was "not found" by `dfmt_edit`, which
+  matches bytes exactly. Lines now keep their own terminators and reads
+  round-trip byte for byte.
+- **Fetch: deny rules held only for the first URL.** A redirect to a host
+  an operator rule denies was followed; every hop is now checked against
+  the policy as well as the SSRF filter. The SSRF filter also refuses
+  NAT64 (`64:ff9b::/96`, which reaches IPv4 loopback through a NAT64
+  gateway), 6to4, Teredo, `192.0.0.0/24`, `198.18.0.0/15` and
+  `240.0.0.0/4`.
+
 ### Changed
 
 - **Agent roster updated to what is maintained today.**

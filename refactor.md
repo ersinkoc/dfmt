@@ -830,7 +830,7 @@ invocation with a table (`bash|sh → -c`, `pwsh|powershell → -NoProfile -NonI
 
 ## III.2 — P1 findings
 
-### SBX-11 · `Read` silently converts CRLF to LF, breaking `Edit` anchors
+### SBX-11 · `Read` silently converts CRLF to LF, breaking `Edit` anchors ✅ FIXED (scanLinesKeepEOL)
 `internal/sandbox/read.go:172-222`, doc claim at `:169-171`. **P1 · M**
 
 `bufio.ScanLines` strips the trailing `\r` and `readLineWindow` re-joins with bare `\n`. The docstring
@@ -841,7 +841,7 @@ CRLF file fails with `old string not found`. The round-trip test uses LF fixture
 **Fix:** preserve the terminator (custom `SplitFunc`, or detect the dominant terminator once). Add CRLF and
 mixed fixtures plus an end-to-end Read→Edit test.
 
-### SBX-12 · Fetch redirects bypass the policy layer
+### SBX-12 · Fetch redirects bypass the policy layer ✅ FIXED (checkFetchRedirect)
 `internal/sandbox/fetch.go:279-285`. **P1 · S**
 
 `CheckRedirect` re-runs the SSRF IP/host checks but never re-runs `PolicyCheck("fetch", …)`. An operator rule
@@ -850,7 +850,7 @@ public host is fetched.
 
 **Fix:** re-run the policy check in `CheckRedirect` before the SSRF assertion.
 
-### SBX-13 · SSRF blocklist gaps: NAT64, 6to4, reserved IPv4
+### SBX-13 · SSRF blocklist gaps: NAT64, 6to4, reserved IPv4 ✅ FIXED (extraBlockedNets)
 `internal/sandbox/fetch.go:100-144`. **P1 · S**
 
 The baseline is strong — loopback, link-local, multicast, RFC1918/ULA, CGNAT, documentation prefixes, metadata
@@ -1145,7 +1145,7 @@ pruning inside `WalkDir` vs user-configurable globs). One `internal/ignoreset` p
 `DefaultDirNames()` and a derived `DefaultGlobs()`, consumed by all three, with a parity test. CAP-5 then
 becomes structurally impossible.
 
-### CAP-7 · `dfmt install-hooks` overwrites existing git hooks with no backup and no manifest row **[verified]**
+### CAP-7 · `dfmt install-hooks` overwrites existing git hooks with no backup and no manifest row **[verified]** ✅ FIXED (githooks.go: chain via .pre-dfmt, git rev-parse --git-path, core.hooksPath refused, manifest rows)
 `internal/cli/setup.go:96-111`. **P0 · M**
 
 `os.WriteFile(dst, content, 0755)` unconditionally. A user with husky, lefthook or a hand-rolled `post-commit`
