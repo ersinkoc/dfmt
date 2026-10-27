@@ -199,13 +199,20 @@ func TestReadKeepsCRLFForEditAnchors(t *testing.T) {
 				t.Fatalf("round-trip lost bytes:\n got %q\nwant %q", full.RawContent, body)
 			}
 
+			// The agent sees Content, never RawContent (that one only feeds
+			// the content store). Checking RawContent alone let a CRLF→LF
+			// pass on the visible text go unnoticed.
+			if full.Content != body {
+				t.Fatalf("visible content rewrote the file:\n got %q\nwant %q", full.Content, body)
+			}
+
 			// A two-line window, used verbatim as an Edit anchor.
 			win, err := sb.Read(ctx, ReadReq{Path: "f.txt", Offset: 1, Limit: 2, Return: "raw"})
 			if err != nil {
 				t.Fatalf("Read window: %v", err)
 			}
-			if _, err := sb.Edit(ctx, EditReq{Path: "f.txt", OldString: win.RawContent, NewString: "X\n"}); err != nil {
-				t.Fatalf("Edit with an anchor taken from Read failed: %v (anchor %q)", err, win.RawContent)
+			if _, err := sb.Edit(ctx, EditReq{Path: "f.txt", OldString: win.Content, NewString: "X\n"}); err != nil {
+				t.Fatalf("Edit with an anchor taken from Read failed: %v (anchor %q)", err, win.Content)
 			}
 		})
 	}

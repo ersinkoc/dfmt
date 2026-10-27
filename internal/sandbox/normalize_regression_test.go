@@ -85,13 +85,14 @@ func TestNormalizeOutputFile_PreservesStructure(t *testing.T) {
 	in := "line1\r\nline1\r\nline1\r\nline1\r\n"
 	out := NormalizeOutputFile(in)
 	// The four duplicate lines must NOT be RLE-collapsed (that's the
-	// structural compaction reserved for NormalizeOutput), but CRLF should
-	// still be normalized to LF.
-	if strings.Count(out, "line1") != 4 {
-		t.Errorf("NormalizeOutputFile collapsed duplicate lines; got %q", out)
+	// structural compaction reserved for NormalizeOutput), and the CRLF
+	// terminators must survive — Read's visible output is an Edit anchor.
+	if out != in {
+		t.Errorf("NormalizeOutputFile rewrote the file body; got %q, want %q", out, in)
 	}
-	if strings.Contains(out, "\r\n") {
-		t.Errorf("NormalizeOutputFile left CRLF; got %q", out)
+	// A lone CR inside a line is file content, not a progress-bar rewrite.
+	if lone := "al\rpha\n"; NormalizeOutputFile(lone) != lone {
+		t.Errorf("NormalizeOutputFile collapsed a lone CR; got %q", NormalizeOutputFile(lone))
 	}
 }
 

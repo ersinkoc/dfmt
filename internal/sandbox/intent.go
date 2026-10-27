@@ -549,13 +549,18 @@ func looksStructured(s string) bool {
 }
 
 // NormalizeOutputFile is the file-oriented normalization mode for Read
-// (SBX-4). Unlike NormalizeOutput it applies ONLY terminal hygiene —
-// binary refusal, ANSI stripping, carriage-return collapsing, and line-
-// ending normalization — and deliberately skips the structural
-// compactors (JSON/YAML/diff/RLE/frontmatter). A file's body is
-// something the agent copies out and writes back via Edit; rewriting it
-// would corrupt the round-trip. Hygiene that removes invisible noise
-// (escapes, progress-bar CRs, CRLF) is safe and token-favorable.
+// (SBX-4). Unlike NormalizeOutput it applies ONLY binary refusal and ANSI
+// stripping, and deliberately skips the structural compactors
+// (JSON/YAML/diff/RLE/frontmatter). A file's body is something the agent
+// copies out and writes back via Edit; rewriting it would corrupt the
+// round-trip.
+//
+// Carriage returns are NOT touched. CR collapsing and CRLF→LF used to run
+// here, which undid scanLinesKeepEOL on the wire: the agent received LF
+// text for a CRLF file, so a multi-line anchor copied from a read never
+// matched in the byte-exact Edit, and a line holding a lone CR arrived
+// truncated to whatever followed it. Those passes are for terminal
+// output (NormalizeOutput), not files.
 func NormalizeOutputFile(s string) string {
 	if s == "" {
 		return s
@@ -563,10 +568,7 @@ func NormalizeOutputFile(s string) string {
 	if compacted := CompactBinary(s); compacted != s {
 		return compacted
 	}
-	s = stripANSI(s)
-	s = collapseCarriageReturns(s)
-	s = normalizeLineEndings(s)
-	return s
+	return stripANSI(s)
 }
 
 // stripANSI removes CSI and OSC escape sequences. Other categories
