@@ -103,6 +103,12 @@ Internal package shapes (`internal/...`) are NOT covered by SemVer.
 - **`dfmt_fetch` `headers`/`body` and `dfmt_exec` `env` were accepted but
   not advertised**, so hosts that build calls from `tools/list` could not
   send them — `method: POST` had no payload. They are in the schemas now.
+- **Text was refused as binary when a multi-byte character straddled byte
+  512.** Binary detection sniffs a 512-byte prefix and a rune cut there
+  read as invalid UTF-8, so `dfmt_read` answered `(binary; …)` for plain
+  source (observed on a window of `journal.go` with an em dash) and
+  grep/glob skipped such files silently — `docs/adr/0010-…` in this repo.
+  A cut-short trailing rune is now trimmed before the check.
 
 ## [0.9.0] — 2026-10-27
 

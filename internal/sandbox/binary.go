@@ -97,10 +97,30 @@ func detectBinary(s string) (string, bool) {
 	if strings.Count(sample, "\x00") >= binaryNullByteThreshold {
 		return "application/octet-stream", true
 	}
-	if !utf8.ValidString(sample) {
+	if !utf8.ValidString(trimIncompleteRune(sample)) {
 		return "application/octet-stream", true
 	}
 	return "", false
+}
+
+// trimIncompleteRune drops a trailing multi-byte UTF-8 sequence that was cut
+// short. Every caller hands detectBinary a fixed-size prefix — the sample
+// above, isBinaryPath's 512-byte sniff — and a cut through a multi-byte
+// rune made the prefix invalid UTF-8, so any text file with an em dash or a
+// Turkish letter straddling byte 512 was refused as binary: dfmt_read
+// returned "(binary; …)" for Go source, and grep/glob skipped the file
+// silently. Only a valid-but-incomplete prefix is trimmed; genuinely
+// invalid bytes still count as binary.
+func trimIncompleteRune(s string) string {
+	for i := len(s) - 1; i >= 0 && i >= len(s)-utf8.UTFMax; i-- {
+		if utf8.RuneStart(s[i]) {
+			if !utf8.FullRuneInString(s[i:]) {
+				return s[:i]
+			}
+			return s
+		}
+	}
+	return s
 }
 
 // matchBinaryMagic checks the first few bytes against the known
