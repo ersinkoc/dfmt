@@ -584,6 +584,17 @@ func joinStrings(parts []string, sep string) string {
 // and used its own length as the document frequency for every token, which
 // effectively collapsed multi-term queries down to single-term behavior.
 func (ix *Index) SearchBM25(query string, limit int) []ScoredHit {
+	return ix.SearchBM25Type(query, limit, "")
+}
+
+// SearchBM25Type is SearchBM25 restricted to documents whose event type is
+// typ ("" = any). The restriction applies before top-K selection. Filtering
+// the top-K afterwards (what dfmt_search did, over a bounded over-fetch)
+// returned nothing for type "note" exactly when it mattered: on a journal
+// that is ~200:1 tool events, BM25's length normalization fills the top
+// candidates with short tool.* documents and the matching notes sit below
+// the cut. Scores are untouched; only the candidate set changes.
+func (ix *Index) SearchBM25Type(query string, limit int, typ string) []ScoredHit {
 	ix.mu.RLock()
 	defer ix.mu.RUnlock()
 
@@ -625,6 +636,9 @@ func (ix *Index) SearchBM25(query string, limit int) []ScoredHit {
 	// Heap for top-K
 	h := &hitHeap{}
 	for id, score := range scores {
+		if typ != "" && ix.meta[id].Type != typ {
+			continue
+		}
 		heap.Push(h, ScoredHit{ID: id, Score: score, Layer: 1})
 	}
 
@@ -650,6 +664,12 @@ func (ix *Index) SearchBM25(query string, limit int) []ScoredHit {
 // to 2 so the response can report which layer produced the hit, and
 // the per-tier BM25 layer (1) still wins on direct ties.
 func (ix *Index) SearchTrigram(query string, limit int) []ScoredHit {
+	return ix.SearchTrigramType(query, limit, "")
+}
+
+// SearchTrigramType is SearchTrigram restricted to event type typ ("" =
+// any), applied before top-K selection; see SearchBM25Type.
+func (ix *Index) SearchTrigramType(query string, limit int, typ string) []ScoredHit {
 	ix.mu.RLock()
 	defer ix.mu.RUnlock()
 
@@ -680,6 +700,9 @@ func (ix *Index) SearchTrigram(query string, limit int) []ScoredHit {
 
 	h := &hitHeap{}
 	for id, count := range hits {
+		if typ != "" && ix.meta[id].Type != typ {
+			continue
+		}
 		heap.Push(h, ScoredHit{ID: id, Score: float64(count), Layer: 2})
 	}
 

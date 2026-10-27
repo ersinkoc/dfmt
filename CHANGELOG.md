@@ -86,6 +86,11 @@ Internal package shapes (`internal/...`) are NOT covered by SemVer.
   size cap, no file budget, no cancellation — so `**/*` with an intent that
   matched nothing read the whole tree. It now scans at most 200 files,
   skips files over Grep's size cap, and stops on cancellation.
+- **`dfmt_search type:"note"` could return nothing while notes matched.**
+  The filter ran over at most 500 top-ranked candidates, and on a
+  tool-heavy journal BM25 fills those with short tool events. The type
+  restriction now applies inside the index, before top-K selection;
+  ranking within the type is unchanged.
 
 ## [0.9.0] — 2026-10-27
 

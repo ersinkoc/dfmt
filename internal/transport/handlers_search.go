@@ -198,19 +198,13 @@ func (h *Handlers) Search(ctx context.Context, params SearchParams) (_ *SearchRe
 	var hits []core.ScoredHit
 	resolvedLayer := params.Layer
 
-	// With a type filter, ask the index for more candidates than the caller
-	// wants and drop the ones that do not match. Filtering after scoring
-	// keeps BM25 intact (relative ranking within the type is unchanged) at
-	// the cost of over-fetching. The multiplier is bounded so a filter that
-	// matches nothing cannot turn into a full-index scan.
-	fetch := params.Limit
-	if params.Type != "" {
-		fetch = min(params.Limit*searchFilterOverFetch, searchFilterMaxCandidates)
-	}
-
+	// The type filter is applied inside the index, before top-K selection
+	// (core.Index.SearchBM25Type). Filtering the top-K here instead —
+	// over-fetching a bounded candidate set — returned zero notes on large
+	// journals, where tool events fill every top slot.
 	switch params.Layer {
 	case "trigram":
-		hits = bundle.Index.SearchTrigram(params.Query, fetch)
+		hits = bundle.Index.SearchTrigramType(params.Query, params.Limit, params.Type)
 	case "fuzzy":
 		// Fuzzy search would go here
 		hits = nil
@@ -221,11 +215,11 @@ func (h *Handlers) Search(ctx context.Context, params SearchParams) (_ *SearchRe
 		// splits awkwardly; trigram match restores them. Reporting the
 		// resolved layer back lets clients distinguish a true miss
 		// from a fallback hit.
-		hits = bundle.Index.SearchBM25(params.Query, fetch)
+		hits = bundle.Index.SearchBM25Type(params.Query, params.Limit, params.Type)
 		if len(hits) > 0 {
 			resolvedLayer = "bm25"
 		} else {
-			hits = bundle.Index.SearchTrigram(params.Query, fetch)
+			hits = bundle.Index.SearchTrigramType(params.Query, params.Limit, params.Type)
 			if len(hits) > 0 {
 				resolvedLayer = "trigram"
 			}
@@ -260,16 +254,5 @@ func (h *Handlers) Search(ctx context.Context, params SearchParams) (_ *SearchRe
 		Layer:   resolvedLayer,
 	}, nil
 }
-
-// searchFilterOverFetch is how many candidates per requested result the
-// index is asked for when a type filter is active, and
-// searchFilterMaxCandidates is the ceiling on that expansion. Together they
-// bound the cost of a filter that matches little or nothing: a query for
-// type "note" against a journal of 100k tool events scans at most
-// searchFilterMaxCandidates scored hits rather than every document.
-const (
-	searchFilterOverFetch     = 20
-	searchFilterMaxCandidates = 500
-)
 
 // RecallParams are the parameters for the Recall method.
