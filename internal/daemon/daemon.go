@@ -974,6 +974,7 @@ func loadJournalAndIndex(dfmtDir string, cfg *config.Config) (core.Journal, *cor
 		Durable:  cfg.Storage.Durability == "durable",
 		BatchMS:  cfg.Storage.MaxBatchMS,
 		Compress: cfg.Storage.CompressRotated,
+		Keep:     cfg.Storage.JournalKeepSegments,
 	}
 	journal, err := core.OpenJournal(journalPath, journalOpts)
 	if err != nil {

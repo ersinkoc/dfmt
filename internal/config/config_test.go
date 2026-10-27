@@ -792,3 +792,14 @@ func containsGlob(list []string, want string) bool {
 	}
 	return false
 }
+
+func TestJournalKeepSegmentsValidation(t *testing.T) {
+	c := Default()
+	if c.Storage.JournalKeepSegments != 0 {
+		t.Errorf("default journal_keep_segments = %d, want 0 (keep all)", c.Storage.JournalKeepSegments)
+	}
+	c.Storage.JournalKeepSegments = -1
+	if err := c.Validate(); err == nil {
+		t.Error("negative journal_keep_segments accepted")
+	}
+}

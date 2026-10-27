@@ -56,6 +56,10 @@ type Config struct {
 		MaxBatchMS      int    `yaml:"max_batch_ms"`
 		JournalMaxBytes int64  `yaml:"journal_max_bytes"`
 		CompressRotated bool   `yaml:"compress_rotated"`
+		// JournalKeepSegments bounds rotated journal segments (ADR-0030).
+		// 0 keeps every segment — the default, because deleting history
+		// recall and replay can reach must be the user's decision.
+		JournalKeepSegments int `yaml:"journal_keep_segments"`
 	} `yaml:"storage"`
 
 	// Retrieval — DefaultBudget and DefaultFormat are wired
@@ -336,6 +340,10 @@ func (c *Config) Validate() error {
 
 	if c.Storage.JournalMaxBytes < 0 {
 		return errors.New("storage.journal_max_bytes must be non-negative")
+	}
+
+	if c.Storage.JournalKeepSegments < 0 {
+		return errors.New("storage.journal_keep_segments must be non-negative (0 keeps all)")
 	}
 
 	if c.Lifecycle.IdleTimeout != "" {

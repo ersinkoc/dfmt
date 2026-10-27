@@ -53,6 +53,10 @@ capture:
 storage:
   durability: batched
   journal_max_bytes: 10485760
+  # Rotated segments kept (journal.jsonl.<id>.jsonl); older ones are deleted
+  # at rotation. 0 keeps all. Deleted history is gone from recall, search
+  # and index rebuilds.
+  journal_keep_segments: 0
 
 # Optional: directories to prepend to the sandbox's PATH for every exec
 # call. Use this when the daemon was auto-started from a shell that does

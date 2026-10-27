@@ -27,6 +27,14 @@ Internal package shapes (`internal/...`) are NOT covered by SemVer.
 
 ## [Unreleased]
 
+### Added
+
+- **`storage.journal_keep_segments`** (ADR-0030): with N > 0, each journal
+  rotation deletes all but the N newest rotated segments. Rotated segments
+  were never removed, so a long-lived project's journal grew without
+  bound. The default, 0, keeps everything — deleted segments are gone from
+  recall, search and index rebuilds, so forgetting is opt-in.
+
 ### Fixed
 
 - **A daemon spawned by `dfmt mcp` became a zombie when it exited, and

@@ -100,6 +100,9 @@ type JournalOptions struct {
 	Durable  bool
 	BatchMS  int
 	Compress bool
+	// Keep is how many rotated segments survive a rotation; older ones are
+	// deleted. 0 keeps all (ADR-0030).
+	Keep int
 }
 
 // Journal appends events to an append-only JSONL file.
@@ -128,6 +131,7 @@ type journalImpl struct {
 	lastSync     time.Time
 	maxBytes     int64
 	compress     bool
+	keep         int
 	hiCursor     string
 	syncStop     chan struct{}
 	syncDone     chan struct{}
@@ -162,6 +166,7 @@ func OpenJournal(path string, opt JournalOptions) (Journal, error) {
 		batchMS:  opt.BatchMS,
 		maxBytes: opt.MaxBytes,
 		compress: opt.Compress,
+		keep:     opt.Keep,
 	}
 
 	// Configure periodic sync for batched (non-durable) mode. The loop starts
@@ -631,7 +636,31 @@ func (j *journalImpl) rotateLocked(ctx context.Context) error {
 	j.file = f
 	j.hiCursor = ""
 
+	j.pruneRotatedLocked()
 	return nil
+}
+
+// pruneRotatedLocked deletes rotated segments beyond j.keep, oldest first.
+// Rotation was the only thing that ever created them and nothing removed
+// one, so a long-lived project's journal grew without bound. Opt-in: with
+// keep 0 (the default) nothing is deleted. A segment that cannot be removed
+// is reported and left; the next rotation retries.
+func (j *journalImpl) pruneRotatedLocked() {
+	if j.keep <= 0 {
+		return
+	}
+	segs, err := journalSegments(j.path)
+	if err != nil {
+		journalWarnf("warning: journal retention: list segments: %v\n", err)
+		return
+	}
+	rotated := segs[:len(segs)-1] // the active file is last
+	for len(rotated) > j.keep {
+		if err := os.Remove(rotated[0]); err != nil && !os.IsNotExist(err) {
+			journalWarnf("warning: journal retention: remove %s: %v\n", rotated[0], err)
+		}
+		rotated = rotated[1:]
+	}
 }
 
 // Close closes the journal.

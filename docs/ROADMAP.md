@@ -90,14 +90,8 @@ The CLAUDE.md / AGENTS.md targets drifted out of compliance:
 
 ### Journal retention
 
-- [ ] **Rotated segments are never deleted.** `rotateLocked`
-  renames the active file to `journal.jsonl.<id>.jsonl` and
-  nothing in `core/` removes one, so history grows without
-  bound. The index tail no longer re-reads them every tick
-  (it skips segments ending before its cursor), but recall
-  cache misses and journal replay still do. Needs a retention
-  policy (age / total bytes / keep-N) and an ADR, since it
-  deletes history `dfmt_recall` can currently reach.
+- [x] **Rotated segments are never deleted** — `storage.journal_keep_segments`
+  (ADR-0030), opt-in, default keeps all.
 
 ### CI hardening
 

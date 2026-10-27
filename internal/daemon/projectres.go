@@ -426,6 +426,7 @@ func loadProjectResources(projectPath string, fallbackCfg *config.Config) (*Proj
 		Durable:  cfg.Storage.Durability == "durable",
 		BatchMS:  cfg.Storage.MaxBatchMS,
 		Compress: cfg.Storage.CompressRotated,
+		Keep:     cfg.Storage.JournalKeepSegments,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("open journal: %w", err)

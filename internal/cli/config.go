@@ -87,6 +87,8 @@ func getConfigField(cfg *config.Config, key string) (string, bool) {
 		return fmt.Sprintf("%d", cfg.Storage.JournalMaxBytes), true
 	case "storage.compress_rotated":
 		return fmt.Sprintf("%v", cfg.Storage.CompressRotated), true
+	case "storage.journal_keep_segments":
+		return fmt.Sprintf("%d", cfg.Storage.JournalKeepSegments), true
 	case "retrieval.default_budget":
 		return fmt.Sprintf("%d", cfg.Retrieval.DefaultBudget), true
 	case "retrieval.default_format":
@@ -163,6 +165,12 @@ func setConfigField(cfg *config.Config, key, value string) error {
 		cfg.Storage.JournalMaxBytes = v
 	case "storage.compress_rotated":
 		cfg.Storage.CompressRotated = value == configBoolTrue
+	case "storage.journal_keep_segments":
+		v, err := strconv.Atoi(value)
+		if err != nil {
+			return fmt.Errorf("invalid int %q: %w", value, err)
+		}
+		cfg.Storage.JournalKeepSegments = v
 	case "retrieval.default_budget":
 		v, err := strconv.Atoi(value)
 		if err != nil {
