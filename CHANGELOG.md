@@ -27,6 +27,18 @@ Internal package shapes (`internal/...`) are NOT covered by SemVer.
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [0.8.1] — 2026-10-27
+
+Agent wire-up that reaches the agents, an agent roster that matches what
+is maintained today, and two daemon-lifecycle gaps found by driving the
+built binary end to end.
+
+**Upgrade note:** re-run `dfmt setup` once. Agents configured by 0.8.0
+(other than Claude Code and Cursor) were written to files they do not
+read; setup now writes their real config and removes the old files.
+
 ### Fixed
 
 - **`dfmt setup` configured seven of nine agents in files they never
@@ -2003,7 +2015,8 @@ for v0.3.x:
   `privacy.allow_nonlocal_http` not wired — DFMT never
   phones home regardless.
 
-[Unreleased]: https://github.com/ersinkoc/dfmt/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/ersinkoc/dfmt/compare/v0.8.1...HEAD
+[0.8.1]: https://github.com/ersinkoc/dfmt/releases/tag/v0.8.1
 [0.8.0]: https://github.com/ersinkoc/dfmt/releases/tag/v0.8.0
 [0.7.4]: https://github.com/ersinkoc/dfmt/releases/tag/v0.7.4
 [0.7.3]: https://github.com/ersinkoc/dfmt/releases/tag/v0.7.3
