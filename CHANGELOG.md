@@ -95,6 +95,11 @@ Internal package shapes (`internal/...`) are NOT covered by SemVer.
   first event that does not fit (tier order), so a long newest decision
   note larger than the budget produced an empty snapshot. A truncated
   copy, marked in-band, now fills the remaining budget before the stop.
+- **An MCP message over 1 MiB hung the client.** It was answered with a
+  `-32700` carrying `id: null`, which no host can match to its request, so
+  a large `dfmt_write` waited for the host's own timeout. The proxy now
+  recovers the top-level id from the prefix and answers under it, naming
+  the cap.
 
 ## [0.9.0] — 2026-10-27
 

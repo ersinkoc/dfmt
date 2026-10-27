@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -145,10 +146,12 @@ func serveMCPStdio(ctx context.Context, in io.Reader, out io.Writer, h mcpHandle
 			}
 			if len(buf) >= max {
 				// Drain to next newline so the next iteration starts clean.
+				// The prefix is returned so the caller can still find the
+				// request's id.
 				for {
 					b2, derr := reader.ReadByte()
 					if derr != nil || b2 == '\n' {
-						return nil, true, nil
+						return buf, true, nil
 					}
 				}
 			}
@@ -222,6 +225,27 @@ func serveMCPStdio(ctx context.Context, in io.Reader, out io.Writer, h mcpHandle
 		})
 	}
 
+	// writeOversized answers a message over the line cap. With id null the
+	// host could not match the error to its request and waited for its own
+	// timeout — a large dfmt_write just hung. The id is recovered from the
+	// prefix when it precedes the payload, as clients emit it.
+	writeOversized := func(prefix []byte) {
+		id, ok := mcpTopLevelID(prefix)
+		if !ok {
+			writeParseError()
+			return
+		}
+		writeResp(&transport.MCPResponse{
+			JSONRPC: "2.0",
+			Error: &transport.RPCError{
+				Code: -32600,
+				Message: fmt.Sprintf("request exceeds the %d-byte message cap; "+
+					"split the content (e.g. several dfmt_edit calls) or use a native tool", mcpMaxLineBytes),
+			},
+			ID: id,
+		})
+	}
+
 	// handle runs one request with panic recovery. Without this guard a
 	// nil-deref or out-of-bounds inside any handler would tear down the
 	// entire stdio loop and the agent would silently lose all dfmt tools
@@ -253,7 +277,7 @@ func serveMCPStdio(ctx context.Context, in io.Reader, out io.Writer, h mcpHandle
 	for {
 		line, overflow, err := readCapped(mcpMaxLineBytes)
 		if overflow {
-			writeParseError()
+			writeOversized(line)
 			continue
 		}
 		if err != nil {
@@ -361,4 +385,64 @@ func mcpCancelTarget(params json.RawMessage) (string, bool) {
 		return "", false
 	}
 	return mcpIDKey(p.RequestID)
+}
+
+// mcpTopLevelID finds the value of the top-level "id" member in a possibly
+// truncated JSON object, without parsing the rest. Only depth-1 keys count,
+// so an "id" inside params (a written file's content) is never mistaken for
+// the request's. ok is false when no complete top-level id was seen.
+func mcpTopLevelID(b []byte) (any, bool) {
+	depth, inStr, esc := 0, false, false
+	keyStart := -1
+	for i := 0; i < len(b); i++ {
+		c := b[i]
+		if inStr {
+			switch {
+			case esc:
+				esc = false
+			case c == '\\':
+				esc = true
+			case c == '"':
+				inStr = false
+				if depth == 1 && keyStart >= 0 && string(b[keyStart:i]) == "id" {
+					if v, ok := mcpScalarAfterColon(b[i+1:]); ok {
+						return v, true
+					}
+				}
+				keyStart = -1
+			}
+			continue
+		}
+		switch c {
+		case '"':
+			inStr = true
+			keyStart = i + 1
+		case '{', '[':
+			depth++
+		case '}', ']':
+			depth--
+		}
+	}
+	return nil, false
+}
+
+// mcpScalarAfterColon decodes the string or number following `:` in b.
+func mcpScalarAfterColon(b []byte) (any, bool) {
+	i := 0
+	for i < len(b) && (b[i] == ' ' || b[i] == '\t' || b[i] == '\r' || b[i] == '\n') {
+		i++
+	}
+	if i >= len(b) || b[i] != ':' {
+		return nil, false
+	}
+	dec := json.NewDecoder(bytes.NewReader(b[i+1:]))
+	var v any
+	if err := dec.Decode(&v); err != nil {
+		return nil, false
+	}
+	switch v.(type) {
+	case string, float64:
+		return v, true
+	}
+	return nil, false
 }

@@ -234,3 +234,41 @@ func TestMCPIDKeyKeepsType(t *testing.T) {
 		t.Error("a notification has no id to track")
 	}
 }
+
+// TestServeMCPStdioOversizedMessageKeepsID: a message over the line cap was
+// answered with id:null, which no client can correlate — a large dfmt_write
+// hung until the host's own timeout.
+func TestServeMCPStdioOversizedMessageKeepsID(t *testing.T) {
+	big := `{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"dfmt_write",` +
+		`"arguments":{"content":"` + strings.Repeat("x", 1<<20) + `"}}}` + "\n"
+	out := &syncBuffer{}
+	serveMCPStdio(t.Context(), strings.NewReader(big+mcpLine(8, "fast")), out, &stubHandler{})
+	got := out.String()
+	if !strings.Contains(got, `"id":7`) || !strings.Contains(got, "message cap") {
+		t.Errorf("oversized request not answered under its id: %q", got)
+	}
+	if !strings.Contains(got, `"result":"fast"`) {
+		t.Errorf("following request lost: %q", got)
+	}
+}
+
+func TestMCPTopLevelID(t *testing.T) {
+	cases := []struct {
+		in   string
+		want any
+		ok   bool
+	}{
+		{`{"jsonrpc":"2.0","id":7,"method":"x"`, float64(7), true},
+		{`{"id": "abc-1", "params":{"content":"`, "abc-1", true},
+		// A nested "id" (file content) must not be taken for the request's.
+		{`{"jsonrpc":"2.0","params":{"id":99,"content":"tr`, nil, false},
+		{`{"method":"id","params":{"x":"`, nil, false},
+		{`{"text":"a \"id\": 5 inside a string","id":3,`, float64(3), true},
+	}
+	for _, tc := range cases {
+		got, ok := mcpTopLevelID([]byte(tc.in))
+		if ok != tc.ok || got != tc.want {
+			t.Errorf("mcpTopLevelID(%q) = %v, %v; want %v, %v", tc.in, got, ok, tc.want, tc.ok)
+		}
+	}
+}
