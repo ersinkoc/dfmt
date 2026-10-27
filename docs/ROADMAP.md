@@ -84,10 +84,8 @@ The CLAUDE.md / AGENTS.md targets drifted out of compliance:
 Go 1.27 counts statements differently and reports several points higher —
 measure with the CI toolchain.)
 
-- [x] **`internal/cli` ≥ 75 %** (75.2 % on Go 1.26). All four packages
-  pass `scripts/coverage-gate.go --strict` locally with CI's toolchain;
-  CI's own run has measured cli a few points lower than local, so check
-  its table before flipping the gate to `--strict`.
+- [x] **`internal/cli` ≥ 75 %** (75.3 % in CI). CI's coverage gate
+  is now `--strict`.
 - [x] **`internal/daemon` ≥ 80 %** (83.4 %).
 - [x] **`internal/transport` ≥ 85 %** (90.0 %).
 

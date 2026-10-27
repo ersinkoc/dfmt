@@ -57,18 +57,12 @@ jobs:
       - name: Coverage gate
         # Only meaningful on one matrix slot — coverage data is identical
         # across OS/Go-version pairs. Pick Linux + the newer Go.
-        # Informational mode for now: prints the per-package table and
-        # appends a Markdown summary to the run page, but exits 0 even
-        # when below target. Flip to `--strict` once the documented
-        # CLAUDE.md / AGENTS.md thresholds are met.
+        # Strict: a package below its CLAUDE.md target fails the build.
+        # Measure locally with this Go version — newer toolchains count
+        # statements differently and report several points higher — and
+        # without relying on the machine's installed agents/toolchains.
         if: matrix.os == 'ubuntu-latest' && matrix.go == '1.26'
-        run: go run scripts/coverage-gate.go cover.out
-
-      - name: Coverage detail (internal/cli, temporary)
-        # Temporary: CI measures internal/cli ~3 points below an identical
-        # local run; dump per-function numbers to find the difference.
-        if: matrix.os == 'ubuntu-latest' && matrix.go == '1.26'
-        run: go tool cover -func=cover.out | grep '/internal/cli/'
+        run: go run scripts/coverage-gate.go cover.out --strict
 
       - name: Race detector (non-blocking)
         # Run with -race only on Linux + the newer Go. Race is a v1.0 hard

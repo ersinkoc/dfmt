@@ -248,7 +248,7 @@ Everything else — HTML parser, BM25, Porter stemmer, MCP wire format, JSON-RPC
 ### Test coverage thresholds
 
 Executable targets live in `scripts/coverage-gate.go`; keep this table in sync with that script.
-CI currently runs the coverage gate informationally without `--strict` until the test-integrity cleanup is complete.
+CI runs the gate with `--strict` on the Linux / Go 1.26 slot. Measure with that toolchain (`-covermode=atomic ./...`): Go 1.27 counts statements differently and reports several points higher, and a developer machine with agents and toolchains installed covers setup/doctor paths CI never reaches — both made local numbers look passing while CI was below target.
 
 - `internal/core`       ≥ 90 %
 - `internal/transport`  ≥ 85 %
