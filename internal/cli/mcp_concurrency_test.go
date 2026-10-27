@@ -168,3 +168,29 @@ func TestServeMCPStdioNotificationsAreSilent(t *testing.T) {
 		t.Errorf("notification produced output: %q", got)
 	}
 }
+
+// TRN-3: a parse error written while workers are answering must not share
+// the writer unguarded. Run under -race; without -race, every line must
+// still be one well-formed frame.
+func TestServeMCPStdioParseErrorDoesNotInterleave(t *testing.T) {
+	h := &stubHandler{release: make(chan struct{})}
+	close(h.release)
+	out := &syncBuffer{}
+
+	var in strings.Builder
+	for i := 1; i <= 200; i++ {
+		in.WriteString(mcpLine(i, "fast"))
+		in.WriteString("{not json\n")
+	}
+	serveMCPStdio(t.Context(), strings.NewReader(in.String()), out, h)
+
+	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+	if len(lines) != 400 {
+		t.Fatalf("got %d response lines, want 400", len(lines))
+	}
+	for _, l := range lines {
+		if !json.Valid([]byte(l)) {
+			t.Fatalf("corrupted frame: %q", l)
+		}
+	}
+}

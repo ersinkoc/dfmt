@@ -125,18 +125,6 @@ func serveMCPStdio(ctx context.Context, in io.Reader, out io.Writer, h mcpHandle
 	reader := bufio.NewReader(in)
 	writer := bufio.NewWriter(out)
 
-	writeParseError := func() {
-		resp := transport.MCPResponse{
-			JSONRPC: "2.0",
-			Error: &transport.RPCError{
-				Code:    -32700,
-				Message: "Parse error",
-			},
-		}
-		_ = json.NewEncoder(writer).Encode(resp)
-		_ = writer.Flush()
-	}
-
 	// readCapped reads one line up to max bytes. If max is exceeded, the
 	// remaining bytes of that line are discarded until the next newline so
 	// the next call starts at a fresh message boundary.
@@ -206,6 +194,19 @@ func serveMCPStdio(ctx context.Context, in io.Reader, out io.Writer, h mcpHandle
 		}
 		_ = writer.Flush()
 		return true
+	}
+
+	// writeParseError goes through writeResp (TRN-3): it used to encode
+	// into writer without writeMu, racing any worker writing a response,
+	// so a malformed line could interleave with an unrelated frame.
+	writeParseError := func() {
+		writeResp(&transport.MCPResponse{
+			JSONRPC: "2.0",
+			Error: &transport.RPCError{
+				Code:    -32700,
+				Message: "Parse error",
+			},
+		})
 	}
 
 	// handle runs one request with panic recovery. Without this guard a
