@@ -766,7 +766,10 @@ func (d *Daemon) Stop(ctx context.Context) error {
 		d.closeExtraProjects()
 
 		// Best-effort housekeeping. Global daemons clean up the host-wide
-		// PID file; legacy daemons clean up the per-project one.
+		// PID file; legacy daemons clean up the per-project one. Held under
+		// lockMu so a state-heal pass already in flight cannot rewrite a
+		// file after it is removed here (it re-checks running under lockMu).
+		d.lockMu.Lock()
 		var pidPath string
 		if d.globalMode {
 			pidPath = project.GlobalPIDPath()
@@ -789,7 +792,6 @@ func (d *Daemon) Stop(ctx context.Context) error {
 		// instant Stop returns can bind cleanly. Releasing too early would
 		// let a racing daemon acquire the lock before the listener is fully
 		// torn down → port-already-in-use on the new daemon's bind.
-		d.lockMu.Lock()
 		if d.lock != nil {
 			_ = d.lock.Release()
 			d.lock = nil
@@ -1165,8 +1167,8 @@ func (d *Daemon) healStateFiles() {
 	}
 	d.lockMu.Lock()
 	defer d.lockMu.Unlock()
-	if d.lock == nil {
-		return // Stop has released it
+	if d.lock == nil || !d.running.Load() {
+		return // Stop is cleaning up (or done): never rewrite behind it
 	}
 	// Unix only: there a removed lock file leaves our flock on an orphaned
 	// inode while a new daemon can lock a fresh file at the path. On
