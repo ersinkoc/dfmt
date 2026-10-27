@@ -64,8 +64,12 @@ type Daemon struct {
 	lastActivityNs atomic.Int64  // UnixNano of last inbound RPC; drives idle monitor
 	idleCh         chan struct{} // closed on idle timeout or stop
 	shutdownCh     chan struct{}
-	stopOnce       sync.Once
-	wg             sync.WaitGroup // tracks background goroutines (e.g. fswatch consumer)
+	// stoppedCh closes when Stop has finished (PID/identity files removed,
+	// lock released). shutdownCh closes at Stop's start, for goroutines
+	// that must wind down; Done exposes stoppedCh, for callers that exit.
+	stoppedCh chan struct{}
+	stopOnce  sync.Once
+	wg        sync.WaitGroup // tracks background goroutines (e.g. fswatch consumer)
 
 	// extraProjects holds lazily-loaded resource bundles for projects
 	// other than the default one (passed to New). Phase 2 multi-project
@@ -237,6 +241,7 @@ func New(projectPath string, cfg *config.Config) (*Daemon, error) {
 		redactor:     redactor,
 		fswatcher:    fswatcher,
 		shutdownCh:   make(chan struct{}),
+		stoppedCh:    make(chan struct{}),
 	}
 	d.lastActivityNs.Store(time.Now().UnixNano())
 	handlers.SetActivityFn(d.Touch)
@@ -324,6 +329,7 @@ func NewGlobal(cfg *config.Config) (*Daemon, error) {
 		server:     server,
 		handlers:   handlers,
 		shutdownCh: make(chan struct{}),
+		stoppedCh:  make(chan struct{}),
 		globalMode: true,
 	}
 	d.lastActivityNs.Store(time.Now().UnixNano())
@@ -378,17 +384,18 @@ func (d *Daemon) Handlers() *transport.Handlers {
 	return d.handlers
 }
 
-// Done returns a channel that is closed when the daemon transitions
-// out of the running state — either because Stop was called explicitly
-// or because the idle-exit monitor fired. Callers (notably runMCP and
-// other CLI subcommands that promoted the daemon in-process) block on
-// this so they keep running as long as the daemon serves, then exit
-// cleanly when shutdown completes.
+// Done returns a channel that is closed once the daemon has stopped —
+// either because Stop was called explicitly or because the idle-exit
+// monitor fired — and Stop has finished its housekeeping. Callers that
+// exit the process when it closes (the foreground daemon loop, runMCP)
+// rely on that: it used to be shutdownCh, which closes at Stop's START,
+// so the process exited mid-Stop and left daemon.pid and daemon.json
+// behind for a daemon that no longer existed.
 //
 // The returned channel survives multiple calls and never re-opens; a
 // daemon, once stopped, stays stopped.
 func (d *Daemon) Done() <-chan struct{} {
-	return d.shutdownCh
+	return d.stoppedCh
 }
 
 // PromoteInProcess constructs a global daemon and starts it in the
@@ -774,6 +781,9 @@ func (d *Daemon) Stop(ctx context.Context) error {
 			d.lock = nil
 		}
 		fmt.Println("DFMT daemon stopped")
+		if d.stoppedCh != nil {
+			close(d.stoppedCh)
+		}
 	})
 	return retErr
 }

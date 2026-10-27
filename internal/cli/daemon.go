@@ -894,16 +894,32 @@ func runGlobalDaemonForeground(cfg *config.Config) int {
 		fmt.Fprintf(os.Stderr, "error starting global daemon: %v\n", err)
 		return 1
 	}
+	serveUntilStopped(d, "global daemon")
+	return 0
+}
 
+// serveUntilStopped blocks until the daemon stops on its own (idle-exit,
+// or a `dfmt stop` over RPC) or the process is signalled, and stops it in
+// the latter case.
+//
+// Both foreground loops used to wait on the signal alone. The idle monitor
+// calls d.Stop, which closes the listeners and removes the PID/port files —
+// and then nothing returned from main, so every "idle-exited" daemon stayed
+// resident, holding the singleton lock with no listener, until the machine
+// rebooted. Unused daemons never actually went away.
+func serveUntilStopped(d *daemon.Daemon, label string) {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
-	<-sigCh
-
-	fmt.Println("\nShutting down global daemon...")
+	defer signal.Stop(sigCh)
+	select {
+	case <-d.Done():
+		return
+	case <-sigCh:
+	}
+	fmt.Printf("\nShutting down %s...\n", label)
 	stopCtx, cancel := context.WithTimeout(context.Background(), d.ShutdownGrace())
 	defer cancel()
-	d.Stop(stopCtx)
-	return 0
+	_ = d.Stop(stopCtx)
 }
 
 func runDaemonForeground(proj string, cfg *config.Config) int {
@@ -918,16 +934,7 @@ func runDaemonForeground(proj string, cfg *config.Config) int {
 		fmt.Fprintf(os.Stderr, "error starting daemon: %v\n", err)
 		return 1
 	}
-
-	// Wait for interrupt signals
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
-	<-sigCh
-
-	fmt.Println("\nShutting down...")
-	stopCtx, cancel := context.WithTimeout(context.Background(), d.ShutdownGrace())
-	defer cancel()
-	d.Stop(stopCtx)
+	serveUntilStopped(d, "daemon")
 	return 0
 }
 
