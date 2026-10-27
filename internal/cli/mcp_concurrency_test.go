@@ -194,3 +194,43 @@ func TestServeMCPStdioParseErrorDoesNotInterleave(t *testing.T) {
 		}
 	}
 }
+
+// TestServeMCPStdioHonorsCancelledNotification: notifications/cancelled was
+// dropped like any notification, so Esc in the host left a dfmt_exec running
+// for its whole timeout. The canceled call must stop, and per the spec get
+// no response; its siblings are untouched.
+func TestServeMCPStdioHonorsCancelledNotification(t *testing.T) {
+	h := &stubHandler{release: make(chan struct{})} // never released
+	out := &syncBuffer{}
+	in := mcpLine(1, "slow") +
+		`{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":1,"reason":"user"}}` + "\n" +
+		mcpLine(2, "fast")
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		serveMCPStdio(t.Context(), strings.NewReader(in), out, h)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("loop never finished: the canceled call is still running")
+	}
+	if strings.Contains(out.String(), `"id":1`) {
+		t.Errorf("canceled request was answered: %q", out.String())
+	}
+	if !strings.Contains(out.String(), `"result":"fast"`) {
+		t.Errorf("sibling call lost: %q", out.String())
+	}
+}
+
+func TestMCPIDKeyKeepsType(t *testing.T) {
+	a, _ := mcpIDKey(float64(1))
+	b, _ := mcpIDKey("1")
+	if a == b {
+		t.Errorf("id 1 and \"1\" share key %q", a)
+	}
+	if _, ok := mcpIDKey(nil); ok {
+		t.Error("a notification has no id to track")
+	}
+}

@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"sync"
+	"sync/atomic"
 	"syscall"
 
 	"github.com/ersinkoc/dfmt/internal/logging"
@@ -180,6 +181,17 @@ func serveMCPStdio(ctx context.Context, in io.Reader, out io.Writer, h mcpHandle
 		slots   = make(chan struct{}, mcpMaxConcurrentCalls)
 	)
 
+	// In-flight requests by id, so `notifications/cancelled` can stop one.
+	// It used to be dropped like any notification: pressing Esc in the host
+	// left a dfmt_exec running up to its full timeout, holding one of the
+	// daemon's exec slots. Canceling the per-request context propagates
+	// over the RPC client to the daemon, whose exec path kills the process
+	// tree on context cancellation (ADR-0023).
+	var (
+		inflightMu sync.Mutex
+		inflight   = map[string]*mcpInflight{}
+	)
+
 	writeResp := func(resp *transport.MCPResponse) bool {
 		// JSON-RPC notifications (no ID) yield a nil response and MUST NOT
 		// produce any bytes on stdout — writing {} or null would confuse
@@ -216,7 +228,7 @@ func serveMCPStdio(ctx context.Context, in io.Reader, out io.Writer, h mcpHandle
 	// mid-session — exactly the "MCP fail olunca patlayan sistem" failure
 	// mode this project exists to prevent. Recovery is per-request, so one
 	// bad call no longer takes its concurrent siblings with it either.
-	handle := func(req *transport.MCPRequest) (resp *transport.MCPResponse) {
+	handle := func(reqCtx context.Context, req *transport.MCPRequest) (resp *transport.MCPResponse) {
 		defer func() {
 			if r := recover(); r != nil {
 				fmt.Fprintf(os.Stderr, "mcp handle panic recovered: %v\n", r)
@@ -234,7 +246,7 @@ func serveMCPStdio(ctx context.Context, in io.Reader, out io.Writer, h mcpHandle
 				// per JSON-RPC 2.0 they never get one.
 			}
 		}()
-		resp, _ = h.Handle(ctx, req)
+		resp, _ = h.Handle(reqCtx, req)
 		return resp
 	}
 
@@ -264,10 +276,35 @@ func serveMCPStdio(ctx context.Context, in io.Reader, out io.Writer, h mcpHandle
 		// The handshake is ordering-sensitive and cheap: run it on this
 		// goroutine so no tool call can observe a half-initialized session.
 		if req.Method == "initialize" {
-			if !writeResp(handle(&req)) {
+			if !writeResp(handle(ctx, &req)) {
 				break
 			}
 			continue
+		}
+
+		// Cancellation is handled here, inline, so it can never queue
+		// behind the very call it is trying to stop.
+		if req.Method == "notifications/cancelled" {
+			if key, ok := mcpCancelTarget(req.Params); ok {
+				inflightMu.Lock()
+				if f := inflight[key]; f != nil {
+					f.canceled.Store(true)
+					f.cancel()
+				}
+				inflightMu.Unlock()
+			}
+			continue
+		}
+
+		reqCtx, cancel := context.WithCancel(ctx)
+		f := &mcpInflight{cancel: cancel}
+		key, tracked := mcpIDKey(req.ID)
+		if tracked {
+			// Registered on the read goroutine, before the worker starts,
+			// so a cancel read on the next line always finds it.
+			inflightMu.Lock()
+			inflight[key] = f
+			inflightMu.Unlock()
 		}
 
 		slots <- struct{}{}
@@ -275,10 +312,22 @@ func serveMCPStdio(ctx context.Context, in io.Reader, out io.Writer, h mcpHandle
 		go func(req transport.MCPRequest) {
 			defer inFlag.Done()
 			defer func() { <-slots }()
+			defer cancel()
+			resp := handle(reqCtx, &req)
+			if tracked {
+				inflightMu.Lock()
+				delete(inflight, key)
+				inflightMu.Unlock()
+			}
+			// The spec says a canceled request gets no response; the
+			// client has already forgotten the id.
+			if f.canceled.Load() {
+				return
+			}
 			// A write failure here (client closed stdout) cannot break the
 			// read loop from a worker; the next read returns EOF and the
 			// loop ends on its own.
-			_ = writeResp(handle(&req))
+			_ = writeResp(resp)
 		}(req)
 	}
 
@@ -286,4 +335,30 @@ func serveMCPStdio(ctx context.Context, in io.Reader, out io.Writer, h mcpHandle
 	// keeps their responses from racing the process exit — and, more
 	// importantly, keeps a half-written JSON line off stdout.
 	inFlag.Wait()
+}
+
+// mcpInflight is one request the client may still cancel.
+type mcpInflight struct {
+	cancel   context.CancelFunc
+	canceled atomic.Bool
+}
+
+// mcpIDKey renders a JSON-RPC id as a map key. The type is part of the key:
+// 1 and "1" are different ids. ok is false for a notification (no id).
+func mcpIDKey(id any) (string, bool) {
+	if id == nil {
+		return "", false
+	}
+	return fmt.Sprintf("%T:%v", id, id), true
+}
+
+// mcpCancelTarget extracts the requestId of a notifications/cancelled.
+func mcpCancelTarget(params json.RawMessage) (string, bool) {
+	var p struct {
+		RequestID any `json:"requestId"`
+	}
+	if err := json.Unmarshal(params, &p); err != nil {
+		return "", false
+	}
+	return mcpIDKey(p.RequestID)
 }

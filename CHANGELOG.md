@@ -74,6 +74,10 @@ Internal package shapes (`internal/...`) are NOT covered by SemVer.
   and decoded, and never read. Matches now carry `before`/`after` lines
   (max 10). Grep also names the 100-match cap when it stops there, and
   stops walking when the call is cancelled.
+- **MCP `notifications/cancelled` was ignored.** Pressing Esc in the host
+  left a `dfmt_exec` running for its full timeout, holding one of the
+  daemon's four exec slots. The proxy now cancels that request's context —
+  the daemon kills the process tree — and sends no response for it.
 
 ## [0.9.0] — 2026-10-27
 
