@@ -140,7 +140,51 @@ func isBlockedIP(ip net.IP) bool {
 	if isIPv6InPrefix(ip, net.ParseIP("fec0::"), 10) {
 		return true
 	}
+	for _, n := range extraBlockedNets {
+		if n.Contains(ip) {
+			return true
+		}
+	}
 	return false
+}
+
+// checkFetchRedirect vets each redirect hop. Operator rules apply to every
+// hop, not just the first URL: otherwise a public URL redirecting to a host
+// a deny rule names is fetched anyway (SBX-12). The SSRF check runs after.
+func (s *SandboxImpl) checkFetchRedirect(r *http.Request, via []*http.Request) error {
+	if len(via) >= 10 {
+		return errors.New("stopped after 10 redirects")
+	}
+	if err := s.PolicyCheck("fetch", normalizeFetchURLForPolicy(r.URL.String())); err != nil {
+		return err
+	}
+	return assertFetchURLAllowed(r.URL.String())
+}
+
+// extraBlockedNets covers what the predicates above miss (SBX-13). The
+// IPv6 transition prefixes embed an IPv4 address the host may route to —
+// 64:ff9b::7f00:1 is 127.0.0.1 through a NAT64 gateway — so they are
+// refused whole rather than decoded.
+var extraBlockedNets = mustParseCIDRs(
+	"64:ff9b::/96",   // NAT64 well-known prefix (RFC 6052)
+	"64:ff9b:1::/48", // NAT64 local-use prefix (RFC 8215)
+	"2002::/16",      // 6to4 (RFC 3056)
+	"2001::/32",      // Teredo (RFC 4380)
+	"192.0.0.0/24",   // IETF protocol assignments (RFC 6890)
+	"198.18.0.0/15",  // benchmarking (RFC 2544)
+	"240.0.0.0/4",    // reserved, including 255.255.255.255
+)
+
+func mustParseCIDRs(cidrs ...string) []*net.IPNet {
+	out := make([]*net.IPNet, 0, len(cidrs))
+	for _, c := range cidrs {
+		_, n, err := net.ParseCIDR(c)
+		if err != nil {
+			panic("sandbox: bad built-in CIDR " + c)
+		}
+		out = append(out, n)
+	}
+	return out
 }
 
 // ErrBlockedHost indicates the target host/IP falls into a blocked range
@@ -276,12 +320,7 @@ func (s *SandboxImpl) Fetch(ctx context.Context, req FetchReq) (FetchResp, error
 		Timeout:   timeout,
 		Transport: transport,
 		// Re-check every redirect target against SSRF policy.
-		CheckRedirect: func(r *http.Request, via []*http.Request) error {
-			if len(via) >= 10 {
-				return errors.New("stopped after 10 redirects")
-			}
-			return assertFetchURLAllowed(r.URL.String())
-		},
+		CheckRedirect: s.checkFetchRedirect,
 	}
 	resp, err := client.Do(httpReq)
 	if err != nil {
