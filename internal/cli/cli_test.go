@@ -530,20 +530,7 @@ func TestRunDaemonWithForegroundTimeout(t *testing.T) {
 	os.WriteFile(configPath, []byte(`version: 1`), 0644)
 
 	flagProject = tmpDir
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-	defer cancel()
-
-	done := make(chan int, 1)
-	go func() {
-		done <- Dispatch([]string{"daemon", "-foreground"})
-	}()
-
-	select {
-	case <-ctx.Done():
-		// Timeout - expected when daemon starts but can't accept connections
-	case code := <-done:
-		_ = code
-	}
+	runForegroundDaemonBriefly(t)
 }
 
 func TestRunStatusJSON(t *testing.T) {
@@ -1697,22 +1684,7 @@ func TestRunDaemonForegroundFlag(t *testing.T) {
 	os.WriteFile(configPath, []byte(`version: 1`), 0644)
 
 	flagProject = tmpDir
-	// Use timeout to prevent hanging on foreground mode
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-	defer cancel()
-
-	done := make(chan int, 1)
-	go func() {
-		done <- Dispatch([]string{"daemon", "-foreground"})
-	}()
-
-	select {
-	case <-ctx.Done():
-		// Expected timeout - foreground mode blocks
-	case code := <-done:
-		// May succeed or fail depending on daemon startup
-		t.Logf("daemon -foreground returned %d", code)
-	}
+	runForegroundDaemonBriefly(t)
 }
 
 // =============================================================================

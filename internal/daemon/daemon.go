@@ -56,6 +56,7 @@ type Daemon struct {
 	fswatcher   *capture.FSWatcher
 	lock        *LockFile  // exclusive singleton lock; nil only between New and Start
 	lockMu      sync.Mutex // guards lock against the state-heal goroutine
+	healDir     string     // global dir this daemon started in; the only one it repairs
 
 	indexPath       string             // .dfmt/index.gob — needed for async persist after rebuild
 	needsRebuild    bool               // set in New(); Start() spawns rebuild goroutine if true
@@ -1165,6 +1166,15 @@ func (d *Daemon) healStateFiles() {
 	if !d.globalMode || !d.running.Load() {
 		return
 	}
+	// Repair only the directory this daemon started in. The paths are
+	// resolved from the environment at call time, so a daemon that outlives
+	// its context (a test binary is one process; DFMT_GLOBAL_DIR can change
+	// under it) would otherwise write its PID, identity and lock into an
+	// unrelated directory and make a stranger's `dfmt stop` believe a daemon
+	// lives there.
+	if d.healDir != "" && project.GlobalDir() != d.healDir {
+		return
+	}
 	d.lockMu.Lock()
 	defer d.lockMu.Unlock()
 	if d.lock == nil || !d.running.Load() {
@@ -1212,6 +1222,7 @@ func (d *Daemon) startStateHeal() {
 		return
 	}
 	interval := stateHealInterval
+	d.healDir = project.GlobalDir()
 	go func() {
 		t := time.NewTicker(interval)
 		defer t.Stop()

@@ -100,3 +100,22 @@ func TestGlobalDaemonYieldsWhenAnotherHoldsTheLock(t *testing.T) {
 		t.Fatal("duplicate daemon kept running")
 	}
 }
+
+// A daemon repairs only the directory it started in. Its paths come from the
+// environment at call time, so one that outlives a test (or a changed
+// DFMT_GLOBAL_DIR) wrote its PID, identity and lock into an unrelated
+// directory — seen as TestRunStopWithRunningDaemon failing ~half the time
+// under -race -count=5 once self-heal existed.
+func TestStateHealStaysInItsOwnDirectory(t *testing.T) {
+	d := startHealingGlobal(t)
+	other := t.TempDir()
+	t.Setenv("DFMT_GLOBAL_DIR", other)
+	time.Sleep(300 * time.Millisecond) // several heal ticks at 50 ms
+	entries, _ := os.ReadDir(other)
+	if len(entries) != 0 {
+		t.Errorf("heal wrote into a directory it did not start in: %v", entries)
+	}
+	if !d.running.Load() {
+		t.Error("daemon stopped")
+	}
+}

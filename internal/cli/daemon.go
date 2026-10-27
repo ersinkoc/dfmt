@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -904,8 +905,26 @@ func runGlobalDaemonForeground(cfg *config.Config) int {
 		fmt.Fprintf(os.Stderr, "error starting global daemon: %v\n", err)
 		return 1
 	}
+	if isTestBinary() {
+		trackTestDaemon(d)
+	}
 	serveUntilStopped(d, "global daemon")
 	return 0
+}
+
+// testDaemons records global daemons a test binary started through the
+// foreground path, which blocks until stopped and gives the caller no handle.
+// Tests stop them via stopTestDaemons; without that a daemon outlives its
+// test inside the shared test process and keeps owning ~/.dfmt.
+var (
+	testDaemonsMu sync.Mutex
+	testDaemons   []*daemon.Daemon
+)
+
+func trackTestDaemon(d *daemon.Daemon) {
+	testDaemonsMu.Lock()
+	testDaemons = append(testDaemons, d)
+	testDaemonsMu.Unlock()
 }
 
 // serveUntilStopped blocks until the daemon stops on its own (idle-exit,
