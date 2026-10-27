@@ -152,7 +152,7 @@ it (with a removal ADR):
 
 - [x] `internal/retrieve/` — **wired in v0.3** via the
   `SnapshotBuilder` integration into `handlers.Recall`. Keep.
-- [ ] `content.Summarizer` (`internal/content/summarize.go`)
+- [x] `content.Summarizer` — removed (unused) (`internal/content/summarize.go`)
   — replace `sandbox.GenerateSummary` for kind-aware
   summaries, or remove.
 - [ ] `core.EnglishStopwords` (the 70-entry exported map) —
@@ -162,7 +162,7 @@ it (with a removal ADR):
 - [x] `core.Levenshtein` + `core.FuzzyMatch` — **removed**
   in ADR-0013; the `fuzzy` Search layer remains accepted
   for forward compatibility but returns no results.
-- [ ] `capture.GitCapture` / `capture.ShellCapture` builders
+- [x] `capture.GitCapture` / `capture.ShellCapture` builders — removed (unused)
   — collapse `internal/cli/dispatch.go::buildCaptureParams`
   onto these helpers (deduplicates the inline construction)
   or remove the helpers.

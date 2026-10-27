@@ -1075,26 +1075,13 @@ external tooling.
 > All three flow through the same `Event` struct since `Type` is a
 > raw string — the enum is convention, not validation.
 
-> **Orphaned constants and builders.** `EvtShellCmd` (`shell.cmd`)
-> is defined and has a `capture.ShellCapture.BuildCommand` helper,
-> but **neither is called from production code**. The `dfmt capture
-> shell` CLI subcommand exists, but it builds a `note` event (P4,
-> source `shell`) with `cmd` / `cwd` in `data` — not an
-> `EvtShellCmd`. The installed bash/zsh/fish hooks emit only
-> `env.cwd` (`EvtEnvCwd`), not shell commands. The constant is
-> reserved for a future feature; treat it as test-only today.
->
-> The pattern extends to the rest of `internal/capture/`: every
-> exported builder helper in `git.go` and `shell.go` —
-> `NewGitCapture`, `BuildCommit`, `BuildCheckout`, `BuildPush`,
-> `GitLog`, `NewShellCapture`, `BuildCommand`, `DetectShell` — is
-> referenced **only** from `git_shell_test.go`. The live capture
-> path bypasses these helpers entirely: shell/git hooks shell out
-> to `dfmt capture …`, which dispatches to
-> `internal/cli/dispatch.go::buildCaptureParams` and constructs the
-> `RememberParams` inline (see §10.2 / §10.3). `internal/capture/`
-> is effectively `fswatch.go` plus reserved scaffolding — see the
-> Reserved code table at end of §18.
+> **Orphaned constant.** `EvtShellCmd` (`shell.cmd`) is defined but
+> not emitted by production code: `dfmt capture shell` builds a `note`
+> event (P4, source `shell`) with `cmd` / `cwd` in `data`, and the
+> installed bash/zsh/fish hooks emit only `env.cwd` (`EvtEnvCwd`). The
+> `capture.GitCapture` / `ShellCapture` builder helpers that used to sit
+> beside it were never called outside their own tests and were removed in
+> 0.9.3; the live path is `cli/setup.go::buildCaptureParams`.
 
 ### 8.2 Classifier
 
@@ -1680,19 +1667,12 @@ next call.
 
 > **Where the `Summary` text comes from.** The string in
 > `out.Summary` is produced by `sandbox.GenerateSummary(content,
-> keywords)` (`internal\sandbox\intent.go`), not by the more elaborate
-> kind-aware `content.Summarizer` in `internal\content\summarize.go`.
-> `GenerateSummary` is intentionally simple: it counts non-blank lines,
-> and either returns `"Total lines: N"` (no keywords) or
-> `"Found K matching lines out of N total. Top matches:\nL{n}: …"`
-> with up to 5 keyword-matching lines truncated to 80 chars each. The
-> richer `content.Summarizer` (warnings detection, top-phrase
-> extraction, kind-aware logic for `ChunkKindLog` / `ChunkKindMarkdown`)
-> ships in the binary and is fully tested but is not currently wired
-> to any production code path — only the package's own
-> `summarize_test.go` and `store_test.go` instantiate it. It's a
-> reserved capability, similar in status to the orphaned `retrieve`
-> package called out in §11.1.
+> keywords)` (`internal\sandbox\intent.go`). It is intentionally simple:
+> it counts non-blank lines, and either returns `"Total lines: N"` (no
+> keywords) or `"Found K matching lines out of N total. Top matches:\nL{n}: …"`
+> with up to 5 keyword-matching lines truncated to 80 chars each. (A
+> kind-aware `content.Summarizer` existed alongside it, fully tested but
+> never wired; it was removed in 0.9.3.)
 
 **`NormalizeOutput` (runs upstream of every return mode).** Ten
 ordered passes in `internal/sandbox/intent.go::NormalizeOutput`,
@@ -1966,8 +1946,8 @@ flowchart LR
 | MCP calls           | `internal/transport/{mcp.go, handlers.go}`         | live       | always                                  |
 | CLI commands        | `internal/cli/dispatch.go::buildCaptureParams`     | live       | always                                  |
 | FS watcher          | `internal/capture/fswatch{,_linux,_windows}.go`    | live       | `capture.fs.enabled=true`               |
-| Git hooks           | `internal/capture/git.go` + `cli/hooks_embed.go`   | live       | `dfmt install-hooks`                    |
-| Shell integration   | `internal/capture/shell.go`                        | live       | `dfmt shell-init bash\|zsh\|fish` + `eval $(...)` |
+| Git hooks           | `cli/setup.go::buildCaptureParams` + `cli/hooks_embed.go` | live       | `dfmt install-hooks`                    |
+| Shell integration   | `cli/setup.go::buildCaptureParams`                 | live       | `dfmt shell-init bash\|zsh\|fish` + `eval $(...)` |
 
 ### 10.1 FS watcher
 
@@ -3175,7 +3155,6 @@ internal/
 ├── content/
 │   ├── content.go           ChunkSet / Chunk types
 │   ├── store.go             ephemeral content store, size-evicted at 64 MiB
-│   └── summarize.go         kind-aware Summarizer (warnings + top phrases) — reserved, not wired (see §9.4)
 ├── core/
 │   ├── core.go              package-level helpers
 │   ├── event.go             EventType / Priority / Source / Event
@@ -3260,10 +3239,8 @@ work assuming these paths are live:
 | Symbol / package                              | Location                        | Status                                                                                          |
 |-----------------------------------------------|---------------------------------|-------------------------------------------------------------------------------------------------|
 | `internal/retrieve/` (whole package)          | `retrieve/{snapshot,render_md}` | `SnapshotBuilder` + `JSONRenderer`/`XMLRenderer` are wired into `handlers.Recall` for `format=json/xml`; `MarkdownRenderer` unused (recall builds lines inline for md). |
-| `content.Summarizer` (kind-aware summary)     | `content/summarize.go`          | Production `Summary` text comes from `sandbox.GenerateSummary` instead (§9.4).                  |
 | `core.EnglishStopwords` (~70 entries)         | `core/core.go`                  | All call sites pass `nil` to `TokenizeFull`; the unexported 25-entry list applies (§8.6).       |
 | `core.TurkishStopwords` (14 entries)          | `core/core.go`                  | Same as above — never reached.                                                                  |
-| `capture.{GitCapture,ShellCapture}` builders   | `capture/{git,shell}.go`        | `NewGitCapture`, `BuildCommit`, `BuildCheckout`, `BuildPush`, `GitLog`, `NewShellCapture`, `BuildCommand`, `DetectShell` — only `git_shell_test.go` references them. The live capture path is `dispatch.go::buildCaptureParams` constructing `RememberParams` inline (§10.2 / §10.3); only `capture/fswatch.go` is wired. |
 
 Treat each row as a tripwire: if a future commit makes one of these
 load-bearing, the corresponding row should be deleted and the

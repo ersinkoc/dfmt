@@ -269,33 +269,6 @@ func TestEvictOnEmptyStore(t *testing.T) {
 	}
 }
 
-func TestSummarizer(t *testing.T) {
-	s := &Summarizer{}
-
-	tests := []struct {
-		name      string
-		body      string
-		kind      ChunkKind
-		wantLines bool
-	}{
-		{"simple", "hello\nworld", ChunkKindText, true},
-		{"empty", "", ChunkKindText, true},
-		{"single line", "hello", ChunkKindText, true},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			sum := s.Summarize(tt.body, tt.kind)
-			if sum == nil {
-				t.Fatal("Summarize returned nil")
-			}
-			if tt.wantLines && sum.Lines == 0 {
-				t.Log("empty body gave 0 lines")
-			}
-		})
-	}
-}
-
 func TestPutChunkSetWithTTL(t *testing.T) {
 	store, _ := NewStore(StoreOptions{})
 
