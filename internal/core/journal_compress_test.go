@@ -102,3 +102,42 @@ func TestJournalRetentionCountsCompressedSegments(t *testing.T) {
 		t.Errorf("after retention = %v, want %v", got, want)
 	}
 }
+
+// compressSegment must leave the original intact when it cannot finish.
+func TestCompressSegmentFailureKeepsOriginal(t *testing.T) {
+	if err := compressSegment(filepath.Join(t.TempDir(), "missing.jsonl")); err == nil {
+		t.Error("compressing a missing segment succeeded")
+	}
+	dir := t.TempDir()
+	seg := filepath.Join(dir, "journal.jsonl.01X.jsonl")
+	if err := os.WriteFile(seg, []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// A directory where the .gz must land makes the final rename fail.
+	if err := os.Mkdir(seg+".gz", 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := compressSegment(seg); err == nil {
+		t.Error("compress over a blocking directory succeeded")
+	}
+	if _, err := os.Stat(seg); err != nil {
+		t.Errorf("original removed after a failed compress: %v", err)
+	}
+	if _, err := os.Stat(seg + ".gz.tmp"); !os.IsNotExist(err) {
+		t.Error("temp file left behind")
+	}
+}
+
+// A corrupt .gz segment is skipped with a warning; later segments still
+// stream.
+func TestStreamSkipsCorruptCompressedSegment(t *testing.T) {
+	j, path := compressedJournal(t, 0, 2)
+	defer j.Close()
+	segs, _ := journalSegments(path)
+	if err := os.WriteFile(segs[0], []byte("not gzip"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := streamIDs(t, j, ""); !reflect.DeepEqual(got, []string{"01G1", "01GZ"}) {
+		t.Errorf("stream past a corrupt segment = %v", got)
+	}
+}

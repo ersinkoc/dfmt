@@ -99,3 +99,36 @@ func TestIndexEvictionAtCapIncludingRestoredDocs(t *testing.T) {
 		t.Error("the new document was not indexed")
 	}
 }
+
+// An index.gob written before reverse maps existed carries posting lists
+// but no doc_stems/doc_trigrams; removing a document from it must take the
+// full posting-list sweep, or the ID keeps scoring as a hit forever.
+func TestIndexRemoveFromPreReverseMapIndex(t *testing.T) {
+	ix := NewIndex()
+	ix.Add(noteEvent("01A", "zebra crossing"))
+	ix.Add(noteEvent("01B", "zebra stripes"))
+	data, err := json.Marshal(ix)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatal(err)
+	}
+	for k := range raw {
+		if k == "doc_stems" || k == "doc_trigrams" {
+			delete(raw, k)
+		}
+	}
+	legacy, _ := json.Marshal(raw)
+	old := NewIndex()
+	if err := json.Unmarshal(legacy, old); err != nil {
+		t.Fatal(err)
+	}
+	old.Remove("01A")
+	for _, h := range old.SearchBM25("zebra", 10) {
+		if h.ID == "01A" {
+			t.Fatal("removed document still scores in a pre-reverse-map index")
+		}
+	}
+}
