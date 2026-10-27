@@ -96,15 +96,12 @@ measure with the CI toolchain.)
 
 ### CI hardening
 
-- [ ] **Re-enable PR-time CI**. Today the workflow is
-  release-only (commit 3cab1f9). A 90-second
-  `go vet + golangci-lint + go test -short` gate on PRs
-  would catch the kind of `gofmt` drift the v0.7.0 cleanup
-  commit erased (13 files at audit time).
-- [ ] **Race detector on Linux + macOS** in the CI matrix.
-  Carry-over from the v1.0 list — promoted here because
-  the v0.7 refactors will touch concurrency-sensitive code.
-- [ ] **Coverage gate** enforcing the targets above.
+- [x] **PR-time CI**: `ci.yml` runs on every push to `main` and
+  every PR — tests on Linux/macOS/Windows plus golangci-lint.
+  Lint and the macOS leg are still `continue-on-error`.
+- [ ] **Race detector** blocking: it runs on Linux but is
+  `continue-on-error`; macOS is not covered.
+- [x] **Coverage gate** enforcing the targets above (`--strict`).
 
 ### Config-schema hygiene (carry-over from v0.3)
 
