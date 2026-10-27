@@ -903,3 +903,22 @@ func TestAcquireLimiter_ContextCancelled(t *testing.T) {
 		t.Errorf("expected Canceled, got %v", err)
 	}
 }
+
+// TestHandlers_Fetch_RedactsHeaders: the body was redacted, header values
+// were not — an echoed token in a custom header went to the agent as is.
+func TestHandlers_Fetch_RedactsHeaders(t *testing.T) {
+	token := "ghp_" + strings.Repeat("a", 36)
+	sb := &stubSandbox{fetchResp: sandbox.FetchResp{
+		Status:  200,
+		Headers: map[string]string{"X-Echo-Token": token},
+		Body:    "ok",
+	}}
+	h := NewHandlers(core.NewIndex(), &mockJournal{}, sb)
+	resp, err := h.Fetch(context.Background(), FetchParams{URL: "https://example.com/x"})
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if strings.Contains(resp.Headers["X-Echo-Token"], token) {
+		t.Errorf("header value not redacted: %q", resp.Headers["X-Echo-Token"])
+	}
+}

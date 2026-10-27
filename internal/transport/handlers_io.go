@@ -253,7 +253,7 @@ func (h *Handlers) Fetch(ctx context.Context, params FetchParams) (_ *FetchRespo
 		})
 		return &FetchResponse{
 			Status:    resp.Status,
-			Headers:   resp.Headers,
+			Headers:   h.redactHeaders(ctx, resp.Headers),
 			Summary:   sentUnchangedSummary,
 			TimedOut:  resp.TimedOut,
 			ContentID: contentID,
@@ -285,7 +285,7 @@ func (h *Handlers) Fetch(ctx context.Context, params FetchParams) (_ *FetchRespo
 	}
 	return &FetchResponse{
 		Status:     resp.Status,
-		Headers:    resp.Headers,
+		Headers:    h.redactHeaders(ctx, resp.Headers),
 		Body:       redBody,
 		Summary:    summary,
 		Matches:    matches,
@@ -397,6 +397,20 @@ func (h *Handlers) redactLines(ctx context.Context, lines []string) []string {
 	out := make([]string, len(lines))
 	for i, l := range lines {
 		out[i] = h.redactString(ctx, l)
+	}
+	return out
+}
+
+// redactHeaders runs fetch response header values through the redactor,
+// as the body already is: an echoed token in a custom header is as much a
+// secret as one in the body.
+func (h *Handlers) redactHeaders(ctx context.Context, headers map[string]string) map[string]string {
+	if len(headers) == 0 {
+		return headers
+	}
+	out := make(map[string]string, len(headers))
+	for k, v := range headers {
+		out[k] = h.redactString(ctx, v)
 	}
 	return out
 }

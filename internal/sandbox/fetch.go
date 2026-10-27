@@ -334,12 +334,7 @@ func (s *SandboxImpl) Fetch(ctx context.Context, req FetchReq) (FetchResp, error
 		return FetchResp{}, fmt.Errorf("read body: %w", err)
 	}
 
-	headers := make(map[string]string)
-	for k, vv := range resp.Header {
-		if len(vv) > 0 {
-			headers[k] = vv[0]
-		}
-	}
+	headers := filterResponseHeaders(resp.Header)
 
 	content := string(body)
 
@@ -365,4 +360,51 @@ func (s *SandboxImpl) Fetch(ctx context.Context, req FetchReq) (FetchResp, error
 		Summary:    filtered.Summary,
 		Vocabulary: filtered.Vocabulary,
 	}, nil
+}
+
+// droppedResponseHeaders never reach the agent. Credentials first:
+// Set-Cookie carries session tokens and was returned verbatim (the body was
+// redacted, the headers were not). The rest is per-response policy noise —
+// a CSP alone is routinely several KB — that no agent acts on, repeated on
+// every call including the "(unchanged)" dedup path.
+var droppedResponseHeaders = map[string]bool{
+	"Set-Cookie":                          true,
+	"Set-Cookie2":                         true,
+	"Authorization":                       true,
+	"Proxy-Authorization":                 true,
+	"Content-Security-Policy":             true,
+	"Content-Security-Policy-Report-Only": true,
+	"Permissions-Policy":                  true,
+	"Feature-Policy":                      true,
+	"Report-To":                           true,
+	"Reporting-Endpoints":                 true,
+	"Nel":                                 true,
+	"Strict-Transport-Security":           true,
+	"Alt-Svc":                             true,
+	"Server-Timing":                       true,
+	"Cross-Origin-Opener-Policy":          true,
+	"Cross-Origin-Embedder-Policy":        true,
+	"Cross-Origin-Resource-Policy":        true,
+	"X-Xss-Protection":                    true,
+	"X-Content-Type-Options":              true,
+	"X-Frame-Options":                     true,
+}
+
+// maxResponseHeaderBytes caps one header value; past it the value is
+// truncated, not dropped, so a long Link header still names its targets.
+const maxResponseHeaderBytes = 512
+
+// filterResponseHeaders keeps the headers an agent can act on (type,
+// length, location, caching, rate limits, pagination links, custom ones)
+// and drops credentials and security-policy noise. Keys are canonical
+// (net/http canonicalizes them on receipt).
+func filterResponseHeaders(h http.Header) map[string]string {
+	out := make(map[string]string, len(h))
+	for k, vv := range h {
+		if len(vv) == 0 || droppedResponseHeaders[k] {
+			continue
+		}
+		out[k] = truncate(vv[0], maxResponseHeaderBytes)
+	}
+	return out
 }
