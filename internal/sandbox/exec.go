@@ -207,11 +207,12 @@ func (s *SandboxImpl) execImpl(ctx context.Context, req ExecReq, rt Runtime) (Ex
 	if err := cmd.Start(); err != nil {
 		return ExecResp{}, err
 	}
-	out, readErr := io.ReadAll(io.LimitReader(stdout, MaxRawBytes))
-	// Always drain the rest of stdout so a noisy subprocess can finish
-	// and Wait() returns. Discard errors here — the subprocess exit
-	// status is what matters.
-	_, _ = io.Copy(io.Discard, stdout)
+	// Keep head AND tail under the MaxRawBytes budget, draining the whole
+	// stream so a noisy subprocess can finish and Wait() returns. The tail
+	// gets the larger share: that is where a build or test run prints its
+	// verdict.
+	outw := newHeadTailBuffer(MaxRawBytes/4, MaxRawBytes-MaxRawBytes/4)
+	_, readErr := io.Copy(outw, stdout)
 	waitErr := cmd.Wait()
 
 	// Did our own deadline fire? Distinguish it from caller cancellation:
@@ -246,19 +247,7 @@ func (s *SandboxImpl) execImpl(ctx context.Context, req ExecReq, rt Runtime) (Ex
 		}
 	}
 
-	// Windows Git Bash outputs UTF-16LE with null bytes; convert to UTF-8
-	output := convertUTF16LEToUTF8(out)
-	if len(output) >= MaxRawBytes {
-		// Trim a trailing partial UTF-8 rune so encoding/json doesn't emit
-		// U+FFFD for the orphan continuation bytes on >MaxRawBytes outputs
-		// whose boundary falls mid-rune (Turkish gradle/maven, CJK paths
-		// in git log). The LimitReader above already capped at MaxRawBytes;
-		// this slice + trim guards the post-UTF16-conversion size.
-		if len(output) > MaxRawBytes {
-			output = output[:MaxRawBytes]
-		}
-		output = trimPartialRune(output)
-	}
+	output, omitted := joinHeadTail(outw)
 
 	// Strip terminal noise (ANSI color/cursor, CR-overwrites, repeat-spam)
 	// before either the return-policy filter or the content-store stash sees
@@ -291,6 +280,15 @@ func (s *SandboxImpl) execImpl(ctx context.Context, req ExecReq, rt Runtime) (Ex
 	stderrText := NormalizeOutput(errw.String())
 	if errw.Truncated() {
 		stderrText += "\n(stderr truncated at " + strconv.Itoa(MaxRawBytes) + " bytes)"
+	}
+	if omitted > 0 {
+		// Stdout goes through the return policy and may come back as
+		// excerpts only; stderr does not, so the gap is reported here too.
+		if stderrText != "" && !strings.HasSuffix(stderrText, "\n") {
+			stderrText += "\n"
+		}
+		stderrText += fmt.Sprintf("(stdout: %d of %d bytes omitted from the middle; head and tail kept)",
+			omitted, outw.Total())
 	}
 	if timedOut {
 		// Say so on the channel that explains a bad exit. `timed_out` is a
@@ -640,4 +638,42 @@ func decodeUTF16LE(data []byte) string {
 		result.WriteRune(r)
 	}
 	return result.String()
+}
+
+// joinHeadTail renders a head/tail-captured stdout as one string, with an
+// in-band marker where bytes were dropped, and returns the dropped count.
+//
+// Encoding is decided on the head (that is where a BOM or the UTF-16 shape
+// is visible) and applied to the tail separately, so the ASCII marker
+// cannot disturb detection. The tail starts at an arbitrary stream offset:
+// a UTF-16 tail is re-aligned to an even offset, a UTF-8 tail drops
+// leading continuation bytes, and the head drops a trailing partial rune —
+// otherwise encoding/json emits U+FFFD at both seams (Turkish gradle
+// output, CJK paths in git log).
+func joinHeadTail(b *headTailBuffer) (string, int64) {
+	head := b.Head()
+	headStr := convertUTF16LEToUTF8(head)
+	tail := b.Tail()
+	if len(tail) == 0 {
+		return headStr, 0
+	}
+	omitted := b.Omitted()
+	var tailStr string
+	if utf16 := headStr != string(head); utf16 {
+		if start := b.Total() - int64(len(tail)); start%2 == 1 {
+			tail = tail[1:]
+			omitted++
+		}
+		tailStr = decodeUTF16LE(tail)
+	} else {
+		tailStr = string(tail)
+	}
+	if omitted == 0 {
+		return headStr + tailStr, 0
+	}
+	headStr = trimPartialRune(headStr)
+	for len(tailStr) > 0 && !utf8.RuneStart(tailStr[0]) {
+		tailStr = tailStr[1:]
+	}
+	return headStr + fmt.Sprintf("\n… (%d bytes omitted) …\n", omitted) + tailStr, omitted
 }

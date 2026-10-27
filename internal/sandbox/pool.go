@@ -105,3 +105,77 @@ func (c *cappedBuffer) Len() int { return c.buf.Len() }
 
 // Truncated reports whether any bytes were dropped at the cap.
 func (c *cappedBuffer) Truncated() bool { return c.truncated }
+
+// headTailBuffer keeps the first headLimit and the last tailLimit bytes of
+// a stream and counts what fell between them. Like cappedBuffer it absorbs
+// every write.
+//
+// It replaced a LimitReader on exec stdout, which kept the HEAD and dropped
+// the rest without a word: `go test -v ./...` or a long build lost the
+// PASS/FAIL verdict printed at the very end, and the return policy's
+// tail-bias then presented the end of the truncated buffer as if it were
+// the end of the output. The tail is where a command's verdict lives.
+type headTailBuffer struct {
+	head      []byte
+	headLimit int
+	tail      []byte // ring buffer once full; tailPos is the oldest byte
+	tailLimit int
+	tailPos   int
+	total     int64
+}
+
+func newHeadTailBuffer(headLimit, tailLimit int) *headTailBuffer {
+	return &headTailBuffer{headLimit: headLimit, tailLimit: tailLimit}
+}
+
+// Write implements io.Writer. Always returns len(p), nil.
+func (b *headTailBuffer) Write(p []byte) (int, error) {
+	n := len(p)
+	b.total += int64(n)
+	if room := b.headLimit - len(b.head); room > 0 {
+		k := min(room, len(p))
+		b.head = append(b.head, p[:k]...)
+		p = p[k:]
+	}
+	if b.tailLimit <= 0 || len(p) == 0 {
+		return n, nil
+	}
+	if len(p) >= b.tailLimit {
+		b.tail = append(b.tail[:0], p[len(p)-b.tailLimit:]...)
+		b.tailPos = 0
+		return n, nil
+	}
+	for len(p) > 0 {
+		if len(b.tail) < b.tailLimit {
+			k := min(b.tailLimit-len(b.tail), len(p))
+			b.tail = append(b.tail, p[:k]...)
+			p = p[k:]
+			continue
+		}
+		k := copy(b.tail[b.tailPos:], p)
+		b.tailPos = (b.tailPos + k) % b.tailLimit
+		p = p[k:]
+	}
+	return n, nil
+}
+
+// Head returns the retained leading bytes.
+func (b *headTailBuffer) Head() []byte { return b.head }
+
+// Tail returns the retained trailing bytes in stream order.
+func (b *headTailBuffer) Tail() []byte {
+	if b.tailPos == 0 {
+		return b.tail
+	}
+	out := make([]byte, 0, len(b.tail))
+	out = append(out, b.tail[b.tailPos:]...)
+	return append(out, b.tail[:b.tailPos]...)
+}
+
+// Total is the number of bytes written, retained or not.
+func (b *headTailBuffer) Total() int64 { return b.total }
+
+// Omitted is the number of bytes dropped between head and tail.
+func (b *headTailBuffer) Omitted() int64 {
+	return b.total - int64(len(b.head)) - int64(len(b.tail))
+}

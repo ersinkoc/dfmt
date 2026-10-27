@@ -398,11 +398,16 @@ func TestExecImplMaxRawBytesTruncation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Exec failed: %v", err)
 	}
-	if len(resp.Stdout) > MaxRawBytes {
-		t.Errorf("Stdout length = %d, want <= %d (MaxRawBytes)", len(resp.Stdout), MaxRawBytes)
+	// MaxRawBytes of payload is retained (head + tail); the only extra
+	// bytes are the in-band marker naming the gap.
+	if got := strings.Count(resp.Stdout, "A"); got != MaxRawBytes {
+		t.Errorf("retained payload = %d bytes, want exactly %d", got, MaxRawBytes)
 	}
-	if len(resp.Stdout) != MaxRawBytes {
-		t.Errorf("Stdout length = %d, want exactly %d after truncation", len(resp.Stdout), MaxRawBytes)
+	if !strings.Contains(resp.Stdout, "bytes omitted") {
+		t.Error("truncated stdout carries no omission marker")
+	}
+	if len(resp.Stdout) > MaxRawBytes+64 {
+		t.Errorf("Stdout length = %d, want <= %d", len(resp.Stdout), MaxRawBytes+64)
 	}
 }
 
