@@ -77,7 +77,7 @@ func (g *gitIgnore) loadFile(path, base string) {
 	if err != nil {
 		return
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	sc := bufio.NewScanner(f)
 	for sc.Scan() {
 		if r, ok := compileIgnoreLine(sc.Text(), base); ok {

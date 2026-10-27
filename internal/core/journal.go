@@ -432,7 +432,7 @@ func compressSegment(path string) error {
 	if err != nil {
 		return err
 	}
-	defer src.Close()
+	defer func() { _ = src.Close() }()
 	tmp := path + ".gz.tmp"
 	dst, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
 	if err != nil {
@@ -486,7 +486,7 @@ func streamFile(ctx context.Context, path string, ch chan<- Event, foundFromPtr 
 			journalWarnf("warning: journal %s: unreadable compressed segment: %v\n", path, zerr)
 			return false, zerr
 		}
-		defer zr.Close()
+		defer func() { _ = zr.Close() }()
 		r = zr
 	}
 
