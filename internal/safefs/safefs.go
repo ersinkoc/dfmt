@@ -13,6 +13,8 @@
 package safefs
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -214,12 +216,32 @@ func EnsureResolvedUnder(path, root string) (string, error) {
 // final path inherits it atomically. On Windows os.Chmod is best-effort;
 // the file is still written.
 func WriteFileAtomic(baseDir, path string, data []byte, mode os.FileMode) error {
+	return writeFileAtomic(baseDir, path, data, mode, false)
+}
+
+// WriteFileAtomicUmask is WriteFileAtomic for a file that does not exist
+// yet and should get the permissions any other tool would give it: 0666
+// minus the process umask (typically 0644). The temp file is created with
+// that mode, so the kernel applies the umask — reading the umask instead
+// (syscall.Umask) would briefly change it for every goroutine creating
+// files in this long-lived daemon.
+func WriteFileAtomicUmask(baseDir, path string, data []byte) error {
+	return writeFileAtomic(baseDir, path, data, 0o666, true)
+}
+
+func writeFileAtomic(baseDir, path string, data []byte, mode os.FileMode, honorUmask bool) error {
 	if err := CheckNoSymlinks(baseDir, path); err != nil {
 		return err
 	}
 
 	dir := filepath.Dir(path)
-	tmp, err := os.CreateTemp(dir, ".safefs-*")
+	var tmp *os.File
+	var err error
+	if honorUmask {
+		tmp, err = createTempWithMode(dir, mode)
+	} else {
+		tmp, err = os.CreateTemp(dir, ".safefs-*")
+	}
 	if err != nil {
 		return fmt.Errorf("safefs: create temp: %w", err)
 	}
@@ -247,10 +269,32 @@ func WriteFileAtomic(baseDir, path string, data []byte, mode os.FileMode) error 
 	}
 	closed = true
 	// Best-effort chmod — ignored on platforms that don't fully honor it.
-	_ = os.Chmod(tmpPath, mode)
+	// Skipped when the creation mode already went through the umask: a
+	// chmod would apply the bits verbatim and undo it.
+	if !honorUmask {
+		_ = os.Chmod(tmpPath, mode)
+	}
 	if err := os.Rename(tmpPath, path); err != nil {
 		_ = os.Remove(tmpPath)
 		return fmt.Errorf("safefs: rename: %w", err)
 	}
 	return nil
+}
+
+// createTempWithMode creates a fresh ".safefs-<random>" file in dir with
+// O_EXCL, so mode is filtered by the umask like any file creation.
+func createTempWithMode(dir string, mode os.FileMode) (*os.File, error) {
+	for range 16 {
+		var b [8]byte
+		if _, err := rand.Read(b[:]); err != nil {
+			return nil, err
+		}
+		name := filepath.Join(dir, ".safefs-"+hex.EncodeToString(b[:]))
+		f, err := os.OpenFile(name, os.O_RDWR|os.O_CREATE|os.O_EXCL, mode)
+		if errors.Is(err, os.ErrExist) {
+			continue
+		}
+		return f, err
+	}
+	return nil, errors.New("safefs: could not create a unique temp file")
 }

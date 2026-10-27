@@ -198,28 +198,33 @@ func (s *SandboxImpl) Write(ctx context.Context, req WriteReq) (WriteResp, error
 		return WriteResp{}, err
 	}
 
-	// Ensure parent directory exists. Use 0o700 so newly-created intermediate
-	// directories aren't world-readable on multi-user hosts. The .dfmt
-	// directory itself is 0o700 — sandbox writes follow the same hygiene.
-	if err := os.MkdirAll(filepath.Dir(cleanPath), 0o700); err != nil {
+	// Ensure parent directory exists. 0o777 filtered by the umask (Mkdir
+	// applies it) — what mkdir -p or the native Write tool would create.
+	// These are project files the user builds, serves and shares; they used
+	// to come out 0o700 with no warning, unlike every other tool's output.
+	if err := os.MkdirAll(filepath.Dir(cleanPath), 0o777); err != nil {
 		return WriteResp{}, fmt.Errorf("create directory: %w", err)
 	}
 
-	// Write file with owner-only permissions for new files. If the file
-	// already exists, preserve its mode (an agent shouldn't widen access on
-	// an existing file by overwriting it).
+	// A new file gets 0666 minus the umask (typically 0644), like any other
+	// tool's output; it used to be 0600, so a script or asset written by the
+	// agent was unreadable to the group, the web server, or a container. An
+	// existing file keeps its mode (an agent shouldn't widen access on an
+	// existing file by overwriting it).
 	//
 	// WriteFileAtomic (tmp + rename) closes the F-R-LOW-1 TOCTOU window
 	// from the security audit: rename(2) replaces a symlink that an
 	// attacker raced into the leaf position rather than following it.
 	// Trade-off: any hard links to a pre-existing target are broken on
 	// overwrite — acceptable for an agent-driven file writer.
-	mode := os.FileMode(0o600)
+	var werr error
 	if fi, ferr := os.Stat(cleanPath); ferr == nil {
-		mode = fi.Mode().Perm()
+		werr = safefs.WriteFileAtomic(absWd, cleanPath, []byte(req.Content), fi.Mode().Perm())
+	} else {
+		werr = safefs.WriteFileAtomicUmask(absWd, cleanPath, []byte(req.Content))
 	}
-	if err := safefs.WriteFileAtomic(absWd, cleanPath, []byte(req.Content), mode); err != nil {
-		return WriteResp{}, fmt.Errorf("write file: %w", err)
+	if werr != nil {
+		return WriteResp{}, fmt.Errorf("write file: %w", werr)
 	}
 
 	return WriteResp{

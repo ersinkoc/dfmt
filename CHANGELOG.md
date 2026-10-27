@@ -169,6 +169,14 @@ Internal package shapes (`internal/...`) are NOT covered by SemVer.
   with its lock unlinked a third daemon could start beside it. `stop` now
   leaves the files alone when they name another live daemon.
 
+### Changed
+
+- **`dfmt_write` creates files and directories like any other tool**: new
+  files 0666 and new directories 0777, both minus the umask (typically
+  0644/0755). They were 0600/0700, so a script or asset the agent wrote was
+  unreadable to the group, a web server or a container, with no warning.
+  An existing file keeps its mode.
+
 ## [0.9.0] — 2026-10-27
 
 Self-update, daemons that go away when unused, agent wire-up that reaches
