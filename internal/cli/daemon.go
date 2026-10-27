@@ -293,7 +293,7 @@ func globalDashboardURL() string {
 // endpoint answers, or it left a port file. Gating on the port file alone
 // (LIF-7) missed a socket-only Unix daemon (transport.http.enabled: false),
 // which writes none — `dfmt stop` then fell through to the per-project
-// path, signalled nothing and printed "Daemon stopped".
+// path, signaled nothing and printed "Daemon stopped".
 func globalDaemonPresent() bool {
 	return client.DaemonRunning("") || globalDashboardURL() != ""
 }
@@ -908,7 +908,7 @@ func runGlobalDaemonForeground(cfg *config.Config) int {
 }
 
 // serveUntilStopped blocks until the daemon stops on its own (idle-exit,
-// or a `dfmt stop` over RPC) or the process is signalled, and stops it in
+// or a `dfmt stop` over RPC) or the process is signaled, and stops it in
 // the latter case.
 //
 // Both foreground loops used to wait on the signal alone. The idle monitor
@@ -1153,6 +1153,29 @@ func stopGlobalDaemon() int {
 		_ = os.Remove(project.GlobalSocketPath())
 		fmt.Printf("Global daemon stopped (was PID %d)\n", pid)
 		return 0
+	}
+
+	// LIF-6: daemon.pid can outlive its daemon (SIGKILL, power loss), and
+	// the PID can then belong to an unrelated process — taskkill /T /F
+	// would take that process and its whole tree. Signal only a PID that
+	// is alive and verifiably the daemon: the endpoint answers, or the
+	// identity file the daemon itself wrote names the same PID.
+	if !isProcessRunning(pid) {
+		_ = os.Remove(project.GlobalPIDPath())
+		_ = os.Remove(project.GlobalPortPath())
+		_ = os.Remove(project.GlobalSocketPath())
+		fmt.Printf("Global daemon not running (removed stale PID file for %d)\n", pid)
+		return 0
+	}
+	if id, ok := daemon.ReadIdentity(); ok && id.PID > 0 && id.PID != pid && isProcessRunning(id.PID) {
+		pid = id.PID // the identity file is written by the live daemon itself
+	} else if !client.DaemonRunning("") && (!ok || id.PID != pid) {
+		fmt.Fprintf(os.Stderr,
+			"error: PID %d from ~/.dfmt/daemon.pid is alive, but nothing answers on the daemon's\n"+
+				"endpoint and no identity file names it, so it may be an unrelated process that\n"+
+				"reused the PID. Not signaling it. If it is dfmt, kill it by hand; then remove\n"+
+				"~/.dfmt/daemon.pid.\n", pid)
+		return 1
 	}
 
 	signalStopProcess(pid, false)

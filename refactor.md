@@ -1534,7 +1534,7 @@ Every `Client.Exec/Read/…/Stats` takes a `ctx` and silently ignores it. The co
 **Fix:** `http.NewRequestWithContext(ctx, …)` and derive the client timeout as `min(ctx deadline, timeout)`.
 A one-line change with a large behavioural win.
 
-### LIF-6 · `dfmt stop` force-kills an unverified PID 🔵 self-kill case FIXED `4368899`
+### LIF-6 · `dfmt stop` force-kills an unverified PID 🔵 self-kill case FIXED `4368899` ✅ FIXED (dead PID = stale; live PID signaled only if the endpoint answers or daemon.json names it)
 `internal/cli/daemon.go:1068-1104`. **P1 · S**
 
 The PID is read from the file and passed straight to `taskkill /PID N /T` — no liveness check, no cross-check

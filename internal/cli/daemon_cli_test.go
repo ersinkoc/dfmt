@@ -5,6 +5,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -578,7 +579,7 @@ func itoa(n int) string {
 
 // LIF-7: a socket-only global daemon writes no port file. `dfmt stop` must
 // still take the global path instead of falling through to the per-project
-// one, which signalled nothing and printed "Daemon stopped". The PID is our
+// one, which signaled nothing and printed "Daemon stopped". The PID is our
 // own so stopGlobalDaemon takes its self-stop branch rather than a signal.
 func TestRunStop_SocketOnlyGlobalDaemon(t *testing.T) {
 	if osutil.IsWindows() {
@@ -600,5 +601,56 @@ func TestRunStop_SocketOnlyGlobalDaemon(t *testing.T) {
 	})
 	if !strings.Contains(out, "Global daemon stopped") {
 		t.Errorf("stop did not take the global path: %q", out)
+	}
+}
+
+// LIF-6: a daemon.pid naming a dead process is stale state, not a stop
+// target.
+func TestStopGlobalDaemon_DeadPIDIsStale(t *testing.T) {
+	if osutil.IsWindows() {
+		t.Skip("uses /bin/true")
+	}
+	withIsolatedGlobalDir(t)
+	cmd := exec.Command("true")
+	if err := cmd.Run(); err != nil {
+		t.Skipf("true: %v", err)
+	}
+	if err := os.WriteFile(project.GlobalPIDPath(), []byte(fmt.Sprint(cmd.Process.Pid)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out := captureStdout(t, func() {
+		if code := stopGlobalDaemon(); code != 0 {
+			t.Errorf("want 0, got %d", code)
+		}
+	})
+	if !strings.Contains(out, "not running") {
+		t.Errorf("output = %q, want a not-running report", out)
+	}
+	if _, err := os.Stat(project.GlobalPIDPath()); !os.IsNotExist(err) {
+		t.Error("stale daemon.pid left behind")
+	}
+}
+
+// LIF-6: a live PID that nothing confirms is the daemon — no endpoint, no
+// identity file — must not be signaled; after PID reuse it is somebody
+// else's process.
+func TestStopGlobalDaemon_UnverifiedPIDNotSignalled(t *testing.T) {
+	if osutil.IsWindows() {
+		t.Skip("uses sleep")
+	}
+	withIsolatedGlobalDir(t)
+	victim := exec.Command("sleep", "30")
+	if err := victim.Start(); err != nil {
+		t.Skipf("sleep: %v", err)
+	}
+	t.Cleanup(func() { _ = victim.Process.Kill(); _ = victim.Wait() })
+	if err := os.WriteFile(project.GlobalPIDPath(), []byte(fmt.Sprint(victim.Process.Pid)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if code := stopGlobalDaemon(); code == 0 {
+		t.Error("stopGlobalDaemon reported success against an unverified PID")
+	}
+	if !isProcessRunning(victim.Process.Pid) {
+		t.Fatal("unrelated process was killed")
 	}
 }

@@ -149,6 +149,12 @@ Most of it was found by driving the built binary end to end.
   still ran `dfmt hook claude-code pretooluse` before every Bash, Read and
   Edit call. Both now remove dfmt's entries and keep the user's own; a
   file dfmt created and that holds nothing else is deleted.
+- **`dfmt stop` could kill an unrelated process.** It signaled whatever
+  PID `~/.dfmt/daemon.pid` named, escalating to a forced tree kill. After
+  a crash left that file behind, PID reuse made the target somebody
+  else's process. A dead PID is now treated as stale state, and a live
+  one is signalled only when the daemon's endpoint answers or its
+  identity file names the same PID.
 - **The Linux filesystem watcher allocated ~4 MB per directory.** With
   `capture.fs` enabled, a 500-directory repository took ~2 GB of memory;
   the read buffer is now 64 KiB.
