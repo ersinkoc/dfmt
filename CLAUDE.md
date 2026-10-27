@@ -175,6 +175,8 @@ Four properties are load-bearing:
 - **The job table refuses at the cap** (32) rather than evicting; dropping a running job to make room would hide the caller's leak behind a result that never arrives. Finished jobs are retained 30 minutes.
 - **Cancel reuses the deadline path**, so it kills the process tree (ADR-0023) rather than detaching from it, and waits `cancelSettleTimeout` (6s, covering `execWaitDelay` plus the journal tail) so one call can answer `canceled` instead of `running`.
 
+**Idle-exit spares in-flight work.** `Handlers.Busy()` (running job or a held exec/async/fetch/read slot) makes the idle monitor `Touch` instead of counting down — activity is otherwise recorded only at RPC entry, so an unpolled job was killed by idle-exit's `StopJobs`. Touch, not skip: the countdown must start when the work ends, or the job's result is lost before anyone polls it. `TestIdleMonitorSparesInFlightWork` pins it.
+
 Note the ceiling split this introduced: `sandbox.MaxExecTimeout` (900s) is the SYNCHRONOUS policy applied by the transport, `MaxAsyncExecTimeout` (2h) the async one, and `sandbox.HardMaxExecTimeout` (2h) the sandbox's own backstop. `execImpl` must clamp to the hard one — clamping to `MaxExecTimeout` there silently cut every async job to fifteen minutes. See [ADR-0025](docs/adr/0025-async-exec-jobs.md).
 
 ### Session memory retrieval (`dfmt_remember` → `dfmt_search` / `dfmt_recall`)

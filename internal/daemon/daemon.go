@@ -914,6 +914,14 @@ func (d *Daemon) startIdleMonitor(_ context.Context) {
 				if !d.running.Load() {
 					return
 				}
+				// In-flight work counts as activity. Touch rather than skip:
+				// the idle countdown must start when the work ENDS, or a job
+				// that ran longer than the timeout would be followed by an
+				// immediate exit that discards its unpolled result.
+				if d.handlers != nil && d.handlers.Busy() {
+					d.Touch()
+					continue
+				}
 				last := d.lastActivityNs.Load()
 				if time.Since(time.Unix(0, last)) < idleTimeout {
 					continue

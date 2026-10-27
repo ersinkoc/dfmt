@@ -305,6 +305,27 @@ func (h *Handlers) StopJobs() {
 	}
 }
 
+// Busy reports whether work is in flight: a running async job, or a held
+// exec/fetch/read slot. The daemon's idle monitor consults it, because
+// activity is only recorded at RPC entry — a two-hour job the agent does not
+// poll for 30 minutes looked idle, and idle-exit's StopJobs killed it.
+func (h *Handlers) Busy() bool {
+	if len(h.execSem) > 0 || len(h.asyncSem) > 0 || len(h.fetchSem) > 0 || len(h.readSem) > 0 {
+		return true
+	}
+	h.jobsMu.Lock()
+	defer h.jobsMu.Unlock()
+	for _, job := range h.jobs {
+		job.mu.Lock()
+		running := job.status == jobStatusRunning
+		job.mu.Unlock()
+		if running {
+			return true
+		}
+	}
+	return false
+}
+
 // asyncTimeout resolves the effective ceiling for an async submission.
 // Clamping happens on the int seconds before the multiplication for the same
 // overflow reason the synchronous path documents (V-17 / G-02).

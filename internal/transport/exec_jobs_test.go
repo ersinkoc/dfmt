@@ -239,3 +239,26 @@ func waitForJob(t *testing.T, h *Handlers, id string) *ExecResponse {
 	t.Fatalf("job %s never finished", id)
 	return nil
 }
+
+// TestHandlersBusyWhileJobRuns: the idle monitor reads Busy. Activity is
+// only recorded at RPC entry, so without it an async job the agent left
+// alone for the idle timeout was killed by idle-exit.
+func TestHandlersBusyWhileJobRuns(t *testing.T) {
+	h, sb := asyncFixture(t)
+	if h.Busy() {
+		t.Fatal("Busy before any work")
+	}
+	submitted, err := h.Exec(context.Background(), ExecParams{Code: "soak", Async: true})
+	if err != nil {
+		t.Fatalf("submit: %v", err)
+	}
+	<-sb.started
+	if !h.Busy() {
+		t.Error("Busy = false while an async job runs")
+	}
+	close(sb.release)
+	waitForJob(t, h, submitted.JobID)
+	if h.Busy() {
+		t.Error("Busy = true after the job finished")
+	}
+}

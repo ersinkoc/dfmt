@@ -59,6 +59,11 @@ Internal package shapes (`internal/...`) are NOT covered by SemVer.
   replies to large bodies, so re-reading the same file or page with a
   different intent returned nothing. Only a reply that carried the whole
   body is remembered now.
+- **Idle-exit killed running async jobs.** Activity was recorded only at
+  RPC entry, so a job (up to 2 h) left unpolled for the idle timeout looked
+  idle, and the shutdown cancelled it. In-flight work now counts as
+  activity, and the countdown restarts when it ends so the result can
+  still be polled.
 
 ## [0.9.0] — 2026-10-27
 
