@@ -170,3 +170,43 @@ func TestReadReachesDeepLinesInLargeFile(t *testing.T) {
 		t.Errorf("window = %d-%d, want 30000-30000", resp.StartLine, resp.EndLine)
 	}
 }
+
+// SBX-11: CRLF and mixed line endings must round-trip, and an anchor copied
+// out of a read must be found by Edit. ScanLines stripped `\r` and the lines
+// were re-joined with `\n`, so any multi-line anchor from a Windows file was
+// "not found" — the round-trip test above only ever used LF.
+func TestReadKeepsCRLFForEditAnchors(t *testing.T) {
+	for name, body := range map[string]string{
+		"crlf":           "alpha\r\nbeta\r\ngamma\r\n",
+		"mixed":          "alpha\r\nbeta\ngamma\r\n",
+		"crlf-no-eol":    "alpha\r\nbeta\r\ngamma",
+		"lone-cr-inside": "al\rpha\r\nbeta\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			file := filepath.Join(dir, "f.txt")
+			if err := os.WriteFile(file, []byte(body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			sb := NewSandbox(dir)
+			ctx := context.Background()
+
+			full, err := sb.Read(ctx, ReadReq{Path: "f.txt", Return: "raw"})
+			if err != nil {
+				t.Fatalf("Read: %v", err)
+			}
+			if full.RawContent != body {
+				t.Fatalf("round-trip lost bytes:\n got %q\nwant %q", full.RawContent, body)
+			}
+
+			// A two-line window, used verbatim as an Edit anchor.
+			win, err := sb.Read(ctx, ReadReq{Path: "f.txt", Offset: 1, Limit: 2, Return: "raw"})
+			if err != nil {
+				t.Fatalf("Read window: %v", err)
+			}
+			if _, err := sb.Edit(ctx, EditReq{Path: "f.txt", OldString: win.RawContent, NewString: "X\n"}); err != nil {
+				t.Fatalf("Edit with an anchor taken from Read failed: %v (anchor %q)", err, win.RawContent)
+			}
+		})
+	}
+}

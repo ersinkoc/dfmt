@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -129,7 +130,7 @@ func (s *SandboxImpl) Read(ctx context.Context, req ReadReq) (ReadResp, error) {
 	}
 	limit := int(req.Limit)
 
-	content, window, err := readLineWindow(f, totalSize, startLine, limit)
+	content, window, err := readLineWindow(f, startLine, limit)
 	if err != nil {
 		return ReadResp{}, err
 	}
@@ -173,12 +174,14 @@ type lineWindow struct {
 // log costs I/O but not memory, which is what preserves access to files
 // bigger than MaxSandboxReadBytes.
 //
-// The trailing newline of the last line is preserved only if the source had
-// one, so a full read round-trips byte-for-byte — anything else would break
-// dfmt_edit anchors taken from the end of a file.
-func readLineWindow(f *os.File, totalSize int64, startLine, limit int) (string, lineWindow, error) {
+// Every line keeps its own terminator, so a read round-trips byte-for-byte —
+// anything else breaks dfmt_edit anchors, since Edit matches bytes exactly.
+// bufio.ScanLines stripped `\r` and the lines were re-joined with `\n`, so
+// any multi-line anchor copied out of a CRLF file was "not found" (SBX-11).
+func readLineWindow(f *os.File, startLine, limit int) (string, lineWindow, error) {
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 64*1024), maxReadLineBytes)
+	sc.Split(scanLinesKeepEOL)
 
 	var b strings.Builder
 	w := lineWindow{start: startLine}
@@ -195,13 +198,12 @@ func readLineWindow(f *os.File, totalSize int64, startLine, limit int) (string, 
 			reachedEOF = false
 			break
 		}
-		line := sc.Text()
-		if b.Len()+len(line)+1 > MaxSandboxReadBytes {
+		line := sc.Bytes()
+		if b.Len()+len(line) > MaxSandboxReadBytes {
 			reachedEOF = false
 			break
 		}
-		b.WriteString(line)
-		b.WriteByte('\n')
+		b.Write(line)
 		collected++
 		w.end = lineNo
 	}
@@ -218,25 +220,23 @@ func readLineWindow(f *os.File, totalSize int64, startLine, limit int) (string, 
 		w.start, w.end = 0, 0
 		return "", w, nil
 	}
-
-	content := b.String()
-	// Drop the newline we appended to the final line when the file itself
-	// did not end with one and we read to its end.
-	if reachedEOF && totalSize > 0 && !fileEndsWithNewline(f, totalSize) {
-		content = strings.TrimSuffix(content, "\n")
-	}
-	return content, w, nil
+	return b.String(), w, nil
 }
 
-// fileEndsWithNewline reports whether the last byte of the file is a newline.
-// A read error is reported as "yes" so the caller leaves the content as-is;
-// guessing the other way would silently strip a real newline.
-func fileEndsWithNewline(f *os.File, size int64) bool {
-	var buf [1]byte
-	if _, err := f.ReadAt(buf[:], size-1); err != nil {
-		return true
+// scanLinesKeepEOL is bufio.ScanLines without the stripping: each token is
+// one line including its `\n` (and any `\r` before it); a final line with
+// no newline is returned as it is.
+func scanLinesKeepEOL(data []byte, atEOF bool) (int, []byte, error) {
+	if atEOF && len(data) == 0 {
+		return 0, nil, nil
 	}
-	return buf[0] == '\n'
+	if i := bytes.IndexByte(data, '\n'); i >= 0 {
+		return i + 1, data[:i+1], nil
+	}
+	if atEOF {
+		return len(data), data, nil
+	}
+	return 0, nil, nil
 }
 
 // MaxFetchBodyBytes caps the size of an HTTP response body that Fetch will read.
