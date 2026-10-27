@@ -3,6 +3,7 @@ package transport
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/ersinkoc/dfmt/internal/core"
@@ -56,10 +57,23 @@ type StatsResponse struct {
 	NativeToolCalls      map[string]int `json:"native_tool_calls,omitempty"`       // count by tool name (Bash, Read, Glob, etc.)
 	MCPToolCalls         map[string]int `json:"mcp_tool_calls,omitempty"`          // count by MCP tool name (dfmt.exec, dfmt.read, etc.)
 	NativeToolBypassRate float64        `json:"native_tool_bypass_rate,omitempty"` // % of tool calls that used native tools
+	// ToolBytes is the raw/returned split per tool event type. tools/list
+	// reads it for the per-tool savings blurb; computing it here keeps the
+	// journal scan in the daemon instead of streaming every event to each
+	// MCP proxy at session start.
+	ToolBytes map[string]ToolByteStats `json:"tool_bytes,omitempty"`
 }
 
-// knownNativeTools is the set of Claude Code built-in tool names captured
-// by the PreToolUse hook and logged as note events with the tool name as tag.
+// ToolByteStats aggregates one tool's calls that recorded byte counts.
+type ToolByteStats struct {
+	Calls         int `json:"calls"`
+	RawBytes      int `json:"raw_bytes"`
+	ReturnedBytes int `json:"returned_bytes"`
+}
+
+// knownNativeTools is the set of Claude Code built-in tool names the retired
+// PreToolUse hook logged as note events tagged with the tool name. Nothing
+// writes such events any more; journals from before 0.9.1 still count.
 var knownNativeTools = map[string]struct{}{
 	"Bash": {}, "Read": {}, "Edit": {}, "Write": {}, "Glob": {},
 	"Grep": {}, "WebFetch": {}, "WebSearch": {}, "TaskCreate": {},
@@ -111,6 +125,7 @@ func (h *Handlers) Stats(ctx context.Context, params StatsParams) (*StatsRespons
 		EventsByPriority: make(map[string]int),
 		NativeToolCalls:  make(map[string]int),
 		MCPToolCalls:     make(map[string]int),
+		ToolBytes:        make(map[string]ToolByteStats),
 	}
 
 	classifier := core.NewClassifier()
@@ -133,11 +148,20 @@ func (h *Handlers) Stats(ctx context.Context, params StatsParams) (*StatsRespons
 		if cachedTokens, ok := getInt(e.Data, core.KeyCachedTokens); ok {
 			totalCached += cachedTokens
 		}
-		if rawBytes, ok := getInt(e.Data, core.KeyRawBytes); ok {
+		rawBytes, hasRaw := getInt(e.Data, core.KeyRawBytes)
+		returnedBytes, hasReturned := getInt(e.Data, core.KeyReturnedBytes)
+		if hasRaw {
 			totalRawBytes += rawBytes
 		}
-		if returnedBytes, ok := getInt(e.Data, core.KeyReturnedBytes); ok {
+		if hasReturned {
 			totalReturnedBytes += returnedBytes
+		}
+		if hasRaw && strings.HasPrefix(string(e.Type), "tool.") {
+			tb := resp.ToolBytes[string(e.Type)]
+			tb.Calls++
+			tb.RawBytes += rawBytes
+			tb.ReturnedBytes += returnedBytes
+			resp.ToolBytes[string(e.Type)] = tb
 		}
 
 		// Track native tool calls via PreToolUse hook (note events with tool tag)

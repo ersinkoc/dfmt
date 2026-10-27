@@ -265,7 +265,7 @@ func (m *MCPProtocol) toolStatsBlurb(eventType string) string {
 		// outputs fit InlineThreshold — advertising it doesn't help.
 		return ""
 	}
-	return fmt.Sprintf(" Recent: ~%.0f%% token savings over last %d calls.", pct, s.n)
+	return fmt.Sprintf(" Observed: ~%.0f%% token savings over %d calls.", pct, s.n)
 }
 
 // compressionStats returns a per-event-type aggregation of (raw, returned)
@@ -305,25 +305,18 @@ func (m *MCPProtocol) compressionStats() map[string]toolCompression {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	stream, err := m.backend.StreamEvents(ctx, "")
-	if err != nil {
-		m.statsCache = out
-		m.statsCachedAt = time.Now()
-		return out
-	}
-
-	for e := range stream {
-		t := string(e.Type)
-		if t != "tool.exec" && t != "tool.read" && t != "tool.fetch" {
-			continue
+	// Stats aggregates inside the daemon. This used to StreamEvents from
+	// the top — every event in the journal serialized over RPC to each
+	// proxy at session start — and a stream cut off by the deadline cached
+	// partial totals presented as complete.
+	st, err := m.backend.Stats(ctx, StatsParams{})
+	if err == nil && st != nil {
+		for t, tb := range st.ToolBytes {
+			if t != "tool.exec" && t != "tool.read" && t != "tool.fetch" {
+				continue
+			}
+			out[t] = toolCompression{n: tb.Calls, rawBytes: tb.RawBytes, returnedBytes: tb.ReturnedBytes}
 		}
-		raw, _ := getInt(e.Data, core.KeyRawBytes)
-		ret, _ := getInt(e.Data, core.KeyReturnedBytes)
-		s := out[t]
-		s.n++
-		s.rawBytes += raw
-		s.returnedBytes += ret
-		out[t] = s
 	}
 
 	m.statsCache = out

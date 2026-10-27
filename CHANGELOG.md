@@ -149,6 +149,12 @@ Internal package shapes (`internal/...`) are NOT covered by SemVer.
   daemon with an exec in flight was SIGKILLed mid-Stop (losing `index.gob`)
   on every upgrade. It now waits up to 15 s, returning as soon as the
   process exits; Windows keeps the short wait.
+- **Every MCP session start streamed the whole journal to the proxy** to
+  compute the savings blurb in `tools/list`, and a stream cut off by its
+  2 s deadline cached partial totals as if complete. The daemon now returns
+  per-tool byte totals in `Stats` (`tool_bytes`), and the blurb reads
+  those. Its text said "over last N calls" for an all-time count; it says
+  "Observed: … over N calls" now.
 
 ## [0.9.0] — 2026-10-27
 

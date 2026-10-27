@@ -50,8 +50,8 @@ func TestToolStatsBlurb_AppendsWhenSamplesSufficient(t *testing.T) {
 	if execDesc == "" {
 		t.Fatal("dfmt_exec tool not found in tools/list response")
 	}
-	if !strings.Contains(execDesc, "Recent:") {
-		t.Errorf("description must include the 'Recent:' blurb when samples are sufficient; got %q", execDesc)
+	if !strings.Contains(execDesc, "Observed:") {
+		t.Errorf("description must include the 'Observed:' blurb when samples are sufficient; got %q", execDesc)
 	}
 	if !strings.Contains(execDesc, "90%") {
 		t.Errorf("description must reflect the observed compression ratio; got %q", execDesc)
@@ -72,7 +72,7 @@ func TestToolStatsBlurb_SuppressedOnFewSamples(t *testing.T) {
 	resp, _ := m.handleToolsList(&MCPRequest{ID: 1})
 	tools := resp.Result.(map[string]any)["tools"].([]MCPTool)
 	for _, tool := range tools {
-		if tool.Name == mcpToolExec && strings.Contains(tool.Description, "Recent:") {
+		if tool.Name == mcpToolExec && strings.Contains(tool.Description, "Observed:") {
 			t.Errorf("blurb must be suppressed below toolStatsMinSamples; got %q", tool.Description)
 		}
 	}
@@ -94,7 +94,7 @@ func TestToolStatsBlurb_SuppressedOnLowSavings(t *testing.T) {
 	resp, _ := m.handleToolsList(&MCPRequest{ID: 1})
 	tools := resp.Result.(map[string]any)["tools"].([]MCPTool)
 	for _, tool := range tools {
-		if tool.Name == mcpToolExec && strings.Contains(tool.Description, "Recent:") {
+		if tool.Name == mcpToolExec && strings.Contains(tool.Description, "Observed:") {
 			t.Errorf("blurb must be suppressed when savings are sub-5%%; got %q", tool.Description)
 		}
 	}
@@ -125,10 +125,10 @@ func TestToolStatsBlurb_PerEventTypeIsolation(t *testing.T) {
 			execDesc = tool.Description
 		}
 	}
-	if !strings.Contains(execDesc, "Recent:") {
+	if !strings.Contains(execDesc, "Observed:") {
 		t.Errorf("exec must carry the blurb; got %q", execDesc)
 	}
-	if strings.Contains(readDesc, "Recent:") {
+	if strings.Contains(readDesc, "Observed:") {
 		t.Errorf("read must NOT inherit exec's stats; got %q", readDesc)
 	}
 }
@@ -164,7 +164,7 @@ func TestCompressionStats_NoJournalIsSafe(t *testing.T) {
 	}
 	tools := resp.Result.(map[string]any)["tools"].([]MCPTool)
 	for _, tool := range tools {
-		if strings.Contains(tool.Description, "Recent:") {
+		if strings.Contains(tool.Description, "Observed:") {
 			t.Errorf("no-journal mode must not produce a blurb; got %q on %s", tool.Description, tool.Name)
 		}
 	}
