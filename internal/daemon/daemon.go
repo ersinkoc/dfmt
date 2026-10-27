@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -765,12 +767,17 @@ func (d *Daemon) Stop(ctx context.Context) error {
 			// Remove the identity file alongside the PID file. A stale
 			// identity next to a dead listener would make the next client
 			// believe a current daemon is up; absent-but-alive is the
-			// safe direction (treated as stale → restart).
-			_ = os.Remove(project.GlobalIdentityPath())
+			// safe direction (treated as stale → restart). Only while it
+			// still names us: a successor may already have written its own.
+			if id, ok := ReadIdentity(); !ok || id.PID == os.Getpid() {
+				_ = os.Remove(project.GlobalIdentityPath())
+			}
 		} else {
 			pidPath = filepath.Join(d.projectPath, ".dfmt", "daemon.pid")
 		}
-		_ = os.Remove(pidPath)
+		if pidFileNamesUs(pidPath) {
+			_ = os.Remove(pidPath)
+		}
 		d.unregister()
 		// Release the singleton lock LAST so a fresh daemon spawned the
 		// instant Stop returns can bind cleanly. Releasing too early would
@@ -1104,4 +1111,18 @@ func buildServer(projectPath, dfmtDir string, cfg *config.Config, handlers *tran
 		httpServer.SetProjectPath(projectPath)
 	}
 	return httpServer, nil
+}
+
+// pidFileNamesUs reports whether path holds this process's PID, or is
+// unreadable/garbled (then there is no other owner to protect).
+func pidFileNamesUs(path string) bool {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return true
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil {
+		return true
+	}
+	return pid == os.Getpid()
 }

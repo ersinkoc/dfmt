@@ -510,8 +510,11 @@ func (s *HTTPServer) Stop(ctx context.Context) error {
 	if s.socketPath != "" {
 		_ = os.Remove(s.socketPath)
 	}
-	// Clean up the port file we wrote.
-	if s.portFile != "" {
+	// Clean up the port file we wrote — only if it is still ours. A
+	// successor started during this shutdown (an MCP proxy reconnecting)
+	// may already have replaced it; deleting that left the new daemon
+	// running but undiscoverable. The token is unique per start.
+	if s.portFile != "" && s.portFileIsOurs() {
 		_ = os.Remove(s.portFile)
 	}
 
@@ -763,6 +766,21 @@ func (s *HTTPServer) handleDropProject(ctx context.Context, req Request) Respons
 // writePortFile writes {"port":...,"token":...} to path with mode 0600 so other local
 // users cannot read the daemon's port (and the same-origin gate plus the
 // non-loopback bind refusal keep cross-origin browser pages out).
+// portFileIsOurs reports whether the port file still carries this server's
+// token. An unreadable or unparsable file is treated as ours (nothing
+// else could have produced it during our lifetime), so cleanup still runs.
+func (s *HTTPServer) portFileIsOurs() bool {
+	data, err := os.ReadFile(s.portFile)
+	if err != nil {
+		return true
+	}
+	var pf PortFile
+	if json.Unmarshal(data, &pf) != nil {
+		return true
+	}
+	return pf.Token == s.authToken
+}
+
 func (s *HTTPServer) writePortFile(path string, port int, token string) error {
 	if err := safefs.CheckNoReservedNames(path); err != nil {
 		return err

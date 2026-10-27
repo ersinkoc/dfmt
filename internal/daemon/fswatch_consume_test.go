@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -62,4 +63,22 @@ func TestDefaultProjectFSWatchJournalsChanges(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 	}
 	t.Error("no file.* event for watched-file.txt reached the journal")
+}
+
+// Stop must not delete a successor's pid file: a daemon started during this
+// one's shutdown (an MCP proxy reconnecting) writes its own, and removing it
+// left the new daemon running but invisible to `dfmt stop` (observed live).
+func TestPidFileNamesUs(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "daemon.pid")
+	if !pidFileNamesUs(p) {
+		t.Error("missing pid file should be treated as ours (nothing to protect)")
+	}
+	_ = os.WriteFile(p, []byte(strconv.Itoa(os.Getpid())), 0o600)
+	if !pidFileNamesUs(p) {
+		t.Error("our own pid not recognized")
+	}
+	_ = os.WriteFile(p, []byte("1"), 0o600)
+	if pidFileNamesUs(p) {
+		t.Error("another process's pid treated as ours")
+	}
 }

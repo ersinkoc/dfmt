@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -1270,5 +1271,23 @@ func TestIsAllowedHostWithNonTCPListener(t *testing.T) {
 	// Non-TCP listener -> always true (fail open for Unix sockets)
 	if !hs.isAllowedHost("anything") {
 		t.Error("isAllowedHost with non-TCP listener: expected true")
+	}
+}
+
+// The HTTP server removes the port file on Stop only while it still holds
+// this server's token; a successor's file must survive the old one's Stop.
+func TestPortFileIsOurs(t *testing.T) {
+	dir := t.TempDir()
+	s := &HTTPServer{portFile: filepath.Join(dir, "port"), authToken: "mine"}
+	if !s.portFileIsOurs() {
+		t.Error("missing port file should be treated as ours")
+	}
+	_ = os.WriteFile(s.portFile, []byte(`{"port":1,"token":"mine"}`), 0o600)
+	if !s.portFileIsOurs() {
+		t.Error("own token not recognized")
+	}
+	_ = os.WriteFile(s.portFile, []byte(`{"port":2,"token":"successor"}`), 0o600)
+	if s.portFileIsOurs() {
+		t.Error("a successor's port file treated as ours")
 	}
 }

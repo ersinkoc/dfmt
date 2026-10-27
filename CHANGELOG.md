@@ -37,6 +37,14 @@ Internal package shapes (`internal/...`) are NOT covered by SemVer.
 
 ### Fixed
 
+- **A stopping daemon could delete its successor's `daemon.pid`,
+  `daemon.json` and port file.** `Stop` removed them unconditionally; a
+  daemon started during the shutdown (an MCP proxy reconnecting) had
+  already written its own, and lost them — running, serving existing
+  connections, invisible to `dfmt stop` (seen on this machine). Each file
+  is now removed only while it still names the stopping daemon (PID, or
+  the port file's per-start token).
+
 - **Search could freeze for a project whose journal was recreated.** The
   index tail streams from its last indexed event, and the journal emits
   nothing until it finds that event — so once it no longer existed (the
