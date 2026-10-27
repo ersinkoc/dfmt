@@ -45,12 +45,6 @@ Internal package shapes (`internal/...`) are NOT covered by SemVer.
   so doctor counted it missing and suggested `dfmt setup --force`, which
   could never bring it back. Doctor ignores the row and setup now drops it.
 
-- **`dfmt doctor` reported correctly configured agents as "files missing".**
-  Manifests from 0.8.0 and earlier list the `<dir>/mcp.json` decoy written
-  for Codex, VS Code and others; setup removes that file but kept its row,
-  so doctor counted it missing and suggested `dfmt setup --force`, which
-  could never bring it back. Doctor ignores the row and setup now drops it.
-
 - **A stopping daemon could delete its successor's `daemon.pid`,
   `daemon.json` and port file.** `Stop` removed them unconditionally; a
   daemon started during the shutdown (an MCP proxy reconnecting) had
