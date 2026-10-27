@@ -500,3 +500,14 @@ func TestFSWatcherStopNoWatches(t *testing.T) {
 		t.Fatal("Stop hung with no registered watches")
 	}
 }
+
+// CAP-2: the buffer must hold one maximal event and stay small; one is
+// allocated per watched directory.
+func TestInotifyBufSize(t *testing.T) {
+	if maxEvent := unix.SizeofInotifyEvent + unix.NAME_MAX + 1; inotifyBufSize < maxEvent {
+		t.Fatalf("inotifyBufSize %d cannot hold one maximal event (%d)", inotifyBufSize, maxEvent)
+	}
+	if inotifyBufSize > 64<<10 {
+		t.Errorf("inotifyBufSize = %d; one buffer per watched directory, keep it <= 64 KiB", inotifyBufSize)
+	}
+}

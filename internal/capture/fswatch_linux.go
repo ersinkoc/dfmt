@@ -46,9 +46,15 @@ func linuxWatchDir(w *FSWatcher, path string) {
 	}()
 }
 
+// inotifyBufSize is the per-directory read buffer. It holds at least one
+// maximal event (16-byte header + NAME_MAX+1) — the kernel never returns a
+// partial one — and batches the rest. It was (16+PATH_MAX)*1024, ~4.2 MB
+// per watched directory with one goroutine each, so a 500-directory repo
+// allocated ~2 GB the moment capture was enabled (CAP-2).
+const inotifyBufSize = 64 << 10
+
 func linuxWatchLoop(w *FSWatcher, fd int, dirPath string) {
-	const eventSize = 16 + unix.PathMax
-	buf := make([]byte, eventSize*1024)
+	buf := make([]byte, inotifyBufSize)
 	// Ensure the inotify fd is released when the loop exits, regardless of
 	// whether Read returned an error or we observed stopCh.
 	defer func() { _ = unix.Close(fd) }()
