@@ -106,6 +106,10 @@ func (h *Handlers) Recall(ctx context.Context, params RecallParams) (_ *RecallRe
 	// and no ref-token-forgery escaping. Now all formats share the builder,
 	// so interning and escaping are active on the default format too.
 	sb := retrieve.NewSnapshotBuilder(budget)
+	if format != "json" && format != "xml" {
+		// Charge events what the markdown renderer prints, not their JSON.
+		sb.SetSizer(retrieve.MarkdownEventSize)
+	}
 	snap, _ := sb.Build(redacted)
 	var snapshot string
 	switch format {

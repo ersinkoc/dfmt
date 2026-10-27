@@ -13,7 +13,17 @@ import (
 type SnapshotBuilder struct {
 	budget     int
 	classifier *core.Classifier
+	// sizer measures what an event costs in the output. nil = its full
+	// JSON encoding, the json/xml cost; see SetSizer.
+	sizer func(core.Event) int
 }
+
+// SetSizer replaces the per-event cost function. The default — the
+// event's whole JSON (id, ts, sig, every data field) — is several times
+// what a markdown line prints, so a markdown recall used roughly a third
+// of the budget it was given and dropped events that would have fit.
+// Pass MarkdownEventSize for markdown output.
+func (sb *SnapshotBuilder) SetSizer(f func(core.Event) int) { sb.sizer = f }
 
 // CollectTiers streams events and keeps a bounded per-tier bucket, so
 // recall's memory cost is independent of journal length. Extracted from
@@ -169,6 +179,9 @@ func (sb *SnapshotBuilder) groupByTier(events []core.Event) map[string][]core.Ev
 }
 
 func (sb *SnapshotBuilder) eventSize(e core.Event) int {
+	if sb.sizer != nil {
+		return sb.sizer(e)
+	}
 	data, err := json.Marshal(e)
 	if err != nil {
 		// Treat an unmarshalable event as oversized so the budget check

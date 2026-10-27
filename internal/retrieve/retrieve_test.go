@@ -1,6 +1,7 @@
 package retrieve
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -704,5 +705,34 @@ func TestSnapshotBuilderTruncatesOversizedTopEvent(t *testing.T) {
 	}
 	if events[0].Data["message"].(string) == msg {
 		t.Error("the caller's event was mutated")
+	}
+}
+
+// TestMarkdownSizerUsesTheBudget: events were charged their full JSON
+// (id, ts, sig, data), several times the markdown line printed for them,
+// so a markdown recall filled a fraction of its budget and dropped events
+// that fit. With MarkdownEventSize the same budget carries far more, and
+// the rendered snapshot still stays within it (plus the fixed header).
+func TestMarkdownSizerUsesTheBudget(t *testing.T) {
+	now := time.Now()
+	var events []core.Event
+	for i := 0; i < 200; i++ {
+		events = append(events, core.Event{
+			ID: fmt.Sprintf("01E%04d", i), TS: now.Add(-time.Duration(i) * time.Second),
+			Type: core.EvtNote, Priority: core.PriP3, Sig: "0123456789abcdef", Project: "/a/long/project/path",
+			Data: map[string]any{"message": "a short note"},
+		})
+	}
+	const budget = 4096
+	plain, _ := NewSnapshotBuilder(budget).Build(events)
+	sb := NewSnapshotBuilder(budget)
+	sb.SetSizer(MarkdownEventSize)
+	sized, _ := sb.Build(events)
+	if len(sized.Events) < 2*len(plain.Events) {
+		t.Errorf("markdown sizer fit %d events vs %d with JSON sizing; want at least double",
+			len(sized.Events), len(plain.Events))
+	}
+	if out := NewMarkdownRenderer().Render(sized); len(out) > budget+512 {
+		t.Errorf("rendered markdown = %d bytes, over the %d budget plus header", len(out), budget)
 	}
 }

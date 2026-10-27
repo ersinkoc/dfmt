@@ -138,6 +138,20 @@ func (r *MarkdownRenderer) Render(snap *Snapshot) string {
 	return b.String()
 }
 
+// markdownSectionAllowance is charged per event on top of its own lines,
+// covering the "### Section" headers and blank lines the renderer adds
+// between groups, so the rendered snapshot stays within the budget.
+const markdownSectionAllowance = 8
+
+// MarkdownEventSize is the byte cost of e in a markdown snapshot: its
+// rendered lines (path interning can only make them shorter) plus a share
+// of the section headers.
+func MarkdownEventSize(e core.Event) int {
+	var b strings.Builder
+	(&MarkdownRenderer{}).renderEvent(&b, e, nil)
+	return b.Len() + markdownSectionAllowance
+}
+
 func (r *MarkdownRenderer) renderEvent(b *strings.Builder, e core.Event, refs map[string]string) {
 	fmt.Fprintf(b, "- **[%s]** %s", e.Priority, e.Type)
 	if e.Actor != "" {

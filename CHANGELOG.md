@@ -37,6 +37,11 @@ Internal package shapes (`internal/...`) are NOT covered by SemVer.
 
 ### Fixed
 
+- **Markdown recall used about a third of its budget.** Events were charged
+  their full JSON encoding (id, timestamp, signature, every data field)
+  while the markdown snapshot prints a fraction of that, so events that
+  would have fit were dropped. Markdown recall now charges what it prints.
+
 - **An older `dfmt mcp` restarted a newer daemon.** Any version mismatch
   counted as stale, so every agent session left open across an upgrade
   replaced the freshly upgraded daemon on its next reconnect, killing
