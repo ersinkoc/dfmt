@@ -92,12 +92,11 @@ func TestRunWriteNoContentFlag(t *testing.T) {
 	flagProject = tmpDir
 	defer func() { flagProject = prevProject }()
 
-	// v0.6.0+: dfmt write self-promotes when no daemon is running, so
-	// the previous "want 1 (no daemon)" assertion is obsolete. The
-	// promoted daemon writes 0 bytes successfully and returns 0.
+	// No content source is a usage error. It used to "succeed" by writing
+	// zero bytes — truncating the target if it existed.
 	code := Dispatch([]string{"write", "/tmp/test.txt"})
-	if code != 0 && code != 1 {
-		t.Errorf("write without -content returned %d, expected 0 or 1", code)
+	if code != 2 {
+		t.Errorf("write without content returned %d, want 2", code)
 	}
 }
 

@@ -52,7 +52,7 @@ This repository is DFMT itself. When working on it, you are dogfooding the daemo
 
 **Cancellation** (`notifications/cancelled`) is handled inline on the read goroutine, never queued behind the call it targets. Each request is registered by id (type included: `1` ≠ `"1"`) before its worker starts, so a cancel on the next line always finds it; canceling its context reaches the daemon over the RPC client and kills the exec's process tree. A canceled request gets no response, per spec.
 
-**Test-binary short-circuit**: `acquireBackend` checks `isTestBinary()` and `DFMT_DISABLE_AUTOSTART=1`; either falls back to in-process promotion via `acquireBackendForLongRunner` so unit tests don't fork sibling processes (the test binary is not the dfmt binary).
+**Test-binary short-circuit**: under `isTestBinary()` or `DFMT_DISABLE_AUTOSTART=1` nothing spawns a daemon (the test binary is not the dfmt binary; re-execing it would re-run the suite). There is no in-process promotion any more — `acquireBackendForLongRunner` only connects. A test that needs a working backend starts one itself: `daemon.NewGlobal(config.Default())` + `Start` under an isolated `DFMT_GLOBAL_DIR`/`HOME` (see `toolProject` in `internal/cli/tools_roundtrip_test.go`).
 
 **Daemon identity — why an upgrade takes effect**: the daemon outlives the command that started it and holds the singleton lock, and liveness is a bare dial (`client.fastDialOK`), which *any* build satisfies. Without a version check, rebuilding and reinstalling dfmt did nothing — the old process kept answering, and because its replies were well-formed the skew showed up as silently wrong results rather than errors. (Observed: a May-15 binary served a v0.6.9 checkout and returned empty stdout for every exec.)
 

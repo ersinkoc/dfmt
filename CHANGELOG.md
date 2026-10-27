@@ -37,6 +37,11 @@ Internal package shapes (`internal/...`) are NOT covered by SemVer.
   liveness check counted it as alive: the upgrade restart in 0.9.1 printed
   "refused to stop" and skipped respawning. The spawner now reaps its
   child, and the Unix liveness check treats a zombie as gone.
+- **`dfmt write <path> "<text>"` wrote an empty file.** The second argument
+  was ignored and the file written — truncated, if it existed — with zero
+  bytes and a success message. The second argument is now the content, `-`
+  reads stdin, and a call with no content source is refused (truncate on
+  purpose with `-content ""`).
 
 ## [0.9.1] — 2026-10-27
 

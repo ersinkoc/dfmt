@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"time"
 
@@ -470,6 +471,9 @@ func runEdit(args []string) int {
 	return 0
 }
 
+// maxCLIWriteBytes bounds `dfmt write <path> -` reading stdin.
+const maxCLIWriteBytes = 16 << 20
+
 func runWrite(args []string) int {
 	var content string
 
@@ -487,6 +491,35 @@ func runWrite(args []string) int {
 		return 1
 	}
 	path := fs.Arg(0)
+	// Content comes from -content, a second argument, or stdin ("-").
+	// `dfmt write f.txt "text"` used to ignore the second argument and
+	// write an EMPTY file — truncating f.txt if it existed — with a success
+	// message. With no content given at all the call is refused; truncating
+	// on purpose takes an explicit -content "".
+	contentSet := false
+	fs.Visit(func(f *flag.Flag) { contentSet = contentSet || f.Name == "content" })
+	switch {
+	case fs.NArg() > 2 || (contentSet && fs.NArg() > 1):
+		fmt.Fprintf(os.Stderr, "error: write takes one content source: -content, a second argument, or - for stdin\n")
+		return 2
+	case fs.NArg() == 2 && fs.Arg(1) == "-":
+		data, rerr := io.ReadAll(io.LimitReader(os.Stdin, maxCLIWriteBytes+1))
+		if rerr != nil {
+			fmt.Fprintf(os.Stderr, "error: read stdin: %v\n", rerr)
+			return 1
+		}
+		if len(data) > maxCLIWriteBytes {
+			fmt.Fprintf(os.Stderr, "error: stdin exceeds %d bytes\n", maxCLIWriteBytes)
+			return 1
+		}
+		content = string(data)
+	case fs.NArg() == 2:
+		content = fs.Arg(1)
+	case !contentSet:
+		fmt.Fprintf(os.Stderr, "error: content required: -content, a second argument, or - for stdin "+
+			"(use -content \"\" to truncate)\n")
+		return 2
+	}
 
 	proj, err := getProject()
 	if err != nil {
