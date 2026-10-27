@@ -155,6 +155,12 @@ Internal package shapes (`internal/...`) are NOT covered by SemVer.
   per-tool byte totals in `Stats` (`tool_bytes`), and the blurb reads
   those. Its text said "over last N calls" for an all-time count; it says
   "Observed: … over N calls" now.
+- **The agent label never reached the daemon.** `initialize` labels the
+  session with `clientInfo` (`claude-code/2.1:<ulid>`), but the proxy sent
+  its own bare ULID, so per-agent attribution in the daemon and dashboard
+  never worked. The labelled session is forwarded now, sanitized to a safe
+  header value (a control character in a client name would otherwise make
+  every call of the session fail).
 
 ## [0.9.0] — 2026-10-27
 

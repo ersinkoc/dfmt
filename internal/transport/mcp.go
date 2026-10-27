@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -379,7 +380,13 @@ func (m *MCPProtocol) handleInitialize(req *MCPRequest) (*MCPResponse, error) {
 			if params.ClientInfo.Version != "" {
 				label += "/" + params.ClientInfo.Version
 			}
-			m.sessionID = label + ":" + m.sessionID
+			// The session ID travels to the daemon as an HTTP header. The
+			// label is client-supplied, and a control character in a header
+			// value makes net/http refuse the request — every tool call of
+			// the session would fail — so keep a safe, bounded subset.
+			if label = sanitizeSessionLabel(label); label != "" {
+				m.sessionID = label + ":" + m.sessionID
+			}
 		}
 	}
 	m.textContent = clientNeedsTextContent(params.ClientInfo.Name)
@@ -631,4 +638,23 @@ func (m *MCPProtocol) errorResult(id any, code int, message string) (*MCPRespons
 		},
 		ID: id,
 	}, nil
+}
+
+// sanitizeSessionLabel keeps [A-Za-z0-9._/@+-] and caps the result at 64
+// bytes, so a clientInfo label is always a valid header value.
+func sanitizeSessionLabel(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		if b.Len() >= 64 {
+			break
+		}
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9',
+			r == '.', r == '_', r == '/', r == '@', r == '+', r == '-':
+			b.WriteRune(r)
+		case r == ' ':
+			b.WriteByte('-')
+		}
+	}
+	return b.String()
 }

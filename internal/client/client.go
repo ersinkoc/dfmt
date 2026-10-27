@@ -65,6 +65,19 @@ type Client struct {
 // commands by exporting once), otherwise a fresh ULID minted at client
 // construction time. The ULID is unique across CLI invocations even when
 // two of them race against the same daemon.
+// sessionFor returns the session to stamp on a request: the MCP session
+// carried on ctx when there is one — it is labelled with the agent's
+// clientInfo ("claude-code/2.1:<ulid>"), which is what lets the daemon and
+// dashboard attribute calls per agent — and this client's own ID otherwise.
+// The proxy used to send only its own bare ULID, so the label minted in
+// handleInitialize never left the proxy process.
+func (c *Client) sessionFor(ctx context.Context) string {
+	if sid := transport.SessionIDFrom(ctx); sid != "" {
+		return sid
+	}
+	return c.sessionID
+}
+
 func resolveSessionID() string {
 	if v := os.Getenv("DFMT_SESSION"); v != "" {
 		return v
@@ -953,7 +966,7 @@ func (c *Client) doHTTPTimeout(
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	if c.sessionID != "" {
-		httpReq.Header.Set("X-DFMT-Session", c.sessionID)
+		httpReq.Header.Set("X-DFMT-Session", c.sessionFor(ctx))
 	}
 	if c.authToken != "" {
 		httpReq.Header.Set("Authorization", "Bearer "+c.authToken)

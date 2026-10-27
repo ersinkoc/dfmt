@@ -107,3 +107,22 @@ func TestToolResultContentEnvOverride(t *testing.T) {
 		t.Errorf("override 1: content[0].text = %q, want full payload", res.Content[0].Text)
 	}
 }
+
+// TestSanitizeSessionLabel: the label becomes an HTTP header value on every
+// proxied call; a control character there makes net/http refuse the request.
+func TestSanitizeSessionLabel(t *testing.T) {
+	cases := map[string]string{
+		"claude-code/2.1.3":     "claude-code/2.1.3",
+		"Visual Studio Code":    "Visual-Studio-Code",
+		"evil\r\nX-Injected: 1": "evilX-Injected-1",
+		"ünicode":               "nicode",
+	}
+	for in, want := range cases {
+		if got := sanitizeSessionLabel(in); got != want {
+			t.Errorf("sanitizeSessionLabel(%q) = %q, want %q", in, got, want)
+		}
+	}
+	if got := sanitizeSessionLabel(strings.Repeat("a", 200)); len(got) != 64 {
+		t.Errorf("label not capped: %d bytes", len(got))
+	}
+}
