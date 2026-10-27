@@ -322,13 +322,16 @@ func TestProjectInstructionPath_AllWiredAgents(t *testing.T) {
 		wantTail string
 	}{
 		{"claude-code", "CLAUDE.md"},
-		{"gemini", "GEMINI.md"},
 		{"vscode", filepath.Join(".github", "copilot-instructions.md")},
+		{"copilot-cli", filepath.Join(".github", "copilot-instructions.md")},
 		{"codex", "AGENTS.md"},
 		{"opencode", "AGENTS.md"},
 		{"zed", "AGENTS.md"},
+		{"antigravity", "AGENTS.md"},
+		{"devin", "AGENTS.md"},
+		{"kiro", "AGENTS.md"},
+		{"cline", "AGENTS.md"},
 		{"cursor", ".cursorrules"},
-		{"windsurf", ".windsurfrules"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.agent, func(t *testing.T) {
@@ -349,7 +352,7 @@ func TestProjectInstructionPath_AllWiredAgents(t *testing.T) {
 // which agent runs first; otherwise re-running init with a different
 // agent set would churn the block content unnecessarily.
 func TestUpsertProjectInstructions_AGENTSmdShared(t *testing.T) {
-	for _, agent := range []string{"codex", "opencode", "zed"} {
+	for _, agent := range []string{"codex", "opencode", "zed", "antigravity", "devin", "kiro", "cline"} {
 		t.Run(agent, func(t *testing.T) {
 			dir := t.TempDir()
 			path, err := UpsertProjectInstructions(dir, agent)
@@ -376,45 +379,22 @@ func TestUpsertProjectInstructions_AGENTSmdShared(t *testing.T) {
 	}
 }
 
-// TestUpsertProjectInstructions_ContinueIsSilentNoOp pins the
-// design choice that Continue.dev has no project-root injection
-// point — its rules live in user-scope ~/.continue/config.yaml.
-// A regression that wires Continue to AGENTS.md or similar would
-// silently overwrite user files; verify the no-op holds.
-func TestUpsertProjectInstructions_ContinueIsSilentNoOp(t *testing.T) {
-	dir := t.TempDir()
-	path, err := UpsertProjectInstructions(dir, "continue")
-	if err != nil {
-		t.Fatalf("err = %v, want nil for Continue (no-op)", err)
-	}
-	if path != "" {
-		t.Errorf("path = %q, want empty (Continue has no project file)", path)
-	}
-	entries, _ := os.ReadDir(dir)
-	if len(entries) != 0 {
-		t.Errorf("dir not empty after Continue upsert: %v", entries)
-	}
-}
-
-// TestUpsertProjectInstructions_WindsurfMarkerStyle proves Windsurf
-// gets the cursor-style plain-text markers, not HTML. Windsurf parses
-// .windsurfrules line by line just like Cursor parses .cursorrules.
-func TestUpsertProjectInstructions_WindsurfMarkerStyle(t *testing.T) {
-	dir := t.TempDir()
-	path, err := UpsertProjectInstructions(dir, "windsurf")
-	if err != nil {
-		t.Fatalf("upsert: %v", err)
-	}
-	if filepath.Base(path) != ".windsurfrules" {
-		t.Fatalf("path = %q, want .../.windsurfrules", path)
-	}
-	got, _ := os.ReadFile(path)
-	gs := string(got)
-	if !strings.Contains(gs, dfmtBlockBeginCursor) {
-		t.Errorf(".windsurfrules missing cursor-style begin marker:\n%s", gs)
-	}
-	if strings.Contains(gs, dfmtBlockBeginMD) {
-		t.Errorf(".windsurfrules contains markdown-style marker (wrong style):\n%s", gs)
+// TestUpsertProjectInstructions_RetiredAgentIsNoOp: agents dropped from the
+// roster (Gemini CLI, Windsurf, Continue.dev) get no instruction file, so a
+// stale --agent value cannot create GEMINI.md or .windsurfrules again.
+func TestUpsertProjectInstructions_RetiredAgentIsNoOp(t *testing.T) {
+	for _, agent := range []string{"gemini", "windsurf", "continue"} {
+		dir := t.TempDir()
+		path, err := UpsertProjectInstructions(dir, agent)
+		if err != nil {
+			t.Fatalf("%s: err = %v, want nil (no-op)", agent, err)
+		}
+		if path != "" {
+			t.Errorf("%s: path = %q, want empty", agent, path)
+		}
+		if entries, _ := os.ReadDir(dir); len(entries) != 0 {
+			t.Errorf("%s: dir not empty after upsert: %v", agent, entries)
+		}
 	}
 }
 

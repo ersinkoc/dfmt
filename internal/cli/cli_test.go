@@ -1593,29 +1593,6 @@ func TestConfigureAgentClaudeCode(t *testing.T) {
 	}
 }
 
-func TestConfigureAgentCodex(t *testing.T) {
-	tmpDir := t.TempDir()
-	os.Setenv("HOME", tmpDir)
-	defer os.Unsetenv("HOME")
-
-	agent := setup.Agent{
-		ID:         "codex",
-		Name:       "Codex",
-		Version:    "1.0",
-		InstallDir: tmpDir,
-	}
-
-	err := configureAgent(agent)
-	if err != nil {
-		t.Fatalf("configureAgent(codex) failed: %v", err)
-	}
-
-	mcpPath := filepath.Join(tmpDir, ".codex", "mcp.json")
-	if _, err := os.Stat(mcpPath); os.IsNotExist(err) {
-		t.Errorf("mcp.json was not created at %s", mcpPath)
-	}
-}
-
 func TestConfigureClaudeCodeNewDir(t *testing.T) {
 	if os.PathSeparator == '\\' {
 		t.Skip("skipping on Windows - os.UserHomeDir() uses USERPROFILE not HOME")
@@ -1686,29 +1663,6 @@ func TestConfigureClaudeCodeExisting(t *testing.T) {
 	backupPath := mcpPath + ".dfmt.bak"
 	if _, err := os.Stat(backupPath); os.IsNotExist(err) {
 		t.Error("backup file was not created")
-	}
-}
-
-func TestConfigureCodexSuccess(t *testing.T) {
-	tmpDir := t.TempDir()
-	os.Setenv("HOME", tmpDir)
-	defer os.Unsetenv("HOME")
-
-	agent := setup.Agent{
-		ID:         "codex",
-		Name:       "Codex CLI",
-		Version:    "1.0",
-		InstallDir: tmpDir,
-	}
-
-	err := configureCodex(agent)
-	if err != nil {
-		t.Fatalf("configureCodex failed: %v", err)
-	}
-
-	mcpPath := filepath.Join(tmpDir, ".codex", "mcp.json")
-	if _, err := os.Stat(mcpPath); os.IsNotExist(err) {
-		t.Errorf("mcp.json was not created at %s", mcpPath)
 	}
 }
 

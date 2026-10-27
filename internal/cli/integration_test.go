@@ -234,3 +234,23 @@ func TestEnsureGlobalDaemon_DisableAutostart(t *testing.T) {
 		t.Errorf("expected 'not spawning' in error, got %q", msg)
 	}
 }
+
+// TestRunCapture_RecordsThroughBackend pins the git-hook capture path. It
+// used client.NewClient, which never starts a daemon, so after an idle-exit
+// every hook capture failed to dial — silently, because the hooks discard
+// stderr — and commits were not recorded. It now goes through
+// acquireBackend like `remember`; the no-daemon half of that is verified
+// against the real binary (a test binary never spawns one).
+func TestRunCapture_RecordsThroughBackend(t *testing.T) {
+	proj := setupInProcessDaemon(t)
+	if code := runCapture([]string{"git", "commit", "abc123", "captured via backend"}); code != 0 {
+		t.Fatalf("runCapture = %d, want 0", code)
+	}
+	raw, err := os.ReadFile(filepath.Join(proj, ".dfmt", "journal.jsonl"))
+	if err != nil {
+		t.Fatalf("read journal: %v", err)
+	}
+	if !strings.Contains(string(raw), `"type":"git.commit"`) {
+		t.Errorf("journal has no git.commit event:\n%s", raw)
+	}
+}

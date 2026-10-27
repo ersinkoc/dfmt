@@ -279,16 +279,27 @@ func runCapture(args []string) int {
 		return 1
 	}
 
-	cl, err := client.NewClient(proj)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+	// acquireBackend, like every other daemon-backed command: it brings
+	// the global daemon up when it is not running. client.NewClient does
+	// not, so after an idle-exit every git hook's capture failed to dial
+	// and — the hooks discard stderr — commits, checkouts and pushes were
+	// dropped without a trace until some other command restarted it.
+	backend, ownedDaemon := acquireBackend(proj)
+	if backend == nil {
 		return 1
 	}
+	defer func() {
+		if ownedDaemon != nil {
+			waitForDaemonShutdown(ownedDaemon)
+		}
+	}()
 
 	ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
 	defer cancel()
+	ctx = transport.WithProjectID(ctx, proj)
+	params.ProjectID = proj
 
-	if _, err := cl.Remember(ctx, params); err != nil {
+	if _, err := backend.Remember(ctx, params); err != nil {
 		fmt.Fprintf(os.Stderr, "error: remember: %v\n", err)
 		return 1
 	}
@@ -524,7 +535,7 @@ func runSetup(args []string) int {
 	// Configure each agent. Track success / failure counts so the final
 	// message can be specific instead of "Setup complete." on a partial
 	// failure (the previous output left the user thinking everything
-	// worked even when one agent's writeMCPConfig hit a permission
+	// worked even when one agent's config write hit a permission
 	// error).
 	configured := make([]string, 0, len(agents))
 	failed := make(map[string]error, 0)
@@ -610,6 +621,19 @@ func runSetupUninstall() int {
 			}
 			fmt.Printf("stripped DFMT block: %s\n", f.Path)
 
+		case setup.FileKindAgentConfig:
+			target, ok := setup.AgentTargetFor(f.Agent)
+			if !ok {
+				logging.Warnf("unknown agent %q for %s; skipping", f.Agent, f.Path)
+				continue
+			}
+			target.Path = f.Path
+			if err := target.Uninstall(); err != nil {
+				fmt.Fprintf(os.Stderr, "error removing dfmt from %s: %v\n", f.Path, err)
+				continue
+			}
+			fmt.Printf("removed dfmt server: %s\n", f.Path)
+
 		case "", setup.FileKindDelete:
 			if err := os.Remove(f.Path); err != nil && !os.IsNotExist(err) {
 				fmt.Fprintf(os.Stderr, "error removing %s: %v\n", f.Path, err)
@@ -660,6 +684,21 @@ func runSetupVerify() int {
 	fmt.Println("Verifying setup...")
 	allOk := true
 	for _, f := range m.Files {
+		if f.Kind == setup.FileKindAgentConfig {
+			// Re-read the entry: a file that exists but lost the dfmt
+			// server (an agent rewriting its own config, a hand edit)
+			// used to pass with a check mark.
+			if target, ok := setup.AgentTargetFor(f.Agent); ok {
+				target.Path = f.Path
+				if verr := target.Verify(); verr != nil {
+					fmt.Printf("✗ %s (%s: %v)\n", f.Path, f.Agent, verr)
+					allOk = false
+				} else {
+					fmt.Printf("✓ %s (%s)\n", f.Path, f.Agent)
+				}
+				continue
+			}
+		}
 		if _, err := os.Stat(f.Path); err != nil {
 			fmt.Printf("✗ %s (missing)\n", f.Path)
 			allOk = false
@@ -895,24 +934,8 @@ func configureAgent(agent setup.Agent) error {
 	switch agent.ID {
 	case "claude-code":
 		return configureClaudeCode(agent)
-	case "cursor":
-		return configureCursor(agent)
-	case "vscode":
-		return configureVSCode(agent)
-	case "codex":
-		return configureCodex(agent)
-	case "gemini":
-		return configureGemini(agent)
-	case "windsurf":
-		return configureWindsurf(agent)
-	case "zed":
-		return configureZed(agent)
-	case "continue":
-		return configureContinue(agent)
-	case "opencode":
-		return configureOpenCode(agent)
 	default:
-		return fmt.Errorf("unsupported agent: %s", agent.ID)
+		return configureAgentTarget(agent.ID)
 	}
 }
 
@@ -927,8 +950,7 @@ func configureClaudeCode(_ setup.Agent) error {
 
 	// V-14 (F-Setup-3): manifest-first — record the file entry before the
 	// write so a SaveManifest failure can never leave an injected file
-	// without a matching uninstall row. See writeMCPConfig for the same
-	// pattern; same reasoning applies here.
+	// without a matching uninstall row.
 	mcpPath := filepath.Join(claudeDir, "mcp.json")
 	m, err := setup.LoadManifest()
 	if err != nil {
@@ -978,112 +1000,38 @@ func configureClaudeCode(_ setup.Agent) error {
 	return nil
 }
 
-func configureCodex(_ setup.Agent) error {
-	home := setup.HomeDir()
-	dir := filepath.Join(home, ".codex")
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return err
+// configureAgentTarget splices the dfmt server into the config file the
+// agent actually reads (setup.AgentTargetFor). Before 0.8.1 every agent but
+// Claude Code got `<dir>/mcp.json`, which only Cursor reads; that legacy
+// file is cleaned up here so it does not linger as a decoy.
+func configureAgentTarget(agentID string) error {
+	target, ok := setup.AgentTargetFor(agentID)
+	if !ok {
+		return fmt.Errorf("unsupported agent: %s", agentID)
 	}
-	return writeMCPConfig(dir, "mcp.json", "codex")
-}
-
-func configureCursor(_ setup.Agent) error {
-	home := setup.HomeDir()
-	dir := filepath.Join(home, ".cursor")
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return err
-	}
-	return writeMCPConfig(dir, "mcp.json", "cursor")
-}
-
-func configureVSCode(_ setup.Agent) error {
-	home := setup.HomeDir()
-	dir := filepath.Join(home, ".vscode")
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return err
-	}
-	return writeMCPConfig(dir, "mcp.json", "vscode")
-}
-
-func configureGemini(_ setup.Agent) error {
-	home := setup.HomeDir()
-	dir := filepath.Join(home, ".gemini")
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return err
-	}
-	return writeMCPConfig(dir, "mcp.json", "gemini")
-}
-
-func configureWindsurf(_ setup.Agent) error {
-	home := setup.HomeDir()
-	dir := filepath.Join(home, ".windsurf")
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return err
-	}
-	return writeMCPConfig(dir, "mcp.json", "windsurf")
-}
-
-func configureZed(_ setup.Agent) error {
-	home := setup.HomeDir()
-	dir := filepath.Join(home, ".config", "zed")
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return err
-	}
-	return writeMCPConfig(dir, "mcp.json", "zed")
-}
-
-func configureContinue(_ setup.Agent) error {
-	home := setup.HomeDir()
-	dir := filepath.Join(home, ".config", "continue")
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return err
-	}
-	return writeMCPConfig(dir, "mcp.json", "continue")
-}
-
-func configureOpenCode(_ setup.Agent) error {
-	home := setup.HomeDir()
-	dir := filepath.Join(home, ".config", "opencode")
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return err
-	}
-	return writeMCPConfig(dir, "mcp.json", "opencode")
-}
-
-func writeMCPConfig(dir, filename, agentID string) error {
-	mcpPath := filepath.Join(dir, filename)
-
-	// V-14 (F-Setup-3): record the manifest entry BEFORE writing the file.
-	// Pre-fix the order was write → SaveManifest, so a SaveManifest failure
-	// (rare — disk full, perm change mid-flight, …) left an MCP config on
-	// disk that `dfmt setup --uninstall` could not find a row for and
-	// therefore could not clean up. With manifest-first, a write failure
-	// leaves a stale-but-harmless manifest entry pointing at a non-
-	// existent path, which uninstall handles gracefully (os.Remove +
-	// IsNotExist short-circuit).
+	// V-14 (F-Setup-3): record the manifest row before writing, so a
+	// SaveManifest failure can never leave an entry uninstall cannot find.
 	m, err := setup.LoadManifest()
 	if err != nil {
 		return fmt.Errorf("load manifest: %w", err)
 	}
 	m.AddFile(setup.FileEntry{
-		Path:    mcpPath,
+		Path:    target.Path,
 		Agent:   agentID,
 		Version: "1",
+		Kind:    setup.FileKindAgentConfig,
 	})
-	m.RecordAgent(agentID, dir)
+	m.RecordAgent(agentID, filepath.Dir(target.Path))
 	if err := setup.SaveManifest(m); err != nil {
 		return fmt.Errorf("save manifest: %w", err)
 	}
-
-	// V-04: merge-aware write — splice `mcpServers.dfmt` into the existing
-	// config and preserve every other key. The previous implementation
-	// replaced the file outright, silently destroying any other MCP server
-	// (playwright, context7, github, …) the user had configured for this
-	// agent. MergeMCPServerEntry also routes through safefs (V-20) and
-	// captures a one-shot pristine .dfmt.bak (V-04 reinstall safety).
-	if err := setup.MergeMCPServerEntry(mcpPath, setup.TargetOSUnix); err != nil {
-		return fmt.Errorf("merge mcp config %s: %w", mcpPath, err)
+	if err := target.Install(); err != nil {
+		return fmt.Errorf("configure %s: %w", target.Path, err)
 	}
-
+	if legacy := setup.LegacyAgentConfigPath(agentID); legacy != "" {
+		if err := setup.UnmergeMCPServerEntry(legacy); err != nil {
+			logging.Warnf("clean legacy %s: %v", legacy, err)
+		}
+	}
 	return nil
 }

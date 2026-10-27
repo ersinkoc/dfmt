@@ -1201,7 +1201,7 @@ watchers. A crash between write and remove leaves litter in arbitrary project di
 
 ## IV.2 — Setup: config writers
 
-### SET-1 · Nine agents, one filename, one schema — several targets are almost certainly wrong
+### SET-1 · Nine agents, one filename, one schema — several targets are almost certainly wrong ✅ FIXED (agenttargets.go; roster updated, Gemini CLI/Windsurf/Continue retired)
 `internal/cli/setup.go:970-1040`. **P1 · M** *(verify each against upstream before implementing)*
 
 Eight agents are configured by writing `mcp.json` into a per-agent directory. Cursor matches; the others do not

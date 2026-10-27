@@ -9,16 +9,24 @@ import (
 )
 
 // Agent IDs used across the codebase.
+//
+// The roster tracks agents that are maintained and reachable today. Three
+// were dropped in 0.8.1: Gemini CLI (stopped serving individual accounts on
+// 2026-06-18; Google's successor is Antigravity), Windsurf (renamed Devin
+// Desktop on 2026-06-02; same product, new config location), and
+// Continue.dev (frozen read-only after its team joined Cursor in 2026-06).
 const (
-	AgentClaudeCode = "claude-code"
-	AgentCursor     = "cursor"
-	AgentVSCode     = "vscode"
-	AgentCodex      = "codex"
-	AgentGemini     = "gemini"
-	AgentWindsurf   = "windsurf"
-	AgentZed        = "zed"
-	AgentContinue   = "continue"
-	AgentOpenCode   = "opencode"
+	AgentClaudeCode  = "claude-code"
+	AgentCursor      = "cursor"
+	AgentVSCode      = "vscode"
+	AgentCopilotCLI  = "copilot-cli"
+	AgentCodex       = "codex"
+	AgentAntigravity = "antigravity"
+	AgentDevin       = "devin"
+	AgentZed         = "zed"
+	AgentOpenCode    = "opencode"
+	AgentKiro        = "kiro"
+	AgentCline       = "cline"
 )
 
 func lookPath(name string) string {
@@ -167,36 +175,85 @@ func detectCodex() *Agent {
 	})
 }
 
-func detectGemini() *Agent {
+func detectCopilotCLI() *Agent {
 	home := HomeDir()
 	return detectAgent(agentSpec{
-		id:   AgentGemini,
-		name: "Gemini CLI",
-		paths: []string{
-			filepath.Join(home, ".gemini"),
-			filepath.Join(home, "AppData", "Roaming", "Gemini"),
-			"/usr/local/bin/gemini",
-		},
-		binary:           "gemini",
+		id:               AgentCopilotCLI,
+		name:             "GitHub Copilot CLI",
+		paths:            []string{filepath.Join(home, ".copilot")},
+		binary:           "copilot",
 		confidencePath:   0.85,
 		confidenceBinary: 0.8,
 	})
 }
 
-func detectWindsurf() *Agent {
+func detectAntigravity() *Agent {
 	home := HomeDir()
 	return detectAgent(agentSpec{
-		id:   AgentWindsurf,
-		name: "Windsurf",
+		id:   AgentAntigravity,
+		name: "Google Antigravity",
 		paths: []string{
-			filepath.Join(home, ".windsurf"),
+			filepath.Join(home, ".gemini", "config", "mcp_config.json"),
+			filepath.Join(home, ".gemini", "antigravity"),
+			filepath.Join(home, "AppData", "Local", "Programs", "Antigravity"),
+			filepath.Join(home, "Applications", "Antigravity.app"),
+			"/Applications/Antigravity.app",
+		},
+		binary:           "agy",
+		confidencePath:   0.85,
+		confidenceBinary: 0.85,
+	})
+}
+
+func detectDevin() *Agent {
+	home := HomeDir()
+	return detectAgent(agentSpec{
+		id:   AgentDevin,
+		name: "Devin Desktop (formerly Windsurf)",
+		paths: []string{
+			filepath.Join(home, ".config", "devin"),
+			filepath.Join(home, "AppData", "Roaming", "devin"),
+			filepath.Join(home, "Applications", "Devin.app"),
+			"/Applications/Devin.app",
+			// A Windsurf install updates itself into Devin Desktop.
+			filepath.Join(home, ".codeium", "windsurf"),
 			filepath.Join(home, "AppData", "Local", "Programs", "Windsurf"),
-			filepath.Join(home, "Applications", "Windsurf.app"),
 			"/Applications/Windsurf.app",
 		},
-		binary:           "windsurf",
+		binary:           "devin",
 		confidencePath:   0.85,
 		confidenceBinary: 0.8,
+	})
+}
+
+func detectKiro() *Agent {
+	home := HomeDir()
+	return detectAgent(agentSpec{
+		id:   AgentKiro,
+		name: "Kiro",
+		paths: []string{
+			filepath.Join(home, ".kiro"),
+			filepath.Join(home, "AppData", "Local", "Programs", "Kiro"),
+			filepath.Join(home, "Applications", "Kiro.app"),
+			"/Applications/Kiro.app",
+		},
+		binary:           "kiro",
+		confidencePath:   0.85,
+		confidenceBinary: 0.8,
+	})
+}
+
+func detectCline() *Agent {
+	return detectAgent(agentSpec{
+		id:   AgentCline,
+		name: "Cline",
+		// The VS Code extension keeps its state under the editor's
+		// globalStorage, keyed by its marketplace ID.
+		paths:          []string{filepath.Join(vscodeUserDir(HomeDir()), "globalStorage", clineExtensionID)},
+		binary:         "cline",
+		confidencePath: 0.85,
+		// The standalone CLI alone does not read the extension's file.
+		confidenceBinary: 0.6,
 	})
 }
 
@@ -214,20 +271,6 @@ func detectZed() *Agent {
 		confidencePath:   0.85,
 		confidenceBinary: 0.8,
 		skipOnWindows:    true,
-	})
-}
-
-func detectContinue() *Agent {
-	home := HomeDir()
-	return detectAgent(agentSpec{
-		id:   AgentContinue,
-		name: "Continue.dev",
-		paths: []string{
-			filepath.Join(home, ".config", "continue"),
-			filepath.Join(home, "AppData", "Roaming", "Continue"),
-			filepath.Join(home, ".continue"),
-		},
-		confidencePath: 0.8,
 	})
 }
 

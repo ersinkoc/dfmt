@@ -574,3 +574,37 @@ func TestDispatchShellInitUnknown(t *testing.T) {
 		t.Errorf("shell-init unknown-shell returned %d, want 1", code)
 	}
 }
+
+// TestCheckAgentWireUp_InstructionFileIsNotWireUp: `dfmt init` records each
+// agent's instruction file as a strip row. Doctor counted those, so an agent
+// with no MCP server configured printed "✓ 1 file(s) in place".
+func TestCheckAgentWireUp_InstructionFileIsNotWireUp(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_DATA_HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("PATH", t.TempDir()) // keep PATH-installed agents out of Detect
+	if err := os.MkdirAll(filepath.Join(home, ".cursor"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	rules := filepath.Join(home, ".cursorrules")
+	if err := os.WriteFile(rules, []byte("rules"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	m := &setup.Manifest{Version: 1, Files: []setup.FileEntry{
+		{Path: rules, Agent: setup.AgentCursor, Version: "v1", Kind: setup.FileKindStrip},
+	}}
+	if err := setup.SaveManifest(m); err != nil {
+		t.Fatalf("save manifest: %v", err)
+	}
+
+	var ok bool
+	out := captureStdout(t, func() { ok = checkAgentWireUp() })
+	if ok {
+		t.Error("checkAgentWireUp = true for an agent with only an instruction file")
+	}
+	if !strings.Contains(out, "no MCP server configured") {
+		t.Errorf("output does not say the server is missing:\n%s", out)
+	}
+}

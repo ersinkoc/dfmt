@@ -222,6 +222,13 @@ const (
 	// rest of the file alone. If the file is empty after stripping
 	// (DFMT was the sole resident), it is removed.
 	FileKindStrip = "strip"
+
+	// FileKindAgentConfig: an agent's own MCP config (Codex config.toml,
+	// VS Code's user mcp.json, Zed settings, …) into which DFMT spliced
+	// one server entry. Uninstall removes that entry via the agent's
+	// AgentTarget and never deletes or restores the file — the user owns
+	// everything else in it, including changes made after setup.
+	FileKindAgentConfig = "agent-config"
 )
 
 // FileEntry records a file written by setup.
@@ -326,23 +333,13 @@ func Detect() []Agent {
 	if a := detectVSCode(); a != nil {
 		agents = append(agents, *a)
 	}
-	if a := detectCodex(); a != nil {
-		agents = append(agents, *a)
-	}
-	if a := detectGemini(); a != nil {
-		agents = append(agents, *a)
-	}
-	if a := detectWindsurf(); a != nil {
-		agents = append(agents, *a)
-	}
-	if a := detectZed(); a != nil {
-		agents = append(agents, *a)
-	}
-	if a := detectContinue(); a != nil {
-		agents = append(agents, *a)
-	}
-	if a := detectOpenCode(); a != nil {
-		agents = append(agents, *a)
+	for _, detect := range []func() *Agent{
+		detectCopilotCLI, detectCodex, detectAntigravity, detectDevin,
+		detectZed, detectOpenCode, detectKiro, detectCline,
+	} {
+		if a := detect(); a != nil {
+			agents = append(agents, *a)
+		}
 	}
 
 	return agents

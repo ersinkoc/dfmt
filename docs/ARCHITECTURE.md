@@ -1,8 +1,9 @@
 # DFMT Architecture
 
 **DFMT** ("Don't Fuck My Tokens") is a local Go daemon that bridges
-AI coding agents (Claude Code, Cursor, Codex, Gemini, VS Code,
-Windsurf, Zed, Continue, OpenCode) with their execution environment.
+AI coding agents (Claude Code, Codex, Cursor, VS Code, Copilot CLI,
+Antigravity, Devin Desktop, Zed, OpenCode, Kiro, Cline) with their
+execution environment.
 It exposes a uniform set of MCP tools for `exec`, `read`, `fetch`,
 `glob`, `grep`, `edit` and `write`, returning **intent-matched
 excerpts** instead of raw output, and persists every operation in an
@@ -2264,8 +2265,9 @@ enforcement: DFMT cannot force Claude Code to route through MCP.
 
 ## 12. Agent setup
 
-`internal/setup/` auto-detects nine agents and writes the MCP
-configuration each one expects.
+`internal/setup/` auto-detects eleven agents and writes the MCP
+configuration each one expects, into the file that agent actually reads
+(`internal/setup/agenttargets.go`).
 
 ```mermaid
 flowchart TB
@@ -2285,30 +2287,26 @@ flowchart TB
     N --> O[clear manifest]
 ```
 
-| Agent ID      | Files written                                                         | Notes                                            |
-|---------------|-----------------------------------------------------------------------|--------------------------------------------------|
-| `claude-code` | `~/.claude/mcp.json` (primary) + `~/.claude.json` (patched, user scope) + project `.claude/settings.json` (init-time hooks) | `.dfmt-bak` backup taken on first patch.        |
-| `cursor`      | `~/.cursor/mcp.json`                                                  |                                                  |
-| `vscode`      | `~/.vscode/mcp.json`                                                  | Copilot / VS Code MCP.                           |
-| `codex`       | `~/.codex/mcp.json`                                                   | Codex CLI.                                       |
-| `gemini`      | `~/.gemini/mcp.json`                                                  |                                                  |
-| `windsurf`    | `~/.windsurf/mcp.json`                                                |                                                  |
-| `zed`         | `~/.config/zed/mcp.json`                                              |                                                  |
-| `continue`    | `~/.config/continue/mcp.json`                                         |                                                  |
-| `opencode`    | `~/.config/opencode/mcp.json`                                         |                                                  |
+| Agent ID      | File (Linux)                                   | Shape                                              |
+|---------------|------------------------------------------------|----------------------------------------------------|
+| `claude-code` | `~/.claude.json` (user scope) + `~/.claude/mcp.json` + project `.claude/settings.json` hooks | `mcpServers.dfmt`; `.dfmt.bak` on first patch |
+| `cursor`      | `~/.cursor/mcp.json`                           | `mcpServers.dfmt`                                  |
+| `vscode`      | `~/.config/Code/User/mcp.json`                 | `servers.dfmt` (`type: stdio`)                     |
+| `copilot-cli` | `~/.copilot/mcp-config.json`                   | `mcpServers.dfmt` (`type: local`, `tools: ["*"]`)  |
+| `codex`       | `~/.codex/config.toml`                         | marker-delimited `[mcp_servers.dfmt]` block        |
+| `antigravity` | `~/.gemini/config/mcp_config.json`             | `mcpServers.dfmt`                                  |
+| `devin`       | `~/.config/devin/mcp_config.json`              | `mcpServers.dfmt`                                  |
+| `zed`         | `~/.config/zed/settings.json`                  | `context_servers.dfmt`                             |
+| `opencode`    | `~/.config/opencode/opencode.json`             | `mcp.dfmt` (`type: local`, `command: [dfmt, mcp]`) |
+| `kiro`        | `~/.kiro/settings/mcp.json`                    | `mcpServers.dfmt`                                  |
+| `cline`       | `~/.config/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json` | `mcpServers.dfmt` |
 
-Every config carries the same shape:
-
-```json
-{
-  "mcpServers": {
-    "dfmt": {
-      "command": "<absolute path to dfmt resolved at setup time>",
-      "args": ["mcp"]
-    }
-  }
-}
-```
+macOS and Windows use each agent's own convention (VS Code and Cline
+under the editor's user directory, Devin and Zed under `%APPDATA%` on
+Windows). Every entry runs `<absolute dfmt path> mcp`. Rows are recorded
+with `Kind: agent-config`: uninstall removes the `dfmt` entry and nothing
+else, `--verify` and `doctor` re-read it, and a JSONC file is refused
+rather than rewritten.
 
 The `command` field is set by `setup.ResolveDFMTCommand()`. Resolution
 order: `exec.LookPath("dfmt")` → `os.Executable()` → literal `"dfmt"`.
@@ -2345,10 +2343,8 @@ agent-instruction files (`internal/setup/projectdocs.go`):
 |---------------------------------------|-------------------|------------------------------------|
 | `CLAUDE.md`                           | Markdown          | `<!-- dfmt:v1 begin --> … <!-- dfmt:v1 end -->` |
 | `AGENTS.md`                           | Markdown          | same                               |
-| `GEMINI.md`                           | Markdown          | same                               |
 | `.github/copilot-instructions.md`     | Markdown          | same                               |
 | `.cursorrules`                        | Plain text        | `# dfmt:v1 begin` … `# dfmt:v1 end`|
-| `.windsurfrules`                      | Plain text        | same                               |
 
 The block contains the "use `dfmt_*` tools instead of native ones"
 contract that makes a session honor MCP routing. Each entry is
@@ -3222,7 +3218,7 @@ internal/
 │   └── htmlmd.go            ConvertHTML — HTML→markdown walker
 ├── setup/
 │   ├── setup.go             write MCP configs, manifest tracking
-│   ├── detect.go            agent auto-detection (9 agents)
+│   ├── detect.go            agent auto-detection (11 agents)
 │   ├── claude.go            Claude-specific patching of ~/.claude.json
 │   └── projectdocs.go       AGENTS.md / CLAUDE.md routing block
 ├── transport/

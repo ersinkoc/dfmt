@@ -808,6 +808,21 @@ func checkAgentWireUp() bool {
 			allOk = false
 			continue
 		}
+		// `dfmt init` writes each agent's instruction file (.cursorrules,
+		// GEMINI.md, …) as a strip row. Counting those made an agent with
+		// no MCP server configured read "✓ 1 file(s) in place".
+		hasServer := false
+		for _, f := range files {
+			if f.Kind != setup.FileKindStrip {
+				hasServer = true
+				break
+			}
+		}
+		if !hasServer {
+			fmt.Printf("✗ %s — instructions written, but no MCP server configured (run `dfmt setup`)\n", a.Name)
+			allOk = false
+			continue
+		}
 		missing := 0
 		var missingPaths []string
 		var stalePaths []string // present but command path is wrong
@@ -815,6 +830,18 @@ func checkAgentWireUp() bool {
 			if _, err := os.Stat(f.Path); err != nil {
 				missing++
 				missingPaths = append(missingPaths, f.Path)
+				continue
+			}
+			// The agent's own config (TOML, YAML, or JSON under a key other
+			// than mcpServers): read the entry back through its target.
+			if target, ok := agentConfigTarget(f); ok {
+				got, cerr := target.Command()
+				switch {
+				case cerr != nil:
+					stalePaths = append(stalePaths, fmt.Sprintf("%s (%v)", f.Path, cerr))
+				case !pathsEqual(got, expectedCmd):
+					stalePaths = append(stalePaths, fmt.Sprintf("%s (found: %s)", f.Path, got))
+				}
 				continue
 			}
 			// File on disk — try to verify the embedded command path. We
@@ -934,7 +961,24 @@ func configuredMCPCommands() []string {
 	}
 	seen := map[string]struct{}{}
 	var out []string
+	add := func(cmd string) {
+		key := cmd
+		if osutil.IsWindows() {
+			key = strings.ToLower(key)
+		}
+		if _, dup := seen[key]; dup {
+			return
+		}
+		seen[key] = struct{}{}
+		out = append(out, cmd)
+	}
 	for _, f := range m.Files {
+		if target, ok := agentConfigTarget(f); ok {
+			if cmd, cerr := target.Command(); cerr == nil {
+				add(cmd)
+			}
+			continue
+		}
 		if !strings.HasSuffix(strings.ToLower(f.Path), ".json") {
 			continue
 		}
@@ -958,17 +1002,23 @@ func configuredMCPCommands() []string {
 		if cmd == "" {
 			continue
 		}
-		key := cmd
-		if osutil.IsWindows() {
-			key = strings.ToLower(key)
-		}
-		if _, dup := seen[key]; dup {
-			continue
-		}
-		seen[key] = struct{}{}
-		out = append(out, cmd)
+		add(cmd)
 	}
 	return out
+}
+
+// agentConfigTarget returns the AgentTarget for a manifest row written into
+// an agent's own config file, pointed at the recorded path.
+func agentConfigTarget(f setup.FileEntry) (setup.AgentTarget, bool) {
+	if f.Kind != setup.FileKindAgentConfig {
+		return setup.AgentTarget{}, false
+	}
+	target, ok := setup.AgentTargetFor(f.Agent)
+	if !ok {
+		return setup.AgentTarget{}, false
+	}
+	target.Path = f.Path
+	return target, true
 }
 
 // pathsEqual is a doctor-local alias over osutil.SameCleanPath. The

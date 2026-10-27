@@ -20,20 +20,33 @@ in the same project can recall what the first one decided.
 
 ## Supported AI agents
 
-| Agent | Auto-detected | MCP wire-up |
+| Agent | Auto-detected | MCP wire-up (Linux path; macOS/Windows follow each agent's convention) |
 |---|---|---|
 | Claude Code (CLI / desktop / IDE) | ✓ | `~/.claude.json` + `~/.claude/settings.json` |
 | Cursor | ✓ | `~/.cursor/mcp.json` |
-| VS Code (with Copilot or MCP-aware extension) | ✓ | `~/.vscode/mcp.json` |
-| Codex CLI | ✓ | `~/.codex/mcp.json` |
-| Gemini CLI | ✓ | `~/.gemini/mcp.json` |
-| Windsurf | ✓ | `~/.windsurf/mcp.json` |
-| Zed | ✓ | `~/.config/zed/mcp.json` |
-| Continue | ✓ | `~/.config/continue/mcp.json` |
-| OpenCode | ✓ | `~/.config/opencode/mcp.json` |
+| VS Code (Copilot agent mode) | ✓ | `~/.config/Code/User/mcp.json` (`servers`) |
+| GitHub Copilot CLI | ✓ | `~/.copilot/mcp-config.json` |
+| Codex CLI / IDE extension | ✓ | `~/.codex/config.toml` (`[mcp_servers.dfmt]`) |
+| Google Antigravity (IDE and `agy` CLI) | ✓ | `~/.gemini/config/mcp_config.json` |
+| Devin Desktop (formerly Windsurf) | ✓ | `~/.config/devin/mcp_config.json` |
+| Zed | ✓ | `~/.config/zed/settings.json` (`context_servers`) |
+| OpenCode | ✓ | `~/.config/opencode/opencode.json` (`mcp`) |
+| Kiro | ✓ | `~/.kiro/settings/mcp.json` |
+| Cline (VS Code extension) | ✓ | `…/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json` |
 
-Any MCP-capable client can use DFMT — point its `mcp.json` at the
-`dfmt mcp` command. The auto-detect list above just saves you the manual
+`dfmt setup` adds one `dfmt` entry to each file and leaves everything
+else in it alone; `dfmt setup --uninstall` removes only that entry.
+Files with comments (JSONC) are left untouched — setup says so, and you
+add the entry by hand. `dfmt setup --verify` re-reads each file and
+checks the entry is still there.
+
+**No longer auto-configured:** Gemini CLI (Google stopped serving it for
+individual accounts on 2026-06-18; Antigravity is its successor),
+Windsurf (renamed Devin Desktop), and Continue.dev (development stopped
+in 2026-06). They can still use DFMT through a manual entry.
+
+Any MCP-capable client can use DFMT: register a stdio server that runs
+`dfmt mcp`. The auto-detect list above just saves you the manual
 config step.
 
 ## Quick start

@@ -60,9 +60,8 @@ func markersFor(path string) markerStyle {
 }
 
 // markdownProjectBlockBody is the canonical DFMT block body for the
-// markdown-style instruction files used by Claude Code (CLAUDE.md),
-// Gemini CLI (GEMINI.md), and VS Code Copilot
-// (.github/copilot-instructions.md). Tool names use backticks so prompt
+// markdown-style instruction files used by Claude Code (CLAUDE.md) and
+// the two Copilots (.github/copilot-instructions.md). Tool names use backticks so prompt
 // renderers display them as code rather than English nouns; the
 // concatenation tax buys a non-trivial bump in agent compliance.
 var markdownProjectBlockBody = "## Context Discipline\n" +
@@ -186,30 +185,21 @@ var cursorrulesProjectBlockBody = "# Context Discipline\n" +
 // ("", false) for agents that have no canonical project-level instruction
 // file or unknown IDs.
 //
-// Continue.dev intentionally has no mapping: its directives live in the
-// user-scope `~/.continue/config.yaml` `prompts:` section (per the
-// AGENT-INTEGRATION.md spec), not a project-root file, so a per-project
-// upsert isn't the right injection point.
-//
-// Several agents map to the same file (Codex/OpenCode/Zed all use
-// AGENTS.md); callers should de-duplicate paths before calling Upsert.
+// Several agents map to the same file (Codex, OpenCode, Zed, Antigravity,
+// Devin, Kiro and Cline all read AGENTS.md; both Copilots read
+// .github/copilot-instructions.md); callers should de-duplicate paths
+// before calling Upsert.
 func ProjectInstructionPath(projectDir, agentID string) (string, bool) {
 	switch agentID {
 	case AgentClaudeCode:
 		return filepath.Join(projectDir, "CLAUDE.md"), true
-	case AgentGemini:
-		return filepath.Join(projectDir, "GEMINI.md"), true
-	case AgentVSCode:
+	case AgentVSCode, AgentCopilotCLI:
 		return filepath.Join(projectDir, ".github", "copilot-instructions.md"), true
-	case AgentCodex, AgentOpenCode, AgentZed:
+	case AgentCodex, AgentOpenCode, AgentZed, AgentAntigravity, AgentDevin, AgentKiro, AgentCline:
 		return filepath.Join(projectDir, "AGENTS.md"), true
 	case AgentCursor:
 		return filepath.Join(projectDir, ".cursorrules"), true
-	case AgentWindsurf:
-		return filepath.Join(projectDir, ".windsurfrules"), true
 	default:
-		// AgentContinue intentionally falls through here — its rules
-		// file is in user config, not project root.
 		return "", false
 	}
 }
@@ -230,13 +220,13 @@ func ProjectBlockBodyForAgent(agentID string) string {
 // order. Returns "" for agents without a registered body.
 func projectBlockBodyFor(agentID string) string {
 	switch agentID {
-	case AgentClaudeCode, AgentGemini, AgentVSCode:
+	case AgentClaudeCode, AgentVSCode, AgentCopilotCLI:
 		return markdownProjectBlockBody
-	case AgentCodex, AgentOpenCode, AgentZed:
+	case AgentCodex, AgentOpenCode, AgentZed, AgentAntigravity, AgentDevin, AgentKiro, AgentCline:
 		return agentsMdProjectBlockBody
-	case AgentCursor, AgentWindsurf:
-		// Both rule files are plain-text-comment-form; the short body
-		// points at AGENTS.md for the full template.
+	case AgentCursor:
+		// Plain-text-comment form; the short body points at AGENTS.md
+		// for the full template.
 		return cursorrulesProjectBlockBody
 	default:
 		return ""

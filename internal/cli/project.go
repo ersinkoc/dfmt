@@ -296,7 +296,7 @@ func runQuickstart(args []string) int {
 		fmt.Println("      no agents detected")
 		fmt.Println()
 		fmt.Println("DFMT is initialized but no agent was configured. Either install one of:")
-		fmt.Println("  Claude Code, Cursor, VS Code, Codex, Gemini, Windsurf, Zed, Continue, OpenCode")
+		fmt.Println("  Claude Code, Codex, Cursor, VS Code, Copilot CLI, Antigravity, Devin, Zed, OpenCode, Kiro, Cline")
 		fmt.Println("then re-run `dfmt quickstart`, or point your agent's MCP config at:")
 		fmt.Printf("  %s mcp\n", setup.ResolveDFMTCommand())
 		return 1
