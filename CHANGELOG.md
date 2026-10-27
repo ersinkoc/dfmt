@@ -27,6 +27,17 @@ Internal package shapes (`internal/...`) are NOT covered by SemVer.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A daemon spawned by `dfmt mcp` became a zombie when it exited, and
+  `dfmt stop` called it "refused to stop".** The spawner released the child
+  without reaping it — `setsid` detaches the terminal, not the parent — so
+  a long-lived proxy held every daemon it started as a zombie after an
+  idle-exit or upgrade stop. `kill(pid, 0)` succeeds for a zombie, so the
+  liveness check counted it as alive: the upgrade restart in 0.9.1 printed
+  "refused to stop" and skipped respawning. The spawner now reaps its
+  child, and the Unix liveness check treats a zombie as gone.
+
 ## [0.9.1] — 2026-10-27
 
 ### Fixed

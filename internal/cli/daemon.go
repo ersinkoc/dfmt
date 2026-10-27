@@ -1001,17 +1001,22 @@ func startGlobalDaemonBackground() (int, error) {
 	if err := cmd.Start(); err != nil {
 		return 0, fmt.Errorf("start global daemon: %w", err)
 	}
-	// Detach: do NOT call cmd.Wait or hold the *exec.Cmd reference.
-	// Reaping is the OS's job once we've severed the parent/child
-	// relationship via setsid/DETACHED_PROCESS. Releasing also frees
-	// the underlying file descriptors so the parent can exit cleanly.
-	_ = cmd.Process.Release()
+	pid := cmd.Process.Pid
+	// Reap the child when it exits. setsid/DETACHED_PROCESS detach it from
+	// the terminal and process group, NOT from this process: it is still
+	// our child until we exit, and an unreaped exited child is a zombie.
+	// That was harmless for a short-lived CLI (init reaps on our exit) but
+	// a long-lived `dfmt mcp` that spawned the daemon held it as a zombie
+	// after every idle-exit or upgrade stop — which `dfmt stop` then saw as
+	// a daemon that "refused to stop". Process.Release did not reap; it only
+	// dropped the handle. The goroutine never blocks this process's exit.
+	go func() { _ = cmd.Wait() }()
 
 	// PID file lives under ~/.dfmt/, written by the daemon itself once it
 	// successfully acquires the lock. We don't write it from here because
 	// the child may fail (e.g. lock contention) and we don't want a stale
 	// PID pointing at a process that exited within milliseconds.
-	return cmd.Process.Pid, nil
+	return pid, nil
 }
 
 func startDaemonBackground(proj string) (int, error) {
