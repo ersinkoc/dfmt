@@ -25,9 +25,9 @@ func testClient(t *testing.T, h http.HandlerFunc) *Client {
 	return &Client{network: "tcp", address: u.Host, timeout: 30 * time.Second}
 }
 
-// LIF-5: cancelling the caller's context aborts the RPC. The context used
+// LIF-5: canceling the caller's context aborts the RPC. The context used
 // to be dropped, so the call ran until the HTTP client's own timeout.
-func TestRPCHonoursContextCancel(t *testing.T) {
+func TestRPCHonorsContextCancel(t *testing.T) {
 	release := make(chan struct{})
 	c := testClient(t, func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.Copy(io.Discard, r.Body)

@@ -242,7 +242,7 @@ func BenchmarkAddAtCapAfterLoad(b *testing.B) {
 				b.Fatalf("LoadIndexWithCursor: %v", err)
 			}
 			if rebuildNeeded {
-				b.Fatal("LoadIndexWithCursor signalled rebuild; persist+load contract violated")
+				b.Fatal("LoadIndexWithCursor signaled rebuild; persist+load contract violated")
 			}
 			if loaded == nil {
 				b.Fatal("LoadIndexWithCursor returned nil index")

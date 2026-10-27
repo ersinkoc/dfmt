@@ -211,7 +211,8 @@ func Install(exe string, data []byte, wantTag string) error {
 	dir := filepath.Dir(exe)
 	tmp, err := os.CreateTemp(dir, ".dfmt-update-*")
 	if err != nil {
-		return fmt.Errorf("cannot write to %s (reinstall with install.sh, or run with permission to write there): %w", dir, err)
+		return fmt.Errorf("cannot write to %s (reinstall with install.sh, "+
+			"or run with permission to write there): %w", dir, err)
 	}
 	tmpPath := tmp.Name()
 	keep := false

@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -29,7 +28,10 @@ func buildDFMT(t *testing.T) string {
 		t.Skip("builds and runs the binary; skipped in -short")
 	}
 	bin := filepath.Join(t.TempDir(), "dfmt")
-	gobin := filepath.Join(runtime.GOROOT(), "bin", "go")
+	gobin, err := exec.LookPath("go")
+	if err != nil {
+		t.Skipf("go not on PATH: %v", err)
+	}
 	out, err := exec.Command(gobin, "build", "-o", bin, ".").CombinedOutput()
 	if err != nil {
 		t.Fatalf("go build: %v\n%s", err, out)

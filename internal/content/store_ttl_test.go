@@ -128,7 +128,7 @@ func TestStore_GetChunkEvictsViaParent(t *testing.T) {
 	}
 }
 
-// TestStore_GetChunksEvictsViaParent verifies that GetChunks honours the
+// TestStore_GetChunksEvictsViaParent verifies that GetChunks honors the
 // same TTL invariant as GetChunk / GetChunkSet: an expired parent set
 // is reaped and the caller sees a miss, instead of receiving stale
 // chunk bodies.

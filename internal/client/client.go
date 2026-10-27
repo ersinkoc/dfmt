@@ -893,9 +893,11 @@ func (c *Client) doHTTP(ctx context.Context, method string, req transport.Reques
 // dfmt_exec was simply impossible, with no error naming the real limit.
 //
 // ctx cancels the request (LIF-5): it used to be accepted by every RPC
-// method and dropped, so Ctrl-C in the MCP proxy and MCP
-// notifications/cancelled could never abort a running call.
-func (c *Client) doHTTPTimeout(ctx context.Context, method string, req transport.Request, timeout time.Duration) ([]byte, error) {
+// method and dropped, so neither Ctrl-C in the MCP proxy nor an MCP
+// cancel notification could abort a running call.
+func (c *Client) doHTTPTimeout(
+	ctx context.Context, method string, req transport.Request, timeout time.Duration,
+) ([]byte, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -972,7 +974,8 @@ func checkRPCStatus(code int, body []byte) error {
 		return fmt.Errorf("%w (HTTP %d): the daemon restarted or was replaced; re-run the command, or `dfmt stop` and retry",
 			ErrUnauthorized, code)
 	case http.StatusNotFound:
-		return fmt.Errorf("daemon does not serve this endpoint (HTTP 404): it is probably an older dfmt; run `dfmt stop` and retry")
+		return errors.New("daemon does not serve this endpoint (HTTP 404): " +
+			"it is probably an older dfmt; run `dfmt stop` and retry")
 	}
 	if trimmed := bytes.TrimSpace(body); len(trimmed) > 0 && trimmed[0] == '{' {
 		return nil

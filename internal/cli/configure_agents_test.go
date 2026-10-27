@@ -56,7 +56,7 @@ func TestConfigureAgent_Cursor(t *testing.T) {
 func TestConfigureAgent_VSCode(t *testing.T) {
 	rel := ".config/Code/User/mcp.json"
 	switch runtime.GOOS {
-	case "darwin":
+	case goosDarwin:
 		rel = "Library/Application Support/Code/User/mcp.json"
 	case "windows":
 		rel = "AppData/Roaming/Code/User/mcp.json"
@@ -107,7 +107,7 @@ func TestConfigureAgent_Kiro(t *testing.T) {
 func TestConfigureAgent_Cline(t *testing.T) {
 	user := ".config/Code/User"
 	switch runtime.GOOS {
-	case "darwin":
+	case goosDarwin:
 		user = "Library/Application Support/Code/User"
 	case "windows":
 		user = "AppData/Roaming/Code/User"

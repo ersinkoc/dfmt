@@ -170,6 +170,9 @@ func runDashboard(args []string) int {
 // surface — the int port can't introduce metacharacters. A future
 // caller passing user input here would need to validate the scheme
 // first.
+// goosDarwin is runtime.GOOS on macOS.
+const goosDarwin = "darwin"
+
 func openInBrowser(url string) error {
 	// Skip browser launches during tests — launching a browser in a test
 	// environment causes unwanted pop-ups and test isolation violations.
@@ -184,7 +187,7 @@ func openInBrowser(url string) error {
 		// first quoted argument becomes the window title rather than
 		// the URL.
 		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", url)
-	case "darwin":
+	case goosDarwin:
 		cmd = exec.Command("open", url)
 	default:
 		cmd = exec.Command("xdg-open", url)
