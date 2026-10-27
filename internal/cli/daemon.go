@@ -289,6 +289,15 @@ func globalDashboardURL() string {
 	return fmt.Sprintf("http://127.0.0.1:%d/dashboard", port)
 }
 
+// globalDaemonPresent reports whether a global daemon may be up: its
+// endpoint answers, or it left a port file. Gating on the port file alone
+// (LIF-7) missed a socket-only Unix daemon (transport.http.enabled: false),
+// which writes none — `dfmt stop` then fell through to the per-project
+// path, signalled nothing and printed "Daemon stopped".
+func globalDaemonPresent() bool {
+	return client.DaemonRunning("") || globalDashboardURL() != ""
+}
+
 // globalDashboardLoginURL is globalDashboardURL carrying the port-file token,
 // which the daemon trades for a browser session cookie. The plain URL only
 // answers with a page pointing back here. "" when no TCP daemon is up.
@@ -1060,7 +1069,7 @@ func runStop(args []string) int {
 	// global mode that file lives at ~/.dfmt/daemon.pid, so the
 	// command always saw pid=0 and falsely reported success without
 	// touching the running process.
-	if globalURL := globalDashboardURL(); globalURL != "" {
+	if globalDaemonPresent() {
 		return stopGlobalDaemon()
 	}
 

@@ -626,7 +626,7 @@ func runSetupUninstall() int {
 	// configured idle timeout. Also avoids the awkward window where
 	// agent MCP configs are gone but the daemon is still serving stale
 	// requests routed through them.
-	if globalDashboardURL() != "" {
+	if globalDaemonPresent() {
 		fmt.Println("Stopping global daemon before uninstall...")
 		if rc := stopGlobalDaemon(); rc != 0 {
 			fmt.Fprintln(os.Stderr,

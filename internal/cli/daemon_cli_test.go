@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -573,4 +574,31 @@ func itoa(n int) string {
 		buf[i] = '-'
 	}
 	return string(buf[i:])
+}
+
+// LIF-7: a socket-only global daemon writes no port file. `dfmt stop` must
+// still take the global path instead of falling through to the per-project
+// one, which signalled nothing and printed "Daemon stopped". The PID is our
+// own so stopGlobalDaemon takes its self-stop branch rather than a signal.
+func TestRunStop_SocketOnlyGlobalDaemon(t *testing.T) {
+	if osutil.IsWindows() {
+		t.Skip("the global daemon is TCP-only on Windows")
+	}
+	withIsolatedGlobalDir(t)
+	ln, err := net.Listen("unix", project.GlobalSocketPath())
+	if err != nil {
+		t.Skipf("listen: %v", err)
+	}
+	defer ln.Close()
+	if err := os.WriteFile(project.GlobalPIDPath(), []byte(fmt.Sprint(os.Getpid())), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out := captureStdout(t, func() {
+		if code := runStop(nil); code != 0 {
+			t.Errorf("want 0, got %d", code)
+		}
+	})
+	if !strings.Contains(out, "Global daemon stopped") {
+		t.Errorf("stop did not take the global path: %q", out)
+	}
 }
