@@ -70,6 +70,10 @@ Internal package shapes (`internal/...`) are NOT covered by SemVer.
   `isError` tool result on MCP now. `dfmt_exec`'s schema also stopped
   declaring `code` as required: hosts that validate arguments client-side
   refused every `job_id` poll and cancel.
+- **`dfmt_grep`'s `context` parameter did nothing.** It was in the schema
+  and decoded, and never read. Matches now carry `before`/`after` lines
+  (max 10). Grep also names the 100-match cap when it stops there, and
+  stops walking when the call is cancelled.
 
 ## [0.9.0] — 2026-10-27
 

@@ -308,7 +308,7 @@ func schemaGrep() MCPTool {
 				},
 				"context": map[string]any{
 					"type":        "integer",
-					"description": "Lines of context around matches",
+					"description": "Lines of context before and after each match (max 10).",
 					"default":     0,
 				},
 			},

@@ -211,7 +211,8 @@ func resolveGrepSearchRoot(absWd, reqPath string) (string, error) {
 // cap is enforced by the caller, but we stop early when the caller's
 // pre-call accounting plus our local hits would cross 100 so we don't
 // read past the budget.
-func grepFileLines(s *SandboxImpl, pattern *regexp.Regexp, path, rel, absWd string, remainingBudget int) (matches []GrepMatch, ok bool) {
+func grepFileLines(s *SandboxImpl, pattern *regexp.Regexp, path, rel, absWd string,
+	remainingBudget, contextLines int) (matches []GrepMatch, ok bool) {
 	// F-02: per-file deny-rule enforcement. The directory-level
 	// PolicyCheck above only blocks if the wd itself is denied;
 	// per-file rules like `read **/.env*` need to be applied here,
@@ -238,6 +239,8 @@ func grepFileLines(s *SandboxImpl, pattern *regexp.Regexp, path, rel, absWd stri
 				File:    rel,
 				Line:    lineNum + 1,
 				Content: line,
+				Before:  contextSlice(lines, lineNum-contextLines, lineNum),
+				After:   contextSlice(lines, lineNum+1, lineNum+1+contextLines),
 			})
 			if len(matches) >= remainingBudget {
 				break
@@ -245,6 +248,30 @@ func grepFileLines(s *SandboxImpl, pattern *regexp.Regexp, path, rel, absWd stri
 		}
 	}
 	return matches, true
+}
+
+// maxGrepContextLines caps GrepReq.Context. Context multiplies the
+// response by up to 2N+1 lines per match across 100 matches; a caller
+// wanting more than this around one hit should dfmt_read the window.
+const maxGrepContextLines = 10
+
+// contextSlice returns lines[from:to] clamped to the file, with each line
+// trimmed like match content. nil when the range is empty.
+func contextSlice(lines []string, from, to int) []string {
+	from = max(from, 0)
+	to = min(to, len(lines))
+	// A trailing "" after the final newline is not a line of the file.
+	if to == len(lines) && to > 0 && lines[to-1] == "" {
+		to--
+	}
+	if from >= to {
+		return nil
+	}
+	out := make([]string, 0, to-from)
+	for _, l := range lines[from:to] {
+		out = append(out, truncate(l, maxGrepLineBytes))
+	}
+	return out
 }
 
 // filterMatchesByIntent applies the intent-keyword filter to matches. A
@@ -313,7 +340,13 @@ func (s *SandboxImpl) Grep(ctx context.Context, req GrepReq) (GrepResp, error) {
 	var grepMatches []GrepMatch
 	totalFiles := 0
 	var skipped walkSkipStats
+	contextLines := min(max(req.Context, 0), maxGrepContextLines)
 	walkErr := filepath.WalkDir(searchRoot, func(path string, d fs.DirEntry, werr error) error {
+		// A canceled call (client gone, deadline) must stop walking; a
+		// whole-tree grep otherwise kept a readSem slot until it finished.
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if werr != nil {
 			return nil
 		}
@@ -363,7 +396,7 @@ func (s *SandboxImpl) Grep(ctx context.Context, req GrepReq) (GrepResp, error) {
 			skipped.binary++
 			return nil
 		}
-		fileMatches, ok := grepFileLines(s, pattern, path, rel, absWd, grepMatchCap-len(grepMatches))
+		fileMatches, ok := grepFileLines(s, pattern, path, rel, absWd, grepMatchCap-len(grepMatches), contextLines)
 		if !ok {
 			return nil
 		}
@@ -379,6 +412,11 @@ func (s *SandboxImpl) Grep(ctx context.Context, req GrepReq) (GrepResp, error) {
 	}
 
 	summary := fmt.Sprintf("Found %d matches in %d files", len(grepMatches), totalFiles)
+	if len(grepMatches) >= grepMatchCap {
+		// The walk stopped at the cap; files after it were never read. A
+		// count equal to the cap reads like the whole answer otherwise.
+		summary += fmt.Sprintf(" (stopped at the %d-match cap; narrow pattern, path or files)", grepMatchCap)
+	}
 	grepMatches, suffix := filterMatchesByIntent(grepMatches, req.Intent)
 	summary += suffix
 	// Name the exclusions. A skip the agent cannot see reads exactly

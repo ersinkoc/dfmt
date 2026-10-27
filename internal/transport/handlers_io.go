@@ -376,6 +376,8 @@ func (h *Handlers) Grep(ctx context.Context, params GrepParams) (_ *GrepResponse
 			File:    m.File,
 			Line:    m.Line,
 			Content: h.redactString(ctx, m.Content),
+			Before:  h.redactLines(ctx, m.Before),
+			After:   h.redactLines(ctx, m.After),
 		}
 	}
 
@@ -386,3 +388,15 @@ func (h *Handlers) Grep(ctx context.Context, params GrepParams) (_ *GrepResponse
 }
 
 // EditParams are the parameters for the Edit method.
+
+// redactLines redacts each line of a grep context slice.
+func (h *Handlers) redactLines(ctx context.Context, lines []string) []string {
+	if len(lines) == 0 {
+		return nil
+	}
+	out := make([]string, len(lines))
+	for i, l := range lines {
+		out[i] = h.redactString(ctx, l)
+	}
+	return out
+}

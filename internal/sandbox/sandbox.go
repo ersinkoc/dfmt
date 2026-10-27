@@ -182,6 +182,10 @@ type GrepMatch struct {
 	File    string `json:"file"`    // File path
 	Line    int    `json:"line"`    // Line number
 	Content string `json:"content"` // Line content
+	// Before/After are the GrepReq.Context lines around the match, nearest
+	// last/first. The parameter was advertised and decoded but never read.
+	Before []string `json:"before,omitempty"`
+	After  []string `json:"after,omitempty"`
 }
 
 // EditReq is a request to edit a file.
