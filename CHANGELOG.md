@@ -64,6 +64,12 @@ Internal package shapes (`internal/...`) are NOT covered by SemVer.
   idle, and the shutdown cancelled it. In-flight work now counts as
   activity, and the countdown restarts when it ends so the result can
   still be polled.
+- **A missing tool argument reached the model as a bare JSON-RPC error**,
+  which many hosts show only as "tool call failed", so the
+  `missing required argument "code"` correction was never read. It is an
+  `isError` tool result on MCP now. `dfmt_exec`'s schema also stopped
+  declaring `code` as required: hosts that validate arguments client-side
+  refused every `job_id` poll and cancel.
 
 ## [0.9.0] — 2026-10-27
 

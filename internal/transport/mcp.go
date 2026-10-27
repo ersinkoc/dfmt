@@ -472,9 +472,19 @@ func dispatchTool[T any, R any](
 	// the zero value — and a zero-value command / path / pattern produces a
 	// successful-looking empty result rather than an error. See
 	// params_validate.go.
+	//
+	// The failure is an isError tool result, not a -32602: the message
+	// exists to let the model correct a guessed argument name, and hosts
+	// commonly surface a JSON-RPC error as a generic "tool call failed"
+	// without its text (see TRN-7 below). The MCP spec classifies input
+	// validation failures as tool execution errors for the same reason.
 	if v, hasRequired := any(args).(validator); hasRequired {
 		if err := v.Validate(); err != nil {
-			return m.errorResult(req.ID, -32602, err.Error())
+			return &MCPResponse{
+				JSONRPC: jsonRPCVersion,
+				Result:  mcpToolResultWithErr(err),
+				ID:      req.ID,
+			}, nil
 		}
 	}
 	ctx = WithProjectID(ctx, m.effectiveProjectID(pid(args)))

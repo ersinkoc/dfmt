@@ -38,7 +38,7 @@ func schemaExec() MCPTool {
 			"properties": map[string]any{
 				"code": map[string]any{
 					"type":        "string",
-					"description": "Code or command to execute",
+					"description": "Code or command to execute. Required unless job_id is set.",
 				},
 				"lang": map[string]any{
 					"type":        "string",
@@ -75,7 +75,9 @@ func schemaExec() MCPTool {
 					"default":     false,
 				},
 			},
-			"required": []string{"code"},
+			// No "required": a job_id poll carries no code, and a host that
+			// validates against the schema client-side refused every poll.
+			// ExecParams.Validate enforces "code unless job_id" server-side.
 		},
 	}
 }
