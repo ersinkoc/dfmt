@@ -37,6 +37,14 @@ Internal package shapes (`internal/...`) are NOT covered by SemVer.
 
 ### Fixed
 
+- **Search could freeze for a project whose journal was recreated.** The
+  index tail streams from its last indexed event, and the journal emits
+  nothing until it finds that event — so once it no longer existed (the
+  journal recreated by `dfmt remove` + `init`, restored from a backup, or
+  its segment deleted) the index never took another event until the daemon
+  restarted. A changed journal with nothing after the cursor now triggers
+  one full re-read.
+
 - **Markdown recall used about a third of its budget.** Events were charged
   their full JSON encoding (id, timestamp, signature, every data field)
   while the markdown snapshot prints a fraction of that, so events that

@@ -60,3 +60,44 @@ func TestTailOnceSkipsUnchangedJournal(t *testing.T) {
 		t.Error("appended event was not indexed")
 	}
 }
+
+// TestTailOnceRecoversFromLostCursor: Stream emits only after finding the
+// cursor, so a cursor that no longer exists (journal recreated, segment
+// deleted) froze the index for the project forever. A changed journal
+// with nothing after the cursor now triggers one full re-read.
+func TestTailOnceRecoversFromLostCursor(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, ".dfmt", "journal.jsonl")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	j1, err := core.OpenJournal(path, core.JournalOptions{Path: path, Durable: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	_ = j1.Append(ctx, core.Event{ID: "01L1", Type: core.EvtNote, Tags: []string{"before-XQ3"}})
+	r := &ProjectResources{ProjectPath: root, Journal: j1, Index: core.NewIndex()}
+	r.tailOnce(ctx)
+	_ = j1.Close()
+
+	// The journal is recreated: the cursor event 01L1 is gone.
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	j2, err := core.OpenJournal(path, core.JournalOptions{Path: path, Durable: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer j2.Close()
+	_ = j2.Append(ctx, core.Event{ID: "01M1", Type: core.EvtNote, Tags: []string{"after-XQ4"}})
+	r.Journal = j2
+
+	r.tailOnce(ctx)
+	if hits := r.Index.SearchTrigram("after-XQ4", 1); len(hits) != 1 {
+		t.Fatal("event in the recreated journal was never indexed: the tail is stuck on a lost cursor")
+	}
+	if cur := r.lastIndexedID.Load(); cur == nil || *cur != "01M1" {
+		t.Errorf("cursor = %v, want 01M1", cur)
+	}
+}

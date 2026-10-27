@@ -626,6 +626,24 @@ func (r *ProjectResources) tailOnce(ctx context.Context) bool {
 		r.Index.Add(e)
 		newest = e.ID
 	}
+	// Cursor lost: the file changed since a complete pass, yet nothing
+	// followed the cursor. An append-only journal that changed always has
+	// a new line after it, so the cursor itself is gone — the journal was
+	// recreated (`dfmt remove` + init, a restore from backup) or the event
+	// was in a deleted segment — and Stream, which emits only after finding
+	// it, would return nothing on every tick forever, freezing search for
+	// this project. Re-stream once from the top; Index.Add skips documents
+	// it already holds.
+	if seen := r.tailSeen.Load(); newest == "" && from != "" && fpOK && seen != nil && *seen != fp &&
+		ctx.Err() == nil {
+		logging.Warnf("index tail for %s: cursor %s not found in the journal; re-reading it", r.ProjectPath, from)
+		if again, rerr := r.Journal.Stream(ctx, ""); rerr == nil {
+			for e := range again {
+				r.Index.Add(e)
+				newest = e.ID
+			}
+		}
+	}
 	if newest != "" {
 		// Snapshot to a stack copy so atomic.Pointer holds an
 		// independent string. Using &newest directly would expose
