@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -68,6 +69,7 @@ func TestRememberWithMockSocket(t *testing.T) {
 	}
 	tmpDir := t.TempDir()
 	socketPath := project.SocketPath(tmpDir)
+	_ = os.MkdirAll(filepath.Dir(socketPath), 0o755)
 
 	ln, err := net.Listen("unix", socketPath)
 	if err != nil {
@@ -116,6 +118,7 @@ func TestSearchWithMockSocket(t *testing.T) {
 	}
 	tmpDir := t.TempDir()
 	socketPath := project.SocketPath(tmpDir)
+	_ = os.MkdirAll(filepath.Dir(socketPath), 0o755)
 
 	ln, err := net.Listen("unix", socketPath)
 	if err != nil {
@@ -164,6 +167,7 @@ func TestRecallWithMockSocket(t *testing.T) {
 	}
 	tmpDir := t.TempDir()
 	socketPath := project.SocketPath(tmpDir)
+	_ = os.MkdirAll(filepath.Dir(socketPath), 0o755)
 
 	ln, err := net.Listen("unix", socketPath)
 	if err != nil {
@@ -215,6 +219,7 @@ func TestDaemonRunningTrue(t *testing.T) {
 		t.Skipf("skipping: could not create .dfmt dir: %v", err)
 	}
 	socketPath := project.SocketPath(tmpDir)
+	_ = os.MkdirAll(filepath.Dir(socketPath), 0o755)
 
 	ln, err := net.Listen("unix", socketPath)
 	if err != nil {
@@ -275,6 +280,7 @@ func TestConnectSuccess(t *testing.T) {
 
 	tmpDir := t.TempDir()
 	socketPath := project.SocketPath(tmpDir)
+	_ = os.MkdirAll(filepath.Dir(socketPath), 0o755)
 
 	ln, err := net.Listen("unix", socketPath)
 	if err != nil {
@@ -376,6 +382,7 @@ func TestRememberErrorResponse(t *testing.T) {
 	}
 	tmpDir := t.TempDir()
 	socketPath := project.SocketPath(tmpDir)
+	_ = os.MkdirAll(filepath.Dir(socketPath), 0o755)
 
 	ln, err := net.Listen("unix", socketPath)
 	if err != nil {
@@ -418,6 +425,7 @@ func TestSearchErrorResponse(t *testing.T) {
 	}
 	tmpDir := t.TempDir()
 	socketPath := project.SocketPath(tmpDir)
+	_ = os.MkdirAll(filepath.Dir(socketPath), 0o755)
 
 	ln, err := net.Listen("unix", socketPath)
 	if err != nil {
@@ -457,6 +465,7 @@ func TestRecallErrorResponse(t *testing.T) {
 	}
 	tmpDir := t.TempDir()
 	socketPath := project.SocketPath(tmpDir)
+	_ = os.MkdirAll(filepath.Dir(socketPath), 0o755)
 
 	ln, err := net.Listen("unix", socketPath)
 	if err != nil {
@@ -1363,6 +1372,7 @@ func TestRememberWithWriteError(t *testing.T) {
 	}
 	tmpDir := t.TempDir()
 	socketPath := project.SocketPath(tmpDir)
+	_ = os.MkdirAll(filepath.Dir(socketPath), 0o755)
 
 	ln, err := net.Listen("unix", socketPath)
 	if err != nil {
@@ -1395,6 +1405,7 @@ func TestRememberWithReadResponseError(t *testing.T) {
 	}
 	tmpDir := t.TempDir()
 	socketPath := project.SocketPath(tmpDir)
+	_ = os.MkdirAll(filepath.Dir(socketPath), 0o755)
 
 	ln, err := net.Listen("unix", socketPath)
 	if err != nil {
@@ -1423,6 +1434,7 @@ func TestRememberWithRPCErrorResponse(t *testing.T) {
 	}
 	tmpDir := t.TempDir()
 	socketPath := project.SocketPath(tmpDir)
+	_ = os.MkdirAll(filepath.Dir(socketPath), 0o755)
 
 	ln, err := net.Listen("unix", socketPath)
 	if err != nil {
@@ -1465,6 +1477,7 @@ func TestRememberWithResultUnmarshalError(t *testing.T) {
 	}
 	tmpDir := t.TempDir()
 	socketPath := project.SocketPath(tmpDir)
+	_ = os.MkdirAll(filepath.Dir(socketPath), 0o755)
 
 	ln, err := net.Listen("unix", socketPath)
 	if err != nil {
@@ -1522,6 +1535,7 @@ func TestSearchWithWriteError(t *testing.T) {
 	}
 	tmpDir := t.TempDir()
 	socketPath := project.SocketPath(tmpDir)
+	_ = os.MkdirAll(filepath.Dir(socketPath), 0o755)
 
 	ln, err := net.Listen("unix", socketPath)
 	if err != nil {
@@ -1553,6 +1567,7 @@ func TestSearchWithRPCError(t *testing.T) {
 	}
 	tmpDir := t.TempDir()
 	socketPath := project.SocketPath(tmpDir)
+	_ = os.MkdirAll(filepath.Dir(socketPath), 0o755)
 
 	ln, err := net.Listen("unix", socketPath)
 	if err != nil {
@@ -1592,6 +1607,7 @@ func TestSearchWithResultUnmarshalError(t *testing.T) {
 	}
 	tmpDir := t.TempDir()
 	socketPath := project.SocketPath(tmpDir)
+	_ = os.MkdirAll(filepath.Dir(socketPath), 0o755)
 
 	ln, err := net.Listen("unix", socketPath)
 	if err != nil {
@@ -1649,6 +1665,7 @@ func TestRecallWithWriteError(t *testing.T) {
 	}
 	tmpDir := t.TempDir()
 	socketPath := project.SocketPath(tmpDir)
+	_ = os.MkdirAll(filepath.Dir(socketPath), 0o755)
 
 	ln, err := net.Listen("unix", socketPath)
 	if err != nil {
@@ -1680,6 +1697,7 @@ func TestRecallWithRPCError(t *testing.T) {
 	}
 	tmpDir := t.TempDir()
 	socketPath := project.SocketPath(tmpDir)
+	_ = os.MkdirAll(filepath.Dir(socketPath), 0o755)
 
 	ln, err := net.Listen("unix", socketPath)
 	if err != nil {
@@ -1719,6 +1737,7 @@ func TestRecallWithResultUnmarshalError(t *testing.T) {
 	}
 	tmpDir := t.TempDir()
 	socketPath := project.SocketPath(tmpDir)
+	_ = os.MkdirAll(filepath.Dir(socketPath), 0o755)
 
 	ln, err := net.Listen("unix", socketPath)
 	if err != nil {
@@ -1960,6 +1979,7 @@ func TestClientDoHTTPUnixSocket(t *testing.T) {
 	}
 	tmpDir := t.TempDir()
 	socketPath := project.SocketPath(tmpDir)
+	_ = os.MkdirAll(filepath.Dir(socketPath), 0o755)
 
 	ln, err := net.Listen("unix", socketPath)
 	if err != nil {
@@ -2100,6 +2120,7 @@ func TestClientStatsMock(t *testing.T) {
 	}
 	tmpDir := t.TempDir()
 	socketPath := project.SocketPath(tmpDir)
+	_ = os.MkdirAll(filepath.Dir(socketPath), 0o755)
 
 	ln, err := net.Listen("unix", socketPath)
 	if err != nil {
@@ -2138,6 +2159,7 @@ func TestClientExecMock(t *testing.T) {
 	}
 	tmpDir := t.TempDir()
 	socketPath := project.SocketPath(tmpDir)
+	_ = os.MkdirAll(filepath.Dir(socketPath), 0o755)
 
 	ln, err := net.Listen("unix", socketPath)
 	if err != nil {
@@ -2176,6 +2198,7 @@ func TestClientReadMock(t *testing.T) {
 	}
 	tmpDir := t.TempDir()
 	socketPath := project.SocketPath(tmpDir)
+	_ = os.MkdirAll(filepath.Dir(socketPath), 0o755)
 
 	ln, err := net.Listen("unix", socketPath)
 	if err != nil {
@@ -2214,6 +2237,7 @@ func TestClientFetchMock(t *testing.T) {
 	}
 	tmpDir := t.TempDir()
 	socketPath := project.SocketPath(tmpDir)
+	_ = os.MkdirAll(filepath.Dir(socketPath), 0o755)
 
 	ln, err := net.Listen("unix", socketPath)
 	if err != nil {
@@ -2252,6 +2276,7 @@ func TestClientGlobMock(t *testing.T) {
 	}
 	tmpDir := t.TempDir()
 	socketPath := project.SocketPath(tmpDir)
+	_ = os.MkdirAll(filepath.Dir(socketPath), 0o755)
 
 	ln, err := net.Listen("unix", socketPath)
 	if err != nil {
@@ -2289,6 +2314,7 @@ func TestClientGrepMock(t *testing.T) {
 	}
 	tmpDir := t.TempDir()
 	socketPath := project.SocketPath(tmpDir)
+	_ = os.MkdirAll(filepath.Dir(socketPath), 0o755)
 
 	ln, err := net.Listen("unix", socketPath)
 	if err != nil {
@@ -2328,6 +2354,7 @@ func TestClientEditMock(t *testing.T) {
 	}
 	tmpDir := t.TempDir()
 	socketPath := project.SocketPath(tmpDir)
+	_ = os.MkdirAll(filepath.Dir(socketPath), 0o755)
 
 	ln, err := net.Listen("unix", socketPath)
 	if err != nil {
@@ -2365,6 +2392,7 @@ func TestClientWriteMock(t *testing.T) {
 	}
 	tmpDir := t.TempDir()
 	socketPath := project.SocketPath(tmpDir)
+	_ = os.MkdirAll(filepath.Dir(socketPath), 0o755)
 
 	ln, err := net.Listen("unix", socketPath)
 	if err != nil {
@@ -2402,6 +2430,7 @@ func TestDoHTTPResponseTooLarge(t *testing.T) {
 	}
 	tmpDir := t.TempDir()
 	socketPath := project.SocketPath(tmpDir)
+	_ = os.MkdirAll(filepath.Dir(socketPath), 0o755)
 
 	ln, err := net.Listen("unix", socketPath)
 	if err != nil {
@@ -2412,19 +2441,20 @@ func TestDoHTTPResponseTooLarge(t *testing.T) {
 	stop := serveMockHTTP(t, ln, func(w http.ResponseWriter, r *http.Request) {
 		// Write a response that exceeds 16 MiB
 		w.Header().Set("Content-Type", "application/json")
-		// 17 MiB of zeros + valid wrapper
-		buf := make([]byte, 17<<20)
+		// 17 MiB of printable filler + valid wrapper. Zero bytes would
+		// encode as \u0000, six bytes each — ~100 MB on the wire, which
+		// the context deadline (honored since LIF-5) cuts off first.
 		resp := transport.Response{
 			JSONRPC: "2.0",
 			ID:      1,
-			Result:  string(buf),
+			Result:  strings.Repeat("a", 17<<20),
 		}
 		_ = json.NewEncoder(w).Encode(resp)
 	})
 	defer stop()
 
 	cl, _ := NewClient(tmpDir)
-	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	_, err = cl.Remember(ctx, transport.RememberParams{Type: "test"})
@@ -2442,6 +2472,7 @@ func TestDoHTTPInvalidResponse(t *testing.T) {
 	}
 	tmpDir := t.TempDir()
 	socketPath := project.SocketPath(tmpDir)
+	_ = os.MkdirAll(filepath.Dir(socketPath), 0o755)
 
 	ln, err := net.Listen("unix", socketPath)
 	if err != nil {
@@ -2495,24 +2526,17 @@ func TestStreamEventsMock(t *testing.T) {
 		t.Skip("skipping Unix socket test on Windows")
 	}
 	tmpDir := t.TempDir()
-	socketPath := project.SocketPath(tmpDir)
+	ln := listenProjectSocket(t, tmpDir)
 
-	ln, err := net.Listen("unix", socketPath)
-	if err != nil {
-		t.Skipf("skipping: could not create socket: %v", err)
-	}
-
-	// Start server that speaks SSE
-	go func() {
-		conn, err := ln.Accept()
-		if err != nil {
-			return
-		}
-		defer conn.Close()
-
-		// Send SSE event
-		conn.Write([]byte("data: {\"id\":\"evt1\",\"type\":\"test\",\"message\":\"hello\"}\n\n"))
-	}()
+	// An HTTP server that answers with one SSE event. The mock used to
+	// write the event as raw bytes with no status line; that never
+	// parsed, but it only ran where the socket bind happened to succeed
+	// (macOS), and was skipped everywhere else.
+	stop := serveMockHTTP(t, ln, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"id\":\"evt1\",\"type\":\"test\",\"message\":\"hello\"}\n\n")
+	})
+	defer stop()
 
 	cl, _ := NewClient(tmpDir)
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
@@ -2534,6 +2558,7 @@ func TestStreamEventsNon200(t *testing.T) {
 	}
 	tmpDir := t.TempDir()
 	socketPath := project.SocketPath(tmpDir)
+	_ = os.MkdirAll(filepath.Dir(socketPath), 0o755)
 
 	ln, err := net.Listen("unix", socketPath)
 	if err != nil {
@@ -2561,6 +2586,7 @@ func TestStreamEventsMalformedJSON(t *testing.T) {
 	}
 	tmpDir := t.TempDir()
 	socketPath := project.SocketPath(tmpDir)
+	_ = os.MkdirAll(filepath.Dir(socketPath), 0o755)
 
 	ln, err := net.Listen("unix", socketPath)
 	if err != nil {
@@ -2594,19 +2620,16 @@ func TestStreamEventsContextCancel(t *testing.T) {
 		t.Skip("skipping Unix socket test on Windows")
 	}
 	tmpDir := t.TempDir()
-	socketPath := project.SocketPath(tmpDir)
+	ln := listenProjectSocket(t, tmpDir)
 
-	ln, err := net.Listen("unix", socketPath)
-	if err != nil {
-		t.Skipf("skipping: could not create socket: %v", err)
-	}
-
+	// Send the headers, then hold the stream open until the client goes
+	// away. The handler used to hijack and close at once, so the request
+	// failed with EOF instead of exercising cancellation.
 	stop := serveMockHTTP(t, ln, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
-		// Hang the response (don't close it)
-		conn, _, _ := w.(http.Hijacker).Hijack()
-		// Keep connection open but don't send anything
-		defer conn.Close()
+		w.WriteHeader(http.StatusOK)
+		w.(http.Flusher).Flush()
+		<-r.Context().Done()
 	})
 	defer stop()
 
@@ -2684,6 +2707,7 @@ func TestDoHTTPAuthHeader(t *testing.T) {
 	}
 	tmpDir := t.TempDir()
 	socketPath := project.SocketPath(tmpDir)
+	_ = os.MkdirAll(filepath.Dir(socketPath), 0o755)
 
 	var capturedSession string
 	ln, err := net.Listen("unix", socketPath)
@@ -2742,6 +2766,7 @@ func TestDoHTTPInvalidStatusCode(t *testing.T) {
 	}
 	tmpDir := t.TempDir()
 	socketPath := project.SocketPath(tmpDir)
+	_ = os.MkdirAll(filepath.Dir(socketPath), 0o755)
 
 	ln, err := net.Listen("unix", socketPath)
 	if err != nil {
@@ -2823,6 +2848,7 @@ func TestClientConnectToUnixSocketRefused(t *testing.T) {
 	}
 	tmpDir := t.TempDir()
 	socketPath := project.SocketPath(tmpDir)
+	_ = os.MkdirAll(filepath.Dir(socketPath), 0o755)
 
 	// Create socket then remove it so dial reliably refuses.
 	ln, err := net.Listen("unix", socketPath)
@@ -2873,4 +2899,19 @@ func TestDaemonRunningEmptyPathIgnoresCWDProject(t *testing.T) {
 	if _, err := os.Stat(pidFile); err != nil {
 		t.Errorf("global probe deleted the CWD project's pid file: %v", err)
 	}
+}
+
+// listenProjectSocket listens on project.SocketPath(dir), creating the
+// .dfmt directory the socket lives in.
+func listenProjectSocket(t *testing.T, dir string) net.Listener {
+	t.Helper()
+	socketPath := project.SocketPath(dir)
+	if err := os.MkdirAll(filepath.Dir(socketPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ln, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatalf("listen %s: %v", socketPath, err)
+	}
+	return ln
 }

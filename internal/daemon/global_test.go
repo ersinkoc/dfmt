@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/ersinkoc/dfmt/internal/osutil"
+	"github.com/ersinkoc/dfmt/internal/project"
 	"github.com/ersinkoc/dfmt/internal/transport"
 )
 
@@ -75,9 +76,11 @@ func TestNewGlobalServerBindsAtGlobalPaths(t *testing.T) {
 			t.Errorf("port file %q should sit inside %q", got, want)
 		}
 	default:
+		// GlobalSocketPath moves the socket out of a long dir (macOS
+		// $TMPDIR); what matters is that the server binds exactly there.
 		got := hs.SocketPath()
-		if got == "" || filepath.Dir(got) != want {
-			t.Errorf("socket path %q should sit inside %q", got, want)
+		if got == "" || got != project.GlobalSocketPath() {
+			t.Errorf("socket path %q, want project.GlobalSocketPath() %q", got, project.GlobalSocketPath())
 		}
 	}
 }

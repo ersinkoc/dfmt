@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ersinkoc/dfmt/internal/capture"
 	"github.com/ersinkoc/dfmt/internal/core"
 )
 
@@ -603,6 +604,9 @@ func TestDropProjectDefaultIsNoop(t *testing.T) {
 // only the default project ever received fswatch events, so secondary
 // projects relied on MCP/CLI events alone for their recall surface.
 func TestFSWatcherPerExtraProject(t *testing.T) {
+	if !capture.WatcherSupported() {
+		t.Skip("no filesystem watcher on this platform")
+	}
 	defaultRoot := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(defaultRoot, ".dfmt"), 0o755); err != nil {
 		t.Fatal(err)

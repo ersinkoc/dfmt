@@ -232,8 +232,16 @@ func TestStopGlobalDaemon_SelfPIDDoesNotSelfKill(t *testing.T) {
 		project.GlobalSocketName:   "stale",
 		project.GlobalLockFileName: "held",
 	}
+	// The socket goes where GlobalSocketPath puts it: a long temp dir
+	// (macOS $TMPDIR) moves it out of dir.
+	at := func(name string) string {
+		if name == project.GlobalSocketName {
+			return project.GlobalSocketPath()
+		}
+		return filepath.Join(dir, name)
+	}
 	for name, content := range files {
-		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o600); err != nil {
+		if err := os.WriteFile(at(name), []byte(content), 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -247,7 +255,7 @@ func TestStopGlobalDaemon_SelfPIDDoesNotSelfKill(t *testing.T) {
 		project.GlobalPortFileName,
 		project.GlobalSocketName,
 	} {
-		if _, err := os.Stat(filepath.Join(dir, name)); !os.IsNotExist(err) {
+		if _, err := os.Stat(at(name)); !os.IsNotExist(err) {
 			t.Errorf("expected %s removed; stat err: %v", name, err)
 		}
 	}

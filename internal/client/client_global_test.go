@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/ersinkoc/dfmt/internal/osutil"
+	"github.com/ersinkoc/dfmt/internal/project"
 	"github.com/ersinkoc/dfmt/internal/transport"
 )
 
@@ -50,7 +51,9 @@ func TestGlobalDaemonTargetReadsGlobalPaths(t *testing.T) {
 		if network != netUnix {
 			t.Errorf("network = %q, want %q", network, netUnix)
 		}
-		want := filepath.Join(tmp, "daemon.sock")
+		// GlobalSocketPath, not tmp/daemon.sock: a long temp dir (macOS
+		// $TMPDIR) moves the socket under the runtime dir.
+		want := project.GlobalSocketPath()
 		if address != want {
 			t.Errorf("address = %q, want %q", address, want)
 		}
@@ -79,7 +82,7 @@ func TestGlobalDaemonTargetEmptyWhenNoFile(t *testing.T) {
 	} else {
 		// On Unix the function always returns the would-be socket path;
 		// the liveness check happens in fastDialOK.
-		want := filepath.Join(tmp, "daemon.sock")
+		want := project.GlobalSocketPath()
 		if address != want {
 			t.Errorf("Unix address = %q, want %q", address, want)
 		}

@@ -905,7 +905,7 @@ func TestForwardProxyOverUnixSendsNewlineTerminatedFrame(t *testing.T) {
 
 	// Start a real SocketServer that the proxy will connect to.
 	handlers := NewHandlers(core.NewIndex(), &mockJournal{}, nil)
-	socketDir := t.TempDir()
+	socketDir := shortSocketDir(t)
 	socketPath := filepath.Join(socketDir, "proxy-test.sock")
 	ss := NewSocketServer(socketPath, handlers)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

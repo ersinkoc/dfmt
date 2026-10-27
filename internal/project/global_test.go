@@ -59,7 +59,7 @@ func TestGlobalCrashPathStable(t *testing.T) {
 // when GlobalDir() produces a path under 100 chars, the socket is placed
 // directly inside it rather than under the runtime dir.
 func TestGlobalSocketPathShortPath(t *testing.T) {
-	tmp := t.TempDir()
+	tmp := shortTempDir(t)
 	t.Setenv("DFMT_GLOBAL_DIR", tmp)
 	got := GlobalSocketPath()
 	// On all platforms with a short temp dir, this should be a direct join
@@ -132,11 +132,24 @@ func TestGlobalSocketPathOnUnix(t *testing.T) {
 	if osutil.IsWindows() {
 		t.Skip("Unix-only test")
 	}
-	tmp := t.TempDir()
+	tmp := shortTempDir(t)
 	t.Setenv("DFMT_GLOBAL_DIR", tmp)
 	got := GlobalSocketPath()
 	want := filepath.Join(tmp, GlobalSocketName)
 	if got != want {
 		t.Errorf("Unix GlobalSocketPath: got %q, want %q", got, want)
 	}
+}
+
+// shortTempDir is a temp dir short enough that GlobalSocketPath does not
+// fall back: t.TempDir embeds the test name, which under macOS's long
+// $TMPDIR crosses the 100-byte cutoff and tests the fallback instead.
+func shortTempDir(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "dfmt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	return dir
 }

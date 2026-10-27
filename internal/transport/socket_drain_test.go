@@ -3,6 +3,7 @@ package transport
 import (
 	"context"
 	"net"
+	"os"
 	"path/filepath"
 	"sync/atomic"
 	"testing"
@@ -32,7 +33,7 @@ func TestSocketServerStopWaitsForInflightConn(t *testing.T) {
 	stopDrainTimeout = 2 * time.Second // generous; we'll release the phantom well before this
 	defer func() { stopDrainTimeout = prevTimeout }()
 
-	dir := t.TempDir()
+	dir := shortSocketDir(t)
 	sockPath := filepath.Join(dir, "drain-wait.sock")
 	server := NewSocketServer(sockPath, &Handlers{})
 
@@ -79,7 +80,7 @@ func TestSocketServerStopDrainTimeoutFires(t *testing.T) {
 	stopDrainTimeout = 100 * time.Millisecond
 	defer func() { stopDrainTimeout = prevTimeout }()
 
-	dir := t.TempDir()
+	dir := shortSocketDir(t)
 	sockPath := filepath.Join(dir, "drain-timeout.sock")
 	server := NewSocketServer(sockPath, &Handlers{})
 
@@ -137,7 +138,7 @@ func TestSocketConnLifetimeCapFires(t *testing.T) {
 		socketReadIdleTimeout = prevIdle
 	}()
 
-	dir := t.TempDir()
+	dir := shortSocketDir(t)
 	sockPath := filepath.Join(dir, "lifetime.sock")
 	server := NewSocketServer(sockPath, &Handlers{})
 
@@ -172,4 +173,17 @@ func TestSocketConnLifetimeCapFires(t *testing.T) {
 	case <-time.After(socketConnMaxLifetime + time.Second):
 		t.Fatalf("conn not closed within %s; lifetime cap did not fire", socketConnMaxLifetime+time.Second)
 	}
+}
+
+// shortSocketDir is a temp dir short enough for a Unix socket path.
+// t.TempDir embeds the test name, and under macOS's long $TMPDIR the
+// result passes sun_path's 104-byte limit, so bind fails with EINVAL.
+func shortSocketDir(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "dfmt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	return dir
 }

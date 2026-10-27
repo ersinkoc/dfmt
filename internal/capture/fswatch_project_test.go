@@ -9,6 +9,7 @@ import (
 )
 
 func TestFSWatcher_SetProject_StampsEvents(t *testing.T) {
+	skipWithoutWatcher(t)
 	dir := t.TempDir()
 	w, err := NewFSWatcher(dir, nil, 10)
 	if err != nil {
@@ -42,6 +43,7 @@ func TestFSWatcher_SetProject_StampsEvents(t *testing.T) {
 }
 
 func TestFSWatcher_NoProject_EmptyStamp(t *testing.T) {
+	skipWithoutWatcher(t)
 	dir := t.TempDir()
 	w, err := NewFSWatcher(dir, nil, 10)
 	if err != nil {
@@ -65,5 +67,14 @@ func TestFSWatcher_NoProject_EmptyStamp(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("timed out waiting for fswatch event")
+	}
+}
+
+// skipWithoutWatcher skips a test that waits for real filesystem events
+// on a platform with no watcher (macOS, CAP-1).
+func skipWithoutWatcher(t *testing.T) {
+	t.Helper()
+	if !WatcherSupported() {
+		t.Skip("no filesystem watcher on this platform")
 	}
 }
