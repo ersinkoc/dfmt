@@ -28,10 +28,19 @@ func runDashboard(args []string) int {
 	// Phase 2: if the host-wide global daemon is up, that's the only
 	// dashboard URL — every project shares it. Short-circuit before
 	// touching the registry (which only knows about legacy per-project
-	// daemons). Only Windows reaches this branch today because Unix
-	// global daemons bind to a Unix socket only; the platform hint
-	// below still applies.
-	if globalURL := globalDashboardURL(); globalURL != "" {
+	// daemons). The URL is a login link: it carries the port-file token,
+	// which the daemon exchanges for an HttpOnly session cookie.
+	//
+	// No port file usually means the daemon idle-exited; bring it up like
+	// every other daemon-backed command does, rather than reporting "no
+	// daemon" for one any other command would have started.
+	globalURL := globalDashboardLoginURL()
+	if globalURL == "" {
+		if err := ensureGlobalDaemon(); err == nil {
+			globalURL = globalDashboardLoginURL()
+		}
+	}
+	if globalURL != "" {
 		fmt.Println(globalURL)
 		if openBrowser {
 			if err := openInBrowser(globalURL); err != nil {

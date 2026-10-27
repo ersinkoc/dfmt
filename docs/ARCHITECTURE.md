@@ -753,6 +753,14 @@ from `internal/transport/dashboard.go` constants (`DashboardHTML`,
 (`/dashboard` and `/dashboard.js`) so the page can use
 `script-src 'self'` without inline-hash maintenance.
 
+Access is by session cookie. `dfmt dashboard` prints
+`/dashboard?token=<port-file token>`; the daemon answers with an
+`HttpOnly; SameSite=Strict` cookie holding an HMAC derived from the
+token and a redirect that drops the token from the URL. The cookie
+unlocks `/dashboard`, `/dashboard.js`, and `/api/*` (including the
+SSE stream, which cannot send headers) but never the JSON-RPC `/`.
+Without it the page answers 401 with instructions.
+
 What the page renders, polling `/api/stats` and `/api/daemons`:
 
 - **Project selector** (top-right dropdown) — switches between all

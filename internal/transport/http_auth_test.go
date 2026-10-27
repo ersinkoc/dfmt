@@ -98,23 +98,28 @@ func TestRPCEndpointAcceptsPortFileToken(t *testing.T) {
 	}
 }
 
-// The dashboard pages and health probes stay open — they are served from the
-// same origin and carry no token. But the /api/* data endpoints now require
-// the bearer token (TRN-4): they stream the full journal of any project
-// named in the query string, including tool.exec code fields and remembered
-// notes, and on Windows loopback TCP has no ACL.
-func TestDashboardAndHealthStayOpen(t *testing.T) {
+// Health probes stay open. The dashboard page answers without a session —
+// with a page saying how to get one, as 401 — and its script is withheld.
+func TestHealthStaysOpenDashboardLocked(t *testing.T) {
 	base, _ := startAuthTestServer(t)
 
-	for _, path := range []string{"/dashboard", "/healthz"} {
-		resp, err := http.Get(base + path)
-		if err != nil {
-			t.Fatalf("GET %s: %v", path, err)
-		}
-		_ = resp.Body.Close()
-		if resp.StatusCode == http.StatusUnauthorized {
-			t.Errorf("GET %s = 401, want it reachable without a token", path)
-		}
+	resp, err := http.Get(base + "/healthz")
+	if err != nil {
+		t.Fatalf("GET /healthz: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("GET /healthz = %d, want 200", resp.StatusCode)
+	}
+
+	resp, err = http.Get(base + "/dashboard")
+	if err != nil {
+		t.Fatalf("GET /dashboard: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized || !strings.Contains(string(body), "dfmt dashboard") {
+		t.Errorf("GET /dashboard without session = %d, want 401 with the login hint", resp.StatusCode)
 	}
 }
 
@@ -136,8 +141,7 @@ func TestAPIRoutesRejectMissingToken(t *testing.T) {
 }
 
 // TestAPIRoutesAcceptPortFileToken verifies the token published in the port
-// file unlocks the /api/* endpoints (the dashboard receives it injected
-// into its served JS).
+// file unlocks the /api/* endpoints for non-browser clients.
 func TestAPIRoutesAcceptPortFileToken(t *testing.T) {
 	base, token := startAuthTestServer(t)
 
@@ -156,25 +160,92 @@ func TestAPIRoutesAcceptPortFileToken(t *testing.T) {
 	}
 }
 
-// TestDashboardJSServesInjectedToken verifies the dashboard JS carries the
-// bearer token when the server is in port-file mode, so the dashboard's
-// /api/* fetches can authenticate (TRN-4).
-func TestDashboardJSServesInjectedToken(t *testing.T) {
-	base, _ := startAuthTestServer(t)
+// Regression: dashboard.js opened with the bearer token as a `const` and
+// sat behind no check, so any local process — or any web page, through a
+// cross-site <script src> that sends no Origin — could read the credential
+// that guards exec and write on "/". And the live event log never worked:
+// EventSource cannot set an Authorization header.
+func TestDashboardJSDoesNotLeakToken(t *testing.T) {
+	base, token := startAuthTestServer(t)
 
 	resp, err := http.Get(base + "/dashboard.js")
 	if err != nil {
 		t.Fatalf("GET dashboard.js: %v", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
-	jsBytes, err := io.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatalf("read dashboard.js: %v", err)
+	body, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("GET /dashboard.js without session = %d, want 401", resp.StatusCode)
 	}
-	js := string(jsBytes)
-	want := "DFMT_AUTH_TOKEN"
-	if !strings.Contains(js, want) {
-		t.Fatalf("dashboard.js does not contain injected %q — the dashboard cannot authenticate /api/* calls", want)
+	if strings.Contains(string(body), token) {
+		t.Fatal("dashboard.js served the bearer token to an unauthenticated request")
+	}
+}
+
+// TestDashboardLoginSessionUnlocksAPIOnly walks the browser flow: the login
+// link sets a session cookie and redirects the token out of the URL; the
+// cookie then unlocks the dashboard, its script, /api/* and the SSE stream,
+// but never "/" — a browser session can read the journal, not exec.
+func TestDashboardLoginSessionUnlocksAPIOnly(t *testing.T) {
+	base, token := startAuthTestServer(t)
+	noRedirect := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}}
+
+	bad, err := noRedirect.Get(base + "/dashboard?token=wrong")
+	if err != nil {
+		t.Fatalf("GET bad login: %v", err)
+	}
+	_ = bad.Body.Close()
+	if bad.StatusCode != http.StatusUnauthorized || len(bad.Cookies()) != 0 {
+		t.Errorf("wrong login token = %d with %d cookies, want 401 and none", bad.StatusCode, len(bad.Cookies()))
+	}
+
+	login, err := noRedirect.Get(base + "/dashboard?token=" + token)
+	if err != nil {
+		t.Fatalf("GET login: %v", err)
+	}
+	_ = login.Body.Close()
+	if login.StatusCode != http.StatusSeeOther || login.Header.Get("Location") != "/dashboard" {
+		t.Fatalf("login = %d to %q, want 303 to /dashboard", login.StatusCode, login.Header.Get("Location"))
+	}
+	var session *http.Cookie
+	for _, c := range login.Cookies() {
+		if c.Name == dashboardCookieName {
+			session = c
+		}
+	}
+	if session == nil {
+		t.Fatal("login set no session cookie")
+	}
+	if !session.HttpOnly || session.SameSite != http.SameSiteStrictMode {
+		t.Errorf("session cookie HttpOnly=%v SameSite=%v, want HttpOnly and Strict", session.HttpOnly, session.SameSite)
+	}
+	if session.Value == token {
+		t.Error("session cookie is the bearer token itself; it must be derived")
+	}
+
+	get := func(method, path string) int {
+		t.Helper()
+		req, err := http.NewRequest(method, base+path, strings.NewReader(`{"jsonrpc":"2.0","method":"dfmt.stats","id":1}`))
+		if err != nil {
+			t.Fatalf("build %s: %v", path, err)
+		}
+		req.AddCookie(session)
+		resp, err := noRedirect.Do(req)
+		if err != nil {
+			t.Fatalf("%s %s: %v", method, path, err)
+		}
+		_ = resp.Body.Close()
+		return resp.StatusCode
+	}
+	for _, path := range []string{"/dashboard", "/dashboard.js", "/api/daemons"} {
+		if code := get(http.MethodGet, path); code != http.StatusOK {
+			t.Errorf("GET %s with session = %d, want 200", path, code)
+		}
+	}
+	if code := get(http.MethodPost, "/"); code != http.StatusUnauthorized {
+		t.Errorf("POST / with only the dashboard session = %d, want 401", code)
 	}
 }
 

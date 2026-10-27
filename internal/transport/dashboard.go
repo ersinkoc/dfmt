@@ -67,6 +67,32 @@ const DashboardHTML = `<!DOCTYPE html>
 </html>
 `
 
+// dashboardLockedHTML is served in place of the dashboard when the request
+// carries no session. It is a fmt format string with one %s: the reason.
+const dashboardLockedHTML = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DFMT Dashboard</title>
+<link rel="stylesheet" href="/dashboard.css">
+<link rel="icon" href="data:,">
+</head>
+<body>
+<div class="container">
+<div class="header"><div class="header-left"><h1>DFMT Dashboard</h1></div></div>
+<div class="locked">
+<p>%s</p>
+<p>Open the dashboard with the login link the CLI prints:</p>
+<pre>dfmt dashboard          # print the link
+dfmt dashboard --open   # open it in your browser</pre>
+<p>Links are valid until the daemon restarts.</p>
+</div>
+</div>
+</body>
+</html>
+`
+
 // DashboardCSS is the dashboard's stylesheet, served at /dashboard.css so the
 // CSP `style-src 'self'` directive is enough — no inline-style hashes to keep
 // in sync with the source. The colors/layout match the prior inline block
@@ -113,6 +139,9 @@ select:focus { outline: none; border-color: #00d4ff; }
 .event-log-prio-p3 { color: #6bcf7f; }
 .event-log-prio-p4 { color: #888; }
 .event-log-msg { color: #ccc; margin-left: 8px; }
+.locked { background: #16213e; border: 1px solid #0f3460; border-radius: 8px; padding: 20px; max-width: 640px; line-height: 1.6; }
+.locked p { margin-bottom: 10px; }
+.locked pre { background: #1a1a2e; padding: 10px; border-radius: 6px; margin: 10px 0; color: #00d4ff; }
 `
 
 // DashboardJS is the dashboard's JavaScript, served at /dashboard.js so CSP
@@ -122,15 +151,19 @@ select:focus { outline: none; border-color: #00d4ff; }
 const DashboardJS = `(function() {
 var errorEl, loadingEl, statsEl, refreshBtn, projectSelect, daemonBadge;
 
-// authHeaders returns the Authorization header when a token was injected
-// into this script by handleDashboardJS (port-file mode). Without a token
-// (Unix socket transport, embedded servers) the header is omitted entirely.
-function authHeaders(extra) {
-  var h = extra || {};
-  if (typeof DFMT_AUTH_TOKEN !== 'undefined' && DFMT_AUTH_TOKEN) {
-    h['Authorization'] = 'Bearer ' + DFMT_AUTH_TOKEN;
-  }
-  return h;
+// The dashboard authenticates with the HttpOnly session cookie set by the
+// login link ` + "`dfmt dashboard`" + ` prints; same-origin fetch and EventSource
+// both send it, so no credential lives in this script.
+var SESSION_EXPIRED = 'Dashboard session expired (the daemon restarted). ' +
+  'Run ` + "`dfmt dashboard`" + ` again and open the new link.';
+
+// readJSON turns a fetch Response into its JSON body, mapping the auth
+// failure to a message that says how to recover instead of a parse error
+// on the plain-text 401 body.
+async function readJSON(resp) {
+  if (resp.status === 401) throw new Error(SESSION_EXPIRED);
+  if (!resp.ok) throw new Error('HTTP ' + resp.status);
+  return resp.json();
 }
 
 function showError(msg) {
@@ -211,8 +244,8 @@ function renderChart(containerId, data) {
 
 async function loadDaemons() {
   try {
-    var resp = await fetch('/api/all-daemons', {headers: authHeaders()});
-    var daemons = await resp.json();
+    var resp = await fetch('/api/all-daemons');
+    var daemons = await readJSON(resp);
     projectSelect.innerHTML = '';
     if (!daemons || daemons.length === 0) {
       var opt = document.createElement('option');
@@ -230,34 +263,27 @@ async function loadDaemons() {
     return daemons[0].project_path || null;
   } catch (err) {
     console.error('Failed to load daemons:', err);
+    if (err.message === SESSION_EXPIRED) showError(err.message);
     return null;
   }
 }
 
-async function loadStatsForProject(projectPath) {
-  showLoading();
+// loadStatsForProject fetches and renders stats. An empty projectPath is
+// the legacy single-project daemon, which has a default project.
+async function loadStatsForProject(projectPath, quiet) {
+  if (!quiet) showLoading();
   try {
-    // Phase 2: the host-wide daemon serves every project from one
-    // process, so we just POST /api/stats with project_id stamped
-    // in params and let the daemon route to the right cache. The
-    // older /api/proxy path (registry-lookup + cross-daemon HTTP
-    // forward) is preserved on the daemon side for v0.3.x straddle
-    // setups but the dashboard no longer needs it for the common
-    // global-mode flow.
+    var params = {no_cache: true};
+    if (projectPath) params.project_id = projectPath;
     var resp = await fetch('/api/stats', {
       method: 'POST',
-      headers: authHeaders({'Content-Type': 'application/json'}),
-      body: JSON.stringify({
-        jsonrpc: '2.0',
-        method: 'dfmt.stats',
-        params: {project_id: projectPath, no_cache: true},
-        id: 1
-      })
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({jsonrpc: '2.0', method: 'dfmt.stats', params: params, id: 1})
     });
-    var data = await resp.json();
+    var data = await readJSON(resp);
     if (data.error) throw new Error(data.error.message || 'Unknown error');
     var stats = data.result;
-    document.getElementById('total-events').textContent = stats.events_total;
+    document.getElementById('total-events').textContent = stats.events_total || 0;
     document.getElementById('total-input').textContent = formatNumber(stats.total_input_tokens || 0);
     document.getElementById('total-output').textContent = formatNumber(stats.total_output_tokens || 0);
     document.getElementById('token-savings').textContent = formatNumber(stats.token_savings || 0);
@@ -276,46 +302,28 @@ async function loadStatsForProject(projectPath) {
     }
     renderChart('type-chart', stats.events_by_type);
     renderChart('priority-chart', stats.events_by_priority);
+    errorEl.style.display = 'none';
     showStats();
   } catch (err) {
-    showError('Error loading stats for ' + projectPath + ': ' + err.message);
+    showError('Error loading stats' + (projectPath ? ' for ' + projectPath : '') + ': ' + err.message);
   }
 }
 
-async function loadStats() {
-  showLoading();
-  try {
-    var resp = await fetch('/api/stats', {
-      method: 'POST',
-      headers: authHeaders({'Content-Type': 'application/json'}),
-      body: JSON.stringify({jsonrpc: '2.0', method: 'dfmt.stats', params: {}, id: 1})
-    });
-    var data = await resp.json();
-    if (data.error) throw new Error(data.error.message || 'Unknown error');
-    var stats = data.result;
-    document.getElementById('total-events').textContent = stats.events_total;
-    document.getElementById('total-input').textContent = formatNumber(stats.total_input_tokens || 0);
-    document.getElementById('total-output').textContent = formatNumber(stats.total_output_tokens || 0);
-    document.getElementById('token-savings').textContent = formatNumber(stats.token_savings || 0);
-    document.getElementById('cache-hit-rate').textContent = (stats.cache_hit_rate || 0).toFixed(1) + '%';
-    document.getElementById('raw-bytes').textContent = formatNumber(stats.total_raw_bytes || 0);
-    document.getElementById('returned-bytes').textContent = formatNumber(stats.total_returned_bytes || 0);
-    document.getElementById('bytes-saved').textContent = formatNumber(stats.bytes_saved || 0);
-    document.getElementById('compression-ratio').textContent = ((stats.compression_ratio || 0) * 100).toFixed(1) + '%';
-    document.getElementById('dedup-hits').textContent = formatNumber(stats.dedup_hits || 0);
-    if (stats.session_start && stats.session_end) {
-      var start = new Date(stats.session_start);
-      var end = new Date(stats.session_end);
-      document.getElementById('session-duration').textContent = formatDuration(end - start);
-      document.getElementById('session-start').textContent = start.toLocaleString();
-      document.getElementById('session-end').textContent = end.toLocaleString();
-    }
-    renderChart('type-chart', stats.events_by_type);
-    renderChart('priority-chart', stats.events_by_priority);
-    showStats();
-  } catch (err) {
-    showError('Error: ' + err.message);
-  }
+function loadStats() {
+  loadStatsForProject('');
+}
+
+// scheduleStatsRefresh re-reads stats shortly after live events arrive, so
+// the cards track the event log instead of freezing at page load. Bursts
+// of events (an agent's tool loop) coalesce into one request.
+var statsRefreshTimer = null;
+function scheduleStatsRefresh() {
+  if (statsRefreshTimer) return;
+  statsRefreshTimer = setTimeout(function() {
+    statsRefreshTimer = null;
+    var selected = projectSelect && projectSelect.value;
+    loadStatsForProject(selected || '', true);
+  }, 1500);
 }
 
 // Live event log via /api/stream SSE. Pre-v0.5.0 the endpoint was
@@ -325,6 +333,9 @@ async function loadStats() {
 // down the prior EventSource when the user switches projects so the
 // dashboard never accumulates orphan SSE connections.
 var eventLogES = null;
+// eventLogLive turns true once the initial replay has been rendered, so
+// replayed history does not trigger a stats refresh per event.
+var eventLogLive = false;
 var EVENT_LOG_MAX_ROWS = 100;
 
 function closeEventLog() {
@@ -368,7 +379,8 @@ function appendEventRow(e) {
   // doesn't blow out the log row width.
   var msgText = '';
   if (e.data) {
-    msgText = e.data.code || e.data.path || e.data.url || '';
+    msgText = e.data.message || e.data.code || e.data.path || e.data.url ||
+      e.data.pattern || e.data.subject || '';
   }
   if (!msgText && Array.isArray(e.tags) && e.tags.length > 0) {
     msgText = e.tags.join(' ');
@@ -391,7 +403,17 @@ function appendEventRow(e) {
 
 function openEventLog(projectPath) {
   closeEventLog();
+  eventLogLive = false;
+  var log = document.getElementById('eventLog');
+  if (log) {
+    log.innerHTML = '';
+    var empty = document.createElement('div');
+    empty.className = 'event-log-empty';
+    empty.textContent = 'Waiting for events...';
+    log.appendChild(empty);
+  }
   if (!projectPath) return;
+  setTimeout(function() { eventLogLive = true; }, 1000);
   var url = '/api/stream?follow=true&project_id=' + encodeURIComponent(projectPath);
   try {
     eventLogES = new EventSource(url);
@@ -403,6 +425,7 @@ function openEventLog(projectPath) {
     try {
       var e = JSON.parse(ev.data);
       appendEventRow(e);
+      if (eventLogLive) scheduleStatsRefresh();
     } catch (err) {
       console.error('SSE parse error:', err);
     }
@@ -412,6 +435,11 @@ function openEventLog(projectPath) {
     // on the built-in retry. If the server is down for good, the user
     // will notice via the stats card going stale.
     console.warn('SSE connection error (will retry)');
+    // A non-200 answer (401 after a daemon restart) closes the stream for
+    // good instead of retrying; re-probe so the page says why.
+    if (eventLogES && eventLogES.readyState === EventSource.CLOSED) {
+      loadDaemons();
+    }
   };
 }
 

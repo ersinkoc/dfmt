@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -225,13 +226,26 @@ func loadedProjectsViaAPI(port int) []string {
 	if port <= 0 {
 		return nil
 	}
-	url := fmt.Sprintf("http://127.0.0.1:%d/api/all-daemons", port)
+	endpoint := fmt.Sprintf("http://127.0.0.1:%d/api/all-daemons", port)
+	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil
+	}
+	// /api/* requires the bearer token (TRN-4). Without it this got a 401,
+	// decoded nothing, and `dfmt list` fell back to a lone "<global>" row
+	// while the daemon was serving real projects.
+	if _, token, terr := readGlobalPortFile(); terr == nil && token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
 	httpClient := &http.Client{Timeout: 500 * time.Millisecond}
-	resp, err := httpClient.Get(url)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return nil
 	}
 	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return nil
+	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
 		return nil
@@ -273,6 +287,21 @@ func globalDashboardURL() string {
 		return ""
 	}
 	return fmt.Sprintf("http://127.0.0.1:%d/dashboard", port)
+}
+
+// globalDashboardLoginURL is globalDashboardURL carrying the port-file token,
+// which the daemon trades for a browser session cookie. The plain URL only
+// answers with a page pointing back here. "" when no TCP daemon is up.
+func globalDashboardLoginURL() string {
+	port, token, err := readGlobalPortFile()
+	if err != nil || port <= 0 {
+		return ""
+	}
+	u := fmt.Sprintf("http://127.0.0.1:%d/dashboard", port)
+	if token != "" {
+		u += "?token=" + url.QueryEscape(token)
+	}
+	return u
 }
 
 // globalDaemonInfo is the single answer to "what is serving this host right
@@ -1263,12 +1292,18 @@ func runList(args []string) int {
 		if len(loaded) == 0 {
 			loaded = []string{"<global>"}
 		}
+		// Uptime is the daemon's, from its identity file; time.Now() here
+		// printed "uptime 0s" for a daemon that had been up for hours.
+		started, perr := time.Parse(time.RFC3339, ginfo.StartedAt)
+		if perr != nil {
+			started = time.Now()
+		}
 		for _, p := range loaded {
 			daemons = append(daemons, client.DaemonEntry{
 				ProjectPath: p,
 				PID:         ginfo.PID,
 				Port:        ginfo.Port,
-				StartedAt:   time.Now(),
+				StartedAt:   started,
 				LastSeen:    time.Now(),
 			})
 		}
@@ -1314,7 +1349,7 @@ func runList(args []string) int {
 		fmt.Println("")
 		for _, d := range daemons {
 			uptime := time.Since(d.StartedAt).Round(time.Second)
-			if osutil.IsWindows() {
+			if osutil.IsWindows() || d.Port > 0 {
 				fmt.Printf("  [%d] %s (port %d, uptime %s)\n", d.PID, d.ProjectPath, d.Port, uptime)
 			} else {
 				fmt.Printf("  [%d] %s (socket, uptime %s)\n", d.PID, d.ProjectPath, uptime)

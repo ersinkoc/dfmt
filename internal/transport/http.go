@@ -3,12 +3,15 @@ package transport
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"net"
 	"net/http"
@@ -393,15 +396,19 @@ func (s *HTTPServer) wrapSecurity(next http.Handler) http.Handler {
 		// /api/* (stats, stream, proxy, daemons) is read-only but streams
 		// the full journal of any project named in the query string —
 		// including tool.exec code fields and remembered notes — so the
-		// same bearer token is required there (TRN-4). The dashboard
-		// receives the token injected into its served JS, which only the
-		// same authenticated origin can fetch.
+		// same bearer token is required there (TRN-4). The browser
+		// dashboard authenticates to /api/* with the session cookie it
+		// gets from the login URL `dfmt dashboard` prints (see
+		// handleDashboard); "/" never accepts the cookie, so a browser
+		// session can read the journal but cannot exec or write.
 		//
 		// When authToken is empty the check is skipped, which keeps two
 		// legitimate cases working: a server constructed without a port
 		// file (tests, embedded use) and the Unix socket transport, whose
 		// access control is the socket's file mode.
-		if s.authToken != "" && (r.URL.Path == "/" || strings.HasPrefix(r.URL.Path, "/api/")) && !s.authorized(r) {
+		needsAuth := r.URL.Path == "/" || strings.HasPrefix(r.URL.Path, "/api/")
+		if s.authToken != "" && needsAuth && !s.authorized(r) &&
+			(r.URL.Path == "/" || !s.hasDashboardSession(r)) {
 			w.Header().Set("WWW-Authenticate", "Bearer")
 			http.Error(w, "unauthorized: present the token from the daemon's port file", http.StatusUnauthorized)
 			return
@@ -815,6 +822,44 @@ func (s *HTTPServer) authorized(r *http.Request) bool {
 	return subtle.ConstantTimeCompare([]byte(presented), []byte(s.authToken)) == 1
 }
 
+// dashboardCookieName names the browser session cookie for the dashboard.
+const dashboardCookieName = "dfmt_dashboard"
+
+// dashboardSessionValue derives the dashboard cookie from the bearer token
+// rather than reusing it, so the credential that unlocks exec and write on
+// "/" never sits in a browser cookie jar. It changes whenever the token
+// does, i.e. on every daemon start.
+func (s *HTTPServer) dashboardSessionValue() string {
+	mac := hmac.New(sha256.New, []byte(s.authToken))
+	mac.Write([]byte("dfmt dashboard session v1"))
+	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+}
+
+// hasDashboardSession reports whether r carries a valid dashboard cookie.
+func (s *HTTPServer) hasDashboardSession(r *http.Request) bool {
+	if s.authToken == "" {
+		return false
+	}
+	c, err := r.Cookie(dashboardCookieName)
+	if err != nil || c.Value == "" {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(c.Value), []byte(s.dashboardSessionValue())) == 1
+}
+
+// writeDashboardLocked answers a dashboard request that has no session
+// with a page that says how to get one, instead of a bare 401.
+func (s *HTTPServer) writeDashboardLocked(w http.ResponseWriter, reason string) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Content-Security-Policy",
+		"default-src 'none'; style-src 'self'; frame-ancestors 'none'; base-uri 'none'")
+	w.WriteHeader(http.StatusUnauthorized)
+	if reason == "" {
+		reason = "This dashboard needs a login link."
+	}
+	_, _ = fmt.Fprintf(w, dashboardLockedHTML, html.EscapeString(reason))
+}
+
 // generateToken generates a cryptographically secure random token for HTTP bearer auth.
 func generateToken() (string, error) {
 	b := make([]byte, 32)
@@ -870,6 +915,28 @@ func (s *HTTPServer) SocketPath() string {
 }
 
 func (s *HTTPServer) handleDashboard(w http.ResponseWriter, r *http.Request) {
+	if s.authToken != "" {
+		if presented := r.URL.Query().Get("token"); presented != "" {
+			if subtle.ConstantTimeCompare([]byte(presented), []byte(s.authToken)) != 1 {
+				s.writeDashboardLocked(w, "That login link is not valid for this daemon.")
+				return
+			}
+			http.SetCookie(w, &http.Cookie{
+				Name:     dashboardCookieName,
+				Value:    s.dashboardSessionValue(),
+				Path:     "/",
+				HttpOnly: true,
+				SameSite: http.SameSiteStrictMode,
+			})
+			// Redirect so the token leaves the address bar and history.
+			http.Redirect(w, r, "/dashboard", http.StatusSeeOther)
+			return
+		}
+		if !s.hasDashboardSession(r) {
+			s.writeDashboardLocked(w, "")
+			return
+		}
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("X-Frame-Options", "DENY")
@@ -885,17 +952,20 @@ func (s *HTTPServer) handleDashboard(w http.ResponseWriter, r *http.Request) {
 // handleDashboardJS serves the dashboard's JavaScript from an external file so
 // CSP can use the simple `script-src 'self'` directive.
 //
-// When the server has an auth token (port-file mode), it is injected as a
-// const at the top of the served JS so the dashboard's /api/* calls carry
-// Authorization. Only the same authenticated origin can fetch this file, and
-// the token is already readable from the 0600 port file — this hands it to
-// nobody who could not already read it (TRN-4).
+// It carries no credential. It used to open with the bearer token as a
+// `const`, on the theory that only the authenticated origin could fetch it —
+// but the route sits behind no check at all, so any local process (or any
+// web page, via a cross-site <script src>, which sends no Origin) could read
+// the token that guards exec and write on "/". The dashboard now rides the
+// HttpOnly session cookie instead, which also works for EventSource: that
+// API cannot set headers, so the live event log never authenticated.
 func (s *HTTPServer) handleDashboardJS(w http.ResponseWriter, r *http.Request) {
+	if s.authToken != "" && !s.hasDashboardSession(r) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
 	w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
-	if s.authToken != "" {
-		_, _ = fmt.Fprintf(w, "const DFMT_AUTH_TOKEN = %q;\n", s.authToken)
-	}
 	_, _ = w.Write([]byte(DashboardJS))
 }
 

@@ -1,11 +1,16 @@
 package cli
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strconv"
 	"testing"
+
+	"github.com/ersinkoc/dfmt/internal/project"
 )
 
 // TestLoadedProjectsViaAPI_NonPositivePort: any non-positive port short-
@@ -155,4 +160,29 @@ func portFromTestServer(t *testing.T, srv *httptest.Server) int {
 		t.Fatalf("test server bound non-positive port: %s", srv.URL)
 	}
 	return port
+}
+
+// TestLoadedProjectsViaAPI_SendsPortFileToken: /api/* requires the bearer
+// token since TRN-4. The helper sent none, got 401, and `dfmt list` showed
+// a lone "<global>" row for a daemon that was serving real projects.
+func TestLoadedProjectsViaAPI_SendsPortFileToken(t *testing.T) {
+	const token = "list-test-token"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer "+token {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		_, _ = w.Write([]byte(`[{"project_path": "/served"}]`))
+	}))
+	defer srv.Close()
+
+	port := portFromTestServer(t, srv)
+	dir := withIsolatedGlobalDir(t)
+	pf := fmt.Sprintf(`{"port":%d,"token":%q}`, port, token)
+	if err := os.WriteFile(filepath.Join(dir, project.GlobalPortFileName), []byte(pf), 0o600); err != nil {
+		t.Fatalf("write port file: %v", err)
+	}
+	if got := loadedProjectsViaAPI(port); len(got) != 1 || got[0] != "/served" {
+		t.Errorf("loadedProjectsViaAPI = %v, want [/served]", got)
+	}
 }
