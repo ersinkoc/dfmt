@@ -43,3 +43,32 @@ func TestGlobalSuccessor(t *testing.T) {
 		t.Errorf("the stopped daemon's own pid file counted as a successor (%d)", got)
 	}
 }
+
+// stopGlobalDaemon's no-signal branches: a stale pid file (process gone)
+// is cleaned up, and a pid that is this very process is treated as stopped
+// rather than signaled (LIF-6 — SIGKILLing ourselves killed a test run).
+func TestStopGlobalDaemonWithoutSignaling(t *testing.T) {
+	t.Setenv("DFMT_GLOBAL_DIR", t.TempDir())
+
+	if err := os.WriteFile(project.GlobalPIDPath(), []byte("999999"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if code := stopGlobalDaemon(); code != 0 {
+		t.Errorf("stale pid: code %d, want 0", code)
+	}
+	if _, err := os.Stat(project.GlobalPIDPath()); !os.IsNotExist(err) {
+		t.Error("stale pid file not removed")
+	}
+
+	if err := os.WriteFile(project.GlobalPIDPath(), []byte(strconv.Itoa(os.Getpid())), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if code := stopGlobalDaemon(); code != 0 {
+		t.Errorf("self pid: code %d, want 0", code)
+	}
+
+	// No pid file at all.
+	if code := stopGlobalDaemon(); code != 1 {
+		t.Errorf("missing pid file: code %d, want 1", code)
+	}
+}

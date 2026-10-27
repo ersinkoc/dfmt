@@ -75,16 +75,19 @@ The CLAUDE.md / AGENTS.md targets drifted out of compliance:
 
 | Package | Current | Target | Gap |
 |---|---|---|---|
-| `internal/core` | 90.7 % | ≥ 90 % | ✅ |
-| `internal/transport` | 90.0 % | ≥ 85 % | ✅ |
-| `internal/daemon` | 83.4 % | ≥ 80 % | ✅ |
-| `internal/cli` | 75.6 % | ≥ 75 % | ✅ |
+| `internal/core` | 90.6 % | ≥ 90 % | ✅ |
+| `internal/transport` | 88.2 % | ≥ 85 % | ✅ |
+| `internal/daemon` | 82.1 % | ≥ 80 % | ✅ |
+| `internal/cli` | 75.2 % | ≥ 75 % | ✅ (thin) |
 
-(Measured 2026-10-27 with `go test -cover` on Linux.)
+(Measured 2026-10-27 with Go 1.26.6, `-covermode=atomic ./...`, as CI does.
+Go 1.27 counts statements differently and reports several points higher —
+measure with the CI toolchain.)
 
-- [x] **`internal/cli` ≥ 75 %** (75.6 %). All four packages pass
-  `scripts/coverage-gate.go --strict` on Linux; flipping CI to
-  `--strict` needs the same check on the Windows/macOS legs.
+- [x] **`internal/cli` ≥ 75 %** (75.2 % on Go 1.26). All four packages
+  pass `scripts/coverage-gate.go --strict` locally with CI's toolchain;
+  CI's own run has measured cli a few points lower than local, so check
+  its table before flipping the gate to `--strict`.
 - [x] **`internal/daemon` ≥ 80 %** (83.4 %).
 - [x] **`internal/transport` ≥ 85 %** (90.0 %).
 

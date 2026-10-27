@@ -185,3 +185,111 @@ func TestCLIMemoryRoundTrip(t *testing.T) {
 		}
 	}
 }
+
+// TestCLIOpsAgainstLiveDaemon covers the operator commands' connected
+// paths — status, list, doctor, dashboard, config — which existing tests
+// only reached with no daemon running.
+func TestCLIOpsAgainstLiveDaemon(t *testing.T) {
+	toolProject(t)
+	run := func(args ...string) (int, string) {
+		var code int
+		out := captureStdout(t, func() { code = Dispatch(args) })
+		return code, out
+	}
+	if code, out := run("status"); code != 0 || !strings.Contains(out, "running") {
+		t.Errorf("status: code %d out %q", code, out)
+	}
+	if code, out := run("list"); code != 0 || out == "" {
+		t.Errorf("list: code %d out %q", code, out)
+	}
+	if code, out := run("dashboard"); code != 0 || !strings.Contains(out, "http") {
+		t.Errorf("dashboard: code %d out %q", code, out)
+	}
+	if _, out := run("doctor"); !strings.Contains(strings.ToLower(out), "daemon") {
+		t.Errorf("doctor output lacks the daemon row: %q", out)
+	}
+	if code, _ := run("config", "set", "storage.journal_keep_segments", "3"); code != 0 {
+		t.Errorf("config set returned %d", code)
+	}
+	if code, out := run("config", "get", "storage.journal_keep_segments"); code != 0 || !strings.Contains(out, "3") {
+		t.Errorf("config get: code %d out %q", code, out)
+	}
+	if code, _ := run("config", "set", "storage.journal_keep_segments", "-1"); code == 0 {
+		t.Error("config set accepted a negative keep count")
+	}
+
+	prevJSON := flagJSON
+	flagJSON = true
+	defer func() { flagJSON = prevJSON }()
+	for _, args := range [][]string{{"status"}, {"list"}} {
+		if code, out := run(args...); code != 0 || !strings.Contains(out, "{") {
+			t.Errorf("%v --json: code %d out %q", args, code, out)
+		}
+	}
+}
+
+// dialBackend("") is the unbound-session path (ADR-0029): it must reach the
+// global daemon without auto-initializing any directory.
+func TestDialBackendBoundAndUnbound(t *testing.T) {
+	proj := toolProject(t)
+	if dialBackend("") == nil {
+		t.Error("unbound dial found no backend with a daemon running")
+	}
+	if dialBackend(proj) == nil {
+		t.Error("bound dial found no backend")
+	}
+}
+
+// A fetch the sandbox refuses (loopback is never reachable) must fail with
+// a non-zero exit, through the real daemon path; plus the flag errors.
+func TestCLIFetchRefusalAndArgs(t *testing.T) {
+	toolProject(t)
+	if code := Dispatch([]string{"fetch"}); code != 1 {
+		t.Errorf("fetch without URL returned %d, want 1", code)
+	}
+	if code := Dispatch([]string{"fetch", "--bogus"}); code != 2 {
+		t.Errorf("fetch with a bad flag returned %d, want 2", code)
+	}
+	if code := Dispatch([]string{"fetch", "-intent", "x", "-method", "POST", "-body", "{}", "-timeout", "2",
+		"http://127.0.0.1:1/"}); code == 0 {
+		t.Error("fetch to loopback succeeded; the sandbox must refuse it")
+	}
+}
+
+func TestToolchainCandidateDirs(t *testing.T) {
+	dirs := toolchainCandidateDirs()
+	if len(dirs) == 0 {
+		t.Fatal("no candidate toolchain directories")
+	}
+	for _, d := range dirs {
+		if !filepath.IsAbs(d) {
+			t.Errorf("candidate %q is not absolute", d)
+		}
+	}
+}
+
+// With no daemon reachable (the test binary never spawns one), dashboard
+// falls back to the legacy registry and, for a Unix-socket project, explains
+// why there is no browser URL instead of printing a dead one.
+func TestCLIDashboardWithoutDaemon(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("DFMT_GLOBAL_DIR", filepath.Join(root, "global"))
+	t.Setenv("HOME", filepath.Join(root, "home"))
+	t.Setenv("XDG_DATA_HOME", filepath.Join(root, "xdg"))
+	proj := filepath.Join(root, "proj")
+	if err := os.MkdirAll(filepath.Join(proj, ".dfmt"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	prev, prevJSON := flagProject, flagJSON
+	flagProject, flagJSON = proj, false
+	t.Cleanup(func() { flagProject, flagJSON = prev, prevJSON })
+
+	var code int
+	out := captureStdout(t, func() { code = Dispatch([]string{"dashboard"}) })
+	if code == 0 && strings.Contains(out, "http://127.0.0.1") {
+		t.Errorf("dashboard printed a URL with no daemon running: %q", out)
+	}
+	if lookupDashboardURL(proj) != "" {
+		t.Error("lookupDashboardURL found a URL with no daemon")
+	}
+}
