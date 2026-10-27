@@ -652,7 +652,19 @@ type journalFingerprint struct {
 }
 
 func statJournal(path string) (journalFingerprint, bool) {
-	info, err := os.Stat(path)
+	// Stat through an open handle, not the path. On Windows a path stat
+	// reads the directory entry, whose size and mtime can lag while
+	// another handle (the daemon's own journal, or an external writer)
+	// holds the file open — so an append looked like "unchanged" and the
+	// tail stopped indexing (Windows CI: TestIndexTailPicksUpExternalAppends).
+	// A handle stat (GetFileInformationByHandle) is current. One open/close
+	// per 3 s tick per project.
+	f, err := os.Open(path)
+	if err != nil {
+		return journalFingerprint{}, false
+	}
+	info, err := f.Stat()
+	_ = f.Close()
 	if err != nil {
 		return journalFingerprint{}, false
 	}

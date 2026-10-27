@@ -27,6 +27,15 @@ Internal package shapes (`internal/...`) are NOT covered by SemVer.
 
 ## [Unreleased]
 
+### Fixed
+
+- **On Windows the index tail could stop picking up appends** (regression
+  in 0.9.1's idle fast path). It compared the journal's size and mtime via
+  a path stat, which on Windows reads the directory entry — stale while
+  another handle holds the file open — so new events looked like "no
+  change" and search fell behind. The fingerprint now comes from a stat on
+  an open handle.
+
 ## [0.9.2] — 2026-10-27
 
 ### Added

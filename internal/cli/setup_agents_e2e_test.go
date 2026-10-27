@@ -83,3 +83,44 @@ func TestSetupConfiguresDetectedAgentsEndToEnd(t *testing.T) {
 		t.Errorf("uninstall damaged the user's Claude settings: %s", settings)
 	}
 }
+
+// runSetup's interactive and failure branches: the confirmation prompt
+// (declined and accepted), an agent whose config write fails, and the
+// "nothing configured" exit.
+func TestSetupPromptAndFailureBranches(t *testing.T) {
+	home, _ := fakeAgentHome(t)
+	withStdin := func(input string, args ...string) (int, string) {
+		r, w, _ := os.Pipe()
+		_, _ = w.WriteString(input)
+		_ = w.Close()
+		orig := os.Stdin
+		os.Stdin = r
+		defer func() { os.Stdin = orig }()
+		var code int
+		out := captureStdout(t, func() { code = Dispatch(args) })
+		return code, out
+	}
+
+	if code, out := withStdin("n\n", "setup", "--agent", "cursor"); code != 1 || !strings.Contains(out, "Aborted") {
+		t.Errorf("declined prompt: code %d out %q", code, out)
+	}
+	if code, out := withStdin("y\n", "setup", "--agent", "codex"); code != 0 || !strings.Contains(out, "Configured 1 agent") {
+		t.Errorf("accepted prompt: code %d out %q", code, out)
+	}
+
+	// Cursor's config path is a directory: the write must fail and be
+	// reported, and with nothing configured the exit is non-zero.
+	cursorCfg := filepath.Join(home, ".cursor", "mcp.json")
+	if err := os.MkdirAll(cursorCfg, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if code, out := withStdin("", "setup", "--force", "--agent", "cursor"); code != 1 ||
+		!strings.Contains(out, "Failed: 1 agent") || !strings.Contains(out, "Nothing was configured") {
+		t.Errorf("failed write: code %d out %q", code, out)
+	}
+
+	if code, out := withStdin("", "setup", "--force", "--agent", "no-such-agent"); code != 0 ||
+		!strings.Contains(out, "No agents detected") {
+		t.Errorf("unknown agent: code %d out %q", code, out)
+	}
+}
