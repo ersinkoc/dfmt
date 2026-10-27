@@ -806,7 +806,7 @@ func checkAgentWireUp() bool {
 	fmt.Println()
 	fmt.Println("AI agent wire-up:")
 	for _, a := range agents {
-		files := byAgent[a.ID]
+		files := withoutLegacyDecoy(a.ID, byAgent[a.ID])
 		if len(files) == 0 {
 			fmt.Printf("✗ %s — detected but not configured (run `dfmt setup`)\n", a.Name)
 			allOk = false
@@ -1081,4 +1081,25 @@ func fsCaptureCheck(dir string, supported bool) (bool, string) {
 			"file changes are not captured", runtime.GOOS)
 	}
 	return true, "on"
+}
+
+// withoutLegacyDecoy drops the manifest row for the <dir>/mcp.json that
+// dfmt <= 0.8.0 wrote for an agent that never read it. Setup removes that
+// file (and now its row); counting a manifest that still lists it reported
+// a correctly configured agent as "files missing".
+func withoutLegacyDecoy(agentID string, files []setup.FileEntry) []setup.FileEntry {
+	legacy := setup.LegacyAgentConfigPath(agentID)
+	if legacy == "" {
+		return files
+	}
+	if target, ok := setup.AgentTargetFor(agentID); ok && samePathCLI(target.Path, legacy) {
+		return files
+	}
+	out := files[:0:0]
+	for _, f := range files {
+		if !samePathCLI(f.Path, legacy) {
+			out = append(out, f)
+		}
+	}
+	return out
 }

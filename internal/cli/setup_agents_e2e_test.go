@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/ersinkoc/dfmt/internal/setup"
 )
 
 // fakeAgentHome makes Claude Code, Cursor and Codex look installed in an
@@ -122,5 +124,46 @@ func TestSetupPromptAndFailureBranches(t *testing.T) {
 	if code, out := withStdin("", "setup", "--force", "--agent", "no-such-agent"); code != 0 ||
 		!strings.Contains(out, "No agents detected") {
 		t.Errorf("unknown agent: code %d out %q", code, out)
+	}
+}
+
+// A manifest from dfmt <= 0.8.0 lists the <dir>/mcp.json decoy it wrote for
+// Codex. Setup removes the decoy file; the leftover row made doctor report
+// "1/3 files missing" for a correctly configured agent (seen on a real
+// install) and point at `setup --force`, which could never restore it.
+func TestDoctorIgnoresLegacyDecoyRow(t *testing.T) {
+	home, _ := fakeAgentHome(t)
+	run := func(args ...string) (int, string) {
+		var code int
+		out := captureStdout(t, func() { code = Dispatch(args) })
+		return code, out
+	}
+	if code, _ := run("setup", "--force", "--agent", "codex"); code != 0 {
+		t.Fatal("setup failed")
+	}
+	// Re-add the decoy row the way an old install left it (file absent).
+	m, err := setup.LoadManifest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoy := filepath.Join(home, ".codex", "mcp.json")
+	m.AddFile(setup.FileEntry{Path: decoy, Agent: setup.AgentCodex, Version: "v0.8.0"})
+	if err := setup.SaveManifest(m); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, out := run("doctor"); strings.Contains(out, "missing: "+decoy) {
+		t.Errorf("doctor reports the retired decoy as missing:\n%s", out)
+	}
+
+	// Re-running setup drops the row for good.
+	if code, _ := run("setup", "--force", "--agent", "codex"); code != 0 {
+		t.Fatal("second setup failed")
+	}
+	m, _ = setup.LoadManifest()
+	for _, f := range m.Files {
+		if f.Path == decoy {
+			t.Errorf("setup kept the legacy decoy row: %+v", f)
+		}
 	}
 }

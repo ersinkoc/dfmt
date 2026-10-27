@@ -304,6 +304,18 @@ func dedupFiles(files []FileEntry) []FileEntry {
 	return out
 }
 
+// RemoveFile drops the entry for path, if any. Reports whether one was
+// removed.
+func (m *Manifest) RemoveFile(path string) bool {
+	for i, f := range m.Files {
+		if samePath(f.Path, path) {
+			m.Files = append(m.Files[:i], m.Files[i+1:]...)
+			return true
+		}
+	}
+	return false
+}
+
 // RecordAgent bumps the manifest timestamp and upserts an AgentEntry
 // marking the given agent as configured.
 func (m *Manifest) RecordAgent(agentID, configDir string) {

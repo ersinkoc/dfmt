@@ -980,9 +980,18 @@ func configureAgentTarget(agentID string) error {
 	if err := target.Install(); err != nil {
 		return fmt.Errorf("configure %s: %w", target.Path, err)
 	}
-	if legacy := setup.LegacyAgentConfigPath(agentID); legacy != "" {
+	if legacy := setup.LegacyAgentConfigPath(agentID); legacy != "" && !samePathCLI(legacy, target.Path) {
 		if err := setup.UnmergeMCPServerEntry(legacy); err != nil {
 			logging.Warnf("clean legacy %s: %v", legacy, err)
+		}
+		// Drop its manifest row too. It stayed behind after the decoy was
+		// cleaned, so `dfmt doctor` reported the agent as "1/3 files
+		// missing" and told the user to run `dfmt setup --force`, which
+		// could never bring back a file dfmt no longer writes.
+		if m, err := setup.LoadManifest(); err == nil && m.RemoveFile(legacy) {
+			if err := setup.SaveManifest(m); err != nil {
+				logging.Warnf("save manifest: %v", err)
+			}
 		}
 	}
 	return nil
