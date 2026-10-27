@@ -122,6 +122,29 @@ Most of it was found by driving the built binary end to end.
   NAT64 (`64:ff9b::/96`, which reaches IPv4 loopback through a NAT64
   gateway), 6to4, Teredo, `192.0.0.0/24`, `198.18.0.0/15` and
   `240.0.0.0/4`.
+- **Ctrl-C and MCP cancellation could not stop a running tool call.**
+  Every client RPC accepted a context and dropped it, so the only
+  deadline was the HTTP timeout — up to fifteen minutes for an exec.
+  Requests now carry the caller's context.
+- **A rejected token read as a JSON error.** A 401 from a daemon that had
+  restarted surfaced as `invalid character 'u' looking for beginning of
+  value`. HTTP failures now name their cause (stale token, older daemon,
+  or the status and the start of the body).
+- **`dfmt mcp` could corrupt a response.** A malformed input line wrote
+  its parse error to stdout without the lock that guards every other
+  response, so it could interleave with a tool result written at the
+  same moment.
+- **`dfmt stop` did nothing on a socket-only daemon.** With
+  `transport.http.enabled: false` there is no port file, so `stop` (and
+  `setup --uninstall`) skipped the global daemon, signalled nothing and
+  printed "Daemon stopped".
+- **The global-daemon probe looked at the current directory.** It fell
+  back to `.dfmt/daemon.sock` relative to the CWD, so inside a project
+  with a legacy per-project daemon it reported that daemon as the global
+  one, and could delete that project's `daemon.pid`.
+- **The Linux filesystem watcher allocated ~4 MB per directory.** With
+  `capture.fs` enabled, a 500-directory repository took ~2 GB of memory;
+  the read buffer is now 64 KiB.
 
 ### Changed
 

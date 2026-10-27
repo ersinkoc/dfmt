@@ -415,7 +415,7 @@ fix was wired to one of three transports. The socket path is the primary control
 **Fix:** call the validator in `SocketServer.dispatch` and in the HTTP decode path. The socket already maps
 `ParamsError → -32602`, and `missingParam` already returns that type, so the mapping slots straight in.
 
-### TRN-3 · Data race on MCP stdout: `writeParseError` does not take the write mutex
+### TRN-3 · Data race on MCP stdout: `writeParseError` does not take the write mutex ✅ FIXED (writeParseError goes through writeResp; -race test)
 `internal/cli/mcp.go:128-138`, called from the read loop at `:242`/`:258` while workers write through
 `writeResp:194-209` (which does lock). **P0 · S**
 
@@ -496,7 +496,7 @@ without giving the model the message — so the agent loses carefully-written re
 **Fix:** map execution errors to a tool result with `IsError: true`; reserve `-32602` for validation,
 `-32601` for unknown tool, `-32603` for "daemon not connected".
 
-### TRN-8 · `Response.ID` is `omitempty` — id `0` vanishes and parse errors omit `"id":null`
+### TRN-8 · `Response.ID` is `omitempty` — id `0` vanishes and parse errors omit `"id":null` ✅ FIXED (Response.ID has no omitempty)
 `internal/transport/jsonrpc.go:27`, used at `http.go:554-559`, `socket.go:232-237`. **P1 · S**
 
 JSON-RPC 2.0 §5 requires `id` in every response and §5.1 requires `id: null` on parse errors. The comment at
@@ -1076,7 +1076,7 @@ ships `darwin/amd64` and `darwin/arm64` binaries.
 **Fix now:** warn at construction when `initWatcher == nil` and surface it in `dfmt doctor`.
 **Fix properly:** kqueue (`EVFILT_VNODE`), or reuse the polling path behind `//go:build darwin || freebsd`.
 
-### CAP-2 · The inotify buffer is ~4.2 MB **per watched directory** **[verified]**
+### CAP-2 · The inotify buffer is ~4.2 MB **per watched directory** **[verified]** ✅ FIXED (inotifyBufSize = 64 KiB)
 `internal/capture/fswatch_linux.go:50-51`. **P0 · S**
 
 ```go
@@ -1519,7 +1519,7 @@ instructions half-way — a hung daemon classifies as `Dead` rather than `Stuck`
 
 ## V.2 — Other P0/P1 lifecycle findings
 
-### LIF-5 · Every `Client` RPC accepts a context and drops it
+### LIF-5 · Every `Client` RPC accepts a context and drops it ✅ FIXED (NewRequestWithContext through doHTTP/doHTTPTimeout)
 `internal/client/client.go:861-911` — `http.NewRequest`, not `NewRequestWithContext`. **P0 · S**
 
 Every `Client.Exec/Read/…/Stats` takes a `ctx` and silently ignores it. The consequences are all user-visible:
@@ -1545,7 +1545,7 @@ and its entire tree**.
 **Fix:** verify liveness first; prefer `ReadIdentity().PID`, written by the live process, and check that `Exe`
 looks like dfmt before signalling.
 
-### LIF-7 · On a socket-only Unix daemon, `dfmt stop` reports success without stopping anything
+### LIF-7 · On a socket-only Unix daemon, `dfmt stop` reports success without stopping anything ✅ FIXED (stop/uninstall gate on globalDaemonPresent; dashboard and doctor port-file rows are about the port file and stay)
 `internal/cli/daemon.go:1017`. **P1 (Unix, non-default config) · S**
 
 `runStop` gates on `globalDashboardURL() != ""`, which reads `~/.dfmt/port` — a file a socket-only global
@@ -1576,7 +1576,7 @@ upgrade" understates it: it is **every stop, including every idle-driven restart
 platform, with signals as the fallback. Alternatively `GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, pid)`, which
 works precisely because of `CREATE_NEW_PROCESS_GROUP`.
 
-### LIF-9 · The HTTP status code is never checked
+### LIF-9 · The HTTP status code is never checked ✅ FIXED (checkRPCStatus, ErrUnauthorized)
 `internal/client/client.go:896-910`. **P1 · S**
 
 A 401 from the token guard — reachable whenever the daemon restarted and the caller holds an old token — a
@@ -1587,7 +1587,7 @@ token is stale".
 **Fix:** branch on the status: 401/403 → a typed `ErrUnauthorized` naming the remedy, 404 → old daemon, 5xx →
 include the first 200 bytes of the body.
 
-### LIF-10 · `DaemonRunning("")` builds *relative* legacy paths
+### LIF-10 · `DaemonRunning("")` builds *relative* legacy paths ✅ FIXED (empty path returns before the legacy leg)
 `internal/client/client.go:437-488`, `:173-186`. **P1 · S**
 
 With an empty project path the legacy fallback uses `.dfmt/port` and `.dfmt/daemon.sock` — **relative to the
