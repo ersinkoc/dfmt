@@ -105,6 +105,7 @@ type HTTPServer struct {
 
 	projectPath string // Used to filter /api/daemons to only this daemon
 	authToken   string // Bearer token for HTTP endpoint authentication
+	boundPort   int    // TCP port actually bound (0 for a Unix socket)
 }
 
 // PortFile is the JSON format written to the port file. Older daemons wrote a
@@ -305,6 +306,7 @@ func (s *HTTPServer) Start(ctx context.Context) error {
 
 	s.listener = ln
 	s.ownListener = ownListener
+	s.boundPort = actualPort
 	s.running = true
 	s.doneCh = make(chan struct{})
 
@@ -766,6 +768,53 @@ func (s *HTTPServer) handleDropProject(ctx context.Context, req Request) Respons
 // writePortFile writes {"port":...,"token":...} to path with mode 0600 so other local
 // users cannot read the daemon's port (and the same-origin gate plus the
 // non-loopback bind refusal keep cross-origin browser pages out).
+// RepairRendezvous restores what clients use to find this server, if an
+// outside actor removed or replaced it while the server kept running: the
+// port file (rewritten with this server's port and token) and the Unix
+// socket path (a fresh listener bound there, served alongside the old
+// one). An older dfmt's `stop` deleted these files after its target
+// exited even when a successor had already written them, leaving that
+// successor running and unreachable. Reports whether anything was repaired.
+// The caller must already hold the singleton lock.
+func (s *HTTPServer) RepairRendezvous() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.running || s.server == nil {
+		return false
+	}
+	repaired := false
+	if s.portFile != "" && s.boundPort > 0 && !s.portFileCurrent() {
+		if err := s.writePortFile(s.portFile, s.boundPort, s.authToken); err == nil {
+			repaired = true
+		}
+	}
+	if s.socketPath != "" {
+		if _, err := os.Stat(s.socketPath); os.IsNotExist(err) {
+			if l, lerr := ListenUnixSocket(s.socketPath); lerr == nil {
+				server := s.server
+				ln := newLimitListener(l, MaxConcurrentConnections)
+				go func() { _ = server.Serve(ln) }()
+				repaired = true
+			}
+		}
+	}
+	return repaired
+}
+
+// portFileCurrent reports whether the port file exists and names this
+// server's port and token.
+func (s *HTTPServer) portFileCurrent() bool {
+	data, err := os.ReadFile(s.portFile)
+	if err != nil {
+		return false
+	}
+	var pf PortFile
+	if json.Unmarshal(data, &pf) != nil {
+		return false
+	}
+	return pf.Port == s.boundPort && pf.Token == s.authToken
+}
+
 // portFileIsOurs reports whether the port file still carries this server's
 // token. An unreadable or unparsable file is treated as ours (nothing
 // else could have produced it during our lifetime), so cleanup still runs.

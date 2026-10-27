@@ -27,6 +27,18 @@ Internal package shapes (`internal/...`) are NOT covered by SemVer.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A daemon whose rendezvous files were deleted stayed lost.** An older
+  dfmt (any `dfmt mcp` proxy left open across an upgrade) could delete the
+  running daemon's `daemon.pid`, `daemon.json`, port file or socket, and
+  even its lock file — the daemon kept serving old connections, `dfmt
+  stop`/`status` could not see it, and a second daemon could start beside
+  it. Happened twice on one host in a day. The global daemon now checks
+  every 5 s and restores them; if its lock file was replaced and another
+  daemon holds the new one, it shuts itself down (Unix; on Windows open
+  files cannot be removed this way).
+
 ## [0.9.3] — 2026-10-27
 
 ### Added

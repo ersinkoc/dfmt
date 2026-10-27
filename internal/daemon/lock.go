@@ -56,6 +56,25 @@ func acquireLockAt(lockPath, ownerLabel string) (*LockFile, error) {
 	}, nil
 }
 
+// Intact reports whether lockPath still names the file this lock holds.
+// When another process unlinks it, the flock lives on an orphaned inode and
+// a new daemon can create and lock a fresh file at the same path — two
+// "singletons" at once.
+func (l *LockFile) Intact() bool {
+	if l == nil || l.file == nil {
+		return false
+	}
+	held, err := l.file.Stat()
+	if err != nil {
+		return false
+	}
+	onDisk, err := os.Stat(l.path)
+	if err != nil {
+		return false
+	}
+	return os.SameFile(held, onDisk)
+}
+
 // Release releases the lock.
 func (l *LockFile) Release() error {
 	if l.file == nil {

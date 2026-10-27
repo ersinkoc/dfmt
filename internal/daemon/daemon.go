@@ -54,7 +54,8 @@ type Daemon struct {
 	handlers    *transport.Handlers
 	redactor    *redact.Redactor
 	fswatcher   *capture.FSWatcher
-	lock        *LockFile // exclusive singleton lock; nil only between New and Start
+	lock        *LockFile  // exclusive singleton lock; nil only between New and Start
+	lockMu      sync.Mutex // guards lock against the state-heal goroutine
 
 	indexPath       string             // .dfmt/index.gob — needed for async persist after rebuild
 	needsRebuild    bool               // set in New(); Start() spawns rebuild goroutine if true
@@ -521,7 +522,9 @@ func (d *Daemon) Start(ctx context.Context) error {
 		d.running.Store(false)
 		return fmt.Errorf("acquire singleton lock: %w", lerr)
 	}
+	d.lockMu.Lock()
 	d.lock = lock
+	d.lockMu.Unlock()
 
 	serverStarted := false
 	fswatcherStarted := false
@@ -596,6 +599,7 @@ func (d *Daemon) Start(ctx context.Context) error {
 
 		// Start idle monitor
 		d.startIdleMonitor(ctx)
+		d.startStateHeal()
 
 		// Register in global registry
 		d.register()
@@ -619,10 +623,12 @@ func (d *Daemon) Start(ctx context.Context) error {
 		if serverStarted {
 			_ = d.server.Stop(ctx)
 		}
+		d.lockMu.Lock()
 		if d.lock != nil {
 			_ = d.lock.Release()
 			d.lock = nil
 		}
+		d.lockMu.Unlock()
 		d.running.Store(false)
 		return startErr
 	}
@@ -783,10 +789,12 @@ func (d *Daemon) Stop(ctx context.Context) error {
 		// instant Stop returns can bind cleanly. Releasing too early would
 		// let a racing daemon acquire the lock before the listener is fully
 		// torn down → port-already-in-use on the new daemon's bind.
+		d.lockMu.Lock()
 		if d.lock != nil {
 			_ = d.lock.Release()
 			d.lock = nil
 		}
+		d.lockMu.Unlock()
 		fmt.Println("DFMT daemon stopped")
 		if d.stoppedCh != nil {
 			close(d.stoppedCh)
@@ -1125,4 +1133,93 @@ func pidFileNamesUs(path string) bool {
 		return true
 	}
 	return pid == os.Getpid()
+}
+
+// stateHealInterval is how often a global daemon checks its rendezvous
+// files. var so tests can shorten it.
+var stateHealInterval = 5 * time.Second
+
+// rendezvousRepairer is implemented by servers that can restore their own
+// port file / socket path (transport.HTTPServer).
+type rendezvousRepairer interface {
+	RepairRendezvous() bool
+}
+
+// healStateFiles makes the global daemon's discoverability self-correcting.
+//
+// Clients find the daemon through ~/.dfmt/{lock,daemon.pid,daemon.json,port
+// or daemon.sock}. Older dfmt binaries — any `dfmt mcp` proxy left running
+// across an upgrade — deleted those files after stopping a daemon even when
+// a successor had already written its own, so the successor kept running,
+// reachable only over connections opened before, invisible to `dfmt stop`,
+// and with its lock file unlinked, so a third daemon could start beside it.
+// Observed twice on one host in a day. The fix in `stop` only helps once
+// every old binary is gone; this repairs the damage from the daemon's side.
+//
+// Order matters: first prove we are still the singleton. If the lock file
+// was replaced, take the lock on the new file; if another daemon holds it,
+// we are the duplicate and shut down. Only then rewrite the other files.
+func (d *Daemon) healStateFiles() {
+	if !d.globalMode || !d.running.Load() {
+		return
+	}
+	d.lockMu.Lock()
+	defer d.lockMu.Unlock()
+	if d.lock == nil {
+		return // Stop has released it
+	}
+	// Unix only: there a removed lock file leaves our flock on an orphaned
+	// inode while a new daemon can lock a fresh file at the path. On
+	// Windows a removed open file is "delete pending" — re-acquiring would
+	// fail and wrongly read as another daemon holding the lock.
+	if !osutil.IsWindows() && !d.lock.Intact() {
+		fresh, err := AcquireGlobalLock()
+		if err != nil {
+			logging.Warnf("global daemon lock file was replaced and another daemon holds it; this daemon (PID %d) is shutting down", os.Getpid())
+			go func() {
+				ctx, cancel := context.WithTimeout(context.Background(), d.ShutdownGrace())
+				defer cancel()
+				_ = d.Stop(ctx)
+			}()
+			return
+		}
+		old := d.lock
+		d.lock = fresh
+		_ = old.Release()
+		logging.Warnf("global daemon lock file was removed by another process; re-acquired")
+	}
+	pidPath := project.GlobalPIDPath()
+	if data, err := os.ReadFile(pidPath); err != nil || strings.TrimSpace(string(data)) != strconv.Itoa(os.Getpid()) {
+		if err := safefs.WriteFile(project.GlobalDir(), pidPath, []byte(fmt.Sprintf("%d\n", os.Getpid())), 0o600); err == nil {
+			logging.Warnf("restored %s (removed or overwritten by another process)", pidPath)
+		}
+	}
+	if id, ok := ReadIdentity(); !ok || id.PID != os.Getpid() {
+		if err := writeIdentityFile(); err == nil {
+			logging.Warnf("restored daemon identity file")
+		}
+	}
+	if r, ok := d.server.(rendezvousRepairer); ok && r.RepairRendezvous() {
+		logging.Warnf("restored the daemon's port file / socket")
+	}
+}
+
+// startStateHeal runs healStateFiles on stateHealInterval until shutdown.
+func (d *Daemon) startStateHeal() {
+	if !d.globalMode {
+		return
+	}
+	interval := stateHealInterval
+	go func() {
+		t := time.NewTicker(interval)
+		defer t.Stop()
+		for {
+			select {
+			case <-d.shutdownCh:
+				return
+			case <-t.C:
+				d.healStateFiles()
+			}
+		}
+	}()
 }
