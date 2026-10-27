@@ -29,6 +29,80 @@ Internal package shapes (`internal/...`) are NOT covered by SemVer.
 
 Nothing yet.
 
+## [0.8.0] — 2026-10-27
+
+An end-to-end pass: build the binary, run it against an isolated home, and
+use every surface the way an operator and an agent do — CLI, daemon
+restart, MCP over stdio, the browser dashboard. Each defect below was found
+that way, not by reading code, and none of them showed up as an error.
+
+### Security
+
+- **The dashboard handed out the exec token.** `/dashboard.js` opened
+  with the daemon's bearer token as a `const` and was served with no
+  check: `curl http://127.0.0.1:<port>/dashboard.js` returned it to any
+  local process, and a cross-site `<script src>` (which sends no
+  `Origin`) could read it from a web page. That token is what guards
+  `exec`/`write`/`edit` on `/`. The token is no longer in the script.
+  `dfmt dashboard` now prints a login link; the daemon trades the token
+  for an `HttpOnly; SameSite=Strict` session cookie (an HMAC derived from
+  the token, not the token) and redirects the token out of the URL. The
+  cookie opens the dashboard and `/api/*`, never `/`. **Behavior change:**
+  the bare `/dashboard` URL now answers 401 with instructions — open the
+  dashboard with `dfmt dashboard --open`.
+
+### Fixed
+
+- **The dashboard's live event log never worked.** `EventSource` cannot
+  send an `Authorization` header, so `/api/stream` answered 401 since
+  `/api/*` started requiring the token, and the log sat at "Waiting for
+  events…". It authenticates with the session cookie now. Stats cards
+  also refresh as events arrive instead of freezing at page load, the log
+  is cleared when switching projects, notes show their message, and an
+  expired session (daemon restarted) says to re-run `dfmt dashboard`
+  instead of failing to parse a 401 body.
+
+- **Search returned nothing after a daemon restart.** On a cold load the
+  project index started empty and the journal replay was left to the
+  tail's first 3-second tick, so every `dfmt_search` in that window found
+  nothing — indistinguishable from "never recorded". Worse, the bundle
+  stayed marked `NeedsRebuild`, so the rebuilt index was never persisted
+  and every restart was cold again (`index.gob` was never written). The
+  replay now runs before the first call is served, and the index is
+  persisted on shutdown.
+
+- **`dfmt note "<body>"` stored the body as a tag.** The positional words
+  went into `tags`, so the event had no message: recall printed it as
+  `Tags: …`, and the note could not carry the retention tags that keep a
+  decision through a recall budget. The body is the message now, and
+  `--tags decision,finding` sets tags.
+
+- **`dfmt list` showed `<global>` instead of the served projects.** Its
+  `/api/all-daemons` call sent no bearer token, got a 401, and fell back
+  to a placeholder row. It also printed "socket" for a TCP daemon and an
+  uptime of `0s` regardless of how long the daemon had been up.
+
+- **`dfmt search` printed bare IDs.** It now shows each hit's type and
+  excerpt, accepts a multi-word query, and takes `--type` (e.g.
+  `--type note`) like `dfmt_search` does.
+
+- **`dfmt dashboard` reported "no daemon" after an idle-exit**, where
+  every other command would have started one. It brings the daemon up.
+
+- **`dfmt_glob` reported its walk exclusions as a match.** The
+  "(skipped N ignored dirs)" and truncation notes were appended to
+  `matches` as entries with no file. They are in a new `summary` field.
+
+### Tests
+
+- `go test ./...` no longer writes into the source tree. Several
+  `internal/cli` tests dispatched `init`/`quickstart`/`setup --refresh`
+  with no project, which resolved to the package directory and left
+  `AGENTS.md`, `CLAUDE.md`, `.github/` and `.dfmt/` in `internal/cli`.
+  `TestMain` now isolates the working directory as it already did HOME.
+- The Claude Code detection tests no longer fail on machines with
+  Claude Code installed (they found the real binary on `PATH`).
+
 ## [0.7.4] — 2026-07-31
 
 A full read-through of the code base, in two passes.
@@ -1871,7 +1945,8 @@ for v0.3.x:
   `privacy.allow_nonlocal_http` not wired — DFMT never
   phones home regardless.
 
-[Unreleased]: https://github.com/ersinkoc/dfmt/compare/v0.7.4...HEAD
+[Unreleased]: https://github.com/ersinkoc/dfmt/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/ersinkoc/dfmt/releases/tag/v0.8.0
 [0.7.4]: https://github.com/ersinkoc/dfmt/releases/tag/v0.7.4
 [0.7.3]: https://github.com/ersinkoc/dfmt/releases/tag/v0.7.3
 [0.7.2]: https://github.com/ersinkoc/dfmt/releases/tag/v0.7.2
