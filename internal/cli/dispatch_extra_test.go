@@ -520,7 +520,7 @@ func TestDispatchHookUnknown(t *testing.T) {
 	flagProject = tmp
 	defer func() { flagProject = prev }()
 
-	// runHook returns 0 for all unknown hooks (it just prints {"block":false})
+	// runHook returns 0 for every hook name (it just prints {})
 	code := Dispatch([]string{"hook", "unknown-hook"})
 	if code != 0 {
 		t.Errorf("hook unknown-hook returned %d, want 0", code)

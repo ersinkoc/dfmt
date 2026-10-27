@@ -179,10 +179,10 @@ func TestRunSetupUninstall_StripsClaudeSettingsHooks(t *testing.T) {
 		t.Fatal(err)
 	}
 	globalSettings := filepath.Join(globalClaude, "settings.json")
-	if err := os.WriteFile(globalSettings, []byte(`{"model":"opus"}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := setup.WriteClaudeCodeSettingsHook(globalClaude); err != nil {
+	// As dfmt <= 0.9.0 left it: the user's key plus the routing hook.
+	legacy := `{"model":"opus","hooks":{"PreToolUse":[{"matcher":"Bash",` +
+		`"hooks":[{"type":"command","command":"dfmt hook claude-code pretooluse"}]}]}}`
+	if err := os.WriteFile(globalSettings, []byte(legacy), 0o600); err != nil {
 		t.Fatal(err)
 	}
 

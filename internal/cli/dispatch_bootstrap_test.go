@@ -124,33 +124,10 @@ func TestRunSetupRefreshPurgesLegacyHook(t *testing.T) {
 		}
 	}
 
-	// PreToolUse matcher must have been expanded to the current set.
-	hooks, _ := projAfter["hooks"].(map[string]any)
-	pre, _ := hooks["PreToolUse"].([]any)
-	if len(pre) == 0 {
-		t.Fatalf("project PreToolUse missing after refresh; got %#v", projAfter)
-	}
-	matcherFound := false
-	for _, g := range pre {
-		gm, _ := g.(map[string]any)
-		matcher, _ := gm["matcher"].(string)
-		// Current matcher set: Bash|Read|WebFetch|Grep|Task|Edit|Write|Glob.
-		// We don't pin the exact ordering — checking superset coverage.
-		want := []string{"Bash", "Read", "WebFetch", "Grep", "Task", "Edit", "Write", "Glob"}
-		ok := true
-		for _, m := range want {
-			if !strings.Contains(matcher, m) {
-				ok = false
-				break
-			}
-		}
-		if ok {
-			matcherFound = true
-			break
-		}
-	}
-	if !matcherFound {
-		t.Errorf("project PreToolUse matcher not expanded to current set; got %#v", pre)
+	// The legacy PreToolUse routing hook is removed, not rewritten: it never
+	// had an effect (setup.PurgeClaudeCodePreToolUseHook).
+	if raw, _ := json.Marshal(projAfter); strings.Contains(string(raw), "pretooluse") {
+		t.Errorf("project PreToolUse routing hook survived refresh: %s", raw)
 	}
 
 	// Backup written.
@@ -173,12 +150,9 @@ func TestRunSetupRefreshPurgesLegacyHook(t *testing.T) {
 		}
 	}
 
-	// Global must now have a PreToolUse hook (WriteClaudeCodeSettingsHook
-	// runs after purge).
-	gHooks, _ := globalAfter["hooks"].(map[string]any)
-	gPre, _ := gHooks["PreToolUse"].([]any)
-	if len(gPre) == 0 {
-		t.Errorf("global PreToolUse missing after refresh; got %#v", globalAfter)
+	// Global: the routing hook is gone after refresh.
+	if raw, _ := json.Marshal(globalAfter); strings.Contains(string(raw), "pretooluse") {
+		t.Errorf("global PreToolUse routing hook survived refresh: %s", raw)
 	}
 
 	// Global backup written.

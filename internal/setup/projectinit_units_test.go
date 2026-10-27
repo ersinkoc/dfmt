@@ -45,72 +45,91 @@ func TestRemoveProjectIsIdempotent(t *testing.T) {
 	}
 }
 
-// The hook writer must merge into an existing settings.json rather than
-// replacing it. Clobbering a user's Claude Code settings would destroy
-// configuration DFMT has no business touching.
-func TestWriteClaudeCodeSettingsHookPreservesExistingKeys(t *testing.T) {
+// legacyPreToolUseSettings is a ~/.claude/settings.json as dfmt <= 0.9.0
+// left it: the user's own keys and hook, plus dfmt's routing hook.
+const legacyPreToolUseSettings = `{
+  "theme": "dark",
+  "hooks": {
+    "PreToolUse": [
+      {"matcher": "Bash", "hooks": [{"type": "command", "command": "./lint.sh"}]},
+      {"matcher": "Bash|Read|WebFetch|Grep|Task|Edit|Write|Glob",
+       "hooks": [{"type": "command", "command": "dfmt hook claude-code pretooluse", "timeout": 5}]}
+    ]
+  }
+}`
+
+// The routing hook printed fields Claude Code's hook protocol does not
+// have, so it never redirected anything — while spawning dfmt before every
+// native tool call. Setup now removes it, and only it.
+func TestPurgeClaudeCodePreToolUseHookRemovesOnlyDFMT(t *testing.T) {
 	claudeDir := t.TempDir()
 	settings := filepath.Join(claudeDir, "settings.json")
-
-	existing := map[string]any{
-		"theme":       "dark",
-		"customThing": map[string]any{"a": float64(1)},
+	if err := os.WriteFile(settings, []byte(legacyPreToolUseSettings), 0o600); err != nil {
+		t.Fatal(err)
 	}
-	data, _ := json.Marshal(existing)
-	if err := os.WriteFile(settings, data, 0o600); err != nil {
-		t.Fatalf("seed settings: %v", err)
+	if err := PurgeClaudeCodePreToolUseHook(claudeDir); err != nil {
+		t.Fatalf("Purge: %v", err)
 	}
-
-	if err := WriteClaudeCodeSettingsHook(claudeDir); err != nil {
-		t.Fatalf("WriteClaudeCodeSettingsHook: %v", err)
+	out, _ := os.ReadFile(settings)
+	if strings.Contains(string(out), "pretooluse") {
+		t.Errorf("dfmt hook survived:\n%s", out)
 	}
-
 	got := map[string]any{}
-	out, err := os.ReadFile(settings)
-	if err != nil {
-		t.Fatalf("read back: %v", err)
-	}
 	if err := json.Unmarshal(out, &got); err != nil {
-		t.Fatalf("settings.json is no longer valid JSON: %v", err)
+		t.Fatalf("settings.json no longer valid JSON: %v", err)
 	}
-	if got["theme"] != "dark" {
-		t.Errorf("theme = %v, want dark — pre-existing keys must survive", got["theme"])
-	}
-	if _, ok := got["customThing"]; !ok {
-		t.Error("customThing was dropped; the writer replaced instead of merging")
+	if got["theme"] != "dark" || !strings.Contains(string(out), "./lint.sh") {
+		t.Errorf("user's keys or hook lost:\n%s", out)
 	}
 }
 
-func TestWriteClaudeCodeSettingsHookCreatesFileWhenAbsent(t *testing.T) {
+func TestPurgeClaudeCodePreToolUseHookNeverCreatesFile(t *testing.T) {
 	claudeDir := t.TempDir()
-	if err := WriteClaudeCodeSettingsHook(claudeDir); err != nil {
-		t.Fatalf("WriteClaudeCodeSettingsHook: %v", err)
+	if err := PurgeClaudeCodePreToolUseHook(claudeDir); err != nil {
+		t.Fatalf("Purge: %v", err)
 	}
-	out, err := os.ReadFile(filepath.Join(claudeDir, "settings.json"))
-	if err != nil {
-		t.Fatalf("settings.json not created: %v", err)
-	}
-	got := map[string]any{}
-	if err := json.Unmarshal(out, &got); err != nil {
-		t.Errorf("created settings.json is not valid JSON: %v", err)
+	if _, err := os.Stat(filepath.Join(claudeDir, "settings.json")); !os.IsNotExist(err) {
+		t.Errorf("settings.json created by a purge (stat err = %v)", err)
 	}
 }
 
 // A settings.json that is not parseable must produce an error rather than
 // being silently overwritten — the user's file may just be mid-edit.
-func TestWriteClaudeCodeSettingsHookRefusesMalformedJSON(t *testing.T) {
+func TestPurgeClaudeCodePreToolUseHookRefusesMalformedJSON(t *testing.T) {
 	claudeDir := t.TempDir()
 	settings := filepath.Join(claudeDir, "settings.json")
 	if err := os.WriteFile(settings, []byte("{ this is not json"), 0o600); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-
-	if err := WriteClaudeCodeSettingsHook(claudeDir); err == nil {
-		t.Fatal("nil error for a malformed settings.json; the user's file would be replaced")
+	if err := PurgeClaudeCodePreToolUseHook(claudeDir); err == nil {
+		t.Fatal("nil error for a malformed settings.json")
 	}
 	out, _ := os.ReadFile(settings)
 	if string(out) != "{ this is not json" {
 		t.Error("malformed settings.json was modified despite the error")
+	}
+}
+
+// Project settings: the writer must not install the hook, and must strip
+// one a previous version wrote.
+func TestWriteProjectClaudeSettingsDropsPreToolUseHook(t *testing.T) {
+	dir := t.TempDir()
+	claudeDir := filepath.Join(dir, ".claude")
+	if err := os.MkdirAll(claudeDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(claudeDir, "settings.json"), []byte(legacyPreToolUseSettings), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeProjectClaudeSettings(dir); err != nil {
+		t.Fatalf("writeProjectClaudeSettings: %v", err)
+	}
+	out, _ := os.ReadFile(filepath.Join(claudeDir, "settings.json"))
+	if strings.Contains(string(out), "pretooluse") {
+		t.Errorf("project settings still carry the routing hook:\n%s", out)
+	}
+	if !strings.Contains(string(out), "./lint.sh") || !strings.Contains(string(out), "PreCompact") {
+		t.Errorf("user hook or dfmt's working hooks lost:\n%s", out)
 	}
 }
 

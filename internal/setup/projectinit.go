@@ -170,7 +170,9 @@ func writeProjectClaudeSettings(dir string) error {
 	purgePowerShellHooks(cfg)
 	mergeClaudeHook(cfg, "PreCompact", preCompact, 30, "Saving session snapshot for next session...")
 	mergeClaudeHook(cfg, "SessionStart", sessionStart, 10, "Loading previous session summary...")
-	mergeClaudeHookWithMatcher(cfg, "PreToolUse", `dfmt hook claude-code pretooluse`, "Bash|Read|WebFetch|Grep|Task|Edit|Write|Glob", 5, "Routing through dfmt for token savings...")
+	// No PreToolUse hook: see PurgeClaudeCodePreToolUseHook. Strip the one
+	// earlier versions wrote.
+	stripClaudeHookCommands(cfg, isDFMTPreToolUseHook)
 
 	// MCP tool names changed from dotted (dfmt.exec) to underscored
 	// (dfmt_exec) so Claude Code's MCP client (regex
@@ -286,67 +288,38 @@ func mergeClaudeHook(cfg map[string]any, eventName, command string, timeoutSecs 
 	cfg["hooks"] = hooks
 }
 
-// mergeClaudeHookWithMatcher is like mergeClaudeHook but allows a custom matcher
-// regex to be specified. Used for PreToolUse where we want to match only
-// specific tool names rather than all tools.
-func mergeClaudeHookWithMatcher(cfg map[string]any, eventName, command, matcher string, timeoutSecs int, statusMsg string) {
-	hooks, _ := cfg["hooks"].(map[string]any)
-	if hooks == nil {
-		hooks = map[string]any{}
-	}
-	groups, _ := hooks[eventName].([]any)
-	// Idempotent: skip if this exact command is already registered.
-	for _, g := range groups {
-		grp, _ := g.(map[string]any)
-		if grp == nil {
-			continue
-		}
-		inner, _ := grp["hooks"].([]any)
-		for _, h := range inner {
-			hc, _ := h.(map[string]any)
-			if hc == nil {
-				continue
-			}
-			if cmd, _ := hc["command"].(string); cmd == command {
-				return
-			}
-		}
-	}
-	newGroup := map[string]any{
-		"matcher": matcher,
-		"hooks": []any{
-			map[string]any{
-				"type":          "command",
-				"command":       command,
-				"timeout":       timeoutSecs,
-				"statusMessage": statusMsg,
-			},
-		},
-	}
-	hooks[eventName] = append(groups, newGroup)
-	cfg["hooks"] = hooks
-}
-
-// WriteClaudeCodeSettingsHook adds the PreToolUse hook to
-// ~/.claude/settings.json so Claude Code intercepts native tool calls
-// and redirects them through dfmt. Idempotent: skips if already present.
-func WriteClaudeCodeSettingsHook(claudeDir string) error {
+// PurgeClaudeCodePreToolUseHook removes the PreToolUse hook earlier dfmt
+// versions wrote to <claudeDir>/settings.json, leaving every other key and
+// hook alone. It never creates the file.
+//
+// The hook (`dfmt hook claude-code pretooluse`, matcher Bash|Read|…) was
+// meant to redirect native tool calls to dfmt, but it printed
+// {"block":false} / {"redirect":…} — fields Claude Code's hook protocol does
+// not have — so it never changed anything. It did spawn a dfmt process and
+// dial the daemon before every native call, and showed "Routing through dfmt
+// for token savings..." while doing nothing. A working version would have
+// to deny native tools, which breaks the documented fallback (on a dfmt
+// failure the agent switches to the native tool), so it is gone instead.
+func PurgeClaudeCodePreToolUseHook(claudeDir string) error {
 	settingsPath := filepath.Join(claudeDir, "settings.json")
 
-	cfg := map[string]any{}
-	if data, err := os.ReadFile(settingsPath); err == nil && strings.TrimSpace(string(data)) != "" {
-		if uerr := json.Unmarshal(data, &cfg); uerr != nil {
-			return fmt.Errorf("parse %s: %w", settingsPath, uerr)
-		}
-	} else if !os.IsNotExist(err) {
+	data, err := os.ReadFile(settingsPath)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
 		return fmt.Errorf("read %s: %w", settingsPath, err)
 	}
-
-	// Add PreToolUse hook with matcher for tools we handle
-	mergeClaudeHookWithMatcher(cfg, "PreToolUse",
-		`dfmt hook claude-code pretooluse`,
-		"Bash|Read|WebFetch|Grep|Task|Edit|Write|Glob",
-		5, "Routing through dfmt for token savings...")
+	if strings.TrimSpace(string(data)) == "" {
+		return nil
+	}
+	cfg := map[string]any{}
+	if uerr := json.Unmarshal(data, &cfg); uerr != nil {
+		return fmt.Errorf("parse %s: %w", settingsPath, uerr)
+	}
+	if !stripClaudeHookCommands(cfg, isDFMTPreToolUseHook) {
+		return nil
+	}
 
 	out, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {

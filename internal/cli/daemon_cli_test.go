@@ -72,8 +72,8 @@ func TestRunHook_NoSubcommand(t *testing.T) {
 			t.Errorf("code: want 0, got %d", code)
 		}
 	})
-	if !strings.Contains(out, `"block":false`) {
-		t.Errorf("output: want block:false, got %q", out)
+	if strings.TrimSpace(out) != "{}" {
+		t.Errorf("output: want {} (the no-opinion PreToolUse reply), got %q", out)
 	}
 }
 
@@ -86,8 +86,8 @@ func TestRunHook_NonPretooluseSubcommand(t *testing.T) {
 			t.Errorf("code: want 0, got %d", code)
 		}
 	})
-	if !strings.Contains(out, `"block":false`) {
-		t.Errorf("output: want block:false, got %q", out)
+	if strings.TrimSpace(out) != "{}" {
+		t.Errorf("output: want {} (the no-opinion PreToolUse reply), got %q", out)
 	}
 }
 
@@ -101,14 +101,13 @@ func TestRunHook_BadStdinJSON(t *testing.T) {
 			t.Errorf("code: want 0, got %d", code)
 		}
 	})
-	if !strings.Contains(out, `"block":false`) {
-		t.Errorf("output: want block:false, got %q", out)
+	if strings.TrimSpace(out) != "{}" {
+		t.Errorf("output: want {} (the no-opinion PreToolUse reply), got %q", out)
 	}
 }
 
 // TestRunHook_EmptyToolName: a parseable payload with an empty tool
-// name also takes the no-block path — shouldRedirect's switch never
-// matches "".
+// name gets the same no-opinion reply.
 func TestRunHook_EmptyToolName(t *testing.T) {
 	stuffStdin(t, `{"tool_name":"","tool_input":{}}`)
 	out := captureStdout(t, func() {
@@ -116,8 +115,8 @@ func TestRunHook_EmptyToolName(t *testing.T) {
 			t.Errorf("code: want 0, got %d", code)
 		}
 	})
-	if !strings.Contains(out, `"block":false`) {
-		t.Errorf("output: want block:false, got %q", out)
+	if strings.TrimSpace(out) != "{}" {
+		t.Errorf("output: want {} (the no-opinion PreToolUse reply), got %q", out)
 	}
 }
 
@@ -131,14 +130,14 @@ func TestRunHook_UnknownToolName(t *testing.T) {
 			t.Errorf("code: want 0, got %d", code)
 		}
 	})
-	if !strings.Contains(out, `"block":false`) {
-		t.Errorf("output: want block:false, got %q", out)
+	if strings.TrimSpace(out) != "{}" {
+		t.Errorf("output: want {} (the no-opinion PreToolUse reply), got %q", out)
 	}
 }
 
 // TestRunHook_KnownToolNoDfmtProject: a redirectable tool (Bash) with
-// stdin but in a cwd that has no .dfmt/ — shouldRedirect's
-// DaemonRunning probe returns false, so the no-block path is taken.
+// stdin but in a cwd that has no .dfmt/ gets the same reply; the hook no
+// longer probes the daemon at all.
 // This is the most common runtime state for projects that haven't yet
 // run `dfmt init`.
 func TestRunHook_KnownToolNoDfmtProject(t *testing.T) {
@@ -149,8 +148,8 @@ func TestRunHook_KnownToolNoDfmtProject(t *testing.T) {
 			t.Errorf("code: want 0, got %d", code)
 		}
 	})
-	if !strings.Contains(out, `"block":false`) {
-		t.Errorf("output: want block:false, got %q", out)
+	if strings.TrimSpace(out) != "{}" {
+		t.Errorf("output: want {} (the no-opinion PreToolUse reply), got %q", out)
 	}
 }
 

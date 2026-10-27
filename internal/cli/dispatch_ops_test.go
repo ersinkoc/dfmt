@@ -719,53 +719,6 @@ func TestRunTailWithNFlag(t *testing.T) {
 }
 
 // =============================================================================
-// toolSubcommand — full branch coverage (100%)
-// =============================================================================
-
-func TestToolSubcommandAllCases(t *testing.T) {
-	cases := []struct {
-		tool   string
-		expect string
-	}{
-		{"Bash", "exec"},
-		{"Read", "read"},
-		{"WebFetch", "fetch"},
-		{"Glob", "glob"},
-		{"Grep", "grep"},
-		{"Edit", "edit"},
-		{"Write", "write"},
-		{"Unknown", "Unknown"},
-	}
-	for _, tc := range cases {
-		got := toolSubcommand(tc.tool)
-		if got != tc.expect {
-			t.Errorf("toolSubcommand(%q) = %q, want %q", tc.tool, got, tc.expect)
-		}
-	}
-}
-
-// =============================================================================
-// logHookEventToDaemon — no-project and NewClient-error branches
-// =============================================================================
-
-func TestLogHookEventToDaemonNoProject(t *testing.T) {
-	prevProject := flagProject
-	flagProject = ""
-	defer func() { flagProject = prevProject }()
-
-	logHookEventToDaemon(HookStdinInput{})
-}
-
-func TestLogHookEventToDaemonEmptyProject(t *testing.T) {
-	tmpDir := t.TempDir()
-	prevProject := flagProject
-	flagProject = tmpDir
-	defer func() { flagProject = prevProject }()
-
-	logHookEventToDaemon(HookStdinInput{ToolName: "Edit", ToolInput: map[string]any{"path": "/f"}})
-}
-
-// =============================================================================
 // openInBrowser — URL formation + platform branching
 // =============================================================================
 

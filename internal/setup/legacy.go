@@ -98,14 +98,10 @@ type PurgeReport struct {
 // constant keeps lint quiet (goconst) and centralizes the spelling.
 const hookEventPreToolUse = "PreToolUse"
 
-// CurrentPreToolUseMatchers is the canonical list of native tool names
-// dfmt's PreToolUse hook handles in the current release. Hooks whose
-// matcher regex is a strict subset get expanded by the purger.
-//
-// Keep this in sync with mergeClaudeHookWithMatcher's matcher arg in
-// projectinit.go::writeProjectClaudeSettings and
-// claude.go::WriteClaudeCodeSettingsHook -- those are the writers; this
-// list is the spec the purger compares against.
+// CurrentPreToolUseMatchers is the matcher the last versions of dfmt's
+// PreToolUse routing hook used. dfmt no longer installs that hook (see
+// PurgeClaudeCodePreToolUseHook, which removes it); the list remains the
+// spec the legacy detector uses to recognise older variants of it.
 var CurrentPreToolUseMatchers = []string{
 	"Bash", "Read", "WebFetch", "Grep", "Task", "Edit", "Write", "Glob",
 }

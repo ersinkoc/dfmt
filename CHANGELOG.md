@@ -119,6 +119,15 @@ Internal package shapes (`internal/...`) are NOT covered by SemVer.
 - **An async job that hit its own deadline could be reported `canceled`**,
   as if the caller had stopped it, depending on whether the command
   returned an error. It is `failed` with `timed out after Ns` now.
+- **The Claude Code PreToolUse hook did nothing, at a cost.** It replied
+  `{"block":false}` / `{"redirect":…}` — fields Claude Code's hook protocol
+  does not have — so no native call was ever redirected, while every
+  Bash/Read/Edit/Grep/Task call spawned `dfmt`, dialed the daemon, and
+  showed "Routing through dfmt for token savings...". dfmt no longer
+  installs it, and `dfmt setup` / each MCP start removes the copy earlier
+  versions wrote (only that entry). `dfmt hook claude-code pretooluse`
+  answers `{}` until then. Denying native tools instead would break the
+  documented fallback to native tools when dfmt fails.
 
 ## [0.9.0] — 2026-10-27
 

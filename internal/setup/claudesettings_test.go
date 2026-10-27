@@ -27,9 +27,6 @@ func TestStripClaudeSettingsKeepsUserEntries(t *testing.T) {
 	if err := writeProjectClaudeSettings(dir); err != nil {
 		t.Fatalf("writeProjectClaudeSettings: %v", err)
 	}
-	if err := WriteClaudeCodeSettingsHook(filepath.Dir(path)); err != nil {
-		t.Fatalf("WriteClaudeCodeSettingsHook: %v", err)
-	}
 
 	changed, err := StripClaudeSettings(path)
 	if err != nil || !changed {

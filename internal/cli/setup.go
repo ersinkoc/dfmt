@@ -361,139 +361,17 @@ func readHookStdin() (HookStdinInput, error) {
 	return input, nil
 }
 
-// runHook handles PreToolUse hooks from Claude Code.
-// Usage: dfmt hook claude-code pretooluse
-// Reads JSON from stdin: {"tool_name": "...", "tool_input": {...}}
-// Writes JSON to stdout for Claude Code to consume.
-func runHook(args []string) int {
-	if len(args) < 2 || args[1] != "pretooluse" {
-		fmt.Fprintln(os.Stdout, `{"block":false}`)
-		return 0
-	}
-
-	input, err := readHookStdin()
-	if err != nil || input.ToolName == "" {
-		fmt.Fprintln(os.Stdout, `{"block":false}`)
-		return 0
-	}
-
-	if shouldRedirect(input.ToolName) {
-		redirect := buildRedirectResponse(input.ToolName, input.ToolInput)
-		enc := json.NewEncoder(os.Stdout)
-		enc.SetEscapeHTML(false)
-		_ = enc.Encode(redirect)
-	} else {
-		fmt.Fprintln(os.Stdout, `{"block":false}`)
-	}
-
-	go logHookEventToDaemon(input)
+// runHook answers `dfmt hook claude-code pretooluse`, which installs from
+// before v0.9.1 still invoke until the next `dfmt setup` / MCP start strips
+// the hook (setup.PurgeClaudeCodePreToolUseHook). It prints `{}` — the empty,
+// valid PreToolUse reply, i.e. "no opinion" — and exits without touching the
+// daemon. The old body emitted fields Claude Code does not read, dialed the
+// daemon on every native tool call, and fired a journal write from a
+// goroutine that main's exit usually killed.
+func runHook(_ []string) int {
+	_, _ = io.Copy(io.Discard, io.LimitReader(os.Stdin, 1<<20))
+	fmt.Fprintln(os.Stdout, `{}`)
 	return 0
-}
-
-// Native tool names that the hook redirects to dfmt tools.
-const (
-	toolBash     = "Bash"
-	toolRead     = "Read"
-	toolWebFetch = "WebFetch"
-	toolGlob     = "Glob"
-	toolGrep     = "Grep"
-	toolEdit     = "Edit"
-	toolWrite    = "Write"
-)
-
-// shouldRedirect returns true for mapped tools when the daemon is running.
-func shouldRedirect(toolName string) bool {
-	switch toolName {
-	case toolBash, toolRead, toolWebFetch, toolGlob, toolGrep, toolEdit, toolWrite:
-		if proj, err := getProject(); err == nil && client.DaemonRunning(proj) {
-			return true
-		}
-	}
-	return false
-}
-
-// buildRedirectResponse creates a redirect spec for the given tool call.
-func buildRedirectResponse(toolName string, toolInput map[string]any) map[string]any {
-	sub := toolSubcommand(toolName)
-	mcpTool := "mcp__dfmt__dfmt_" + sub
-
-	var dfmtParams map[string]any
-	switch toolName {
-	case toolBash:
-		dfmtParams = map[string]any{"code": toolInput["command"], "lang": "bash"}
-	case toolRead:
-		dfmtParams = map[string]any{"path": toolInput["path"]}
-	case toolWebFetch:
-		dfmtParams = map[string]any{"url": toolInput["url"]}
-	case toolGlob:
-		dfmtParams = map[string]any{"pattern": toolInput["pattern"]}
-	case toolGrep:
-		dfmtParams = map[string]any{"pattern": toolInput["pattern"], "files": toolInput["files"]}
-	case toolEdit:
-		dfmtParams = map[string]any{
-			"path":       toolInput["path"],
-			"old_string": toolInput["old_string"],
-			"new_string": toolInput["new_string"],
-		}
-	case toolWrite:
-		dfmtParams = map[string]any{"path": toolInput["path"], "content": toolInput["content"]}
-	default:
-		dfmtParams = toolInput
-	}
-
-	return map[string]any{
-		"redirect": map[string]any{
-			"tool":       mcpTool,
-			"tool_input": dfmtParams,
-		},
-	}
-}
-
-// toolSubcommand maps native tool name to dfmt subcommand.
-func toolSubcommand(toolName string) string {
-	switch toolName {
-	case toolBash:
-		return "exec"
-	case toolRead:
-		return "read"
-	case toolWebFetch:
-		return "fetch"
-	case toolGlob:
-		return "glob"
-	case toolGrep:
-		return "grep"
-	case toolEdit:
-		return "edit"
-	case toolWrite:
-		return "write"
-	default:
-		return toolName
-	}
-}
-
-// logHookEventToDaemon sends a note event for stats tracking (non-blocking).
-func logHookEventToDaemon(input HookStdinInput) {
-	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
-	defer cancel()
-
-	proj, err := getProject()
-	if err != nil {
-		return
-	}
-	cl, err := client.NewClient(proj)
-	if err != nil {
-		return
-	}
-
-	toolJSON, _ := json.Marshal(input.ToolInput)
-	params := transport.RememberParams{
-		Type:     string(core.EvtNote),
-		Priority: string(core.PriP3),
-		Source:   string(core.SrcMCP),
-		Data:     map[string]any{"tool": input.ToolName, "input": string(toolJSON)},
-		Tags:     []string{input.ToolName},
-	}
-	_, _ = cl.Remember(ctx, params)
 }
 
 func runSetup(args []string) int {
@@ -797,7 +675,7 @@ func runSetupVerify() int {
 //
 // Each file is purged via PurgeLegacyClaudeSettings (which writes a
 // one-shot .dfmt.bak) and then re-written with the current template:
-// WriteClaudeCodeSettingsHook for the global file, EnsureProjectInitialized
+// PurgeClaudeCodePreToolUseHook for the global file, EnsureProjectInitialized
 // for each project (which calls writeProjectClaudeSettings under the hood).
 func runSetupRefresh() int {
 	resolved := setup.ResolveDFMTCommand()
@@ -883,11 +761,12 @@ func runSetupRefresh() int {
 	// Re-write current templates so anything missing is restored.
 	fmt.Println("\nWriting fresh templates...")
 
-	// Global: PreToolUse hook only — writeProjectClaudeSettings refuses
-	// to touch ~/.claude/settings.json on purpose.
+	// Global: dfmt writes nothing to ~/.claude/settings.json any more
+	// (writeProjectClaudeSettings refuses it on purpose); only the retired
+	// PreToolUse hook is removed.
 	globalDir := filepath.Join(home, ".claude")
 	if _, err := os.Stat(globalDir); err == nil {
-		if werr := setup.WriteClaudeCodeSettingsHook(globalDir); werr != nil {
+		if werr := setup.PurgeClaudeCodePreToolUseHook(globalDir); werr != nil {
 			fmt.Fprintf(os.Stderr, "  warn: write %s: %v\n", globalPath, werr)
 		} else {
 			fmt.Printf("  ✓ %s\n", globalPath)
@@ -1059,11 +938,11 @@ func configureClaudeCode(_ setup.Agent) error {
 	if err := setup.PatchClaudeCodeUserJSON("", true); err != nil {
 		logging.Warnf("patch ~/.claude.json: %v", err)
 	}
-	// Also write the PreToolUse hook to ~/.claude/settings.json so Claude Code
-	// intercepts native tool calls and redirects them through dfmt. The hook
-	// uses a matcher regex so it only fires for the tools we handle.
-	if err := setup.WriteClaudeCodeSettingsHook(claudeDir); err != nil {
-		logging.Warnf("write PreToolUse hook to %s: %v", claudeDir, err)
+	// Remove the PreToolUse hook earlier versions wrote to
+	// ~/.claude/settings.json; it never had an effect (see
+	// setup.PurgeClaudeCodePreToolUseHook).
+	if err := setup.PurgeClaudeCodePreToolUseHook(claudeDir); err != nil {
+		logging.Warnf("remove legacy PreToolUse hook from %s: %v", claudeDir, err)
 	}
 	m.RecordAgent("claude-code", claudeDir)
 	if err := setup.SaveManifest(m); err != nil {

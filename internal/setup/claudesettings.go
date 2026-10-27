@@ -10,8 +10,8 @@ import (
 )
 
 // StripClaudeSettings removes what dfmt merged into a Claude Code
-// settings.json — its hooks (PreToolUse routing, PreCompact snapshot,
-// SessionStart summary) and its `mcp__dfmt__*` allow entries — and leaves
+// settings.json — its hooks (PreCompact snapshot, SessionStart summary,
+// and the retired PreToolUse routing hook) and its `mcp__dfmt__*` allow entries — and leaves
 // everything else. It reports whether the file changed. A file left
 // empty (`{}`) is removed; a file that does not parse is refused rather
 // than rewritten.
@@ -119,9 +119,20 @@ func isDFMTClaudeHookCommand(cmd string) bool {
 	return strings.HasPrefix(rest, "hook ") || strings.HasPrefix(rest, "recall --save")
 }
 
+// isDFMTPreToolUseHook matches the retired PreToolUse routing hook.
+func isDFMTPreToolUseHook(cmd string) bool {
+	return isDFMTClaudeHookCommand(cmd) && strings.Contains(cmd, "hook claude-code pretooluse")
+}
+
 // stripDFMTClaudeHooks drops dfmt's hook commands, then any group and
 // event left empty by that, then an empty "hooks" object.
 func stripDFMTClaudeHooks(cfg map[string]any) bool {
+	return stripClaudeHookCommands(cfg, isDFMTClaudeHookCommand)
+}
+
+// stripClaudeHookCommands drops every hook whose command matches, then any
+// group and event left empty by that, then an empty "hooks" object.
+func stripClaudeHookCommands(cfg map[string]any, match func(string) bool) bool {
 	hooks, _ := cfg["hooks"].(map[string]any)
 	if hooks == nil {
 		return false
@@ -143,7 +154,7 @@ func stripDFMTClaudeHooks(cfg map[string]any) bool {
 			var kept []any
 			for _, h := range inner {
 				hc, _ := h.(map[string]any)
-				if cmd, _ := hc["command"].(string); hc != nil && isDFMTClaudeHookCommand(cmd) {
+				if cmd, _ := hc["command"].(string); hc != nil && match(cmd) {
 					changed = true
 					continue
 				}
