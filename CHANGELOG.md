@@ -27,7 +27,60 @@ Internal package shapes (`internal/...`) are NOT covered by SemVer.
 
 ## [Unreleased]
 
-Nothing yet.
+### Fixed
+
+- **`dfmt setup` configured seven of nine agents in files they never
+  read.** Every agent except Claude Code got `<dir>/mcp.json` with an
+  `mcpServers` key; only Cursor reads that. Codex reads `config.toml`,
+  VS Code a profile-scoped `mcp.json` under `servers`, Zed
+  `context_servers` in its settings, OpenCode `mcp` in `opencode.json` —
+  so setup printed "Configured N agent(s)" and `setup --verify` printed a
+  check mark (it only statted the file it had just written) for agents
+  that never launched dfmt. Each agent is now configured in its real file
+  under its real key, and a re-run removes the 0.8.0 decoy files.
+  - Uninstall removes only the `dfmt` entry from these files, which the
+    user owns. It no longer restores the setup-time backup, which
+    discarded every change made to the file since setup.
+  - `setup --verify` and `doctor` read the entry back (TOML and JSON
+    alike) instead of checking that the file exists.
+  - A config with comments (JSONC) is left untouched with a message,
+    rather than rewritten without its comments.
+- **Git hooks stopped recording after the daemon idle-exited.**
+  `dfmt capture` (what the hooks run) used a client that never starts a
+  daemon, so with none running every commit, checkout and push failed to
+  dial — silently, because the hooks discard stderr. It now starts the
+  daemon like every other command.
+- **Search hits lost their excerpts after a restart.** Excerpts are not
+  persisted and are meant to be rebuilt as the journal is re-streamed,
+  but `Index.Add` skipped every document a loaded index already held.
+  With 0.8.0 persisting the index on shutdown, every search after a
+  restart returned hits with no excerpt.
+- **`dfmt doctor` showed agents as wired up when only their instruction
+  file existed.** An agent with `.cursorrules` or `GEMINI.md` from
+  `dfmt init` but no MCP server read "✓ 1 file(s) in place".
+
+### Changed
+
+- **Agent roster updated to what is maintained today.**
+  - Added: GitHub Copilot CLI, Google Antigravity (IDE and `agy` CLI),
+    Kiro, Cline.
+  - Windsurf is now **Devin Desktop** (renamed 2026-06-02), configured in
+    `~/.config/devin/mcp_config.json`.
+  - Removed: Gemini CLI (no longer served for individual accounts since
+    2026-06-18; Antigravity is its successor) and Continue.dev (frozen
+    in 2026-06). Both can still use DFMT through a manual MCP entry.
+  - `dfmt init` no longer writes `GEMINI.md` or `.windsurfrules`; the new
+    agents read `AGENTS.md`, and Copilot CLI shares
+    `.github/copilot-instructions.md` with VS Code. Existing blocks in
+    those files are still removed by uninstall.
+
+### Tests
+
+- `cmd/dfmt` gains end-to-end tests that build the binary and drive it
+  against an isolated home, covering what unit tests cannot reach because
+  a test binary never spawns a daemon: hook capture with no daemon
+  running, and search right after a restart (which found the excerpt
+  regression above).
 
 ## [0.8.0] — 2026-10-27
 
