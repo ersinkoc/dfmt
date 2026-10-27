@@ -155,6 +155,9 @@ Most of it was found by driving the built binary end to end.
   else's process. A dead PID is now treated as stale state, and a live
   one is signalled only when the daemon's endpoint answers or its
   identity file names the same PID.
+- **`capture.fs` silently did nothing on macOS**, which has no watcher
+  yet. The daemon now logs a warning and `dfmt doctor` shows a failing
+  "Filesystem capture" row.
 - **The Linux filesystem watcher allocated ~4 MB per directory.** With
   `capture.fs` enabled, a 500-directory repository took ~2 GB of memory;
   the read buffer is now 64 KiB.
@@ -181,6 +184,14 @@ Most of it was found by driving the built binary end to end.
   a test binary never spawns a daemon: hook capture with no daemon
   running, and search right after a restart (which found the excerpt
   regression above).
+- 34 client tests never ran on Linux: their mock socket's `.dfmt`
+  directory did not exist, the bind failed, and the test skipped itself.
+  They run now. Two of them were broken (a stream mock with no HTTP
+  status line, a cancel test that closed its connection at once), which
+  is why they failed on macOS, the one platform where the bind happened
+  to succeed. macOS CI also failed on socket paths: tests expected the
+  socket inside a long `$TMPDIR`, which `GlobalSocketPath` deliberately
+  moves.
 
 ## [0.8.0] — 2026-10-27
 

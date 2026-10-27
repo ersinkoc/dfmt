@@ -1066,7 +1066,7 @@ opt-in. Same for `CompactMarkdownFrontmatter`, which strips frontmatter from arb
 
 ## IV.1 — Capture: the filesystem watcher is the weakest subsystem in the repo
 
-### CAP-1 · No macOS watcher exists, and enabling capture there is a silent no-op **[verified]**
+### CAP-1 · No macOS watcher exists, and enabling capture there is a silent no-op **[verified]** ✅ FIXED (warning + doctor row; a macOS watcher itself is still open)
 `internal/capture/` has `fswatch_linux.go` and `fswatch_windows.go`; there is no `fswatch_darwin.go`. **P0 · S**
 
 `initWatcher` stays nil, so `Start()` walks the whole tree doing nothing and returns nil. `capture.fs.enabled:
