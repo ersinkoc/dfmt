@@ -105,9 +105,8 @@ measure with the CI toolchain.)
 
 ### Config-schema hygiene (carry-over from v0.3)
 
-- [ ] **`storage.compress_rotated`**: accepted in schema;
-  `journal.Rotate()` renames files but never invokes gzip.
-  Either wire it or drop with an ADR.
+- [x] **`storage.compress_rotated`**: wired — rotated segments
+  are gzipped and read back transparently.
 - [ ] **`index.heading_boost`**: stored on the `Index`
   struct; no scoring path reads it. ADR-or-remove.
 - [ ] **`privacy.telemetry` / `privacy.remote_sync` /

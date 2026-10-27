@@ -3,6 +3,7 @@ package core
 import (
 	"bufio"
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"errors"
@@ -377,6 +378,7 @@ func segmentsAfter(segments []string, from string) []string {
 // the name has another shape (kept, never skipped).
 func rotatedSegmentID(path string) string {
 	name := filepath.Base(path)
+	name = strings.TrimSuffix(name, ".gz")
 	name = strings.TrimSuffix(name, ".jsonl")
 	if i := strings.LastIndexByte(name, '.'); i >= 0 {
 		return name[i+1:]
@@ -390,17 +392,78 @@ func rotatedSegmentID(path string) string {
 func journalSegments(activePath string) ([]string, error) {
 	dir := filepath.Dir(activePath)
 	base := filepath.Base(activePath)
-	pattern := filepath.Join(dir, base+".*.jsonl")
-	matches, err := filepath.Glob(pattern)
+	plain, err := filepath.Glob(filepath.Join(dir, base+".*.jsonl"))
 	if err != nil {
 		return nil, err
 	}
-	// Glob returns lexicographic order, which is the same as chronological
-	// for ULIDs, but Go's docs don't guarantee that ordering for all
-	// platforms — sort explicitly to be safe.
-	sort.Strings(matches)
+	gzipped, err := filepath.Glob(filepath.Join(dir, base+".*.jsonl.gz"))
+	if err != nil {
+		return nil, err
+	}
+	// One entry per segment. Both forms exist only if compression was
+	// interrupted after the .gz rename but before the original's removal;
+	// both are complete then, and the uncompressed one is read.
+	have := make(map[string]bool, len(plain))
+	for _, p := range plain {
+		have[p] = true
+	}
+	matches := plain
+	for _, g := range gzipped {
+		if !have[strings.TrimSuffix(g, ".gz")] {
+			matches = append(matches, g)
+		}
+	}
+	// Chronological = lexicographic on the segment id (fixed-width,
+	// time-prefixed); compare without the .gz suffix so both forms sort
+	// together.
+	sort.Slice(matches, func(a, b int) bool {
+		return strings.TrimSuffix(matches[a], ".gz") < strings.TrimSuffix(matches[b], ".gz")
+	})
 	matches = append(matches, activePath)
 	return matches, nil
+}
+
+// compressSegment gzips a rotated segment in place: <path>.gz is written
+// through a temp file, fsynced and renamed, and only then is <path>
+// removed, so a crash at any point leaves at least one complete copy
+// (journalSegments prefers the original if both survive).
+func compressSegment(path string) error {
+	src, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer src.Close()
+	tmp := path + ".gz.tmp"
+	dst, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		return err
+	}
+	zw := gzip.NewWriter(dst)
+	if _, err := io.Copy(zw, src); err != nil {
+		_ = dst.Close()
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := zw.Close(); err != nil {
+		_ = dst.Close()
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := dst.Sync(); err != nil {
+		_ = dst.Close()
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := dst.Close(); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := os.Rename(tmp, path+".gz"); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	_ = src.Close()
+	return os.Remove(path)
 }
 
 // streamFile scans one journal file and forwards events into ch. Returns
@@ -416,7 +479,18 @@ func streamFile(ctx context.Context, path string, ch chan<- Event, foundFromPtr 
 	}
 	defer f.Close()
 
-	scanner := bufio.NewScanner(f)
+	var r io.Reader = f
+	if strings.HasSuffix(path, ".gz") {
+		zr, zerr := gzip.NewReader(f)
+		if zerr != nil {
+			journalWarnf("warning: journal %s: unreadable compressed segment: %v\n", path, zerr)
+			return false, zerr
+		}
+		defer zr.Close()
+		r = zr
+	}
+
+	scanner := bufio.NewScanner(r)
 	// Buffer upper bound must match maxEventBytes; Scanner silently skips
 	// lines beyond this, so it doubles as a data-integrity guardrail.
 	scanner.Buffer(make([]byte, 64*1024), scannerBufferMax)
@@ -636,6 +710,14 @@ func (j *journalImpl) rotateLocked(ctx context.Context) error {
 	j.file = f
 	j.hiCursor = ""
 
+	// storage.compress_rotated: accepted, defaulted to true and documented
+	// for several releases while Rotate never compressed anything. A
+	// failure leaves the plain segment, which is still read normally.
+	if j.compress {
+		if err := compressSegment(newPath); err != nil {
+			journalWarnf("warning: journal %s: compress rotated segment: %v\n", newPath, err)
+		}
+	}
 	j.pruneRotatedLocked()
 	return nil
 }

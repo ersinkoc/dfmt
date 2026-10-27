@@ -29,6 +29,14 @@ Internal package shapes (`internal/...`) are NOT covered by SemVer.
 
 ### Fixed
 
+- **`storage.compress_rotated` did nothing.** It was accepted, defaulted to
+  `true` and documented, while rotation never compressed a segment. Rotated
+  segments are now gzipped (`journal.jsonl.<id>.jsonl.gz`, written via a
+  temp file and fsync before the original is removed) and read back
+  transparently by recall, search, replay and the index tail. Segments
+  rotated by earlier versions stay plain and are read as before; a dfmt
+  older than this one cannot read the compressed ones.
+
 - **On Windows the index tail could stop picking up appends** (regression
   in 0.9.1's idle fast path). It compared the journal's size and mtime via
   a path stat, which on Windows reads the directory entry — stale while

@@ -426,7 +426,10 @@ func TestAppendWithMaxBatchMS(t *testing.T) {
 	}
 }
 
-func TestRotateWithCompression(t *testing.T) {
+// TestRotateWithoutCompression: with Compress off the rotated segment stays
+// a plain .jsonl. (It was named WithCompression but never enabled it;
+// compression itself is covered in journal_compress_test.go.)
+func TestRotateWithoutCompression(t *testing.T) {
 	tmpDir := t.TempDir()
 	journalPath := filepath.Join(tmpDir, "rotated.journal")
 

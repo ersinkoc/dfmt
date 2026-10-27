@@ -1159,11 +1159,12 @@ flowchart LR
     M --> N[create new journal.jsonl]
 ```
 
-> **Compression flag is dead code.** `storage.compress_rotated` and
-> the journal's internal `compress bool` are wired into the option
-> struct but `Rotate()` never invokes any gzip path. Rotated
-> segments stay as plain `.jsonl` on disk regardless of the
-> setting. Treat the flag as reserved for a future feature.
+> **Compression.** With `storage.compress_rotated` (default `true`),
+> `Rotate()` gzips the renamed segment to `journal.jsonl.<id>.jsonl.gz`
+> (temp file, fsync, rename, then the original is removed; a crash
+> leaves at least one complete copy). `Stream` reads `.gz` segments
+> transparently; if both forms of a segment exist the plain one is
+> read. Until 0.9.3 the flag was accepted but never acted on.
 
 **Rotate() detail.** The actual rotation sequence:
 
@@ -1929,8 +1930,8 @@ Key invariants:
 > being unwired in the journal-rotation path. The chunk-set
 > `<id>.json.gz` files on disk are real gzip envelopes; an
 > operator inspecting `.dfmt/content/` should `gunzip -c` to read
-> them. The dead `storage.compress_rotated` flag from §13 only
-> governs the journal's rotated `.jsonl` segments.
+> them. `storage.compress_rotated` from §13 only governs the
+> journal's rotated segments.
 
 ---
 
@@ -2501,7 +2502,7 @@ of these values in `.dfmt/config.yaml` is silently a no-op.
 | `capture.fs.enabled / watch / ignore / debounce_ms` | wired                                                    |
 | `capture.git.enabled / capture.shell.enabled`    | wired (honored by `install-hooks` / `shell-init`)          |
 | `storage.durability / max_batch_ms / journal_max_bytes` | wired (threaded into `OpenJournal`)                  |
-| `storage.compress_rotated`                       | **unwired** — `Rotate()` never gzips (see §8.3)             |
+| `storage.compress_rotated`                       | `core.Journal::Rotate` → `compressSegment` (see §8.3)       |
 | `lifecycle.idle_timeout`                         | wired                                                       |
 | `lifecycle.shutdown_timeout`                     | wired — `ShutdownGrace()` reads config, falls back to `10*time.Second` on parse error |
 | `transport.mcp.enabled / http.enabled / socket.enabled` | wired                                                |
@@ -2520,7 +2521,7 @@ config fields ahead of the consuming code, with `Validate()`
 already enforcing sensible ranges, and the wiring lands later
 without re-reviewing the schema. The flip side is that several
 fields look configurable but have no downstream consumer yet
-(`heading_boost` in scoring; `compress_rotated` in rotation). Several Reserved
+(`heading_boost` in scoring). Several Reserved
 (v0.4) privacy flags are in the schema but have no consumer — the defaults are safe.
 
 ### 13.1 Schema (Go struct → YAML key)
@@ -2536,7 +2537,7 @@ fields look configurable but have no downstream consumer yet
 | **storage**   | `storage.durability`             | string   | `"batched"`        | `"durable"` or `"batched"`. Validated.             |
 |               | `storage.max_batch_ms`           | int      | `100`              | Max delay between fsyncs in batched mode.          |
 |               | `storage.journal_max_bytes`      | int64    | `10485760` (10 MiB)| Trigger for rotation.                              |
-|               | `storage.compress_rotated`       | bool     | `true`             | **Unwired** — `Rotate()` never invokes gzip.        |
+|               | `storage.compress_rotated`       | bool     | `true`             | Rotated segments are gzipped (`.jsonl.gz`).         |
 | **retrieval** | `retrieval.default_budget`       | int      | `4096`             | Wired — `SetRecallDefaults()` seeds handler; zero = use default.     |
 |               | `retrieval.default_format`       | string   | `"md"`             | Wired — `SetRecallDefaults()` seeds handler; empty = use default.   |
 |               | `retrieval.default_budget`       | int      | `4096`             | Wired — `SetRecallDefaults()` seeds handler; zero = use default.     |
@@ -2702,7 +2703,7 @@ flowchart TB
 |-------------------------|-----------------------------------------------|--------------------------------------------------------|
 | `config.yaml`           | `dfmt init` / user-edited                     | Project config; merged onto global + struct defaults.  |
 | `journal.jsonl`         | `core.Journal`                                | Active append-only log.                                |
-| `journal.jsonl.<ULID>.jsonl` | `core.Journal::Rotate`                  | Older segments. The `storage.compress_rotated` flag is currently a no-op (see §8.3). |
+| `journal.jsonl.<ULID>.jsonl[.gz]` | `core.Journal::Rotate`             | Older segments; gzipped when `storage.compress_rotated` (default). Pruned by `storage.journal_keep_segments` (ADR-0030). |
 | `index.gob`             | `core.Index::Persist`                         | JSON payload — filename kept for backwards compat.     |
 | `index.cursor`          | `core.Index::Persist`                         | Last indexed event ID; enables incremental load.       |
 | `daemon.sock`           | `transport.SocketServer`                      | Unix socket, mode 0600 (umask 0o077 at bind).          |
