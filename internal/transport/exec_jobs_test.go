@@ -262,3 +262,22 @@ func TestHandlersBusyWhileJobRuns(t *testing.T) {
 		t.Error("Busy = true after the job finished")
 	}
 }
+
+// TestAsyncJobOwnDeadlineIsNotCanceled: a job that ran out of its own time
+// was reported "canceled" — as if the caller had stopped it — while the
+// success path maps the same deadline to the job's own outcome.
+func TestAsyncJobOwnDeadlineIsNotCanceled(t *testing.T) {
+	h, sb := asyncFixture(t)
+	defer close(sb.release)
+	submitted, err := h.Exec(context.Background(), ExecParams{Code: "hang", Async: true, Timeout: 1})
+	if err != nil {
+		t.Fatalf("submit: %v", err)
+	}
+	final := waitForJob(t, h, submitted.JobID)
+	if final.Status == jobStatusCanceled {
+		t.Fatalf("own deadline reported as %q", final.Status)
+	}
+	if !strings.Contains(final.Error, "timed out") {
+		t.Errorf("Status=%q Error=%q, want a timeout named", final.Status, final.Error)
+	}
+}

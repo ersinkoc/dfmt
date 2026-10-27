@@ -116,6 +116,9 @@ Internal package shapes (`internal/...`) are NOT covered by SemVer.
   end before the cursor (falling back to a full pass if a segment name
   misleads) and reads pre-cursor lines by id only. 30k events in three
   segments: 152.8 ms → 0.59 ms per tick.
+- **An async job that hit its own deadline could be reported `canceled`**,
+  as if the caller had stopped it, depending on whether the command
+  returned an error. It is `failed` with `timed out after Ns` now.
 
 ## [0.9.0] — 2026-10-27
 

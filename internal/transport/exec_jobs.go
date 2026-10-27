@@ -192,6 +192,12 @@ func (h *Handlers) runJob(ctx context.Context, job *execJob, bundle Bundle, para
 	resp, execErr := h.runExec(ctx, bundle, inner, MaxAsyncExecTimeout)
 
 	switch {
+	case execErr != nil && errors.Is(ctx.Err(), context.DeadlineExceeded):
+		// The job's own deadline, not a cancel: reporting "canceled" told
+		// the caller they stopped it when the command simply ran out of
+		// time — and the success path below already treats a deadline as
+		// the job's own outcome, so the two paths disagreed.
+		job.finish(jobStatusFailed, nil, fmt.Errorf("timed out after %ds", inner.Timeout))
 	case execErr != nil && ctx.Err() != nil:
 		// The command failed because we stopped it. "context canceled" as an
 		// error string tells the caller nothing the status does not already
