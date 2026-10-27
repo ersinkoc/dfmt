@@ -159,6 +159,7 @@ type GlobParams struct {
 type GlobResponse struct {
 	Files   []string               `json:"files,omitempty"`
 	Matches []sandbox.ContentMatch `json:"matches,omitempty"`
+	Summary string                 `json:"summary,omitempty"`
 }
 
 // GrepParams are the parameters for the Grep method.
@@ -318,6 +319,7 @@ func (h *Handlers) Glob(ctx context.Context, params GlobParams) (_ *GlobResponse
 	return &GlobResponse{
 		Files:   resp.Files,
 		Matches: h.redactMatches(ctx, resp.Matches),
+		Summary: resp.Summary,
 	}, nil
 }
 

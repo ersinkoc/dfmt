@@ -151,17 +151,12 @@ func (s *SandboxImpl) Glob(ctx context.Context, req GlobReq) (GlobResp, error) {
 		Matches: contentMatches,
 	}
 	if totalFiles > maxGlobInlineFiles {
-		// Use Matches as a side channel to surface the truncation; consumers
-		// already display Matches in their summary.
-		resp.Matches = append(resp.Matches, ContentMatch{
-			Text: fmt.Sprintf("(truncated: %d more files not shown; refine pattern)", totalFiles-maxGlobInlineFiles),
-		})
+		resp.Summary = fmt.Sprintf("(truncated: %d more files not shown; refine pattern)",
+			totalFiles-maxGlobInlineFiles)
 	}
 	// Same honesty rule as Grep: an unreported exclusion is
 	// indistinguishable from a file that does not exist.
-	if note := skipped.note(); note != "" {
-		resp.Matches = append(resp.Matches, ContentMatch{Text: note})
-	}
+	resp.Summary = strings.TrimSpace(resp.Summary + skipped.note())
 	return resp, nil
 }
 

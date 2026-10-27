@@ -135,6 +135,9 @@ type GlobReq struct {
 type GlobResp struct {
 	Files   []string       `json:"files"`   // Matched file paths
 	Matches []ContentMatch `json:"matches"` // Intent-matched excerpts
+	// Summary reports truncation and walk exclusions. Both used to ride
+	// in Matches as text-only entries, where they read as a match.
+	Summary string `json:"summary,omitempty"`
 }
 
 // GrepReq is a request to grep files.

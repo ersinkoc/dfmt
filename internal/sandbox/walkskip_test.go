@@ -256,6 +256,16 @@ func TestGlobExcludesBuildOutput(t *testing.T) {
 	if !found {
 		t.Errorf("glob lost the real source file; files=%v", resp.Files)
 	}
+	// The exclusion is reported in Summary, not as a text-only entry in
+	// Matches that reads as a search hit.
+	if !strings.Contains(resp.Summary, "ignored dir") {
+		t.Errorf("summary = %q, want the skipped-dirs note", resp.Summary)
+	}
+	for _, m := range resp.Matches {
+		if m.Source == "" {
+			t.Errorf("matches carries a sourceless note entry %q", m.Text)
+		}
+	}
 }
 
 // TestGlobExplicitPatternIntoExcludedDirWins mirrors Grep's escape
