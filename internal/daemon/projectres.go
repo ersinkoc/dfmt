@@ -302,6 +302,18 @@ func (d *Daemon) Resources(projectID string) (*ProjectResources, error) {
 	if d.extraProjects == nil {
 		d.extraProjects = make(map[string]*ProjectResources)
 	}
+	// Catch the index up with the journal before the first call is
+	// served. A cold load (no index.gob, or a tokenizer bump) returns an
+	// empty index, and leaving the replay to the tail's first tick meant
+	// every search in the first indexTailInterval after a restart came
+	// back empty — indistinguishable from "nothing was ever recorded".
+	// And because NeedsRebuild then stayed true for the bundle's whole
+	// life, the shutdown paths below never persisted the rebuilt index,
+	// so the next restart was cold again. Index.Add is idempotent, so a
+	// warm load only pays a stream over events it already holds.
+	if r.catchUpIndex() && r.NeedsRebuild {
+		r.NeedsRebuild = false
+	}
 	r.LastActivityNs.Store(now)
 	d.extraProjects[key] = r
 	// Start the index-tail goroutine immediately so a `dfmt mcp`
@@ -559,11 +571,29 @@ func (r *ProjectResources) startIndexTail(parent context.Context) {
 	}()
 }
 
+// indexCatchUpTimeout bounds the synchronous journal replay a cold load
+// performs before serving its first call. A journal at the default
+// 10 MiB rotation cap replays well inside it; on timeout the bundle is
+// served with what was indexed so far and the tail finishes the job.
+const indexCatchUpTimeout = 30 * time.Second
+
+// catchUpIndex runs one synchronous tail pass and reports whether it
+// read the journal through to the end.
+func (r *ProjectResources) catchUpIndex() bool {
+	if r == nil || r.Journal == nil || r.Index == nil {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), indexCatchUpTimeout)
+	defer cancel()
+	return r.tailOnce(ctx) && ctx.Err() == nil
+}
+
 // tailOnce performs one pass of the journal tail: Stream from
 // lastIndexedID forward, Add each event to the index, advance the
 // cursor. Errors are logged and the next tick retries — tail is
-// best-effort and must never wedge the daemon.
-func (r *ProjectResources) tailOnce(ctx context.Context) {
+// best-effort and must never wedge the daemon. Reports whether the
+// stream could be opened.
+func (r *ProjectResources) tailOnce(ctx context.Context) bool {
 	from := ""
 	if cur := r.lastIndexedID.Load(); cur != nil {
 		from = *cur
@@ -571,7 +601,7 @@ func (r *ProjectResources) tailOnce(ctx context.Context) {
 	stream, err := r.Journal.Stream(ctx, from)
 	if err != nil {
 		logging.Warnf("index tail stream for %s: %v", r.ProjectPath, err)
-		return
+		return false
 	}
 	var newest string
 	for e := range stream {
@@ -586,6 +616,7 @@ func (r *ProjectResources) tailOnce(ctx context.Context) {
 		id := newest
 		r.lastIndexedID.Store(&id)
 	}
+	return true
 }
 
 // stopIndexTail cancels the tail goroutine if running and waits for

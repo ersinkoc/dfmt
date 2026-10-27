@@ -248,6 +248,61 @@ func TestCloseExtraProjectsPersistsIndex(t *testing.T) {
 	}
 }
 
+// TestResourcesColdLoadIndexesJournalSynchronously pins the restart
+// path: a project whose journal exists but whose index.gob does not
+// must be searchable on the very first call, and the rebuilt index
+// must be marked persistable. Before the fix the replay was left to
+// the tail's first tick, so every search in the first 3 s after a
+// daemon restart returned nothing, and NeedsRebuild stayed true so the
+// index was never written and every restart was cold again.
+func TestResourcesColdLoadIndexesJournalSynchronously(t *testing.T) {
+	extraRoot := t.TempDir()
+	dfmtDir := filepath.Join(extraRoot, ".dfmt")
+	if err := os.MkdirAll(dfmtDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	j, err := core.OpenJournal(filepath.Join(dfmtDir, "journal.jsonl"), core.JournalOptions{})
+	if err != nil {
+		t.Fatalf("open journal: %v", err)
+	}
+	e := core.Event{
+		ID:      string(core.NewULID(time.Now())),
+		TS:      time.Now(),
+		Type:    core.EvtNote,
+		Project: extraRoot,
+		Data:    map[string]any{"message": "coldstart sentinel decision"},
+	}
+	e.Sig = e.ComputeSig()
+	if err := j.Append(context.Background(), e); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	if err := j.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	d, err := New(t.TempDir(), newTestConfig())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() {
+		if d.journal != nil {
+			_ = d.journal.Close()
+		}
+		d.closeExtraProjects()
+	}()
+
+	r, err := d.Resources(extraRoot)
+	if err != nil {
+		t.Fatalf("Resources: %v", err)
+	}
+	if hits := r.Index.SearchBM25("coldstart", 5); len(hits) == 0 {
+		t.Fatal("first search after cold load returned nothing; journal was not replayed before serving")
+	}
+	if r.NeedsRebuild {
+		t.Error("NeedsRebuild still true after a complete replay; the index would never be persisted")
+	}
+}
+
 // TestResourcesLoadsProjectOwnConfig proves that an extra project loads
 // its own .dfmt/config.yaml rather than inheriting the daemon's
 // startup cfg. Before this fix a global daemon serving both project A
