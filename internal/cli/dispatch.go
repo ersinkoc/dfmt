@@ -96,8 +96,8 @@ func printUsage() {
 Usage:
   dfmt init                       Initialize a project
   dfmt quickstart                 Init + setup + verify in one shot
-  dfmt remember [flags] <body>    Record an event (use --type for types like llm.response)
-  dfmt note <body>               Record a note
+  dfmt remember [flags] <body>    Record an event (--tags decision,… ; --type llm.response)
+  dfmt note [--tags t,…] <body>  Record a note
   dfmt search <query>            Search events
   dfmt recall                    Build session snapshot
   dfmt status                    Check daemon status

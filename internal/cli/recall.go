@@ -18,6 +18,7 @@ func runRemember(verb string, args []string) int {
 	var typ, source string
 	var actor string
 	var dataJSON string
+	var tagList string
 	var inputTokens, outputTokens, cachedTokens int
 	var model string
 
@@ -31,6 +32,8 @@ func runRemember(verb string, args []string) int {
 	fs.StringVar(&source, "source", "cli", "Event source")
 	fs.StringVar(&actor, "actor", "", "Actor")
 	fs.StringVar(&dataJSON, "data", "", "JSON data")
+	fs.StringVar(&tagList, "tags", "",
+		"Comma-separated tags; decision/summary keep a note longest, finding/followup next")
 	fs.IntVar(&inputTokens, "input-tokens", 0, "LLM input tokens")
 	fs.IntVar(&outputTokens, "output-tokens", 0, "LLM output tokens")
 	fs.IntVar(&cachedTokens, "cached-tokens", 0, "Cached tokens (savings)")
@@ -85,12 +88,24 @@ func runRemember(verb string, args []string) int {
 		}
 	}
 
+	// The positional words are the body, as the usage line says. They
+	// used to be sent as tags, so `dfmt note "chose X because Y"` stored
+	// one tag holding the whole sentence and no message: recall printed it
+	// as "Tags: …", the dashboard log fell back to it, and the event could
+	// not carry the retention tags that keep a decision through a budget.
+	var tags []string
+	for _, t := range strings.Split(tagList, ",") {
+		if t = strings.TrimSpace(t); t != "" {
+			tags = append(tags, t)
+		}
+	}
 	params := transport.RememberParams{
-		Type:   typ,
-		Source: source,
-		Actor:  actor,
-		Data:   data,
-		Tags:   fs.Args(),
+		Type:    typ,
+		Source:  source,
+		Actor:   actor,
+		Data:    data,
+		Tags:    tags,
+		Message: strings.Join(fs.Args(), " "),
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
@@ -116,7 +131,9 @@ func runRemember(verb string, args []string) int {
 func runSearch(args []string) int {
 	var limit int
 	fs := flag.NewFlagSet("search", flag.ContinueOnError)
+	var typ string
 	fs.IntVar(&limit, "limit", 10, "Max results")
+	fs.StringVar(&typ, "type", "", "Only this event type (e.g. note, tool.exec)")
 	if err := fs.Parse(args); err != nil {
 		if err == flag.ErrHelp {
 			return 0
@@ -151,8 +168,9 @@ func runSearch(args []string) int {
 	ctx = transport.WithProjectID(ctx, proj)
 
 	resp, err := backend.Search(ctx, transport.SearchParams{
-		Query:     query,
+		Query:     strings.Join(fs.Args(), " "),
 		Limit:     limit,
+		Type:      typ,
 		ProjectID: proj,
 	})
 	if err != nil {
@@ -163,8 +181,18 @@ func runSearch(args []string) int {
 	if flagJSON {
 		fmt.Println(mustMarshalJSON(resp))
 	} else {
+		if len(resp.Results) == 0 {
+			fmt.Println("No matches.")
+		}
 		for _, hit := range resp.Results {
-			fmt.Printf("[%.2f] %s\n", hit.Score, hit.ID)
+			line := fmt.Sprintf("[%.2f] %s", hit.Score, hit.ID)
+			if hit.Type != "" {
+				line += " " + hit.Type
+			}
+			if hit.Excerpt != "" {
+				line += "  " + hit.Excerpt
+			}
+			fmt.Println(line)
 		}
 	}
 

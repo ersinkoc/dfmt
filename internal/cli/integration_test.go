@@ -2,6 +2,9 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -98,6 +101,34 @@ func TestRunRemember_Integration(t *testing.T) {
 	// are CLI flags. Default type=note is fine for the smoke pass.
 	if code := runRemember("note", []string{"--type", "note"}); code != 0 {
 		t.Errorf("runRemember: want 0, got %d", code)
+	}
+}
+
+// TestRunNote_BodyIsMessageNotTags pins the CLI body contract: the usage
+// line says `dfmt note <body>`, but the positional words were sent as tags,
+// so the journal held one tag containing the sentence and no message.
+func TestRunNote_BodyIsMessageNotTags(t *testing.T) {
+	proj := setupInProcessDaemon(t)
+	if code := runRemember("note", []string{"--tags", "decision, finding", "chose", "X", "over", "Y"}); code != 0 {
+		t.Fatalf("runRemember: want 0, got %d", code)
+	}
+	raw, err := os.ReadFile(filepath.Join(proj, ".dfmt", "journal.jsonl"))
+	if err != nil {
+		t.Fatalf("read journal: %v", err)
+	}
+	var e struct {
+		Data map[string]any `json:"data"`
+		Tags []string       `json:"tags"`
+	}
+	lines := strings.Split(strings.TrimSpace(string(raw)), "\n")
+	if err := json.Unmarshal([]byte(lines[len(lines)-1]), &e); err != nil {
+		t.Fatalf("decode last event: %v", err)
+	}
+	if got := e.Data["message"]; got != "chose X over Y" {
+		t.Errorf("message = %v, want the joined body", got)
+	}
+	if strings.Join(e.Tags, ",") != "decision,finding" {
+		t.Errorf("tags = %v, want [decision finding]", e.Tags)
 	}
 }
 
