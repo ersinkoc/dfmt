@@ -24,7 +24,7 @@ func TestWriteNewFileFollowsUmask(t *testing.T) {
 	if _, err := sb.Write(context.Background(), WriteReq{Path: "sub/dir/new.sh", Content: "echo hi\n"}); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
-	fi, err := os.Stat(filepath.Join(dir, "sub/dir/new.sh"))
+	fi, err := os.Stat(filepath.Join(dir, "sub", "dir", "new.sh"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -48,7 +48,7 @@ func TestWriteNewFileFollowsUmask(t *testing.T) {
 		t.Errorf("existing file widened to %o", fi.Mode().Perm())
 	}
 	// No temp files left behind.
-	if left, _ := filepath.Glob(filepath.Join(dir, "sub/dir/.safefs-*")); len(left) != 0 {
+	if left, _ := filepath.Glob(filepath.Join(dir, "sub", "dir", ".safefs-*")); len(left) != 0 {
 		t.Errorf("temp files left: %v", left)
 	}
 }

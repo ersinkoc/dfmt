@@ -66,7 +66,7 @@ type Client struct {
 // construction time. The ULID is unique across CLI invocations even when
 // two of them race against the same daemon.
 // sessionFor returns the session to stamp on a request: the MCP session
-// carried on ctx when there is one — it is labelled with the agent's
+// carried on ctx when there is one — it is labeled with the agent's
 // clientInfo ("claude-code/2.1:<ulid>"), which is what lets the daemon and
 // dashboard attribute calls per agent — and this client's own ID otherwise.
 // The proxy used to send only its own bare ULID, so the label minted in

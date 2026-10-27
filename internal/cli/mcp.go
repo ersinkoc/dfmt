@@ -195,7 +195,7 @@ func serveMCPStdio(ctx context.Context, in io.Reader, out io.Writer, h mcpHandle
 		slots   = make(chan struct{}, mcpMaxConcurrentCalls)
 	)
 
-	// In-flight requests by id, so `notifications/cancelled` can stop one.
+	// In-flight requests by id, so a cancel notification can stop one.
 	// It used to be dropped like any notification: pressing Esc in the host
 	// left a dfmt_exec running up to its full timeout, holding one of the
 	// daemon's exec slots. Canceling the per-request context propagates
@@ -319,7 +319,7 @@ func serveMCPStdio(ctx context.Context, in io.Reader, out io.Writer, h mcpHandle
 
 		// Cancellation is handled here, inline, so it can never queue
 		// behind the very call it is trying to stop.
-		if req.Method == "notifications/cancelled" {
+		if req.Method == mcpMethodCancelled {
 			if key, ok := mcpCancelTarget(req.Params); ok {
 				inflightMu.Lock()
 				if f := inflight[key]; f != nil {
@@ -387,7 +387,11 @@ func mcpIDKey(id any) (string, bool) {
 	return fmt.Sprintf("%T:%v", id, id), true
 }
 
-// mcpCancelTarget extracts the requestId of a notifications/cancelled.
+// mcpMethodCancelled is the MCP cancel notification's method name. The
+// spelling is the protocol's, not ours.
+const mcpMethodCancelled = "notifications/cancelled" //nolint:misspell // MCP wire name
+
+// mcpCancelTarget extracts the requestId of a cancel notification.
 func mcpCancelTarget(params json.RawMessage) (string, bool) {
 	var p struct {
 		RequestID any `json:"requestId"`

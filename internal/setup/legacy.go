@@ -101,7 +101,7 @@ const hookEventPreToolUse = "PreToolUse"
 // CurrentPreToolUseMatchers is the matcher the last versions of dfmt's
 // PreToolUse routing hook used. dfmt no longer installs that hook (see
 // PurgeClaudeCodePreToolUseHook, which removes it); the list remains the
-// spec the legacy detector uses to recognise older variants of it.
+// spec the legacy detector uses to recognize older variants of it.
 var CurrentPreToolUseMatchers = []string{
 	"Bash", "Read", "WebFetch", "Grep", "Task", "Edit", "Write", "Glob",
 }

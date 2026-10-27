@@ -195,7 +195,7 @@ func TestServeMCPStdioParseErrorDoesNotInterleave(t *testing.T) {
 	}
 }
 
-// TestServeMCPStdioHonorsCancelledNotification: notifications/cancelled was
+// TestServeMCPStdioHonorsCancelledNotification: the cancel notification was
 // dropped like any notification, so Esc in the host left a dfmt_exec running
 // for its whole timeout. The canceled call must stop, and per the spec get
 // no response; its siblings are untouched.
@@ -203,7 +203,7 @@ func TestServeMCPStdioHonorsCancelledNotification(t *testing.T) {
 	h := &stubHandler{release: make(chan struct{})} // never released
 	out := &syncBuffer{}
 	in := mcpLine(1, "slow") +
-		`{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":1,"reason":"user"}}` + "\n" +
+		`{"jsonrpc":"2.0","method":"` + mcpMethodCancelled + `","params":{"requestId":1,"reason":"user"}}` + "\n" +
 		mcpLine(2, "fast")
 
 	done := make(chan struct{})
