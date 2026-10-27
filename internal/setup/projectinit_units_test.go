@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -118,4 +119,20 @@ func TestWriteClaudeCodeSettingsHookRefusesMalformedJSON(t *testing.T) {
 // Claude Code may or may not exist.
 func TestIsClaudeCodeInstalledAnswers(t *testing.T) {
 	_ = IsClaudeCodeInstalled()
+}
+
+// SET-4: `dfmt remove` takes dfmt's hooks out of .claude/settings.json; it
+// used to run the markdown block stripper on it, a no-op.
+func TestRemoveProjectStripsClaudeSettingsHooks(t *testing.T) {
+	dir := t.TempDir()
+	if err := writeProjectClaudeSettings(dir); err != nil {
+		t.Fatal(err)
+	}
+	if err := RemoveProject(dir); err != nil {
+		t.Fatalf("RemoveProject: %v", err)
+	}
+	if data, err := os.ReadFile(filepath.Join(dir, ".claude", "settings.json")); err == nil &&
+		strings.Contains(string(data), "dfmt") {
+		t.Errorf("dfmt hooks left in settings.json:\n%s", data)
+	}
 }

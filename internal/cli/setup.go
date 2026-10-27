@@ -700,12 +700,51 @@ func runSetupUninstall() int {
 		logging.Warnf("clean ~/.claude.json: %v", err)
 	}
 
+	// Same for the hooks and permissions merged into Claude Code's
+	// settings.json files (SET-4): left in place, Claude Code keeps
+	// running `dfmt hook claude-code pretooluse` before every tool call
+	// after dfmt is gone.
+	for _, p := range claudeSettingsToStrip(m) {
+		changed, err := setup.StripClaudeSettings(p)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error removing dfmt hooks from %s: %v\n", p, err)
+			continue
+		}
+		if changed {
+			fmt.Printf("removed dfmt hooks: %s\n", p)
+		}
+	}
+
 	// Clear manifest
 	if err := setup.SaveManifest(&setup.Manifest{Version: 1}); err != nil {
 		logging.Warnf("clear manifest: %v", err)
 	}
 	fmt.Println("Uninstall complete")
 	return 0
+}
+
+// claudeSettingsToStrip lists the Claude Code settings.json files dfmt may
+// have merged hooks into: the user-global one, and the project-level one
+// of every project the manifest knows (by its instruction-file rows, which
+// sit at the project root or in its .github directory).
+func claudeSettingsToStrip(m *setup.Manifest) []string {
+	paths := []string{filepath.Join(setup.HomeDir(), ".claude", "settings.json")}
+	seen := map[string]bool{paths[0]: true}
+	for _, f := range m.Files {
+		if f.Kind != setup.FileKindStrip {
+			continue
+		}
+		root := filepath.Dir(f.Path)
+		if filepath.Base(root) == ".github" {
+			root = filepath.Dir(root)
+		}
+		p := filepath.Join(root, ".claude", "settings.json")
+		if !seen[p] {
+			seen[p] = true
+			paths = append(paths, p)
+		}
+	}
+	return paths
 }
 
 func runSetupVerify() int {

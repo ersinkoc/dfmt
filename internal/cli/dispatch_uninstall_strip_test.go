@@ -162,3 +162,57 @@ func TestRunSetupUninstall_LegacyKindEmptyDeletes(t *testing.T) {
 		t.Errorf("legacy-kind entry should be deleted; stat err = %v", err)
 	}
 }
+
+// SET-4: uninstall takes dfmt's hooks out of the user-global Claude
+// settings and out of each manifest-tracked project's, keeping the user's
+// own entries. Left in place, Claude Code ran `dfmt hook claude-code
+// pretooluse` before every tool call after dfmt was gone.
+func TestRunSetupUninstall_StripsClaudeSettingsHooks(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", tmpDir)
+	home := filepath.Join(tmpDir, "home")
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	globalClaude := filepath.Join(home, ".claude")
+	if err := os.MkdirAll(globalClaude, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	globalSettings := filepath.Join(globalClaude, "settings.json")
+	if err := os.WriteFile(globalSettings, []byte(`{"model":"opus"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := setup.WriteClaudeCodeSettingsHook(globalClaude); err != nil {
+		t.Fatal(err)
+	}
+
+	projectDir := filepath.Join(tmpDir, "proj")
+	if err := setup.EnsureProjectInitialized(projectDir); err != nil {
+		t.Fatal(err)
+	}
+	claudeMd := filepath.Join(projectDir, "CLAUDE.md")
+	if err := setup.UpsertDFMTBlock(claudeMd, "dfmt routing rules\n"); err != nil {
+		t.Fatal(err)
+	}
+	projectSettings := filepath.Join(projectDir, ".claude", "settings.json")
+	if data, _ := os.ReadFile(projectSettings); !strings.Contains(string(data), "dfmt") {
+		t.Fatalf("precondition: project settings carry no dfmt hooks:\n%s", data)
+	}
+	if err := setup.SaveManifest(&setup.Manifest{Version: 1, Files: []setup.FileEntry{
+		{Path: claudeMd, Agent: setup.AgentClaudeCode, Version: "v1", Kind: setup.FileKindStrip},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	if code := Dispatch([]string{"setup", "--uninstall"}); code != 0 {
+		t.Fatalf("setup --uninstall returned %d", code)
+	}
+
+	data, err := os.ReadFile(globalSettings)
+	if err != nil || strings.Contains(string(data), "dfmt") || !strings.Contains(string(data), `"opus"`) {
+		t.Errorf("global settings after uninstall (%v):\n%s", err, data)
+	}
+	if data, err := os.ReadFile(projectSettings); err == nil && strings.Contains(string(data), "dfmt") {
+		t.Errorf("project settings still carry dfmt hooks:\n%s", data)
+	}
+}

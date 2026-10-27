@@ -96,7 +96,7 @@ func EnsureProjectInitialized(dir string) error {
 // RemoveProject undoes EnsureProjectInitialized and the instruction-file
 // injection from `dfmt init`. It is the counterpart to EnsureProjectInitialized:
 // - removes .dfmt/ directory and all contents
-// - strips the DFMT block from .claude/settings.json
+// - strips dfmt's hooks and permissions from .claude/settings.json
 // - strips the DFMT block from CLAUDE.md and AGENTS.md
 // Idempotent: re-running produces no additional changes.
 func RemoveProject(dir string) error {
@@ -106,9 +106,11 @@ func RemoveProject(dir string) error {
 		return fmt.Errorf("remove .dfmt/: %w", err)
 	}
 
-	// Strip DFMT block from .claude/settings.json
+	// Strip dfmt's hooks and permissions from .claude/settings.json. This
+	// used to call StripDFMTBlock, which looks for markdown markers a JSON
+	// file never has — a no-op that left the hooks running (SET-4).
 	settingsPath := filepath.Join(dir, ".claude", "settings.json")
-	if err := StripDFMTBlock(settingsPath); err != nil {
+	if _, err := StripClaudeSettings(settingsPath); err != nil {
 		return fmt.Errorf("strip settings.json: %w", err)
 	}
 
