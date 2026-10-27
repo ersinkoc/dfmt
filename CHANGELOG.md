@@ -34,6 +34,26 @@ Internal package shapes (`internal/...`) are NOT covered by SemVer.
   same NAT, so the limit is routinely exhausted. The update now falls
   back to github.com's release pages, which have no such limit; the
   checksum verification is the same.
+- **Tool results were invisible in MCP clients that ignore
+  `structuredContent`** (#1, Windsurf/Devin Desktop): `content` carried only
+  `dfmt: see structuredContent`. The payload is now serialized into
+  `content` for every client not known to read `structuredContent`; Claude
+  Code, Cursor and Codex keep the token-saving sentinel.
+  `DFMT_MCP_LEGACY_CONTENT=1` / `=0` force either shape. `initialize` now
+  echoes the client's protocol revision instead of always answering
+  `2024-11-05`, a revision that predates `structuredContent`.
+- **A `dfmt mcp` session with no project** returned a bare `-32603 daemon
+  not connected` for every call. It is now a tool error the model sees,
+  naming the directory searched and the `--project` / `DFMT_PROJECT` fix.
+- **`dfmt_read` turned CRLF into LF on the wire** — only the internal
+  stash kept the terminators, so multi-line anchors copied from a read of
+  a Windows file never matched in `dfmt_edit`, and a line with a lone CR
+  arrived truncated. File reads now apply only binary refusal and ANSI
+  stripping.
+- **`dfmt_exec` stdout over 256 KiB lost its end, silently.** The head was
+  kept and the rest discarded with no marker, so a long `go test -v` lost
+  its PASS/FAIL verdict. Stdout now keeps head and tail, with an in-band
+  `(N bytes omitted)` marker and a note on stderr.
 
 ## [0.9.0] — 2026-10-27
 
