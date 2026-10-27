@@ -161,6 +161,13 @@ Internal package shapes (`internal/...`) are NOT covered by SemVer.
   never worked. The labelled session is forwarded now, sanitized to a safe
   header value (a control character in a client name would otherwise make
   every call of the session fail).
+- **`dfmt stop` could orphan the daemon that replaced the one it stopped.**
+  Anything needing a daemon during the shutdown (an MCP proxy's reconnect)
+  spawns a successor as soon as the old lock is released; `stop` then
+  deleted the pid, port and lock files unconditionally — the successor's.
+  It kept running, listening, unreachable and invisible to `dfmt stop`, and
+  with its lock unlinked a third daemon could start beside it. `stop` now
+  leaves the files alone when they name another live daemon.
 
 ## [0.9.0] — 2026-10-27
 

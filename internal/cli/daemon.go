@@ -1195,12 +1195,35 @@ func stopGlobalDaemon() int {
 		}
 	}
 
+	// A successor may already own these files: anything that needs the
+	// daemon while this one was shutting down (an MCP proxy's reconnect,
+	// another command) spawns a new one the moment the old lock is
+	// released. Deleting its pid/port/lock unconditionally left that
+	// daemon running but unreachable and invisible to `dfmt stop` — and,
+	// with its lock file unlinked, let yet another daemon start beside it.
+	if succ := globalSuccessor(pid); succ > 0 {
+		fmt.Printf("Global daemon stopped (was PID %d); PID %d has already taken over\n", pid, succ)
+		return 0
+	}
 	_ = os.Remove(project.GlobalPIDPath())
 	_ = os.Remove(project.GlobalLockPath())
 	_ = os.Remove(project.GlobalPortPath())
 	_ = os.Remove(project.GlobalSocketPath())
 
 	fmt.Printf("Global daemon stopped (was PID %d)\n", pid)
+	return 0
+}
+
+// globalSuccessor returns the PID of a live global daemon other than
+// stopped, as named by the pid or identity file (both are written by the
+// daemon itself), or 0.
+func globalSuccessor(stopped int) int {
+	if p := readPIDFile(project.GlobalPIDPath()); p > 0 && p != stopped && isProcessRunning(p) {
+		return p
+	}
+	if id, ok := daemon.ReadIdentity(); ok && id.PID > 0 && id.PID != stopped && isProcessRunning(id.PID) {
+		return id.PID
+	}
 	return 0
 }
 
