@@ -231,6 +231,9 @@ func TestDetectClaudeCode_NotFound(t *testing.T) {
 	// Set HOME to a non-existent path so no agents are found
 	tmpDir := t.TempDir()
 	os.Setenv("HOME", tmpDir)
+	// Empty PATH too: detectClaudeCode falls back to exec.LookPath, so on
+	// any machine with Claude Code installed this test found the real one.
+	t.Setenv("PATH", t.TempDir())
 
 	// Clear any other env vars that might affect detection
 	os.Unsetenv("XDG_DATA_HOME")
@@ -955,6 +958,7 @@ func TestDetectClaudeCode_DirectoryAtHomePath(t *testing.T) {
 	tmpDir := t.TempDir()
 	os.Setenv("HOME", tmpDir)
 	os.Unsetenv("XDG_DATA_HOME")
+	t.Setenv("PATH", t.TempDir()) // keep a PATH-installed claude out of the 0.85 branch
 
 	// Only create .claude directory at HOME path - no binary paths
 	claudeDir := filepath.Join(tmpDir, ".claude")

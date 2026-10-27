@@ -39,7 +39,22 @@ func TestMain(m *testing.M) {
 	os.Setenv("HOME", isolatedHome)
 	os.Setenv("USERPROFILE", isolatedHome)
 
+	// Same for the working directory. Several tests dispatch init /
+	// quickstart / setup --refresh with no --project, which resolves to
+	// cwd — the package directory — and every `go test ./...` left
+	// AGENTS.md, CLAUDE.md, .github/ and .dfmt/ inside internal/cli.
+	isolatedCwd, err := os.MkdirTemp("", "dfmt-cli-test-cwd-*")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "TestMain: create isolated cwd: %v\n", err)
+		os.Exit(1)
+	}
+	if err := os.Chdir(isolatedCwd); err != nil {
+		fmt.Fprintf(os.Stderr, "TestMain: chdir isolated cwd: %v\n", err)
+		os.Exit(1)
+	}
+
 	code := m.Run()
+	_ = os.RemoveAll(isolatedCwd)
 
 	// Restore so a parent process that re-uses this env (e.g. `go test`
 	// driver) does not see empty values. Tests that os.Unsetenv("HOME")
@@ -2172,12 +2187,23 @@ func TestRunRememberWithInvalidJSONData(t *testing.T) {
 // =============================================================================
 
 func TestRunInitWithEmptyDir(t *testing.T) {
-	// Empty dir path should default to cwd
+	// Empty dir path should default to cwd. The cwd MUST be a temp dir:
+	// running this from the package directory initialized
+	// internal/cli itself, leaving AGENTS.md, CLAUDE.md and
+	// .github/copilot-instructions.md in the source tree after every
+	// `go test ./...`.
+	cwd := t.TempDir()
+	t.Chdir(cwd)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, ".local", "share"))
 	flagProject = ""
-	code := Dispatch([]string{"init", "-dir", ""})
-	// Should either succeed or fail gracefully (cwd might not exist in test env)
-	if code != 0 && code != 1 {
-		t.Errorf("init with empty dir returned unexpected %d", code)
+	if code := Dispatch([]string{"init", "-dir", ""}); code != 0 {
+		t.Fatalf("init with empty dir returned %d, want 0", code)
+	}
+	if _, err := os.Stat(filepath.Join(cwd, ".dfmt")); err != nil {
+		t.Errorf("init with empty dir did not initialize the cwd: %v", err)
 	}
 }
 
