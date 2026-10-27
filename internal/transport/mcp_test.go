@@ -30,13 +30,8 @@ func TestMCPProtocol_Handle_ToolsCall_NilHandlers(t *testing.T) {
 		return
 	}
 
-	if resp.Error == nil {
-		t.Fatal("expected error response for nil handlers")
-		return
-	}
-
-	if resp.Error.Code != -32603 {
-		t.Errorf("expected error code -32603, got %d", resp.Error.Code)
+	if res, ok := resp.Result.(MCPCallToolResult); !ok || !res.IsError {
+		t.Fatalf("expected isError tool result for nil handlers, got %+v", resp)
 	}
 }
 
@@ -63,12 +58,8 @@ func TestMCPProtocol_Handle_ToolsCall_EmptyParams(t *testing.T) {
 	}
 
 	// Should error because handlers is nil
-	if resp.Error == nil {
-		t.Fatal("expected error response for nil handlers")
-		return
-	}
-	if resp.Error.Code != -32603 {
-		t.Errorf("expected error code -32603, got %d", resp.Error.Code)
+	if res, ok := resp.Result.(MCPCallToolResult); !ok || !res.IsError {
+		t.Fatalf("expected isError tool result for nil handlers, got %+v", resp)
 	}
 }
 

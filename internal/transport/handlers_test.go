@@ -2213,14 +2213,18 @@ func TestMCPProtocolHandleToolsCallNilHandlers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Handle failed: %v", err)
 	}
-	if resp.Error == nil {
-		t.Fatal("resp.Error is nil for nil handlers")
+	// Tool-level failure (TRN-7), so hosts surface the fix to the model.
+	if resp.Error != nil {
+		t.Fatalf("resp.Error = %+v, want an isError tool result", resp.Error)
 	}
-	if resp.Error.Code != -32603 {
-		t.Errorf("resp.Error.Code = %d, want -32603", resp.Error.Code)
+	res, ok := resp.Result.(MCPCallToolResult)
+	if !ok || !res.IsError || len(res.Content) == 0 {
+		t.Fatalf("Result = %#v, want MCPCallToolResult{IsError:true}", resp.Result)
 	}
-	if resp.Error.Message != "daemon not connected" {
-		t.Errorf("resp.Error.Message = %s, want 'daemon not connected'", resp.Error.Message)
+	for _, want := range []string{"no project found", "--project", "DFMT_PROJECT"} {
+		if !strings.Contains(res.Content[0].Text, want) {
+			t.Errorf("error text %q lacks %q", res.Content[0].Text, want)
+		}
 	}
 }
 

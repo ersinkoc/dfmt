@@ -26,9 +26,10 @@ func runMCP(_ []string) int {
 	// terminates the proxy; the daemon keeps running for other callers.
 	//
 	// Project resolution: getProject() walks up looking for .dfmt/ or
-	// .git/. A miss leaves the backend nil so every tool call returns
-	// -32603 ("daemon not connected"). The MCP server itself still
-	// starts so the agent's MCP host doesn't see a dead transport.
+	// .git/. A miss leaves the backend nil so every tool call returns an
+	// isError result naming the cwd and the --project / DFMT_PROJECT fix.
+	// The MCP server itself still starts so the agent's MCP host doesn't
+	// see a dead transport.
 	proj, projErr := getProject()
 	if projErr != nil {
 		proj = ""
@@ -60,8 +61,8 @@ func runMCP(_ []string) int {
 		backend = newReconnectingBackend(proj, initial)
 	} else {
 		fmt.Fprintln(os.Stderr,
-			"dfmt mcp: no project found — tool calls will return -32603. "+
-				"Open dfmt from a project root or set DFMT_PROJECT.")
+			"dfmt mcp: no project found — tool calls will fail. "+
+				"Pass --project <path>, open dfmt from a project root, or set DFMT_PROJECT.")
 	}
 
 	mcp := transport.NewMCPProtocol(backend)

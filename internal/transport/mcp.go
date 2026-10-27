@@ -4,32 +4,18 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"sync"
 	"time"
 
-	"github.com/ersinkoc/dfmt/internal/config"
 	"github.com/ersinkoc/dfmt/internal/core"
 	"github.com/ersinkoc/dfmt/internal/version"
 )
 
-// mcpLegacyContentSentinel is what we put in content[0].text when the modern
-// path is active. Strict MCP validators reject empty content arrays, so a tiny
-// sentinel keeps them happy while the actual payload travels in
-// structuredContent (where every modern client already reads it from).
+// mcpLegacyContentSentinel is what we put in content[0].text when the
+// payload travels only in structuredContent. Strict MCP validators reject
+// empty content arrays, so a tiny sentinel keeps them happy. It is sent only
+// to clients known to read structuredContent — see clientNeedsTextContent.
 const mcpLegacyContentSentinel = "dfmt: see structuredContent"
-
-// mcpLegacyContent, when DFMT_MCP_LEGACY_CONTENT=1, restores the pre-token-
-// optimization behavior of duplicating the full JSON payload into
-// content[0].text alongside structuredContent. The duplicate roughly doubled
-// the token cost of every tool response on clients that count both fields
-// (Claude Code, Cursor, Codex). The sentinel-only default is safe for every
-// MCP client that consumes structuredContent — which, as of mid-2025, is all
-// of them. The escape hatch exists for the rare text-only client that parses
-// JSON out of content[0].text.
-func mcpLegacyContent() bool {
-	return os.Getenv("DFMT_MCP_LEGACY_CONTENT") == "1"
-}
 
 // MCPProtocol implements the Model Context Protocol over JSON-RPC.
 //
@@ -62,6 +48,12 @@ type MCPProtocol struct {
 	// Mutated only by SetProjectID before any tool call so no mutex
 	// is needed; the field is treated as immutable post-startup.
 	projectID string
+
+	// textContent selects whether tool results carry the serialized payload
+	// in content[0].text (true) or only the sentinel (false). Decided in
+	// handleInitialize from clientInfo; same mutation rule as sessionID.
+	// A DFMT_MCP_LEGACY_CONTENT override wins at call time.
+	textContent bool
 
 	// statsMu guards the lazily-populated tool-call compression cache used
 	// to enrich tool descriptions with self-tuning telemetry. Computing the
@@ -153,18 +145,15 @@ type MCPCallToolResult struct {
 
 // mcpToolResult wraps a handler payload in the MCP CallToolResult envelope.
 //
-// Default (token-optimized): content[0].text carries a short sentinel and the
-// full payload travels in structuredContent. Modern MCP clients (Claude Code,
-// Cursor, Codex, Cline, Continue) read structuredContent; emitting the
-// JSON-stringified payload in *both* fields was a flat ~50% token tax on
-// every tool response.
+// fullText=false (token-optimized): content[0].text carries a short sentinel
+// and the payload travels in structuredContent. Emitting the payload in
+// *both* fields is a flat ~50% token tax on clients that count both.
 //
-// Legacy mode (DFMT_MCP_LEGACY_CONTENT=1): content[0].text gets the full
-// JSON-stringified payload, matching the pre-optimization behavior. Use this
-// only when paired with a text-only MCP client that parses JSON out of
-// content[0].text and ignores structuredContent.
-func mcpToolResult(payload any) MCPCallToolResult {
-	if mcpLegacyContent() {
+// fullText=true: content[0].text gets the JSON-stringified payload too, the
+// spec's backwards-compatible shape, for clients that forward only content
+// blocks to the model (issue #1: Windsurf).
+func mcpToolResult(payload any, fullText bool) MCPCallToolResult {
+	if fullText {
 		body, err := json.Marshal(payload)
 		if err != nil {
 			body = []byte(fmt.Sprintf("%v", payload))
@@ -229,6 +218,15 @@ func NewMCPProtocol(backend Backend) *MCPProtocol {
 // mode (h.project default).
 func (m *MCPProtocol) SetProjectID(projectID string) {
 	m.projectID = projectID
+}
+
+// wantTextContent reports whether tool results should carry the payload in
+// content[0].text. An env override applies even before initialize.
+func (m *MCPProtocol) wantTextContent() bool {
+	if full, ok := mcpContentOverride(); ok {
+		return full
+	}
+	return m.textContent
 }
 
 // effectiveProjectID returns the project ID to attach to a tool call's
@@ -371,13 +369,14 @@ func (m *MCPProtocol) handleInitialize(req *MCPRequest) (*MCPResponse, error) {
 	// telemetry can attribute "(unchanged)" rates to specific agents
 	// (claude-code vs cursor vs ad-hoc). Errors are tolerated — the ULID
 	// suffix already guarantees uniqueness; clientInfo is just a label.
+	var params struct {
+		ProtocolVersion string `json:"protocolVersion"`
+		ClientInfo      struct {
+			Name    string `json:"name"`
+			Version string `json:"version"`
+		} `json:"clientInfo"`
+	}
 	if len(req.Params) > 0 {
-		var params struct {
-			ClientInfo struct {
-				Name    string `json:"name"`
-				Version string `json:"version"`
-			} `json:"clientInfo"`
-		}
 		if err := json.Unmarshal(req.Params, &params); err == nil && params.ClientInfo.Name != "" {
 			label := params.ClientInfo.Name
 			if params.ClientInfo.Version != "" {
@@ -386,9 +385,10 @@ func (m *MCPProtocol) handleInitialize(req *MCPRequest) (*MCPResponse, error) {
 			m.sessionID = label + ":" + m.sessionID
 		}
 	}
+	m.textContent = clientNeedsTextContent(params.ClientInfo.Name)
 
 	result := MCPInitializeResult{
-		ProtocolVersion: config.DefaultMCPProtocolVersion,
+		ProtocolVersion: negotiateMCPProtocolVersion(params.ProtocolVersion),
 		Capabilities: MCPServerCapabilities{
 			Tools: MCPToolsCapability{ListChanged: false},
 		},
@@ -499,14 +499,21 @@ func dispatchTool[T any, R any](
 	}
 	return &MCPResponse{
 		JSONRPC: jsonRPCVersion,
-		Result:  mcpToolResult(result),
+		Result:  mcpToolResult(result, m.wantTextContent()),
 		ID:      req.ID,
 	}, nil
 }
 
 func (m *MCPProtocol) handleToolsCall(ctx context.Context, req *MCPRequest) (*MCPResponse, error) {
 	if m.backend == nil {
-		return m.errorResult(req.ID, -32603, "daemon not connected")
+		// A nil backend means `dfmt mcp` found no project at startup. This
+		// is a tool-level failure (TRN-7), so the model sees the fix rather
+		// than a host's generic "tool call failed" for a bare -32603.
+		return &MCPResponse{
+			JSONRPC: jsonRPCVersion,
+			Result:  mcpToolResultWithErr(errNoMCPProject()),
+			ID:      req.ID,
+		}, nil
 	}
 
 	// Attach the per-MCPProtocol session ID so the wire-dedup cache

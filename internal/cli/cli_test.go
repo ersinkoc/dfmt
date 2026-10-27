@@ -1361,8 +1361,8 @@ func TestMCPProtocolToolsCallNoHandler(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Handle failed: %v", err)
 	}
-	if resp.Error == nil {
-		t.Error("Expected error when no handler")
+	if res, ok := resp.Result.(transport.MCPCallToolResult); !ok || !res.IsError {
+		t.Errorf("Expected isError tool result when no handler, got %+v", resp)
 	}
 }
 
