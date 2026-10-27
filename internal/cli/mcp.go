@@ -62,12 +62,23 @@ func runMCP(_ []string) int {
 		// fine — the wrapper dials on first use.
 		backend = newReconnectingBackend(proj, initial)
 	} else {
+		// Unbound session (issue #2): an MCP host with one global config
+		// starts dfmt outside any project. Connect to the global daemon
+		// without auto-initializing the cwd; each call names its project
+		// via project_id, which tools/list then advertises.
 		fmt.Fprintln(os.Stderr,
-			"dfmt mcp: no project found — tool calls will fail. "+
-				"Pass --project <path>, open dfmt from a project root, or set DFMT_PROJECT.")
+			"dfmt mcp: no project found — every tool call must pass project_id "+
+				"(or start with --project <path> / DFMT_PROJECT).")
+		if err := ensureGlobalDaemon(); err != nil {
+			fmt.Fprintf(os.Stderr, "dfmt mcp: cannot start global daemon: %v — will retry on the first tool call.\n", err)
+		}
+		backend = newReconnectingBackend("", nil)
 	}
 
 	mcp := transport.NewMCPProtocol(backend)
+	if proj == "" {
+		mcp.SetUnbound()
+	}
 	// SetProjectID still pins the per-call project_id stamp the proxy
 	// adds to every Backend invocation. Empty-proj is fine: the daemon
 	// then routes via its default project (legacy single-project mode)

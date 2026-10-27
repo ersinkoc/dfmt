@@ -74,7 +74,8 @@ func errNoMCPProject() error {
 		cwd = "(unknown)"
 	}
 	return fmt.Errorf("dfmt: no project found from %s (no .dfmt/ or .git/ there or above) — "+
-		"add \"--project\", \"<absolute project path>\" to this MCP server's args, or set DFMT_PROJECT", cwd)
+		"pass project_id (the absolute project root) on the call, "+
+		"or add \"--project\", \"<absolute project path>\" to this MCP server's args, or set DFMT_PROJECT", cwd)
 }
 
 // clientNeedsTextContent reports whether a client identified by name must

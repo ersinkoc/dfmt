@@ -112,6 +112,30 @@ const (
 // caller's Budget) and well below sizes that would actually crash the CLI.
 const maxRPCResponseBytes = 16 << 20
 
+// NewGlobalClient connects to the host-wide global daemon with no project
+// bound: every call must carry its own project_id. It exists for `dfmt mcp`
+// sessions started outside any project (an MCP host with one global config,
+// e.g. Windsurf), and differs from NewClient("") in what it does NOT do — it
+// never runs EnsureProjectInitialized, which would write .dfmt/ and
+// instruction files into whatever directory the host happened to start in,
+// and it has no legacy per-project fallback. An error means no global
+// daemon is reachable.
+func NewGlobalClient() (*Client, error) {
+	address, token, network, socket := globalDaemonTarget()
+	if address == "" || !fastDialOK(network, address) {
+		return nil, errors.New("global daemon not reachable")
+	}
+	return &Client{
+		socketPath: socket,
+		network:    network,
+		address:    address,
+		authToken:  token,
+		timeout:    timeouts.RPC,
+		sessionID:  resolveSessionID(),
+		globalMode: true,
+	}, nil
+}
+
 // NewClient creates a new client for the given project.
 // If the project is not initialized, it auto-initializes.
 // If the daemon is not running, it automatically starts it.

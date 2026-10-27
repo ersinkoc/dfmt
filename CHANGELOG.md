@@ -128,6 +128,15 @@ Internal package shapes (`internal/...`) are NOT covered by SemVer.
   versions wrote (only that entry). `dfmt hook claude-code pretooluse`
   answers `{}` until then. Denying native tools instead would break the
   documented fallback to native tools when dfmt fails.
+- **`dfmt mcp` started outside any project served nothing** (#2): hosts
+  with one global MCP config (Windsurf/Devin Desktop) got `daemon not
+  connected` for every call, and the schemas offered no way to name a
+  project. Such a session now connects without initializing its cwd and
+  advertises a required `project_id` on every tool; bound sessions'
+  `tools/list` is unchanged. Every explicit `project_id` must be an
+  absolute project root (`.dfmt/` or `.git/`), never `/` or the home
+  directory — the daemon creates `.dfmt/` in whatever it is given and makes
+  it the sandbox root. ADR-0029.
 
 ## [0.9.0] — 2026-10-27
 

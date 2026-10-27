@@ -55,6 +55,10 @@ type MCPProtocol struct {
 	// A DFMT_MCP_LEGACY_CONTENT override wins at call time.
 	textContent bool
 
+	// unbound marks a session started outside any project (SetUnbound):
+	// calls must name their project, and tools/list says so.
+	unbound bool
+
 	// statsMu guards the lazily-populated tool-call compression cache used
 	// to enrich tool descriptions with self-tuning telemetry. Computing the
 	// stats requires a journal stream; caching keeps tools/list cheap when
@@ -433,6 +437,9 @@ func (m *MCPProtocol) handleToolsList(req *MCPRequest) (*MCPResponse, error) {
 	// Description here is safe; positional indices match the canonical
 	// 0=exec, 1=read, 2=fetch ordering defined alongside the schemas.
 	tools := mcpToolsBuiltin()
+	if m.unbound {
+		tools = withProjectIDParam(tools)
+	}
 	tools[0].Description += m.toolStatsBlurb("tool.exec")
 	tools[1].Description += m.toolStatsBlurb("tool.read")
 	tools[2].Description += m.toolStatsBlurb("tool.fetch")
@@ -486,6 +493,16 @@ func dispatchTool[T any, R any](
 				ID:      req.ID,
 			}, nil
 		}
+	}
+	// An explicit project_id is model-controlled input naming a sandbox
+	// root; check it here, before the daemon would create .dfmt/ there.
+	// An unbound session has no project to fall back to.
+	if callPID := pid(args); callPID != "" {
+		if err := validateCallProjectID(callPID); err != nil {
+			return &MCPResponse{JSONRPC: jsonRPCVersion, Result: mcpToolResultWithErr(err), ID: req.ID}, nil
+		}
+	} else if m.unbound {
+		return &MCPResponse{JSONRPC: jsonRPCVersion, Result: mcpToolResultWithErr(errNoMCPProject()), ID: req.ID}, nil
 	}
 	ctx = WithProjectID(ctx, m.effectiveProjectID(pid(args)))
 	result, err := call(ctx, args)

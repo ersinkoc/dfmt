@@ -93,6 +93,15 @@ func (b *reconnectingBackend) renew() transport.Backend {
 // dialBackend builds a client backend without spawning anything. Callers
 // that want a daemon guaranteed call ensureGlobalDaemon first.
 func dialBackend(projectPath string) transport.Backend {
+	if projectPath == "" {
+		// A session with no project: connect without auto-initializing the
+		// cwd; each call names its project (project_id).
+		cl, err := client.NewGlobalClient()
+		if err != nil {
+			return nil
+		}
+		return client.NewBackend(cl)
+	}
 	cl, err := client.NewClient(projectPath)
 	if err != nil {
 		return nil
