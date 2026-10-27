@@ -29,6 +29,12 @@ Internal package shapes (`internal/...`) are NOT covered by SemVer.
 
 ### Fixed
 
+- **Re-running the install script downgraded a newer build.** `install.sh`
+  / `install.ps1` overwrote whatever was installed with the latest release
+  — a source build or a newer release included — and the daemon then
+  restarted onto the older binary. With the default `latest`, a newer
+  installed binary is now kept (`DFMT_FORCE=1` replaces it anyway).
+
 - **A daemon whose rendezvous files were deleted stayed lost.** An older
   dfmt (any `dfmt mcp` proxy left open across an upgrade) could delete the
   running daemon's `daemon.pid`, `daemon.json`, port file or socket, and

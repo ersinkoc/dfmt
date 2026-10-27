@@ -7,6 +7,7 @@
 #   DFMT_VERSION=v0.1.0       pin a specific release tag (default: latest)
 #   DFMT_INSTALL_DIR=/path    override install directory (default: ~/.local/bin)
 #   DFMT_FROM_SOURCE=1        skip binary download, go install from source
+#   DFMT_FORCE=1              replace an installed binary even if it is newer
 #   DFMT_DEBUG=1              verbose shell tracing
 
 set -eu
@@ -112,8 +113,28 @@ download_binary() {
     fi
 
     chmod +x "$tmp/$ASSET"
+    if [ "$RELEASE_TAG" = "latest" ] && [ "${DFMT_FORCE:-}" != "1" ] && installed_is_newer "$INSTALL_DIR/dfmt" "$tmp/$ASSET"; then
+        return 0
+    fi
     mv "$tmp/$ASSET" "$INSTALL_DIR/dfmt"
     info "installed to $INSTALL_DIR/dfmt"
+    return 0
+}
+
+# installed_is_newer CURRENT CANDIDATE: true when CURRENT reports a version
+# that sorts after CANDIDATE's. Re-running this script used to overwrite a
+# newer build (a source build, or a newer release) with "latest" without a
+# word — and the running daemon then restarted onto the older binary. A
+# pinned DFMT_VERSION is deliberate and skips this check; DFMT_FORCE=1
+# replaces anyway. Without `sort -V` the check is skipped (old behavior).
+installed_is_newer() {
+    [ -x "$1" ] || return 1
+    cur=$("$1" --version 2>/dev/null | awk '{print $2}')
+    new=$("$2" --version 2>/dev/null | awk '{print $2}')
+    [ -n "$cur" ] && [ -n "$new" ] && [ "$cur" != "$new" ] || return 1
+    top=$(printf '%s\n%s\n' "$new" "$cur" | sort -V 2>/dev/null | tail -n 1)
+    [ "$top" = "$cur" ] || return 1
+    info "keeping $1 ($cur): it is newer than the latest release ($new). Set DFMT_FORCE=1 to replace it."
     return 0
 }
 

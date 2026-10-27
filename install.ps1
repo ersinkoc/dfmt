@@ -46,6 +46,32 @@ if ($Tag -eq 'latest') {
     $base = "https://github.com/$RepoOwner/$RepoName/releases/download/$Tag"
 }
 
+# ConvertTo-BuildKey turns "v0.9.3" / "v0.9.2-24-gabc1234" into a sortable
+# [version] (major.minor.patch.commits-past-tag); $null when unparsable.
+function ConvertTo-BuildKey([string]$v) {
+    if ($v -match '^v?(\d+)\.(\d+)\.(\d+)(?:-(\d+)-g[0-9a-f]+)?$') {
+        $n = if ($Matches[4]) { [int]$Matches[4] } else { 0 }
+        return [version]::new([int]$Matches[1], [int]$Matches[2], [int]$Matches[3], $n)
+    }
+    return $null
+}
+
+# Test-InstalledNewer: re-running this script used to overwrite a newer
+# build with "latest" silently. A pinned DFMT_VERSION skips this check;
+# DFMT_FORCE=1 replaces anyway.
+function Test-InstalledNewer([string]$current, [string]$candidate) {
+    if (-not (Test-Path $current)) { return $false }
+    try {
+        $cur = ((& $current --version) -split '\s+')[1]
+        $new = ((& $candidate --version) -split '\s+')[1]
+    } catch { return $false }
+    $ck = ConvertTo-BuildKey $cur
+    $nk = ConvertTo-BuildKey $new
+    if ($null -eq $ck -or $null -eq $nk -or $ck -le $nk) { return $false }
+    Write-Info "keeping $current ($cur): it is newer than the latest release ($new). Set DFMT_FORCE=1 to replace it."
+    return $true
+}
+
 function Download-Binary {
     Write-Info "fetching $asset from release $Tag"
     $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("dfmt-" + [Guid]::NewGuid())
@@ -72,6 +98,9 @@ function Download-Binary {
             Write-Warn "could not verify checksum: $_"
         }
 
+        if ($Tag -eq 'latest' -and $env:DFMT_FORCE -ne '1' -and (Test-InstalledNewer $target $tmpExe)) {
+            return $true
+        }
         Move-Item -Force -Path $tmpExe -Destination $target -ErrorAction SilentlyContinue
         if (-not (Test-Path $target)) {
             # target might be locked; remove and retry
