@@ -160,9 +160,9 @@ Cross-call wire dedup: a `content_id` already emitted to the agent in this sessi
 
 Five ingestion paths feed the journal: MCP calls (live), CLI commands like `dfmt remember` / `dfmt task` (live), filesystem watcher (opt-in), git hooks (opt-in via `dfmt install-hooks`), shell integration (opt-in via `dfmt shell-init`).
 
-### Recall (`internal/transport/handlers.go::Recall`)
+### Recall (`internal/transport/handlers_recall.go::Recall`)
 
-`dfmt_recall` rebuilds a markdown snapshot under a byte budget. Per-tier streaming with FIFO eviction — lower-priority content drops first when the budget tightens. Path interning (Refs table at the top of the snapshot + `[rN]` token references in events, kicks in at ≥3 occurrences) lives in `internal/retrieve/render_md.go` and is wired for `format=json` and `format=xml`, which route through `retrieve.SnapshotBuilder`. The **default markdown path is not interned** — it builds its lines inline in `handlers_recall.go` and never reaches the renderer. Wiring markdown is tracked on the roadmap (see `docs/ROADMAP.md`).
+`dfmt_recall` rebuilds a markdown snapshot under a byte budget. Per-tier streaming with FIFO eviction — lower-priority content drops first when the budget tightens. Path interning (Refs table at the top of the snapshot + `[rN]` token references in events, kicks in at ≥3 occurrences) lives in `internal/retrieve/render_md.go`. Every format, markdown included, goes through one `retrieve.SnapshotBuilder` pass (TRN-6); markdown used to be a separate inline implementation with no interning and a different budget model. When the next event does not fit, the builder fits a truncated copy of it (marked in-band) and then stops — stopping outright let one long newest decision note empty the whole snapshot.
 
 Recall memoizes its rendered snapshot against the journal cursor, keyed by (project, budget, format). Invalidation is exact, not TTL-based: one appended event moves `Journal.Checkpoint` and the next call rebuilds. Two invariants — an **empty cursor is never cached** (it cannot distinguish two journal states, so a journal whose checkpoint does not advance would pin a stale snapshot forever), and **`SetRedactor` clears the cache** (snapshots were rendered through the old redactor while the cursor stayed put).
 

@@ -10,8 +10,10 @@ the next one with a one-line explanation. If you want the full
 
 The release identities:
 
-- **v0.6.7** — *Current shipped cut* (single-binary,
-  self-promoting daemon; see ADR-0019, ADR-0020, ADR-0021).
+- **v0.9.0** — *Current shipped cut* (2026-10-27; see
+  `CHANGELOG.md`). The v0.6 line's single-binary,
+  self-promoting daemon (ADR-0019, ADR-0020, ADR-0021) is the
+  steady state.
 - **v0.7.0** — *Navigability & test-floor* (the next
   milestone).
 - **v1.0.0** — *Stability commitment* (SemVer guarantees on
@@ -52,27 +54,20 @@ deliverables.
 
 ### Refactor (split god-files, no behavior change)
 
-- [ ] **`internal/cli/dispatch.go` (5 087 LOC) → 10 files**.
-  Group by responsibility — `daemon.go`, `project.go`,
-  `recall.go`, `tools.go`, `setup.go`, `doctor.go`, `mcp.go`,
-  `dashboard.go`, `config.go` — with `dispatch.go` shrinking
-  to ~150 LOC (Dispatch + global flag handling). One PR per
-  file to keep diffs reviewable. Carries over from the v0.3
-  "stretch" item, now load-bearing.
-- [ ] **`internal/sandbox/permissions.go` (2 542 LOC) → 8
-  files**. Separate policy types, glob compiler, shell
-  parser, and the seven tool primitives (`Exec`, `Read`,
-  `Fetch`, `Glob`, `Grep`, `Edit`, `Write`).
-- [ ] **`internal/transport/handlers.go` (2 208 LOC) → 7
-  files**. One file per tool handler; shared plumbing
-  (dedup, redact, store) stays in the root handlers.go.
-- [ ] **`internal/daemon/daemon.go::New` (261 LOC)** —
+- [x] **`internal/cli/dispatch.go` (5 087 LOC) → split** —
+  247 LOC as of v0.9.0.
+- [x] **`internal/sandbox/permissions.go` (2 542 LOC) → split**
+  — 198 LOC; policy, glob, shell parsing and the tool
+  primitives live in their own files.
+- [x] **`internal/transport/handlers.go` (2 208 LOC) → split**
+  — per-tool `handlers_*.go`; the root file (1 114 LOC) keeps
+  shared plumbing.
+- [ ] **`internal/daemon/daemon.go::New` (261 → 111 LOC)** —
   extract `loadIndexJournal`, `startFSWatcher`,
   `bindListener` private helpers so the constructor reads
   as a 4-step recipe.
-- [ ] **`internal/transport/mcp.go::handleToolsList` (302
-  LOC)** — move per-tool schemas to `mcp_schemas.go` as
-  `var toolSchemaXxx = json.RawMessage(...)`.
+- [x] **`internal/transport/mcp.go::handleToolsList`** — per-tool
+  schemas live in `mcp_schemas.go`.
 
 ### Test-floor
 
@@ -80,18 +75,29 @@ The CLAUDE.md / AGENTS.md targets drifted out of compliance:
 
 | Package | Current | Target | Gap |
 |---|---|---|---|
-| `internal/core` | 91.5 % | ≥ 90 % | ✅ |
-| `internal/transport` | 82.4 % | ≥ 85 % | −2.6 pp |
-| `internal/daemon` | 75.2 % | ≥ 80 % | −4.8 pp |
-| `internal/cli` | 63.5 % | ≥ 75 % | **−11.5 pp** |
+| `internal/core` | 90.7 % | ≥ 90 % | ✅ |
+| `internal/transport` | 90.0 % | ≥ 85 % | ✅ |
+| `internal/daemon` | 83.4 % | ≥ 80 % | ✅ |
+| `internal/cli` | 69.7 % | ≥ 75 % | **−5.3 pp** |
+
+(Measured 2026-10-27 with `go test -cover` on Linux.)
 
 - [ ] **`internal/cli` ≥ 75 %**. The `dispatch.go` split
   enables targeted unit tests per subcommand. Existing
   integration tests stay; new tests go after the split.
-- [ ] **`internal/daemon` ≥ 80 %**. `daemon.New` decomposition
-  makes the constructor branches reachable.
-- [ ] **`internal/transport` ≥ 85 %**. Mostly a matter of
-  HTTP-handler coverage (`handleAPIProxy`, `handleAPIStream`).
+- [x] **`internal/daemon` ≥ 80 %** (83.4 %).
+- [x] **`internal/transport` ≥ 85 %** (90.0 %).
+
+### Journal retention
+
+- [ ] **Rotated segments are never deleted.** `rotateLocked`
+  renames the active file to `journal.jsonl.<id>.jsonl` and
+  nothing in `core/` removes one, so history grows without
+  bound. The index tail no longer re-reads them every tick
+  (it skips segments ending before its cursor), but recall
+  cache misses and journal replay still do. Needs a retention
+  policy (age / total bytes / keep-N) and an ADR, since it
+  deletes history `dfmt_recall` can currently reach.
 
 ### CI hardening
 
