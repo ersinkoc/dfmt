@@ -100,6 +100,9 @@ Internal package shapes (`internal/...`) are NOT covered by SemVer.
   a large `dfmt_write` waited for the host's own timeout. The proxy now
   recovers the top-level id from the prefix and answers under it, naming
   the cap.
+- **`dfmt_fetch` `headers`/`body` and `dfmt_exec` `env` were accepted but
+  not advertised**, so hosts that build calls from `tools/list` could not
+  send them — `method: POST` had no payload. They are in the schemas now.
 
 ## [0.9.0] — 2026-10-27
 

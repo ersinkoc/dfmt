@@ -65,6 +65,11 @@ func schemaExec() MCPTool {
 					"description": "Submit and return a job_id immediately instead of waiting. For work longer than the sync ceiling.",
 					"default":     false,
 				},
+				"env": map[string]any{
+					"type":                 "object",
+					"description":          "Extra environment variables for the command.",
+					"additionalProperties": map[string]any{"type": "string"},
+				},
 				"job_id": map[string]any{
 					"type":        "string",
 					"description": "Poll a job submitted with async. Returns status 'running' or the finished result.",
@@ -138,6 +143,17 @@ func schemaFetch() MCPTool {
 					"type":        "string",
 					"description": "HTTP method. Default: GET",
 					"default":     "GET",
+				},
+				// headers/body were accepted by FetchParams all along but not
+				// advertised, so `method: POST` had no way to carry a payload.
+				"headers": map[string]any{
+					"type":                 "object",
+					"description":          "Request headers.",
+					"additionalProperties": map[string]any{"type": "string"},
+				},
+				"body": map[string]any{
+					"type":        "string",
+					"description": "Request body (POST/PUT/PATCH).",
 				},
 				"return": map[string]any{
 					"type":        "string",

@@ -38,3 +38,25 @@ func TestExecSchemaAllowsJobPoll(t *testing.T) {
 		t.Errorf("job_id poll rejected: %v", err)
 	}
 }
+
+// TestSchemasAdvertiseAcceptedParams: FetchParams.Headers/Body and
+// ExecParams.Env were decoded and honored but absent from the schemas, so a
+// host building its call interface from tools/list could never send them —
+// `method: POST` had no way to carry a payload.
+func TestSchemasAdvertiseAcceptedParams(t *testing.T) {
+	for tool, want := range map[string][]string{
+		"fetch": {"headers", "body"},
+		"exec":  {"env"},
+	} {
+		schema := schemaFetch()
+		if tool == "exec" {
+			schema = schemaExec()
+		}
+		props := schema.InputSchema["properties"].(map[string]any)
+		for _, p := range want {
+			if _, ok := props[p]; !ok {
+				t.Errorf("%s schema lacks %q", tool, p)
+			}
+		}
+	}
+}
