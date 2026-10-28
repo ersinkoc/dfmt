@@ -493,8 +493,10 @@ func runSetupUninstall() int {
 	}
 
 	if len(m.Files) == 0 {
-		fmt.Println("Nothing to uninstall")
-		return 0
+		// No manifest rows does not mean nothing was written: the shared
+		// ~/.claude.json and settings.json entries are not manifest rows,
+		// and a daemon may still be running. Fall through to those.
+		fmt.Println("No tracked files; checking shared agent configs")
 	}
 
 	// Stop the host-wide daemon before stripping configs. Without this,

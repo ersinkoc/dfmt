@@ -27,6 +27,13 @@ Internal package shapes (`internal/...`) are NOT covered by SemVer.
 
 ## [Unreleased]
 
+### Added
+
+- `dfmt uninstall [--yes] [--keep-data] [--keep-binary]`: full removal —
+  agent configs, project `.dfmt/` data, `~/.dfmt`, the setup manifest and the
+  binary. `setup --uninstall` no longer stops early when the manifest is
+  empty, so shared `~/.claude.json` entries are cleaned in that case too.
+
 ## [0.9.4] — 2026-10-27
 
 ### Fixed

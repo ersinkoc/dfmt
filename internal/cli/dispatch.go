@@ -31,6 +31,8 @@ func Dispatch(args []string) int {
 		return runInit(remaining)
 	case "remove", "teardown":
 		return runRemove(remaining)
+	case "uninstall":
+		return runUninstall(remaining)
 	case "quickstart":
 		return runQuickstart(remaining)
 	case "remember":
@@ -127,7 +129,10 @@ Usage:
   dfmt mcp                       Start MCP server (stdio)
   dfmt setup                    Configure agents
   dfmt setup --verify           Verify setup
-  dfmt setup --uninstall        Remove configuration
+  dfmt setup --uninstall        Remove agent configuration only
+  dfmt uninstall [--yes] [--keep-data] [--keep-binary]
+                                Remove everything: agent configs, project
+                                .dfmt/ data, ~/.dfmt, and the binary
 
 Flags:
   --json    JSON output

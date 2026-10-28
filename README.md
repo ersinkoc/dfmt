@@ -218,8 +218,13 @@ config at the dfmt binary directly:
 }
 ```
 
-`dfmt setup --uninstall` removes everything DFMT wrote (and surgically
-strips its keys from any shared user config like `~/.claude.json`).
+`dfmt setup --uninstall` removes everything DFMT wrote into agent configs (and
+surgically strips its keys from any shared user config like `~/.claude.json`).
+
+`dfmt uninstall` goes all the way: that pass, plus each known project's
+`.dfmt/` (journals, indexes) and instruction-file blocks, `~/.dfmt`, the setup
+manifest, and the binary itself. It asks first; `--yes` skips the prompt,
+`--keep-data` and `--keep-binary` narrow it.
 
 ## Project layout
 
