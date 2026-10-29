@@ -27,6 +27,8 @@ Internal package shapes (`internal/...`) are NOT covered by SemVer.
 
 ## [Unreleased]
 
+## [0.9.5] — 2026-10-29
+
 ### Added
 
 - `dfmt uninstall [--yes] [--keep-data] [--keep-binary]`: full removal —
