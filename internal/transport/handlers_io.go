@@ -321,16 +321,28 @@ func (h *Handlers) Glob(ctx context.Context, params GlobParams) (_ *GlobResponse
 		return nil, err
 	}
 
-	h.logEvent(ctx, "tool.glob", params.Intent, map[string]any{
-		"pattern": params.Pattern,
-		"files":   len(resp.Files),
-	})
-
-	return &GlobResponse{
+	out := &GlobResponse{
 		Files:   resp.Files,
 		Matches: h.redactMatches(ctx, resp.Matches),
 		Summary: resp.Summary,
-	}, nil
+	}
+	// A native glob returns the same listing, so raw == returned: recorded
+	// to keep the call visible in the per-tool ledger, claiming no saving.
+	size := len(out.Summary)
+	for _, f := range out.Files {
+		size += len(f) + 1
+	}
+	for _, m := range out.Matches {
+		size += len(m.Text)
+	}
+	h.logEvent(ctx, "tool.glob", params.Intent, map[string]any{
+		"pattern":             params.Pattern,
+		"files":               len(resp.Files),
+		core.KeyRawBytes:      size,
+		core.KeyReturnedBytes: size,
+	})
+
+	return out, nil
 }
 
 // Grep performs text search via the sandbox.
@@ -363,14 +375,10 @@ func (h *Handlers) Grep(ctx context.Context, params GrepParams) (_ *GrepResponse
 		return nil, err
 	}
 
-	h.logEvent(ctx, "tool.grep", params.Intent, map[string]any{
-		"pattern": params.Pattern,
-		"files":   params.Files,
-		"matches": len(resp.Matches),
-	})
-
 	// Redact match content
 	matches := make([]sandbox.GrepMatch, len(resp.Matches))
+	summary := h.redactString(ctx, resp.Summary)
+	size := len(summary)
 	for i, m := range resp.Matches {
 		matches[i] = sandbox.GrepMatch{
 			File:    m.File,
@@ -379,11 +387,27 @@ func (h *Handlers) Grep(ctx context.Context, params GrepParams) (_ *GrepResponse
 			Before:  h.redactLines(ctx, m.Before),
 			After:   h.redactLines(ctx, m.After),
 		}
+		size += len(m.File) + len(matches[i].Content)
+		for _, l := range matches[i].Before {
+			size += len(l)
+		}
+		for _, l := range matches[i].After {
+			size += len(l)
+		}
 	}
+
+	// raw == returned, as for glob: a native grep prints the same lines.
+	h.logEvent(ctx, "tool.grep", params.Intent, map[string]any{
+		"pattern":             params.Pattern,
+		"files":               params.Files,
+		"matches":             len(resp.Matches),
+		core.KeyRawBytes:      size,
+		core.KeyReturnedBytes: size,
+	})
 
 	return &GrepResponse{
 		Matches: matches,
-		Summary: h.redactString(ctx, resp.Summary),
+		Summary: summary,
 	}, nil
 }
 

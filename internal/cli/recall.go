@@ -395,6 +395,13 @@ func runStats(args []string) int {
 			fmt.Printf("  Returned Bytes:   %d\n", resp.TotalReturnedBytes)
 			fmt.Printf("  Bytes Saved:      %d\n", resp.BytesSaved)
 			fmt.Printf("  Compression:      %.1f%%\n", resp.CompressionRatio*100)
+			fmt.Printf("  Est. tokens:      %d raw -> %d returned (saved ~%d)\n",
+				resp.EstRawTokens, resp.EstReturnedTokens, resp.EstTokensSaved)
+			if resp.ToolsListTokens > 0 {
+				fmt.Printf("  Fixed cost:       ~%d tokens of tool declarations, once per session\n",
+					resp.ToolsListTokens)
+			}
+			fmt.Println("  (bytes/4 estimate; outputs under ~1k tokens pass through unfiltered)")
 			fmt.Println()
 		}
 

@@ -27,6 +27,19 @@ Internal package shapes (`internal/...`) are NOT covered by SemVer.
 
 ## [Unreleased]
 
+### Added
+
+- `dfmt stats` / `StatsResponse`: estimated token totals
+  (`est_raw_tokens`, `est_returned_tokens`, `est_tokens_saved`) and the
+  per-session `tools/list` fixed cost (`tools_list_bytes`,
+  `tools_list_tokens`). See ADR-0032.
+
+### Changed
+
+- `tool.grep` / `tool.glob` events now carry `raw_bytes` / `returned_bytes`
+  (equal: no saving is claimed), so they appear in `tool_bytes` and the
+  overall ratio counts them.
+
 ## [0.9.5] — 2026-10-29
 
 ### Added

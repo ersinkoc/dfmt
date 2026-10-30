@@ -37,6 +37,7 @@ See [ADR-0000](0000-adr-process.md) for the process governing how ADRs are writt
 | [0029](0029-per-call-project-routing.md) | Per-Call Project Routing for Unbound MCP Sessions | Accepted | A `dfmt mcp` started outside any project connects without auto-init and advertises a required `project_id` on every tool; bound sessions are unchanged. Every explicit `project_id` must be an absolute project root (`.dfmt/` or `.git/`), never `/` or home — the daemon would otherwise create `.dfmt/` there and make it the sandbox root. |
 | [0030](0030-journal-segment-retention.md) | Opt-In Retention for Rotated Journal Segments | Accepted | `storage.journal_keep_segments` (default 0 = keep all) deletes all but the N newest rotated segments at each rotation. Opt-in because a rotated segment is agent memory recall and search can still reach, not cache. |
 | [0031](0031-honor-gitignore-in-walkers.md) | Honor .gitignore in the Grep/Glob Walkers | Accepted | Walkers honor `.git/info/exclude`, the root and nested `.gitignore` files (stdlib matcher, gitignore(5) semantics), in addition to the basename list. An ignored search root is searched; skips are counted in the summary. |
+| [0032](0032-honest-token-ledger.md) | An Honest Token Ledger | Accepted | Stats gain estimated token totals and the per-session `tools/list` fixed cost; grep/glob are recorded at raw == returned so the ratio is not flattered; `token_savings` documented as cache hits, not DFMT's saving. |
 
 ## Superseded Decisions
 

@@ -2,6 +2,7 @@ package transport
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -37,11 +38,13 @@ type StatsResponse struct {
 	// LLM token metrics — populated only when callers pass input_tokens /
 	// output_tokens / cached_tokens to dfmt_remember (the MCP layer cannot
 	// observe API usage on its own).
-	TotalInputTokens  int     `json:"total_input_tokens,omitempty"`
-	TotalOutputTokens int     `json:"total_output_tokens,omitempty"`
-	TotalCachedTokens int     `json:"total_cached_tokens,omitempty"`
-	TokenSavings      int     `json:"token_savings,omitempty"` // alias of TotalCachedTokens
-	CacheHitRate      float64 `json:"cache_hit_rate,omitempty"`
+	TotalInputTokens  int `json:"total_input_tokens,omitempty"`
+	TotalOutputTokens int `json:"total_output_tokens,omitempty"`
+	TotalCachedTokens int `json:"total_cached_tokens,omitempty"`
+	// TokenSavings is an alias of TotalCachedTokens: API prompt-cache hits the
+	// caller reported, NOT DFMT's own saving — see EstTokensSaved for that.
+	TokenSavings int     `json:"token_savings,omitempty"`
+	CacheHitRate float64 `json:"cache_hit_rate,omitempty"`
 	// MCP byte savings — populated automatically by sandbox tool calls.
 	// raw = pre-filter (post-redact) bytes; returned = bytes actually sent back.
 	TotalRawBytes      int     `json:"total_raw_bytes,omitempty"`
@@ -53,6 +56,18 @@ type StatsResponse struct {
 	// instead of writing a new one. Process-lifetime counter — survives
 	// idle restarts via re-warming, not via persistence.
 	DedupHits int `json:"dedup_hits,omitempty"`
+	// Token estimates derived from the byte totals above (bytes/4, rounded
+	// up — the ASCII rule of thumb behind sandbox.ApproxTokens). They are
+	// estimates and work on journals written before this field existed.
+	EstRawTokens      int `json:"est_raw_tokens,omitempty"`
+	EstReturnedTokens int `json:"est_returned_tokens,omitempty"`
+	EstTokensSaved    int `json:"est_tokens_saved,omitempty"`
+	// ToolsListBytes/Tokens is the fixed cost every session pays once for the
+	// tool declarations (tools/list). It is reported next to the savings, not
+	// subtracted from them: the journal carries no session id, so the number
+	// of sessions the totals span is unknown.
+	ToolsListBytes  int `json:"tools_list_bytes,omitempty"`
+	ToolsListTokens int `json:"tools_list_tokens,omitempty"`
 	// Native tool awareness: how many tool calls bypassed dfmt MCP
 	NativeToolCalls      map[string]int `json:"native_tool_calls,omitempty"`       // count by tool name (Bash, Read, Glob, etc.)
 	MCPToolCalls         map[string]int `json:"mcp_tool_calls,omitempty"`          // count by MCP tool name (dfmt.exec, dfmt.read, etc.)
@@ -202,6 +217,13 @@ func (h *Handlers) Stats(ctx context.Context, params StatsParams) (*StatsRespons
 		resp.CompressionRatio = float64(resp.BytesSaved) / float64(totalRawBytes)
 	}
 	resp.DedupHits = int(h.dedupHits.Load())
+	resp.EstRawTokens = bytesToTokens(resp.TotalRawBytes)
+	resp.EstReturnedTokens = bytesToTokens(resp.TotalReturnedBytes)
+	if resp.EstRawTokens > resp.EstReturnedTokens {
+		resp.EstTokensSaved = resp.EstRawTokens - resp.EstReturnedTokens
+	}
+	resp.ToolsListBytes = toolsListBytes()
+	resp.ToolsListTokens = bytesToTokens(resp.ToolsListBytes)
 
 	// Compute native tool bypass rate
 	var nativeTotal, mcpTotal int
@@ -247,6 +269,24 @@ func (h *Handlers) Stats(ctx context.Context, params StatsParams) (*StatsRespons
 	}
 
 	return cloneStatsResponse(resp), nil
+}
+
+// bytesToTokens converts a byte count to an estimated token count.
+func bytesToTokens(n int) int {
+	if n <= 0 {
+		return 0
+	}
+	return (n + 3) / 4
+}
+
+// toolsListBytes is the serialized size of the built-in tool declarations —
+// what an agent pays once per session before its first call.
+func toolsListBytes() int {
+	b, err := json.Marshal(mcpToolsBuiltin())
+	if err != nil {
+		return 0
+	}
+	return len(b)
 }
 
 // cloneStatsResponse produces a defensive copy. The cache is shared across
