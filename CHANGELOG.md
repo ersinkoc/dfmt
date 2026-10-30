@@ -34,8 +34,19 @@ Internal package shapes (`internal/...`) are NOT covered by SemVer.
   per-session `tools/list` fixed cost (`tools_list_bytes`,
   `tools_list_tokens`). See ADR-0032.
 
+- Dashboard: headline "estimated tokens kept out of your context" with the
+  fixed per-session cost and a plain note when most outputs passed through
+  unfiltered; per-tool ledger table; host-wide totals across every project
+  the one daemon serves.
+
+### Fixed
+
+- `Stats` cache clone shared the `ToolBytes` map with the cached response.
+
 ### Changed
 
+- Dashboard card "Cache Savings" renamed "API Cache Hits (reported)": it is
+  prompt-cache usage the caller reported, not DFMT's saving.
 - `tool.grep` / `tool.glob` events now carry `raw_bytes` / `returned_bytes`
   (equal: no saving is claimed), so they appear in `tool_bytes` and the
   overall ratio counts them.

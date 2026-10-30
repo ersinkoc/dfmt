@@ -30,6 +30,19 @@ const DashboardHTML = `<!DOCTYPE html>
 <div id="error" class="error"></div>
 <div id="loading" class="loading">Loading stats...</div>
 <div id="stats" class="hidden">
+<div class="hero">
+<div class="hero-value" id="hero-tokens">0</div>
+<div class="hero-label">estimated tokens kept out of your context</div>
+<div class="hero-sub" id="hero-sub"></div>
+</div>
+<h2>Host-wide (one daemon)</h2>
+<div class="cards">
+<div class="card"><div class="card-value" id="host-projects">0</div><div class="card-label">Projects served</div></div>
+<div class="card"><div class="card-value" id="host-saved">0</div><div class="card-label">Est. tokens saved (all projects)</div></div>
+<div class="card"><div class="card-value" id="host-ratio">0%</div><div class="card-label">Compression (all projects)</div></div>
+</div>
+<h2>Per-tool ledger</h2>
+<div class="chart"><table class="ledger" id="tool-table"><thead><tr><th>Tool</th><th>Calls</th><th>Raw tok</th><th>Returned tok</th><th>Saved</th></tr></thead><tbody></tbody></table></div>
 <div class="cards">
 <div class="card"><div class="card-value" id="total-events">0</div><div class="card-label">Total Events</div></div>
 <div class="card"><div class="card-value" id="session-duration">-</div><div class="card-label">Session Duration</div></div>
@@ -46,7 +59,7 @@ const DashboardHTML = `<!DOCTYPE html>
 <div class="cards">
 <div class="card"><div class="card-value" id="total-input">0</div><div class="card-label">Input Tokens</div></div>
 <div class="card"><div class="card-value" id="total-output">0</div><div class="card-label">Output Tokens</div></div>
-<div class="card"><div class="card-value" id="token-savings">0</div><div class="card-label">Cache Savings</div></div>
+<div class="card"><div class="card-value" id="token-savings">0</div><div class="card-label">API Cache Hits (reported)</div></div>
 <div class="card"><div class="card-value" id="cache-hit-rate">0%</div><div class="card-label">Cache Hit Rate</div></div>
 </div>
 <h2>Events by Type</h2>
@@ -128,6 +141,15 @@ select:focus { outline: none; border-color: #00d4ff; }
 .daemon-badge { background: #00ff88; color: #1a1a2e; padding: 4px 8px; border-radius: 4px; font-size: 0.75rem; font-weight: bold; }
 .daemon-badge.dead { background: #ff4444; color: white; }
 .hidden { display: none; }
+.hero { background: linear-gradient(135deg, #16213e, #0f3460); border: 1px solid #00d4ff; border-radius: 10px; padding: 24px; text-align: center; margin-bottom: 20px; }
+.hero-value { font-size: 3.2rem; font-weight: bold; color: #00ff88; }
+.hero-label { color: #ccc; margin-top: 4px; }
+.hero-sub { color: #888; font-size: 0.8rem; margin-top: 8px; }
+.ledger { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+.ledger th { text-align: right; color: #888; font-weight: normal; padding: 4px 8px; border-bottom: 1px solid #0f3460; }
+.ledger td { text-align: right; padding: 6px 8px; border-bottom: 1px solid #0f3460; color: #ccc; }
+.ledger th:first-child, .ledger td:first-child { text-align: left; color: #00d4ff; }
+.ledger tr:last-child td { border-bottom: none; }
 .event-log { background: #16213e; border: 1px solid #0f3460; border-radius: 6px; padding: 10px; max-height: 280px; overflow-y: auto; font-family: 'SF Mono', Monaco, Menlo, Consolas, monospace; font-size: 0.78rem; }
 .event-log-empty { color: #666; font-style: italic; padding: 6px; }
 .event-log-row { padding: 4px 6px; border-bottom: 1px solid #0f3460; line-height: 1.5; }
@@ -242,6 +264,87 @@ function renderChart(containerId, data) {
   });
 }
 
+function bytesToTok(n) { return n > 0 ? Math.ceil(n / 4) : 0; }
+
+// renderHero states the headline in tokens and says plainly when the saving
+// is small: outputs under ~1k tokens pass through unfiltered by design.
+function renderHero(stats) {
+  var saved = stats.est_tokens_saved || 0;
+  document.getElementById('hero-tokens').textContent = formatNumber(saved);
+  var parts = [];
+  if (stats.total_raw_bytes) {
+    parts.push(((stats.compression_ratio || 0) * 100).toFixed(1) + '% of ' +
+      formatNumber(stats.est_raw_tokens || 0) + ' tokens of raw output');
+  }
+  if (stats.tools_list_tokens) {
+    parts.push('fixed cost ~' + formatNumber(stats.tools_list_tokens) + ' tokens per session (tool declarations)');
+  }
+  if (stats.total_raw_bytes && (stats.compression_ratio || 0) < 0.05) {
+    parts.push('most outputs were small and passed through unfiltered');
+  }
+  parts.push('bytes/4 estimate');
+  document.getElementById('hero-sub').textContent = parts.join(' · ');
+}
+
+function cell(text) {
+  var td = document.createElement('td');
+  td.textContent = text;
+  return td;
+}
+
+function renderToolLedger(toolBytes) {
+  var body = document.querySelector('#tool-table tbody');
+  body.innerHTML = '';
+  var names = Object.keys(toolBytes || {}).sort(function(a, b) {
+    return toolBytes[b].raw_bytes - toolBytes[a].raw_bytes;
+  });
+  if (names.length === 0) {
+    var tr = document.createElement('tr');
+    var td = cell('No byte-counted tool calls yet');
+    td.colSpan = 5;
+    tr.appendChild(td);
+    body.appendChild(tr);
+    return;
+  }
+  names.forEach(function(name) {
+    var t = toolBytes[name];
+    var raw = bytesToTok(t.raw_bytes), ret = bytesToTok(t.returned_bytes);
+    var pct = raw > 0 ? Math.max(0, (raw - ret) / raw * 100) : 0;
+    var tr = document.createElement('tr');
+    tr.appendChild(cell(name.replace('tool.', '')));
+    tr.appendChild(cell(t.calls));
+    tr.appendChild(cell(formatNumber(raw)));
+    tr.appendChild(cell(formatNumber(ret)));
+    tr.appendChild(cell(pct.toFixed(1) + '%'));
+    body.appendChild(tr);
+  });
+}
+
+// loadHostWide sums the per-project stats of every project the one daemon
+// serves. Done client-side from the same /api/stats the page already uses.
+var hostDaemons = [];
+async function loadHostWide() {
+  var paths = hostDaemons.slice(0, 20);
+  document.getElementById('host-projects').textContent = hostDaemons.length;
+  var raw = 0, saved = 0;
+  await Promise.all(paths.map(async function(p) {
+    try {
+      var resp = await fetch('/api/stats', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({jsonrpc: '2.0', method: 'dfmt.stats', params: {project_id: p}, id: 1})
+      });
+      var data = await readJSON(resp);
+      if (data.result) {
+        raw += data.result.est_raw_tokens || 0;
+        saved += data.result.est_tokens_saved || 0;
+      }
+    } catch (_) {}
+  }));
+  document.getElementById('host-saved').textContent = formatNumber(saved);
+  document.getElementById('host-ratio').textContent = (raw > 0 ? saved / raw * 100 : 0).toFixed(1) + '%';
+}
+
 async function loadDaemons() {
   try {
     var resp = await fetch('/api/all-daemons');
@@ -254,6 +357,7 @@ async function loadDaemons() {
       projectSelect.appendChild(opt);
       return null;
     }
+    hostDaemons = daemons.map(function(d) { return d.project_path || ''; }).filter(Boolean);
     daemons.forEach(function(d) {
       var opt = document.createElement('option');
       opt.value = d.project_path || '';
@@ -300,6 +404,9 @@ async function loadStatsForProject(projectPath, quiet) {
       document.getElementById('session-start').textContent = start.toLocaleString();
       document.getElementById('session-end').textContent = end.toLocaleString();
     }
+    renderHero(stats);
+    renderToolLedger(stats.tool_bytes);
+    loadHostWide();
     renderChart('type-chart', stats.events_by_type);
     renderChart('priority-chart', stats.events_by_priority);
     errorEl.style.display = 'none';

@@ -302,6 +302,12 @@ func cloneStatsResponse(src *StatsResponse) *StatsResponse {
 	out.EventsByPriority = cloneIntMap(src.EventsByPriority)
 	out.NativeToolCalls = cloneIntMap(src.NativeToolCalls)
 	out.MCPToolCalls = cloneIntMap(src.MCPToolCalls)
+	if src.ToolBytes != nil {
+		out.ToolBytes = make(map[string]ToolByteStats, len(src.ToolBytes))
+		for k, v := range src.ToolBytes {
+			out.ToolBytes[k] = v
+		}
+	}
 	return &out
 }
 
