@@ -34,6 +34,8 @@ Internal package shapes (`internal/...`) are NOT covered by SemVer.
   per-session `tools/list` fixed cost (`tools_list_bytes`,
   `tools_list_tokens`). See ADR-0032.
 
+- Stats `large_whole_calls` / `large_whole_tokens`: large outputs that were
+  delivered unfiltered; shown in `dfmt stats` and the dashboard headline.
 - `dfmt-bench replay [journal.jsonl]`: measured per-tool savings from a real
   journal, with the share of calls too small to filter. README no longer
   states the synthetic 40–90 % without that context.

@@ -38,6 +38,11 @@ README's 40–90 % comes from synthetic `dfmt-bench` scenarios only. Reasons:
   A native grep prints the same lines, so no saving is claimed; the call
   becomes visible in `tool_bytes` and the ratio is no longer flattered by
   leaving the cheap-to-claim tools out.
+- `large_whole_calls`, `large_whole_tokens`: calls whose output exceeded the
+  inline threshold and still came back (at least 90 %) whole. Measured on
+  this repository: 31 large calls saved almost nothing because they were
+  `return: "raw"` reads and uncuttable output. The count exposes that leak
+  instead of averaging it away.
 - `token_savings` stays on the wire for compatibility; its comment now says
   it is cache hits, not DFMT's saving.
 

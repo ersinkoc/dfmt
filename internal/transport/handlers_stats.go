@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/ersinkoc/dfmt/internal/core"
+	"github.com/ersinkoc/dfmt/internal/sandbox"
 )
 
 type StatsParams struct {
@@ -62,6 +63,11 @@ type StatsResponse struct {
 	EstRawTokens      int `json:"est_raw_tokens,omitempty"`
 	EstReturnedTokens int `json:"est_returned_tokens,omitempty"`
 	EstTokensSaved    int `json:"est_tokens_saved,omitempty"`
+	// LargeWholeCalls/Tokens: calls whose output exceeded the inline threshold
+	// and still went back (nearly) whole — typically return:"raw", or output
+	// with nothing to cut. This is where an agent's context actually fills.
+	LargeWholeCalls  int `json:"large_whole_calls,omitempty"`
+	LargeWholeTokens int `json:"large_whole_tokens,omitempty"`
 	// ToolsListBytes/Tokens is the fixed cost every session pays once for the
 	// tool declarations (tools/list). It is reported next to the savings, not
 	// subtracted from them: the journal carries no session id, so the number
@@ -177,6 +183,10 @@ func (h *Handlers) Stats(ctx context.Context, params StatsParams) (*StatsRespons
 			tb.RawBytes += rawBytes
 			tb.ReturnedBytes += returnedBytes
 			resp.ToolBytes[string(e.Type)] = tb
+			if rawBytes > sandbox.InlineTokenThreshold*4 && returnedBytes*10 >= rawBytes*9 {
+				resp.LargeWholeCalls++
+				resp.LargeWholeTokens += bytesToTokens(returnedBytes)
+			}
 		}
 
 		// Track native tool calls via PreToolUse hook (note events with tool tag)

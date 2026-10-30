@@ -65,6 +65,38 @@ func TestStats_GrepGlobRecordedWithoutSaving(t *testing.T) {
 	}
 }
 
+// A big output that comes back whole is where context actually fills; an
+// excerpted one and a small one must not be counted.
+func TestStats_LargeWholeCalls(t *testing.T) {
+	big := strings.Repeat("x", 8000)
+	for name, tc := range map[string]struct {
+		resp sandbox.ExecResp
+		want int
+	}{
+		"whole":     {sandbox.ExecResp{Stdout: big, RawStdout: big}, 1},
+		"excerpted": {sandbox.ExecResp{Stdout: "tiny", RawStdout: big, Summary: "s"}, 0},
+		"small":     {sandbox.ExecResp{Stdout: "ok", RawStdout: "ok"}, 0},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := NewHandlers(core.NewIndex(), &mockJournal{}, &stubSandbox{execResp: tc.resp})
+			ctx := context.Background()
+			if _, err := h.Exec(ctx, ExecParams{Code: "x", Intent: "i"}); err != nil {
+				t.Fatal(err)
+			}
+			st, err := h.Stats(ctx, StatsParams{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if st.LargeWholeCalls != tc.want {
+				t.Errorf("LargeWholeCalls = %d, want %d", st.LargeWholeCalls, tc.want)
+			}
+			if tc.want == 1 && st.LargeWholeTokens != 2000 {
+				t.Errorf("LargeWholeTokens = %d, want 2000", st.LargeWholeTokens)
+			}
+		})
+	}
+}
+
 func TestStats_EstimatedTokensAndFixedCost(t *testing.T) {
 	journal := &mockJournal{}
 	sb := &stubSandbox{execResp: sandbox.ExecResp{

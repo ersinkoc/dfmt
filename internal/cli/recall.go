@@ -401,6 +401,10 @@ func runStats(args []string) int {
 				fmt.Printf("  Fixed cost:       ~%d tokens of tool declarations, once per session\n",
 					resp.ToolsListTokens)
 			}
+			if resp.LargeWholeCalls > 0 {
+				fmt.Printf("  Large & whole:    %d calls delivered ~%d tokens unfiltered (return=raw or nothing to cut)\n",
+					resp.LargeWholeCalls, resp.LargeWholeTokens)
+			}
 			fmt.Println("  (bytes/4 estimate; outputs under ~1k tokens pass through unfiltered)")
 			fmt.Println()
 		}

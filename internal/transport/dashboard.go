@@ -282,6 +282,10 @@ function renderHero(stats) {
   if (stats.total_raw_bytes && (stats.compression_ratio || 0) < 0.05) {
     parts.push('most outputs were small and passed through unfiltered');
   }
+  if (stats.large_whole_calls) {
+    parts.push(stats.large_whole_calls + ' large calls (~' + formatNumber(stats.large_whole_tokens || 0) +
+      ' tokens) came back unfiltered');
+  }
   parts.push('bytes/4 estimate');
   document.getElementById('hero-sub').textContent = parts.join(' · ');
 }
