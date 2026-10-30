@@ -32,6 +32,8 @@ Operations:
   search       Benchmark search
   exec         Benchmark sandbox execution
   tokensaving  Measure end-to-end token-savings vs legacy pipeline
+  replay [journal.jsonl]
+               Measured savings from a real journal (default .dfmt/journal.jsonl)
   all          Run all benchmarks (default)`)
 		return
 	}
@@ -43,6 +45,10 @@ Operations:
 
 	if op == "tokensaving" {
 		runTokenSavingReport()
+		return
+	}
+	if op == "replay" {
+		runReplay(os.Args[2:])
 		return
 	}
 

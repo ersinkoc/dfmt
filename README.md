@@ -105,9 +105,17 @@ running.
 
 ## Why use it
 
-**Token savings.** On the workloads in `dfmt-bench tokensaving`, dfmt
-reduces wire bytes 40–90 % vs. raw native output. The agent gets the
-matched excerpts, not the haystack.
+**Token savings.** On the noisy workloads in `dfmt-bench tokensaving`
+(progress bars, 200-line test runs, kubectl JSON, HTML pages), dfmt reduces
+wire bytes 40–90 % vs. raw native output. Those are simulations of the cases
+it is built for. Output under ~1 000 tokens is passed through whole, so on
+ordinary sessions — mostly short commands and small reads — the saving is
+much smaller and arrives in the occasional large output. Measure your own:
+`dfmt stats` (estimated tokens saved, plus the fixed cost of the tool
+declarations) and `dfmt-bench replay` (per-tool totals from your real
+journal, including how many calls were too small to filter). The first
+numbers from this repository's own journal: 2.6 % saved, 93 % of calls
+small — see ADR-0032.
 
 **Session memory across compaction.** When the agent's conversation is
 compacted (most providers do this around 80 % context), DFMT's journal

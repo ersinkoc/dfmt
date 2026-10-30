@@ -34,6 +34,9 @@ Internal package shapes (`internal/...`) are NOT covered by SemVer.
   per-session `tools/list` fixed cost (`tools_list_bytes`,
   `tools_list_tokens`). See ADR-0032.
 
+- `dfmt-bench replay [journal.jsonl]`: measured per-tool savings from a real
+  journal, with the share of calls too small to filter. README no longer
+  states the synthetic 40–90 % without that context.
 - Dashboard: headline "estimated tokens kept out of your context" with the
   fixed per-session cost and a plain note when most outputs passed through
   unfiltered; per-tool ledger table; host-wide totals across every project
