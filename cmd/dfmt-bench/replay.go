@@ -12,7 +12,7 @@ import (
 	"github.com/ersinkoc/dfmt/internal/sandbox"
 )
 
-// replayRow is one tool's totals, accumulated from journal events.
+// replayRow is one tool's totals in tokens, accumulated from journal events.
 type replayRow struct {
 	calls, raw, returned int
 	// calls by raw size: under the inline threshold, an output is passed
@@ -45,7 +45,6 @@ func replayJournal(r io.Reader, w io.Writer) error {
 	rows := map[string]*replayRow{}
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 1<<20), 16<<20)
-	inlineBytes := sandbox.InlineTokenThreshold * 4
 	for sc.Scan() {
 		var e struct {
 			Type string         `json:"type"`
@@ -64,10 +63,18 @@ func replayJournal(r io.Reader, w io.Writer) error {
 			row = &replayRow{}
 			rows[e.Type] = row
 		}
+		// Prefer the tokens recorded at event time; bytes/4 for older events.
+		rawTok, retTok := tok(raw), tok(ret)
+		if v, ok := num(e.Data["raw_tokens"]); ok {
+			rawTok = v
+		}
+		if v, ok := num(e.Data["returned_tokens"]); ok {
+			retTok = v
+		}
 		row.calls++
-		row.raw += raw
-		row.returned += ret
-		if raw <= inlineBytes {
+		row.raw += rawTok
+		row.returned += retTok
+		if rawTok <= sandbox.InlineTokenThreshold {
 			row.small++
 		} else {
 			row.large++
@@ -95,7 +102,7 @@ func replayJournal(r io.Reader, w io.Writer) error {
 	for _, n := range names {
 		r := rows[n]
 		fmt.Fprintf(w, "%-12s %7d %10d %10d %7.1f%% %8d %8d\n", strings.TrimPrefix(n, "tool."),
-			r.calls, tok(r.raw), tok(r.returned), pct(r.raw, r.returned), r.small, r.large)
+			r.calls, r.raw, r.returned, pct(r.raw, r.returned), r.small, r.large)
 		t.calls += r.calls
 		t.raw += r.raw
 		t.returned += r.returned
@@ -104,8 +111,8 @@ func replayJournal(r io.Reader, w io.Writer) error {
 	}
 	fmt.Fprintln(w, strings.Repeat("-", 70))
 	fmt.Fprintf(w, "%-12s %7d %10d %10d %7.1f%% %8d %8d\n", "TOTAL",
-		t.calls, tok(t.raw), tok(t.returned), pct(t.raw, t.returned), t.small, t.large)
-	fmt.Fprintf(w, "\n%.0f%% of calls were small enough to pass through unfiltered (bytes/4 estimate).\n",
+		t.calls, t.raw, t.returned, pct(t.raw, t.returned), t.small, t.large)
+	fmt.Fprintf(w, "\n%.0f%% of calls were small enough to pass through unfiltered (tokens recorded per event; bytes/4 for older events).\n",
 		100*float64(t.small)/float64(t.calls))
 	return nil
 }

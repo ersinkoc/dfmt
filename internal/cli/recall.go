@@ -404,6 +404,10 @@ func runStats(args []string) int {
 			if resp.LargeWholeCalls > 0 {
 				fmt.Printf("  Large & whole:    %d calls delivered ~%d tokens unfiltered (return=raw or nothing to cut)\n",
 					resp.LargeWholeCalls, resp.LargeWholeTokens)
+				if resp.RawModeCalls > 0 {
+					fmt.Printf("                    of which %d (~%d tokens) asked for return=raw — drop it or pass an intent\n",
+						resp.RawModeCalls, resp.RawModeTokens)
+				}
 			}
 			fmt.Println("  (bytes/4 estimate; outputs under ~1k tokens pass through unfiltered)")
 			fmt.Println()

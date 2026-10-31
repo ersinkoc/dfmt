@@ -57,9 +57,9 @@ type StatsResponse struct {
 	// instead of writing a new one. Process-lifetime counter — survives
 	// idle restarts via re-warming, not via persistence.
 	DedupHits int `json:"dedup_hits,omitempty"`
-	// Token estimates derived from the byte totals above (bytes/4, rounded
-	// up — the ASCII rule of thumb behind sandbox.ApproxTokens). They are
-	// estimates and work on journals written before this field existed.
+	// Token totals: the exact ApproxTokens recorded per event when present,
+	// else the bytes/4 estimate for events written before ADR-0032 recorded
+	// tokens. Always estimates of agent-side cost, never API-billed counts.
 	EstRawTokens      int `json:"est_raw_tokens,omitempty"`
 	EstReturnedTokens int `json:"est_returned_tokens,omitempty"`
 	EstTokensSaved    int `json:"est_tokens_saved,omitempty"`
@@ -68,6 +68,10 @@ type StatsResponse struct {
 	// with nothing to cut. This is where an agent's context actually fills.
 	LargeWholeCalls  int `json:"large_whole_calls,omitempty"`
 	LargeWholeTokens int `json:"large_whole_tokens,omitempty"`
+	// RawModeCalls/Tokens is the subset the caller asked for with
+	// return:"raw" — the avoidable part of the leak.
+	RawModeCalls  int `json:"raw_mode_calls,omitempty"`
+	RawModeTokens int `json:"raw_mode_tokens,omitempty"`
 	// ToolsListBytes/Tokens is the fixed cost every session pays once for the
 	// tool declarations (tools/list). It is reported next to the savings, not
 	// subtracted from them: the journal carries no session id, so the number
@@ -153,6 +157,7 @@ func (h *Handlers) Stats(ctx context.Context, params StatsParams) (*StatsRespons
 	var earliest, latest time.Time
 	var totalInput, totalOutput, totalCached int
 	var totalRawBytes, totalReturnedBytes int
+	var totalRawTokens, totalReturnedTokens int
 	total := 0
 
 	for e := range stream {
@@ -177,15 +182,32 @@ func (h *Handlers) Stats(ctx context.Context, params StatsParams) (*StatsRespons
 		if hasReturned {
 			totalReturnedBytes += returnedBytes
 		}
+		// Tokens: recorded at event time when present (exact per body,
+		// including CJK); otherwise the bytes/4 estimate for older events.
+		rawTok, retTok := bytesToTokens(rawBytes), bytesToTokens(returnedBytes)
+		if v, ok := getInt(e.Data, core.KeyRawTokens); ok {
+			rawTok = v
+		}
+		if v, ok := getInt(e.Data, core.KeyReturnedTokens); ok {
+			retTok = v
+		}
+		if hasRaw && hasReturned {
+			totalRawTokens += rawTok
+			totalReturnedTokens += retTok
+		}
 		if hasRaw && strings.HasPrefix(string(e.Type), "tool.") {
 			tb := resp.ToolBytes[string(e.Type)]
 			tb.Calls++
 			tb.RawBytes += rawBytes
 			tb.ReturnedBytes += returnedBytes
 			resp.ToolBytes[string(e.Type)] = tb
-			if rawBytes > sandbox.InlineTokenThreshold*4 && returnedBytes*10 >= rawBytes*9 {
+			if rawTok > sandbox.InlineTokenThreshold && retTok*10 >= rawTok*9 {
 				resp.LargeWholeCalls++
-				resp.LargeWholeTokens += bytesToTokens(returnedBytes)
+				resp.LargeWholeTokens += retTok
+				if mode, _ := e.Data[core.KeyReturnMode].(string); mode == "raw" {
+					resp.RawModeCalls++
+					resp.RawModeTokens += retTok
+				}
 			}
 		}
 
@@ -227,8 +249,8 @@ func (h *Handlers) Stats(ctx context.Context, params StatsParams) (*StatsRespons
 		resp.CompressionRatio = float64(resp.BytesSaved) / float64(totalRawBytes)
 	}
 	resp.DedupHits = int(h.dedupHits.Load())
-	resp.EstRawTokens = bytesToTokens(resp.TotalRawBytes)
-	resp.EstReturnedTokens = bytesToTokens(resp.TotalReturnedBytes)
+	resp.EstRawTokens = totalRawTokens
+	resp.EstReturnedTokens = totalReturnedTokens
 	if resp.EstRawTokens > resp.EstReturnedTokens {
 		resp.EstTokensSaved = resp.EstRawTokens - resp.EstReturnedTokens
 	}

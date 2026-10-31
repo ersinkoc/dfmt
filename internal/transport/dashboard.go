@@ -286,6 +286,10 @@ function renderHero(stats) {
     parts.push(stats.large_whole_calls + ' large calls (~' + formatNumber(stats.large_whole_tokens || 0) +
       ' tokens) came back unfiltered');
   }
+  if (stats.raw_mode_calls) {
+    parts.push(stats.raw_mode_calls + ' of them asked for return=raw (~' +
+      formatNumber(stats.raw_mode_tokens || 0) + ' tokens avoidable)');
+  }
   parts.push('bytes/4 estimate');
   document.getElementById('hero-sub').textContent = parts.join(' · ');
 }

@@ -97,6 +97,35 @@ func TestStats_LargeWholeCalls(t *testing.T) {
 	}
 }
 
+// Tokens are recorded per event, so a CJK body is not mis-sized by bytes/4
+// (3 bytes per rune would read as 1500 tokens, ApproxTokens says 2000), and
+// the return mode is what separates an avoidable leak from a plain big output.
+func TestStats_TokensRecordedAtEventTime(t *testing.T) {
+	cjk := strings.Repeat("日", 2000)
+	journal := &mockJournal{}
+	sb := &stubSandbox{execResp: sandbox.ExecResp{Stdout: cjk, RawStdout: cjk}}
+	h := NewHandlers(core.NewIndex(), journal, sb)
+	ctx := context.Background()
+	if _, err := h.Exec(ctx, ExecParams{Code: "x", Return: "raw"}); err != nil {
+		t.Fatal(err)
+	}
+	ev := journal.events[0]
+	if got, _ := getInt(ev.Data, core.KeyRawTokens); got != 2000 {
+		t.Errorf("raw_tokens = %d, want 2000", got)
+	}
+	if mode, _ := ev.Data[core.KeyReturnMode].(string); mode != "raw" {
+		t.Errorf("return_mode = %q, want raw", mode)
+	}
+	st, err := h.Stats(ctx, StatsParams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.EstRawTokens != 2000 || st.LargeWholeCalls != 1 || st.RawModeCalls != 1 || st.RawModeTokens != 2000 {
+		t.Errorf("stats = raw %d, whole %d, rawmode %d/%d; want 2000, 1, 1/2000",
+			st.EstRawTokens, st.LargeWholeCalls, st.RawModeCalls, st.RawModeTokens)
+	}
+}
+
 func TestStats_EstimatedTokensAndFixedCost(t *testing.T) {
 	journal := &mockJournal{}
 	sb := &stubSandbox{execResp: sandbox.ExecResp{

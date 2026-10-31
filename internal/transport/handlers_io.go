@@ -74,13 +74,11 @@ func (h *Handlers) Read(ctx context.Context, params ReadParams) (_ *ReadResponse
 	// Wire dedup short-circuit. See ADR-0009 and the matching block in Exec
 	// for the full rationale.
 	if params.Return != "raw" && h.seenBefore(ctx, contentID) {
-		h.logEvent(ctx, "tool.read", params.Intent, map[string]any{
-			"path":                params.Path,
-			"read_bytes":          resp.ReadBytes,
-			"size":                resp.Size,
-			core.KeyRawBytes:      len(rawStash),
-			core.KeyReturnedBytes: len(sentUnchangedSummary),
-		})
+		h.logEvent(ctx, "tool.read", params.Intent, ledgerData(map[string]any{
+			"path":       params.Path,
+			"read_bytes": resp.ReadBytes,
+			"size":       resp.Size,
+		}, params.Return, rawStash, sentUnchangedSummary))
 		return &ReadResponse{
 			Summary:    sentUnchangedSummary,
 			Size:       resp.Size,
@@ -96,19 +94,11 @@ func (h *Handlers) Read(ctx context.Context, params ReadParams) (_ *ReadResponse
 	summary := h.redactString(ctx, resp.Summary)
 	matches := h.redactMatches(ctx, resp.Matches)
 
-	rawBytes := len(rawStash)
-	returnedBytes := len(redContent) + len(summary)
-	for _, m := range matches {
-		returnedBytes += len(m.Text)
-	}
-
-	h.logEvent(ctx, "tool.read", params.Intent, map[string]any{
-		"path":                params.Path,
-		"read_bytes":          resp.ReadBytes,
-		"size":                resp.Size,
-		core.KeyRawBytes:      rawBytes,
-		core.KeyReturnedBytes: returnedBytes,
-	})
+	h.logEvent(ctx, "tool.read", params.Intent, ledgerData(map[string]any{
+		"path":       params.Path,
+		"read_bytes": resp.ReadBytes,
+		"size":       resp.Size,
+	}, params.Return, rawStash, append([]string{redContent, summary}, matchTexts(matches)...)...))
 
 	// Only content the agent received whole may be answered with
 	// "(unchanged)" later: after a summary/matches-only reply, a second
@@ -245,12 +235,10 @@ func (h *Handlers) Fetch(ctx context.Context, params FetchParams) (_ *FetchRespo
 	// chains) the agent may still want to reason about even when the body
 	// hasn't changed.
 	if params.Return != "raw" && h.seenBefore(ctx, contentID) {
-		h.logEvent(ctx, "tool.fetch", params.Intent, map[string]any{
-			"url":                 params.URL,
-			"status":              resp.Status,
-			core.KeyRawBytes:      len(rawStash),
-			core.KeyReturnedBytes: len(sentUnchangedSummary),
-		})
+		h.logEvent(ctx, "tool.fetch", params.Intent, ledgerData(map[string]any{
+			"url":    params.URL,
+			"status": resp.Status,
+		}, params.Return, rawStash, sentUnchangedSummary))
 		return &FetchResponse{
 			Status:    resp.Status,
 			Headers:   h.redactHeaders(ctx, resp.Headers),
@@ -264,18 +252,10 @@ func (h *Handlers) Fetch(ctx context.Context, params FetchParams) (_ *FetchRespo
 	summary := h.redactString(ctx, resp.Summary)
 	matches := h.redactMatches(ctx, resp.Matches)
 
-	rawBytes := len(rawStash)
-	returnedBytes := len(redBody) + len(summary)
-	for _, m := range matches {
-		returnedBytes += len(m.Text)
-	}
-
-	h.logEvent(ctx, "tool.fetch", params.Intent, map[string]any{
-		"url":                 params.URL,
-		"status":              resp.Status,
-		core.KeyRawBytes:      rawBytes,
-		core.KeyReturnedBytes: returnedBytes,
-	})
+	h.logEvent(ctx, "tool.fetch", params.Intent, ledgerData(map[string]any{
+		"url":    params.URL,
+		"status": resp.Status,
+	}, params.Return, rawStash, append([]string{redBody, summary}, matchTexts(matches)...)...))
 
 	// Only content the agent received whole may be answered with
 	// "(unchanged)" later: after a summary/matches-only reply, a second

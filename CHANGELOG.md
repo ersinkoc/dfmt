@@ -34,6 +34,10 @@ Internal package shapes (`internal/...`) are NOT covered by SemVer.
   per-session `tools/list` fixed cost (`tools_list_bytes`,
   `tools_list_tokens`). See ADR-0032.
 
+- Exec/read/fetch events record `raw_tokens`, `returned_tokens` and
+  `return_mode`; stats and `dfmt-bench replay` use them (bytes/4 only for
+  older events), and `raw_mode_calls` / `raw_mode_tokens` show how much of
+  the unfiltered large output was an explicit `return:"raw"`.
 - Stats `large_whole_calls` / `large_whole_tokens`: large outputs that were
   delivered unfiltered; shown in `dfmt stats` and the dashboard headline.
 - `dfmt-bench replay [journal.jsonl]`: measured per-tool savings from a real

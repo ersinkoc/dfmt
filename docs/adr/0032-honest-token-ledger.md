@@ -49,6 +49,16 @@ README's 40–90 % comes from synthetic `dfmt-bench` scenarios only. Reasons:
 `dfmt stats` prints the estimate, the fixed cost, and the pass-through
 caveat.
 
+### Amendment (2026-10-31): tokens recorded at event time
+
+Exec, read and fetch events now carry `raw_tokens`, `returned_tokens`
+(`sandbox.ApproxTokens` of the bodies) and `return_mode`. Stats and
+`dfmt-bench replay` use them per event and fall back to bytes/4 for events
+written before this change, so old journals still work and new ones are
+exact for CJK. `raw_mode_calls`/`raw_mode_tokens` count the large-and-whole
+calls that asked for `return:"raw"` — the avoidable share of the leak.
+Grep/glob events still carry bytes only (fallback applies).
+
 ## Consequences
 
 - The headline ratio can go *down* on real journals, because grep/glob now

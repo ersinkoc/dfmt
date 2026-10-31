@@ -79,6 +79,11 @@ const (
 const (
 	KeyRawBytes      = "raw_bytes"      // int - pre-filter (post-redact) output size
 	KeyReturnedBytes = "returned_bytes" // int - bytes actually returned to caller
+	// Token-ledger keys (ADR-0032): the same two quantities in approximated
+	// tokens, and the return mode the caller asked for.
+	KeyRawTokens      = "raw_tokens"      // int - ApproxTokens of the pre-filter output
+	KeyReturnedTokens = "returned_tokens" // int - ApproxTokens of what was returned
+	KeyReturnMode     = "return_mode"     // string - auto | raw | summary | search
 )
 
 // Event represents a single event in the journal.

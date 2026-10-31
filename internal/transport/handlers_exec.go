@@ -4,7 +4,6 @@ import (
 	"context"
 	"time"
 
-	"github.com/ersinkoc/dfmt/internal/core"
 	"github.com/ersinkoc/dfmt/internal/sandbox"
 )
 
@@ -157,14 +156,12 @@ func (h *Handlers) runExec(ctx context.Context, bundle Bundle, params ExecParams
 	// at full byte size before short-circuiting so dashboard stats reflect
 	// the work that ran.
 	if params.Return != "raw" && h.seenBefore(ctx, contentID) {
-		h.logEvent(ctx, "tool.exec", params.Intent, map[string]any{
-			"code":                params.Code,
-			"lang":                params.Lang,
-			"exit":                resp.Exit,
-			"duration":            resp.DurationMs,
-			core.KeyRawBytes:      len(rawStash),
-			core.KeyReturnedBytes: len(sentUnchangedSummary),
-		})
+		h.logEvent(ctx, "tool.exec", params.Intent, ledgerData(map[string]any{
+			"code":     params.Code,
+			"lang":     params.Lang,
+			"exit":     resp.Exit,
+			"duration": resp.DurationMs,
+		}, params.Return, rawStash, sentUnchangedSummary))
 		return &ExecResponse{
 			Exit:       resp.Exit,
 			Summary:    sentUnchangedSummary,
@@ -178,22 +175,14 @@ func (h *Handlers) runExec(ctx context.Context, bundle Bundle, params ExecParams
 	summary := h.redactString(ctx, resp.Summary)
 	matches := h.redactMatches(ctx, resp.Matches)
 
-	rawBytes := len(rawStash)
-	returnedBytes := len(stdout) + len(stderr) + len(summary)
-	for _, m := range matches {
-		returnedBytes += len(m.Text)
-	}
-
 	// Log the invocation. Code goes in redacted because secrets leak through
 	// command lines far more often than through stdout.
-	h.logEvent(ctx, "tool.exec", params.Intent, map[string]any{
-		"code":                params.Code,
-		"lang":                params.Lang,
-		"exit":                resp.Exit,
-		"duration":            resp.DurationMs,
-		core.KeyRawBytes:      rawBytes,
-		core.KeyReturnedBytes: returnedBytes,
-	})
+	h.logEvent(ctx, "tool.exec", params.Intent, ledgerData(map[string]any{
+		"code":     params.Code,
+		"lang":     params.Lang,
+		"exit":     resp.Exit,
+		"duration": resp.DurationMs,
+	}, params.Return, rawStash, append([]string{stdout, stderr, summary}, matchTexts(matches)...)...))
 
 	// Only content the agent received whole may be answered with
 	// "(unchanged)" later: after a summary/matches-only reply, a second
