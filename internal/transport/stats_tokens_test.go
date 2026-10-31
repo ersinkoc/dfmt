@@ -52,6 +52,11 @@ func TestStats_GrepGlobRecordedWithoutSaving(t *testing.T) {
 		if want := wantSize[string(ev.Type)]; raw != want {
 			t.Errorf("%s size = %d, want %d", ev.Type, raw, want)
 		}
+		rt, okRT := getInt(ev.Data, core.KeyRawTokens)
+		tt, okTT := getInt(ev.Data, core.KeyReturnedTokens)
+		if !okRT || !okTT || rt != tt || rt <= 0 {
+			t.Errorf("%s tokens raw=%d(%v) returned=%d(%v), want equal, present, >0", ev.Type, rt, okRT, tt, okTT)
+		}
 	}
 	st, err := h.Stats(ctx, StatsParams{})
 	if err != nil {

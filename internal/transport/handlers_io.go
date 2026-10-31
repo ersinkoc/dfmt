@@ -5,7 +5,6 @@ import (
 	"errors"
 	"time"
 
-	"github.com/ersinkoc/dfmt/internal/core"
 	"github.com/ersinkoc/dfmt/internal/logging"
 	"github.com/ersinkoc/dfmt/internal/sandbox"
 )
@@ -308,19 +307,18 @@ func (h *Handlers) Glob(ctx context.Context, params GlobParams) (_ *GlobResponse
 	}
 	// A native glob returns the same listing, so raw == returned: recorded
 	// to keep the call visible in the per-tool ledger, claiming no saving.
-	size := len(out.Summary)
+	var size sizeTally
+	size.add(out.Summary)
 	for _, f := range out.Files {
-		size += len(f) + 1
+		size.add(f + "\n")
 	}
 	for _, m := range out.Matches {
-		size += len(m.Text)
+		size.add(m.Text)
 	}
-	h.logEvent(ctx, "tool.glob", params.Intent, map[string]any{
-		"pattern":             params.Pattern,
-		"files":               len(resp.Files),
-		core.KeyRawBytes:      size,
-		core.KeyReturnedBytes: size,
-	})
+	h.logEvent(ctx, "tool.glob", params.Intent, size.apply(map[string]any{
+		"pattern": params.Pattern,
+		"files":   len(resp.Files),
+	}))
 
 	return out, nil
 }
@@ -358,7 +356,8 @@ func (h *Handlers) Grep(ctx context.Context, params GrepParams) (_ *GrepResponse
 	// Redact match content
 	matches := make([]sandbox.GrepMatch, len(resp.Matches))
 	summary := h.redactString(ctx, resp.Summary)
-	size := len(summary)
+	var size sizeTally
+	size.add(summary)
 	for i, m := range resp.Matches {
 		matches[i] = sandbox.GrepMatch{
 			File:    m.File,
@@ -367,23 +366,22 @@ func (h *Handlers) Grep(ctx context.Context, params GrepParams) (_ *GrepResponse
 			Before:  h.redactLines(ctx, m.Before),
 			After:   h.redactLines(ctx, m.After),
 		}
-		size += len(m.File) + len(matches[i].Content)
+		size.add(m.File)
+		size.add(matches[i].Content)
 		for _, l := range matches[i].Before {
-			size += len(l)
+			size.add(l)
 		}
 		for _, l := range matches[i].After {
-			size += len(l)
+			size.add(l)
 		}
 	}
 
 	// raw == returned, as for glob: a native grep prints the same lines.
-	h.logEvent(ctx, "tool.grep", params.Intent, map[string]any{
-		"pattern":             params.Pattern,
-		"files":               params.Files,
-		"matches":             len(resp.Matches),
-		core.KeyRawBytes:      size,
-		core.KeyReturnedBytes: size,
-	})
+	h.logEvent(ctx, "tool.grep", params.Intent, size.apply(map[string]any{
+		"pattern": params.Pattern,
+		"files":   params.Files,
+		"matches": len(resp.Matches),
+	}))
 
 	return &GrepResponse{
 		Matches: matches,

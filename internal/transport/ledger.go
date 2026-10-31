@@ -27,6 +27,25 @@ func ledgerData(data map[string]any, mode, raw string, returned ...string) map[s
 	return data
 }
 
+// sizeTally accumulates the bytes and tokens of a response that is returned
+// as produced (grep, glob), where raw == returned by definition.
+type sizeTally struct{ bytes, tokens int }
+
+func (t *sizeTally) add(s string) {
+	t.bytes += len(s)
+	t.tokens += sandbox.ApproxTokens(s)
+}
+
+// apply records the tally as both raw and returned: the call is visible in
+// the ledger and claims no saving.
+func (t *sizeTally) apply(data map[string]any) map[string]any {
+	data[core.KeyRawBytes] = t.bytes
+	data[core.KeyReturnedBytes] = t.bytes
+	data[core.KeyRawTokens] = t.tokens
+	data[core.KeyReturnedTokens] = t.tokens
+	return data
+}
+
 // matchTexts lists the excerpt bodies of a response, for ledgerData.
 func matchTexts(ms []sandbox.ContentMatch) []string {
 	out := make([]string, len(ms))

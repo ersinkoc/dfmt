@@ -52,6 +52,9 @@ Internal package shapes (`internal/...`) are NOT covered by SemVer.
   fixed per-session cost and a plain note when most outputs passed through
   unfiltered; per-tool ledger table; host-wide totals across every project
   the one daemon serves.
+- `tool.grep` / `tool.glob` events now carry `raw_tokens` / `returned_tokens`
+  (equal, so no saving is claimed) like exec/read/fetch, instead of falling
+  back to bytes/4.
 
 ### Fixed
 
