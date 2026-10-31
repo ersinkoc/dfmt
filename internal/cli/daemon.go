@@ -118,6 +118,13 @@ func runStatus(args []string) int {
 		}
 	}
 
+	// One daemon serves every initialized project on the host; say how many
+	// it currently holds so that is visible without `dfmt list`.
+	var projectsLoaded []string
+	if ginfo.Alive {
+		projectsLoaded = loadedProjectsViaAPI(ginfo.Port)
+	}
+
 	if flagJSON {
 		// fmt %q produces Go-escaped strings, not JSON — low-byte control
 		// characters and "\xHH" escapes in a Windows path would produce
@@ -127,6 +134,9 @@ func runStatus(args []string) int {
 			"daemon_running": running,
 			"socket":         socketPath,
 			"dashboard":      dashboardURL,
+		}
+		if len(projectsLoaded) > 0 {
+			payload["projects_loaded"] = len(projectsLoaded)
 		}
 		if ginfo.Alive {
 			// Report which build is actually serving, and this binary's own,
@@ -169,6 +179,9 @@ func runStatus(args []string) int {
 				}
 			} else {
 				fmt.Println("Daemon: running")
+			}
+			if n := len(projectsLoaded); n > 0 {
+				fmt.Printf("Serving: %d project(s) from this one daemon\n", n)
 			}
 			if dashboardURL != "" {
 				// Surfacing the dashboard URL on every `dfmt status` lets

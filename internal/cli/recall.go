@@ -409,7 +409,7 @@ func runStats(args []string) int {
 						resp.RawModeCalls, resp.RawModeTokens)
 				}
 			}
-			fmt.Println("  (bytes/4 estimate; outputs under ~1k tokens pass through unfiltered)")
+			fmt.Println("  (approximate tokens; outputs under ~1k tokens pass through unfiltered)")
 			fmt.Println()
 		}
 
