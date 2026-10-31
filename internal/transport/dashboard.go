@@ -43,6 +43,10 @@ const DashboardHTML = `<!DOCTYPE html>
 </div>
 <h2>Per-tool ledger</h2>
 <div class="chart"><table class="ledger" id="tool-table"><thead><tr><th>Tool</th><th>Calls</th><th>Raw tok</th><th>Returned tok</th><th>Saved</th></tr></thead><tbody></tbody></table></div>
+<h2>Tokens saved per day (last 14 days)</h2>
+<div class="chart"><div class="bar-chart" id="daily-chart"></div></div>
+<h2>Top savers</h2>
+<div class="chart"><table class="ledger" id="saver-table"><thead><tr><th>Call</th><th>Raw tok</th><th>Saved tok</th></tr></thead><tbody></tbody></table></div>
 <div class="cards">
 <div class="card"><div class="card-value" id="total-events">0</div><div class="card-label">Total Events</div></div>
 <div class="card"><div class="card-value" id="session-duration">-</div><div class="card-label">Session Duration</div></div>
@@ -124,7 +128,7 @@ select:focus { outline: none; border-color: #00d4ff; }
 .card { background: #16213e; border-radius: 8px; padding: 15px; border: 1px solid #0f3460; }
 .card-value { font-size: 2rem; font-weight: bold; color: #00d4ff; }
 .card-label { font-size: 0.8rem; color: #888; margin-top: 5px; }
-.chart { background: #16213e; border-radius: 8px; padding: 15px; border: 1px solid #0f3460; }
+.chart { background: #16213e; border-radius: 8px; padding: 15px; border: 1px solid #0f3460; margin-bottom: 20px; }
 .bar-chart { display: flex; flex-direction: column; gap: 8px; }
 .bar-row { display: flex; align-items: center; gap: 10px; }
 .bar-label { width: 120px; font-size: 0.8rem; color: #aaa; text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -290,7 +294,7 @@ function renderHero(stats) {
     parts.push(stats.raw_mode_calls + ' of them asked for return=raw (~' +
       formatNumber(stats.raw_mode_tokens || 0) + ' tokens avoidable)');
   }
-  parts.push('bytes/4 estimate');
+  parts.push('approximate tokens');
   document.getElementById('hero-sub').textContent = parts.join(' · ');
 }
 
@@ -324,6 +328,63 @@ function renderToolLedger(toolBytes) {
     tr.appendChild(cell(formatNumber(raw)));
     tr.appendChild(cell(formatNumber(ret)));
     tr.appendChild(cell(pct.toFixed(1) + '%'));
+    body.appendChild(tr);
+  });
+}
+
+// renderDaily draws one bar per day, oldest first, sized by tokens saved.
+function renderDaily(days) {
+  var container = document.getElementById('daily-chart');
+  container.innerHTML = '';
+  if (!days || days.length === 0) {
+    var empty = document.createElement('div');
+    empty.style.cssText = 'color:#888;text-align:center;padding:20px;';
+    empty.textContent = 'No data';
+    container.appendChild(empty);
+    return;
+  }
+  var max = Math.max.apply(null, days.map(function(d) { return d.saved_tokens || 0; })) || 1;
+  days.forEach(function(d) {
+    var row = document.createElement('div');
+    row.className = 'bar-row';
+    var label = document.createElement('div');
+    label.className = 'bar-label';
+    label.textContent = d.date.slice(5);
+    var box = document.createElement('div');
+    box.className = 'bar-container';
+    var fill = document.createElement('div');
+    fill.className = 'bar-fill';
+    fill.style.width = ((d.saved_tokens || 0) / max * 100) + '%';
+    box.appendChild(fill);
+    var val = document.createElement('div');
+    val.className = 'bar-value';
+    val.textContent = formatNumber(d.saved_tokens || 0) + ' / ' + formatNumber(d.raw_tokens || 0);
+    val.style.width = '100px';
+    row.appendChild(label);
+    row.appendChild(box);
+    row.appendChild(val);
+    container.appendChild(row);
+  });
+}
+
+function renderSavers(savers) {
+  var body = document.querySelector('#saver-table tbody');
+  body.innerHTML = '';
+  if (!savers || savers.length === 0) {
+    var tr = document.createElement('tr');
+    var td = cell('No call has been compressed yet');
+    td.colSpan = 3;
+    tr.appendChild(td);
+    body.appendChild(tr);
+    return;
+  }
+  savers.forEach(function(s) {
+    var tr = document.createElement('tr');
+    var first = cell(s.tool.replace('tool.', '') + '  ' + (s.label || ''));
+    first.style.wordBreak = 'break-all';
+    tr.appendChild(first);
+    tr.appendChild(cell(formatNumber(s.raw_tokens || 0)));
+    tr.appendChild(cell(formatNumber(s.saved_tokens || 0)));
     body.appendChild(tr);
   });
 }
@@ -414,6 +475,8 @@ async function loadStatsForProject(projectPath, quiet) {
     }
     renderHero(stats);
     renderToolLedger(stats.tool_bytes);
+    renderDaily(stats.daily);
+    renderSavers(stats.top_savers);
     loadHostWide();
     renderChart('type-chart', stats.events_by_type);
     renderChart('priority-chart', stats.events_by_priority);

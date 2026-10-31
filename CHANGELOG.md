@@ -38,6 +38,9 @@ Internal package shapes (`internal/...`) are NOT covered by SemVer.
   `return_mode`; stats and `dfmt-bench replay` use them (bytes/4 only for
   older events), and `raw_mode_calls` / `raw_mode_tokens` show how much of
   the unfiltered large output was an explicit `return:"raw"`.
+- Stats `daily` (tokens raw/saved per UTC day, last 14) and `top_savers`
+  (the five calls that kept the most tokens out of context); the dashboard
+  draws both.
 - `dfmt status` prints "Serving: N project(s) from this one daemon" and
   `status --json` carries `projects_loaded`.
 - Stats `large_whole_calls` / `large_whole_tokens`: large outputs that were

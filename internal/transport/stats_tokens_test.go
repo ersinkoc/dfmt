@@ -126,6 +126,65 @@ func TestStats_TokensRecordedAtEventTime(t *testing.T) {
 	}
 }
 
+func TestInsertTopSaver(t *testing.T) {
+	var top []TopSaver
+	for _, saved := range []int{5, 50, 1, 20, 30, 10, 40} {
+		top = insertTopSaver(top, TopSaver{Saved: saved})
+	}
+	var got []int
+	for _, s := range top {
+		got = append(got, s.Saved)
+	}
+	want := []int{50, 40, 30, 20, 10}
+	if len(got) != len(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("got %v, want %v", got, want)
+		}
+	}
+}
+
+func TestSaverLabel(t *testing.T) {
+	if got := saverLabel(map[string]any{"code": "go  test\n./..."}); got != "go test ./..." {
+		t.Errorf("label = %q", got)
+	}
+	long := strings.Repeat("a", 200)
+	if got := []rune(saverLabel(map[string]any{"path": long})); len(got) != topSaverLabel {
+		t.Errorf("label length = %d, want %d", len(got), topSaverLabel)
+	}
+	if got := saverLabel(map[string]any{}); got != "" {
+		t.Errorf("label = %q, want empty", got)
+	}
+}
+
+func TestStats_DailyAndTopSavers(t *testing.T) {
+	big := strings.Repeat("x", 8000)
+	sb := &stubSandbox{execResp: sandbox.ExecResp{Stdout: "tiny", RawStdout: big, Summary: "s"}}
+	h := NewHandlers(core.NewIndex(), &mockJournal{}, sb)
+	ctx := context.Background()
+	if _, err := h.Exec(ctx, ExecParams{Code: "go test ./...", Intent: "i"}); err != nil {
+		t.Fatal(err)
+	}
+	st, err := h.Stats(ctx, StatsParams{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(st.Daily) != 1 || st.Daily[0].Calls != 1 || st.Daily[0].Saved <= 0 {
+		t.Fatalf("Daily = %+v", st.Daily)
+	}
+	if len(st.TopSavers) != 1 || st.TopSavers[0].Label != "go test ./..." || st.TopSavers[0].Tool != "tool.exec" {
+		t.Fatalf("TopSavers = %+v", st.TopSavers)
+	}
+	// The cached copy must not alias the slices handed to callers.
+	st.TopSavers[0].Label = "mutated"
+	again, _ := h.Stats(ctx, StatsParams{})
+	if again.TopSavers[0].Label != "go test ./..." {
+		t.Errorf("cache aliased: %q", again.TopSavers[0].Label)
+	}
+}
+
 func TestStats_EstimatedTokensAndFixedCost(t *testing.T) {
 	journal := &mockJournal{}
 	sb := &stubSandbox{execResp: sandbox.ExecResp{

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -72,6 +73,12 @@ type StatsResponse struct {
 	// return:"raw" — the avoidable part of the leak.
 	RawModeCalls  int `json:"raw_mode_calls,omitempty"`
 	RawModeTokens int `json:"raw_mode_tokens,omitempty"`
+	// Daily is raw/returned tokens per UTC day, oldest first, capped to the
+	// last statsDailyDays days that have byte-counted calls.
+	Daily []DayStat `json:"daily,omitempty"`
+	// TopSavers are the byte-counted calls that kept the most tokens out of
+	// the agent's context, largest first.
+	TopSavers []TopSaver `json:"top_savers,omitempty"`
 	// ToolsListBytes/Tokens is the fixed cost every session pays once for the
 	// tool declarations (tools/list). It is reported next to the savings, not
 	// subtracted from them: the journal carries no session id, so the number
@@ -87,6 +94,60 @@ type StatsResponse struct {
 	// journal scan in the daemon instead of streaming every event to each
 	// MCP proxy at session start.
 	ToolBytes map[string]ToolByteStats `json:"tool_bytes,omitempty"`
+}
+
+const (
+	statsDailyDays = 14
+	statsTopSavers = 5
+	topSaverLabel  = 80
+)
+
+// DayStat is one day's token totals.
+type DayStat struct {
+	Date  string `json:"date"`
+	Raw   int    `json:"raw_tokens"`
+	Saved int    `json:"saved_tokens"`
+	Calls int    `json:"calls"`
+}
+
+// TopSaver is one call that kept tokens out of context.
+type TopSaver struct {
+	Tool  string `json:"tool"`
+	Label string `json:"label"`
+	Raw   int    `json:"raw_tokens"`
+	Saved int    `json:"saved_tokens"`
+}
+
+// saverLabel names a call by the most telling field it logged.
+func saverLabel(data map[string]any) string {
+	for _, k := range []string{"code", "path", "url", "pattern"} {
+		if s, ok := data[k].(string); ok && s != "" {
+			s = strings.Join(strings.Fields(s), " ")
+			if r := []rune(s); len(r) > topSaverLabel {
+				s = string(r[:topSaverLabel-1]) + "…"
+			}
+			return s
+		}
+	}
+	return ""
+}
+
+// insertTopSaver keeps the statsTopSavers largest by Saved, in order.
+func insertTopSaver(top []TopSaver, s TopSaver) []TopSaver {
+	i := len(top)
+	for i > 0 && top[i-1].Saved < s.Saved {
+		i--
+	}
+	if i >= statsTopSavers {
+		return top
+	}
+	top = append(top, TopSaver{})
+	copy(top[i+1:], top[i:])
+	top[i] = s
+	if len(top) > statsTopSavers {
+		top = top[:statsTopSavers]
+	}
+	return top
 }
 
 // ToolByteStats aggregates one tool's calls that recorded byte counts.
@@ -158,6 +219,8 @@ func (h *Handlers) Stats(ctx context.Context, params StatsParams) (*StatsRespons
 	var totalInput, totalOutput, totalCached int
 	var totalRawBytes, totalReturnedBytes int
 	var totalRawTokens, totalReturnedTokens int
+	daily := make(map[string]*DayStat)
+	var topSavers []TopSaver
 	total := 0
 
 	for e := range stream {
@@ -194,6 +257,21 @@ func (h *Handlers) Stats(ctx context.Context, params StatsParams) (*StatsRespons
 		if hasRaw && hasReturned {
 			totalRawTokens += rawTok
 			totalReturnedTokens += retTok
+			if strings.HasPrefix(string(e.Type), "tool.") {
+				day := daily[e.TS.UTC().Format("2006-01-02")]
+				if day == nil {
+					day = &DayStat{Date: e.TS.UTC().Format("2006-01-02")}
+					daily[day.Date] = day
+				}
+				day.Calls++
+				day.Raw += rawTok
+				if rawTok > retTok {
+					day.Saved += rawTok - retTok
+					topSavers = insertTopSaver(topSavers, TopSaver{
+						Tool: string(e.Type), Label: saverLabel(e.Data), Raw: rawTok, Saved: rawTok - retTok,
+					})
+				}
+			}
 		}
 		if hasRaw && strings.HasPrefix(string(e.Type), "tool.") {
 			tb := resp.ToolBytes[string(e.Type)]
@@ -253,6 +331,18 @@ func (h *Handlers) Stats(ctx context.Context, params StatsParams) (*StatsRespons
 	resp.EstReturnedTokens = totalReturnedTokens
 	if resp.EstRawTokens > resp.EstReturnedTokens {
 		resp.EstTokensSaved = resp.EstRawTokens - resp.EstReturnedTokens
+	}
+	resp.TopSavers = topSavers
+	days := make([]string, 0, len(daily))
+	for d := range daily {
+		days = append(days, d)
+	}
+	sort.Strings(days)
+	if len(days) > statsDailyDays {
+		days = days[len(days)-statsDailyDays:]
+	}
+	for _, d := range days {
+		resp.Daily = append(resp.Daily, *daily[d])
 	}
 	resp.ToolsListBytes = toolsListBytes()
 	resp.ToolsListTokens = bytesToTokens(resp.ToolsListBytes)
@@ -334,6 +424,8 @@ func cloneStatsResponse(src *StatsResponse) *StatsResponse {
 	out.EventsByPriority = cloneIntMap(src.EventsByPriority)
 	out.NativeToolCalls = cloneIntMap(src.NativeToolCalls)
 	out.MCPToolCalls = cloneIntMap(src.MCPToolCalls)
+	out.Daily = append([]DayStat(nil), src.Daily...)
+	out.TopSavers = append([]TopSaver(nil), src.TopSavers...)
 	if src.ToolBytes != nil {
 		out.ToolBytes = make(map[string]ToolByteStats, len(src.ToolBytes))
 		for k, v := range src.ToolBytes {
