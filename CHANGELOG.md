@@ -55,6 +55,9 @@ Internal package shapes (`internal/...`) are NOT covered by SemVer.
 - `tool.grep` / `tool.glob` events now carry `raw_tokens` / `returned_tokens`
   (equal, so no saving is claimed) like exec/read/fetch, instead of falling
   back to bytes/4.
+- `dfmt-bench bypass [transcript|dir]`: native vs DFMT tool use from a Claude Code
+  transcript, with the size of native results (names and sizes only, run on
+  request; the daemon never reads transcripts).
 
 ### Fixed
 

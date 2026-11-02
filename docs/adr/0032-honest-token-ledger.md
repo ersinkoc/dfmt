@@ -69,3 +69,19 @@ Grep/glob events still carry bytes only (fallback applies).
   would fix it and is left for a later change.
 - No counterfactual exists for edit/write (a native Edit is as small), so
   they stay out of the ledger.
+
+## Amendment 2026-11-02: native-tool bypass is measured outside the daemon
+
+The ledger sees only calls that reach DFMT; an agent that runs `Bash` instead
+of `dfmt_exec` is invisible to it. The one place that shows both sides is the
+host's transcript. `dfmt-bench bypass [transcript.jsonl|dir]` reads a Claude
+Code transcript on request and prints native vs DFMT calls per tool plus the
+approximate tokens of the native results (and how many were over the inline
+threshold, the only ones DFMT would have filtered).
+
+Deliberately not part of the daemon or `dfmt stats`: reading an agent's
+conversation files is a privacy-sensitive act the user should choose to do,
+the format is specific to one host, and the daemon makes no such reads on its
+own. Only tool names and result sizes are kept; no content is stored or
+printed. On this repo it showed 45 % of exec calls and 90 % of reads going
+through DFMT, with native results over 1k tokens being 45 of 1395 calls.

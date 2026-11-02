@@ -34,6 +34,9 @@ Operations:
   tokensaving  Measure end-to-end token-savings vs legacy pipeline
   replay [journal.jsonl]
                Measured savings from a real journal (default .dfmt/journal.jsonl)
+  bypass [transcript.jsonl|dir]
+               Native vs DFMT tool use from a Claude Code transcript (default: this
+               directory's ~/.claude/projects entry); keeps names and sizes only
   all          Run all benchmarks (default)`)
 		return
 	}
@@ -49,6 +52,10 @@ Operations:
 	}
 	if op == "replay" {
 		runReplay(os.Args[2:])
+		return
+	}
+	if op == "bypass" {
+		runBypass(os.Args[2:])
 		return
 	}
 
