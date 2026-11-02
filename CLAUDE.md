@@ -196,6 +196,17 @@ Three things follow from that, and they are the reason retrieval works now:
 
 Note that `Recall` classifies each event (`classifier.Classify`) to pick its tier AND to label it. The stored `Priority` is not the effective one — `dfmt_remember` coerces every agent-written event to p3 (F-21) and the classifier re-elevates from tags — so rendering the stored value printed `[p3]` on lines sorted above `[p2]`.
 
+### Token ledger (`internal/transport/ledger.go`, `handlers_stats.go`, [ADR-0032](docs/adr/0032-honest-token-ledger.md))
+
+The savings claim is measured, not asserted. Measured on this repo: ~2.6 % saved, 93 % of calls under the 1k-token inline threshold (so they pass through unfiltered). Rules that keep the numbers honest:
+
+- **Tokens are recorded at event time** (`raw_tokens`, `returned_tokens`, `return_mode` via `ledgerData`/`sizeTally`) with `sandbox.ApproxTokens`. Stats falls back to bytes/4 only for older events. Do not recompute from bytes in new code: bytes/4 mis-sizes CJK.
+- **grep/glob record raw == returned.** A native grep prints the same lines, so the call is visible without claiming a saving. Do not "improve" the ratio by inventing a counterfactual.
+- **`large_whole_calls`** (raw > 1024 tokens, returned ≥ 90 % of it) is the real context leak; `raw_mode_calls` is the avoidable subset (`return:"raw"`).
+- **`TokenSavings` is cache hits**, not DFMT's saving; the dashboard labels it "API Cache Hits (reported)".
+- The stats cache (5 s TTL) hands out clones; `cloneStatsResponse` must copy every map/slice field (`ToolBytes`, `Daily`, `TopSavers`) or callers mutate the cache.
+- `dfmt-bench replay [journal.jsonl]` reproduces the numbers from a real journal; `tokensaving` is synthetic scenarios only.
+
 ### Index tail (`internal/daemon/projectres.go::tailOnce`, `core.Journal.Stream`)
 
 Each loaded project polls its journal every 3 s. That used to mean a full parse each tick — `Stream` walked every segment from the top, decoding and signature-checking every line, to find the cursor. Now: an unchanged active file (size+mtime from the last *complete* pass, taken before streaming) returns after one `stat`; rotated segments whose name (the last *appended* id) sorts before the cursor are skipped, with a full second pass if the cursor was not found — names can mislead under out-of-order appends, and nothing is emitted before the cursor so the retry is exact; pre-cursor lines are matched by their leading `{"id":"…"` and never decoded. 152.8 ms → 0.59 ms per tick on 30k events in three segments. Rotated segments are deleted only with `storage.journal_keep_segments` > 0 (ADR-0030, opt-in; the default keeps all, because a rotated segment is memory recall can still reach).
