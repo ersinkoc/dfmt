@@ -52,12 +52,18 @@ func runBypass(args []string) {
 // bypassFiles exists so the files' deferred Close runs before runBypass exits.
 func bypassFiles(paths []string) error {
 	var files []io.Reader
+	var opened []*os.File
+	defer func() {
+		for _, f := range opened {
+			_ = f.Close() // read-only: a Close error loses nothing
+		}
+	}()
 	for _, p := range paths {
 		f, err := os.Open(p)
 		if err != nil {
 			return err
 		}
-		defer func() { _ = f.Close() }() // read-only: a Close error loses nothing
+		opened = append(opened, f)
 		files = append(files, f)
 	}
 	return bypassReport(files, os.Stdout)

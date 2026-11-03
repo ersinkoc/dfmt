@@ -26,7 +26,7 @@ func IsDFMTFile(path string) bool {
 	if err != nil {
 		return false
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }() // read-only
 	return containsSignature(io.LimitReader(f, maxScan))
 }
 
@@ -76,7 +76,7 @@ func FindCopies(keep string) []Copy {
 
 	consider := func(path, reason string) {
 		key := path
-		if runtime.GOOS == "windows" {
+		if runtime.GOOS == goosWindows {
 			key = strings.ToLower(key)
 		}
 		if seenFile[key] {
@@ -105,7 +105,7 @@ func FindCopies(keep string) []Copy {
 		}
 		dir = filepath.Clean(dir)
 		dk := dir
-		if runtime.GOOS == "windows" {
+		if runtime.GOOS == goosWindows {
 			dk = strings.ToLower(dk)
 		}
 		if seenDir[dk] {

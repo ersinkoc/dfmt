@@ -59,7 +59,7 @@ func terminate(pid int) error {
 	if err != nil {
 		return err
 	}
-	if runtime.GOOS == "windows" {
+	if runtime.GOOS == goosWindows {
 		// No console to deliver a control event to a detached daemon.
 		return ignoreGone(proc.Kill())
 	}

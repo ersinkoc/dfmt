@@ -13,6 +13,8 @@ import (
 	"time"
 )
 
+const goosWindows = "windows"
+
 // Snapshot is the process table as observed at one moment.
 type Snapshot struct {
 	// Procs are the dfmt-looking processes.
@@ -36,7 +38,7 @@ func List() (Snapshot, error) {
 	switch runtime.GOOS {
 	case "linux":
 		return listProc("/proc")
-	case "windows":
+	case goosWindows:
 		return listWindows()
 	default:
 		return listPS()
@@ -195,7 +197,7 @@ func parseWindows(out string) Snapshot {
 	return snap
 }
 
-// splitCommandLine splits on spaces, honouring double quotes. Only the
+// splitCommandLine splits on spaces, honoring double quotes. Only the
 // subcommand word matters here, so no escape handling is attempted.
 func splitCommandLine(s string) []string {
 	var out []string

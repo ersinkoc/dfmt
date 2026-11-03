@@ -13,6 +13,12 @@ import (
 	"strings"
 )
 
+const (
+	roleDaemon = "daemon"
+	roleMCP    = "mcp"
+	roleCLI    = "cli"
+)
+
 // Proc is one running process that looks like dfmt.
 type Proc struct {
 	PID  int
@@ -44,14 +50,14 @@ func (p Proc) Role() string {
 			continue
 		}
 		switch a {
-		case "daemon":
-			return "daemon"
-		case "mcp":
-			return "mcp"
+		case roleDaemon:
+			return roleDaemon
+		case roleMCP:
+			return roleMCP
 		}
-		return "cli"
+		return roleCLI
 	}
-	return "cli"
+	return roleCLI
 }
 
 // Input is everything BuildPlan needs; none of it is read from the machine.
@@ -147,7 +153,7 @@ func BuildPlan(in Input) Plan {
 			continue
 		}
 		plan.Healthy[p.Role()]++
-		if p.Role() == "daemon" {
+		if p.Role() == roleDaemon {
 			daemons = append(daemons, p)
 		}
 	}
@@ -173,7 +179,7 @@ func BuildPlan(in Input) Plan {
 						"duplicate daemon pid %d hosts this command; rerun `dfmt cleanup` from a normal shell", d.PID))
 					continue
 				}
-				plan.Healthy["daemon"]--
+				plan.Healthy[roleDaemon]--
 				plan.Kill = append(plan.Kill, Victim{Proc: d, Reason: fmt.Sprintf(
 					"duplicate daemon; pid %d holds the singleton", in.DaemonPID)})
 			}
@@ -184,7 +190,7 @@ func BuildPlan(in Input) Plan {
 		if same(c.Path, in.Keep) {
 			continue
 		}
-		plan.Remove = append(plan.Remove, Removal{Path: c.Path, Reason: c.Reason})
+		plan.Remove = append(plan.Remove, Removal(c))
 	}
 
 	sort.Slice(plan.Kill, func(i, j int) bool { return plan.Kill[i].Proc.PID < plan.Kill[j].Proc.PID })
