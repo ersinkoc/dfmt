@@ -172,6 +172,20 @@ if [ ! -x "$INSTALL_DIR/dfmt" ]; then
     die "dfmt binary not found at $INSTALL_DIR/dfmt after install"
 fi
 
+# --- one dfmt, one daemon --------------------------------------------------
+# The daemon outlives the install and keeps serving the code it started with;
+# a second copy elsewhere on PATH (go install, an older install dir) shadows
+# the new one. `dfmt cleanup --yes` stops stale/duplicate dfmt processes and
+# removes stray copies (ADR-0034). Binaries are recognised by their embedded
+# module path, never by name, so an unrelated `dfmt` (the D formatter) is safe.
+# A pinned old release has no `cleanup`; that is not an error.
+info "removing stale dfmt processes and stray copies"
+if "$INSTALL_DIR/dfmt" help 2>&1 | grep -q 'dfmt cleanup'; then
+    "$INSTALL_DIR/dfmt" cleanup --yes || warn "'dfmt cleanup' reported problems; run 'dfmt doctor'."
+else
+    warn "this release has no 'dfmt cleanup'; stop old daemons with 'dfmt stop' and check 'type -a dfmt'."
+fi
+
 # --- PATH check ------------------------------------------------------------
 case ":$PATH:" in
     *":$INSTALL_DIR:"*) ;;

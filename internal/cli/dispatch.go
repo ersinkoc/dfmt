@@ -63,6 +63,8 @@ func Dispatch(args []string) int {
 		return runDashboard(remaining)
 	case "update", "self-update":
 		return runUpdate(remaining)
+	case "cleanup":
+		return runCleanup(remaining)
 	case "tail":
 		return runTail(remaining)
 	case "shell-init":
@@ -121,6 +123,7 @@ Usage:
   dfmt stats                     Show session stats
   dfmt dashboard [--open]        Print/open the live web dashboard URL
   dfmt update [--check]          Update this binary to the latest release
+  dfmt cleanup [--yes]           Stop stale/duplicate dfmt processes, remove stray copies
   dfmt tail                      Stream events
   dfmt shell-init <shell>        Print shell integration
   dfmt install-hooks            Install git hooks

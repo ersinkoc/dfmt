@@ -39,6 +39,21 @@ if ($env:DFMT_INSTALL_DIR) {
 New-Item -ItemType Directory -Force -Path $installDir | Out-Null
 $target = Join-Path $installDir 'dfmt.exe'
 
+# Stop-RunningDfmt: a running dfmt.exe is locked and cannot be replaced, and
+# the daemon outlives the shell that started it. Ask the installed binary to
+# stop its daemon, then end any remaining process whose image IS $target.
+# Matching by full path (not by the name "dfmt") keeps an unrelated program
+# that happens to be called dfmt (the D formatter) out of this.
+function Stop-RunningDfmt {
+    if (Test-Path $target) {
+        try { & $target stop 2>$null | Out-Null } catch { }
+    }
+    Get-Process -Name dfmt -ErrorAction SilentlyContinue |
+        Where-Object { $_.Path -and ($_.Path -ieq $target) } |
+        ForEach-Object { try { Stop-Process -Id $_.Id -Force -ErrorAction Stop } catch { } }
+    Start-Sleep -Milliseconds 300
+}
+
 # --- base URL --------------------------------------------------------------
 if ($Tag -eq 'latest') {
     $base = "https://github.com/$RepoOwner/$RepoName/releases/latest/download"
@@ -101,6 +116,7 @@ function Download-Binary {
         if ($Tag -eq 'latest' -and $env:DFMT_FORCE -ne '1' -and (Test-InstalledNewer $target $tmpExe)) {
             return $true
         }
+        Stop-RunningDfmt
         Move-Item -Force -Path $tmpExe -Destination $target -ErrorAction SilentlyContinue
         if (-not (Test-Path $target)) {
             # target might be locked; remove and retry
@@ -146,6 +162,7 @@ function Install-FromSource {
     }
     $src = Join-Path $goBin 'dfmt.exe'
     if ((Test-Path $src) -and ($src -ne $target)) {
+        Stop-RunningDfmt
         # Remove target if locked, then copy
         try {
             Remove-Item -Force $target -ErrorAction Stop
@@ -176,18 +193,23 @@ if (-not (Test-Path $target)) {
     exit 1
 }
 
-# --- also install to ~/.dfmt/ so ResolveDFMTCommand finds it ----------
-# This mirrors the Unix behaviour where ~/.dfmt/dfmt is the canonical
-# path ResolveDFMTCommand resolves to. Without this the doctor check
-# shows "stale" when the binary was installed elsewhere.
-$userDfmtDir = Join-Path $env:USERPROFILE '.dfmt'
-$userDfmtExe = Join-Path $userDfmtDir 'dfmt.exe'
+# --- one dfmt, one daemon ----------------------------------------------------
+# Older installers also copied dfmt.exe into ~/.dfmt. Nothing reads that copy,
+# and it goes stale at the next `dfmt update`, so it is now removed rather than
+# refreshed. `dfmt cleanup --yes` also stops stale/duplicate dfmt processes and
+# deletes stray copies elsewhere on PATH (ADR-0034). Binaries are recognised by
+# their embedded module path, never by name. A pinned old release has no
+# `cleanup`; that is not an error.
+Write-Info "removing stale dfmt processes and stray copies"
 try {
-    New-Item -ItemType Directory -Force -Path $userDfmtDir | Out-Null
-    Copy-Item -Force -Path $target -Destination $userDfmtExe -ErrorAction Stop
-    Write-Info "also installed to $userDfmtExe"
+    if ((& $target help 2>&1 | Out-String) -match 'dfmt cleanup') {
+        & $target cleanup --yes
+        if ($LASTEXITCODE -ne 0) { Write-Warn "'dfmt cleanup' reported problems; run 'dfmt doctor'." }
+    } else {
+        Write-Warn "this release has no 'dfmt cleanup'; run 'dfmt stop' and check 'where.exe dfmt'."
+    }
 } catch {
-    Write-Warn "could not copy to $userDfmtExe (non-fatal): $_"
+    Write-Warn "'dfmt cleanup' failed (non-fatal): $_"
 }
 
 # --- ensure installDir is on user PATH -------------------------------------

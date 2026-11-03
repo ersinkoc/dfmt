@@ -737,8 +737,20 @@ func checkBinaryConsistency() bool {
 		for p, who := range seen {
 			fmt.Printf("    %s  ← %s\n", displayPath(p), who)
 		}
-		fmt.Println("    Keep one. Whichever you keep, run `dfmt setup --force` from it so")
-		fmt.Println("    agent configs point at it, then `dfmt stop` to retire the old daemon.")
+		fmt.Println("    Run `dfmt cleanup --yes` from the one you want to keep: it removes the")
+		fmt.Println("    others and stops stale processes. Then `dfmt setup --force` re-points agents.")
+	}
+
+	// Stale processes and stray copies are invisible to the path comparison
+	// above (a copy no agent points at, a daemon of a replaced binary).
+	// Skipped under `go test`, which would otherwise inspect the developer's
+	// real process table and PATH.
+	if !isTestBinary() {
+		if plan, err := planCleanup(self); err == nil && !plan.Empty() {
+			ok = false
+			fmt.Printf("! %d stale dfmt process(es) and %d stray copie(s) found\n", len(plan.Kill), len(plan.Remove))
+			fmt.Println("    Run `dfmt cleanup` to see them, `dfmt cleanup --yes` to remove them.")
+		}
 	}
 
 	// A version skew is reported separately from a path skew: the same path

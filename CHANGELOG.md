@@ -29,6 +29,17 @@ Internal package shapes (`internal/...`) are NOT covered by SemVer.
 
 ### Added
 
+- `dfmt cleanup [--yes]` leaves one installed dfmt and at most one daemon:
+  stops dfmt processes running a replaced or other binary, collapses
+  duplicate daemons to the one in `daemon.json`, and removes stray copies
+  (other PATH entries, `$GOBIN`, `~/.dfmt`, `*.old`, interrupted-update
+  temp files). Binaries are identified by content, not name; dry run unless
+  `--yes`. `dfmt update`, `install.sh` and `install.ps1` run it, and
+  `dfmt doctor` reports what it would do. See ADR-0034.
+- Lean wire envelope: small, whole, unfiltered read/exec/fetch results no
+  longer carry `content_id`, `size`, `read_bytes`, `duration_ms` (a
+  one-line read drops from ~137 to ~21 JSON bytes). `exit` is always kept;
+  partial reads keep their line window. See ADR-0033.
 - `dfmt stats` / `StatsResponse`: estimated token totals
   (`est_raw_tokens`, `est_returned_tokens`, `est_tokens_saved`) and the
   per-session `tools/list` fixed cost (`tools_list_bytes`,

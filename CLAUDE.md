@@ -83,6 +83,15 @@ On Windows the graceful stop cannot work for a `DETACHED_PROCESS` daemon (no con
 
 **Self-update is user-initiated only** (`dfmt update`, `internal/selfupdate`, [ADR-0028](docs/adr/0028-self-update.md)): latest GitHub release asset `dfmt-<goos>-<goarch>`, verified against the release's `sha256sums.txt` (a missing line is a refusal), executed once with `--version` before the rename-swap in the binary's own directory (Windows renames the running exe to `.old`; `Dispatch` deletes it next run). Builds from a checkout are not release tags and need `--force`. Never add a background update check — dfmt makes no network calls on its own.
 
+**One installed dfmt, at most one daemon** (`dfmt cleanup`, `internal/instances`, [ADR-0034](docs/adr/0034-single-instance-hygiene.md)). Daemon identity only replaces a stale *daemon*; it never touched the other ways a host ends up with several dfmt — proxies and daemons still running a replaced binary, `~/.dfmt/dfmt.exe` (the Windows installer used to write it; nothing reads it), `$GOBIN/dfmt` from the source fallback, older install dirs shadowing the new one. Rules that keep it from doing damage:
+
+- **Identity is the image, not the name** (`IsDFMTFile`: the bytes contain `github.com/ersinkoc/dfmt`). `dfmt` is also the D formatter. Never match on a file or process name alone; a corrupt dfmt must still match, so it is a byte scan, not `--version`.
+- **Never kill an ancestor.** `Input.Ancestors` comes from the real process tree (`Snapshot.AncestorsOf`); deriving it from dfmt processes breaks at the first shell (`dfmt ← bash ← daemon`, i.e. `dfmt_exec "dfmt cleanup"`).
+- **Duplicate daemons: only the one named in `daemon.json` survives; if none is named, kill nothing** — it may just have lost its rendezvous files (`healStateFiles`).
+- **`dfmt mcp` proxies on the kept binary are agent sessions** — left alone. Files inside a Go checkout (`go.mod` within 4 parents, e.g. `dist/dfmt`) are never removed.
+- **Dry run unless `--yes`.** `update` and both installers pass it; `doctor` only reports (and skips the check under `isTestBinary()`).
+- `Role()` must skip `--project <dir>`; a proxy launched as `dfmt --project X mcp` was once classified `cli`.
+
 **The MCP proxy self-heals** (`internal/cli/reconnect.go`). `dfmt mcp` resolved its backend once at startup and never revalidated it, so when the daemon idle-exited at 30 minutes — and agent sessions routinely idle longer — every subsequent tool call returned a raw dial error for the rest of the session, recoverable only by reconnecting the MCP server by hand. `reconnectingBackend` re-runs `ensureGlobalDaemon`, rebuilds the client, and retries once.
 
 Two rules there are load-bearing:

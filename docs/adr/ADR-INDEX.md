@@ -38,6 +38,8 @@ See [ADR-0000](0000-adr-process.md) for the process governing how ADRs are writt
 | [0030](0030-journal-segment-retention.md) | Opt-In Retention for Rotated Journal Segments | Accepted | `storage.journal_keep_segments` (default 0 = keep all) deletes all but the N newest rotated segments at each rotation. Opt-in because a rotated segment is agent memory recall and search can still reach, not cache. |
 | [0031](0031-honor-gitignore-in-walkers.md) | Honor .gitignore in the Grep/Glob Walkers | Accepted | Walkers honor `.git/info/exclude`, the root and nested `.gitignore` files (stdlib matcher, gitignore(5) semantics), in addition to the basename list. An ignored search root is searched; skips are counted in the summary. |
 | [0032](0032-honest-token-ledger.md) | An Honest Token Ledger | Accepted | Stats gain estimated token totals and the per-session `tools/list` fixed cost; grep/glob are recorded at raw == returned so the ratio is not flattered; `token_savings` documented as cache hits, not DFMT's saving. |
+| [0033](0033-lean-wire-envelope.md) | Lean Wire Envelope | Accepted | Small, whole, unfiltered read/exec/fetch results drop `content_id`, `size`, `read_bytes`, `duration_ms`; `exit` always kept, partial reads keep their line window; summary/excerpt/large responses unchanged. |
+| [0034](0034-single-instance-hygiene.md) | One Installed dfmt, At Most One Daemon | Accepted | `dfmt cleanup` stops stale/duplicate dfmt processes and removes stray copies, identifying dfmt by image content (not name), never killing ancestors, dry run unless `--yes`; wired into update and both installers. |
 
 ## Superseded Decisions
 

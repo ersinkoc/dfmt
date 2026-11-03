@@ -134,6 +134,16 @@ func runUpdate(args []string) int {
 			fmt.Fprintln(os.Stderr, "warning: could not stop the running daemon; the next dfmt command restarts it")
 		}
 	}
+
+	// An update must not leave a second dfmt behind: stale daemons and
+	// proxies still running the replaced code, and copies elsewhere on PATH
+	// that would shadow the new one (ADR-0034).
+	if plan, err := planCleanup(exe); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not check for stray dfmt copies: %v\n", err)
+	} else if !plan.Empty() {
+		fmt.Println("Removing stale dfmt processes and copies:")
+		reportCleanup(os.Stdout, plan, true)
+	}
 	fmt.Println("Restart your AI agents to load the new `dfmt mcp`.")
 	return 0
 }
