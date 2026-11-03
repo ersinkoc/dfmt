@@ -27,6 +27,13 @@ Internal package shapes (`internal/...`) are NOT covered by SemVer.
 
 ## [Unreleased]
 
+## [0.10.0] — 2026-11-03
+
+The wire shape of small `dfmt_read` / `dfmt_exec` / `dfmt_fetch` results
+changed (bookkeeping fields dropped when the payload is small, ADR-0033), so
+this is a minor bump. Clients that read `content_id`, `size`, `read_bytes`,
+`duration_ms` or `timed_out` must treat them as optional.
+
 ### Added
 
 - `dfmt cleanup [--yes]` leaves one installed dfmt and at most one daemon:
@@ -2439,7 +2446,8 @@ for v0.3.x:
   `privacy.allow_nonlocal_http` not wired — DFMT never
   phones home regardless.
 
-[Unreleased]: https://github.com/ersinkoc/dfmt/compare/v0.9.5...HEAD
+[Unreleased]: https://github.com/ersinkoc/dfmt/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/ersinkoc/dfmt/releases/tag/v0.10.0
 [0.9.5]: https://github.com/ersinkoc/dfmt/releases/tag/v0.9.5
 [0.9.4]: https://github.com/ersinkoc/dfmt/releases/tag/v0.9.4
 [0.9.3]: https://github.com/ersinkoc/dfmt/releases/tag/v0.9.3
