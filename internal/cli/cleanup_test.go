@@ -88,3 +88,16 @@ func TestPlanCleanupKeepsGivenBinary(t *testing.T) {
 		t.Fatalf("Keep = %q", plan.Keep)
 	}
 }
+
+func TestStoppedProxiesCountsOnlyMCP(t *testing.T) {
+	mk := func(pid int, sub string) instances.Victim {
+		return instances.Victim{Proc: instances.Proc{PID: pid, Args: []string{"dfmt", sub}}}
+	}
+	plan := instances.Plan{Kill: []instances.Victim{mk(1, "mcp"), mk(2, "daemon"), mk(3, "mcp"), mk(4, "status")}}
+	if got := stoppedProxies(plan); got != 2 {
+		t.Fatalf("stoppedProxies = %d, want 2", got)
+	}
+	if got := stoppedProxies(instances.Plan{}); got != 0 {
+		t.Fatalf("empty plan = %d, want 0", got)
+	}
+}

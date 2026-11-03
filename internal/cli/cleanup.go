@@ -94,6 +94,10 @@ func reportCleanup(w io.Writer, plan instances.Plan, apply bool) int {
 		return 1
 	}
 	cleanupln(w, "Done. Any dfmt command starts a fresh daemon on demand.")
+	if n := stoppedProxies(plan); n > 0 {
+		cleanupf(w, "Stopped %d `dfmt mcp` proxy(ies): reconnect dfmt in each agent session "+
+			"(Claude Code: /mcp), or its dfmt calls fail with a bare \"tool call failed\".\n", n)
+	}
 	return 0
 }
 
@@ -101,3 +105,15 @@ func reportCleanup(w io.Writer, plan instances.Plan, apply bool) int {
 // has no better handler than carrying on, so the error is dropped explicitly.
 func cleanupf(w io.Writer, format string, a ...any) { _, _ = fmt.Fprintf(w, format, a...) }
 func cleanupln(w io.Writer, a ...any)               { _, _ = fmt.Fprintln(w, a...) }
+
+// stoppedProxies counts the agent-session proxies the plan ends. Their host
+// reports a dead MCP server only as "tool call failed", so the user is told.
+func stoppedProxies(plan instances.Plan) int {
+	n := 0
+	for _, v := range plan.Kill {
+		if v.Proc.Role() == "mcp" {
+			n++
+		}
+	}
+	return n
+}
