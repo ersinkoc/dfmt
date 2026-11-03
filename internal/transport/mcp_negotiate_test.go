@@ -69,7 +69,7 @@ func TestToolResultContentByClient(t *testing.T) {
 		{"", true},
 	}
 	for _, tc := range cases {
-		sb := &stubSandbox{readResp: sandbox.ReadResp{Content: "payload-marker"}}
+		sb := &stubSandbox{readResp: sandbox.ReadResp{Content: strings.Repeat("x", 100) + "payload-marker"}}
 		m := newTestMCPProtocol(sb, nil)
 		initializeAs(t, m, "2025-06-18", tc.client)
 		resp := callTool(t, m, methodRead, ReadParams{Path: "/x"})
@@ -89,14 +89,14 @@ func TestToolResultContentByClient(t *testing.T) {
 }
 
 func TestToolResultContentEnvOverride(t *testing.T) {
-	sb := &stubSandbox{readResp: sandbox.ReadResp{Content: "payload-marker"}}
+	sb := &stubSandbox{readResp: sandbox.ReadResp{Content: strings.Repeat("x", 100) + "payload-marker"}}
 
 	t.Setenv("DFMT_MCP_LEGACY_CONTENT", "0")
 	m := newTestMCPProtocol(sb, nil)
 	initializeAs(t, m, "2025-06-18", "windsurf")
 	res := callTool(t, m, methodRead, ReadParams{Path: "/x"}).Result.(MCPCallToolResult)
-	if res.Content[0].Text != mcpLegacyContentSentinel {
-		t.Errorf("override 0: content[0].text = %q, want sentinel", res.Content[0].Text)
+	if strings.Contains(res.Content[0].Text, "payload-marker") || !strings.HasPrefix(res.Content[0].Text, "dfmt:") {
+		t.Errorf("override 0: content[0].text = %q, want a short dfmt: digest", res.Content[0].Text)
 	}
 
 	t.Setenv("DFMT_MCP_LEGACY_CONTENT", "1")

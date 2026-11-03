@@ -150,8 +150,10 @@ type MCPCallToolResult struct {
 
 // mcpToolResult wraps a handler payload in the MCP CallToolResult envelope.
 //
-// fullText=false (token-optimized): content[0].text carries a short sentinel
-// and the payload travels in structuredContent. Emitting the payload in
+// fullText=false (token-optimized): content[0].text carries a one-line digest
+// (mcpDigest; the sentinel when there is nothing to summarize) and the
+// payload travels in structuredContent. The digest is what the person sees in
+// a terminal host, which renders content[0].text only. Emitting the payload in
 // *both* fields is a flat ~50% token tax on clients that count both.
 //
 // fullText=true: content[0].text gets the JSON-stringified payload too, the
@@ -168,8 +170,12 @@ func mcpToolResult(payload any, fullText bool) MCPCallToolResult {
 			StructuredContent: payload,
 		}
 	}
+	text := mcpDigest(payload)
+	if text == "" {
+		text = mcpLegacyContentSentinel
+	}
 	return MCPCallToolResult{
-		Content:           []MCPContent{{Type: "text", Text: mcpLegacyContentSentinel}},
+		Content:           []MCPContent{{Type: "text", Text: text}},
 		StructuredContent: payload,
 	}
 }

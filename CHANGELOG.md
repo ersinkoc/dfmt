@@ -27,6 +27,16 @@ Internal package shapes (`internal/...`) are NOT covered by SemVer.
 
 ## [Unreleased]
 
+### Changed
+
+- For hosts that read `structuredContent` (Claude Code, Cursor, Codex),
+  `content[0].text` is now a one-line digest (`dfmt: exit 0 · 3 lines · first
+  line`) instead of the fixed `dfmt: see structuredContent`, which was all the
+  terminal showed for every call. The full result still travels only in
+  `structuredContent`.
+- `dfmt cleanup` tells the user to reconnect agents whose `dfmt mcp` proxy it
+  stopped; their host reports a dead server only as `tool call failed`.
+
 ## [0.10.0] — 2026-11-03
 
 The wire shape of small `dfmt_read` / `dfmt_exec` / `dfmt_fetch` results
