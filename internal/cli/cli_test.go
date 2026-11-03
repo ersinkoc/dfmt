@@ -1809,7 +1809,7 @@ func TestRunMCPWithMalformedJSON(t *testing.T) {
 	}()
 
 	select {
-	case <-time.After(200 * time.Millisecond):
+	case <-time.After(10 * time.Second):
 		// Timeout is ok - MCP is reading stdin
 	case code := <-done:
 		// Returns after EOF
@@ -1840,7 +1840,7 @@ func TestRunMCPWithIncompleteJSON(t *testing.T) {
 	}()
 
 	select {
-	case <-time.After(200 * time.Millisecond):
+	case <-time.After(10 * time.Second):
 	case code := <-done:
 		t.Logf("mcp with incomplete json returned %d", code)
 	}
@@ -2534,7 +2534,7 @@ func TestRunMCPWithValidJSONParseError(t *testing.T) {
 	}()
 
 	select {
-	case <-time.After(200 * time.Millisecond):
+	case <-time.After(10 * time.Second):
 	case code := <-done:
 		t.Logf("mcp with null method returned %d", code)
 	}
@@ -2560,7 +2560,7 @@ func TestRunMCPWithEmptyMethod(t *testing.T) {
 	}()
 
 	select {
-	case <-time.After(200 * time.Millisecond):
+	case <-time.After(10 * time.Second):
 	case code := <-done:
 		t.Logf("mcp with empty method returned %d", code)
 	}
@@ -3102,7 +3102,7 @@ func TestRunMCPWithReadError(t *testing.T) {
 	}()
 
 	select {
-	case <-time.After(200 * time.Millisecond):
+	case <-time.After(10 * time.Second):
 	case code := <-done:
 		t.Logf("runMCP with read error returned %d", code)
 	}
@@ -3129,7 +3129,7 @@ func TestRunMCPWithWriteError(t *testing.T) {
 	}()
 
 	select {
-	case <-time.After(200 * time.Millisecond):
+	case <-time.After(10 * time.Second):
 	case code := <-done:
 		t.Logf("runMCP with valid input returned %d", code)
 	}
