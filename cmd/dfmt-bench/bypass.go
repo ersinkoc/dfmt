@@ -43,20 +43,24 @@ func runBypass(args []string) {
 		fmt.Fprintf(os.Stderr, "bypass: %v\n", err)
 		os.Exit(1)
 	}
+	if err := bypassFiles(paths); err != nil {
+		fmt.Fprintf(os.Stderr, "bypass: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+// bypassFiles exists so the files' deferred Close runs before runBypass exits.
+func bypassFiles(paths []string) error {
 	var files []io.Reader
 	for _, p := range paths {
 		f, err := os.Open(p)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "bypass: %v\n", err)
-			os.Exit(1)
+			return err
 		}
-		defer f.Close()
+		defer func() { _ = f.Close() }() // read-only: a Close error loses nothing
 		files = append(files, f)
 	}
-	if err := bypassReport(files, os.Stdout); err != nil {
-		fmt.Fprintf(os.Stderr, "bypass: %v\n", err)
-		os.Exit(1)
-	}
+	return bypassReport(files, os.Stdout)
 }
 
 // transcriptPaths resolves the argument: a file, a directory of *.jsonl, or —
@@ -92,6 +96,7 @@ func transcriptPaths(args []string) ([]string, error) {
 }
 
 func bypassReport(files []io.Reader, w io.Writer) error {
+	ew := &errWriter{w: w}
 	rows := map[string]*bypassRow{}
 	row := func(native string) *bypassRow {
 		if rows[native] == nil {
@@ -162,24 +167,24 @@ func bypassReport(files []io.Reader, w io.Writer) error {
 	}
 	sort.Slice(names, func(i, j int) bool { return rows[names[i]].tokens > rows[names[j]].tokens })
 
-	fmt.Fprintln(w, "\n=== Native-tool bypass (from the agent transcript) ===")
-	fmt.Fprintf(w, "%-9s %7s %7s %7s %11s %8s\n", "Native", "Native", "DFMT", "DFMT %", "Native tok", ">1k tok")
-	fmt.Fprintln(w, strings.Repeat("-", 56))
+	ew.println("\n=== Native-tool bypass (from the agent transcript) ===")
+	ew.printf("%-9s %7s %7s %7s %11s %8s\n", "Native", "Native", "DFMT", "DFMT %", "Native tok", ">1k tok")
+	ew.println(strings.Repeat("-", 56))
 	var tn, td, tt, tl int
 	for _, n := range names {
 		r := rows[n]
-		fmt.Fprintf(w, "%-9s %7d %7d %6.0f%% %11d %8d\n", n, r.native, r.viaDFMT,
+		ew.printf("%-9s %7d %7d %6.0f%% %11d %8d\n", n, r.native, r.viaDFMT,
 			share(r.viaDFMT, r.native+r.viaDFMT), r.tokens, r.large)
 		tn += r.native
 		td += r.viaDFMT
 		tt += r.tokens
 		tl += r.large
 	}
-	fmt.Fprintln(w, strings.Repeat("-", 56))
-	fmt.Fprintf(w, "%-9s %7d %7d %6.0f%% %11d %8d\n", "TOTAL", tn, td, share(td, tn+td), tt, tl)
-	fmt.Fprintln(w, "\nNative tok = approximate tokens of the native results seen. Only the >1k column is output")
-	fmt.Fprintln(w, "DFMT would have filtered; the rest passes through its inline tier unchanged either way.")
-	return nil
+	ew.println(strings.Repeat("-", 56))
+	ew.printf("%-9s %7d %7d %6.0f%% %11d %8d\n", "TOTAL", tn, td, share(td, tn+td), tt, tl)
+	ew.println("\nNative tok = approximate tokens of the native results seen. Only the >1k column is output")
+	ew.println("DFMT would have filtered; the rest passes through its inline tier unchanged either way.")
+	return ew.err
 }
 
 // resultText flattens a tool_result's content: a string, or a list of text blocks.

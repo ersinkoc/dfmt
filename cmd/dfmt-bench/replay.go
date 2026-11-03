@@ -29,19 +29,24 @@ func runReplay(args []string) {
 	if len(args) > 0 {
 		path = args[0]
 	}
-	f, err := os.Open(path)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "replay: %v\n", err)
-		os.Exit(1)
-	}
-	defer f.Close()
-	if err := replayJournal(f, os.Stdout); err != nil {
+	if err := replayFile(path); err != nil {
 		fmt.Fprintf(os.Stderr, "replay: %v\n", err)
 		os.Exit(1)
 	}
 }
 
+// replayFile exists so the file's deferred Close runs before runReplay exits.
+func replayFile(path string) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = f.Close() }() // read-only: a Close error loses nothing
+	return replayJournal(f, os.Stdout)
+}
+
 func replayJournal(r io.Reader, w io.Writer) error {
+	ew := &errWriter{w: w}
 	rows := map[string]*replayRow{}
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 1<<20), 16<<20)
@@ -84,8 +89,8 @@ func replayJournal(r io.Reader, w io.Writer) error {
 		return err
 	}
 	if len(rows) == 0 {
-		fmt.Fprintln(w, "no byte-counted tool events in this journal")
-		return nil
+		ew.println("no byte-counted tool events in this journal")
+		return ew.err
 	}
 
 	names := make([]string, 0, len(rows))
@@ -94,14 +99,14 @@ func replayJournal(r io.Reader, w io.Writer) error {
 	}
 	sort.Slice(names, func(i, j int) bool { return rows[names[i]].raw > rows[names[j]].raw })
 
-	fmt.Fprintln(w, "\n=== Journal Replay (measured, not simulated) ===")
-	fmt.Fprintf(w, "%-12s %7s %10s %10s %8s %8s %8s\n",
+	ew.println("\n=== Journal Replay (measured, not simulated) ===")
+	ew.printf("%-12s %7s %10s %10s %8s %8s %8s\n",
 		"Tool", "Calls", "Raw tok", "Ret tok", "Saved", "<=1k tok", ">1k tok")
-	fmt.Fprintln(w, strings.Repeat("-", 70))
+	ew.println(strings.Repeat("-", 70))
 	var t replayRow
 	for _, n := range names {
 		r := rows[n]
-		fmt.Fprintf(w, "%-12s %7d %10d %10d %7.1f%% %8d %8d\n", strings.TrimPrefix(n, "tool."),
+		ew.printf("%-12s %7d %10d %10d %7.1f%% %8d %8d\n", strings.TrimPrefix(n, "tool."),
 			r.calls, r.raw, r.returned, pct(r.raw, r.returned), r.small, r.large)
 		t.calls += r.calls
 		t.raw += r.raw
@@ -109,12 +114,13 @@ func replayJournal(r io.Reader, w io.Writer) error {
 		t.small += r.small
 		t.large += r.large
 	}
-	fmt.Fprintln(w, strings.Repeat("-", 70))
-	fmt.Fprintf(w, "%-12s %7d %10d %10d %7.1f%% %8d %8d\n", "TOTAL",
+	ew.println(strings.Repeat("-", 70))
+	ew.printf("%-12s %7d %10d %10d %7.1f%% %8d %8d\n", "TOTAL",
 		t.calls, t.raw, t.returned, pct(t.raw, t.returned), t.small, t.large)
-	fmt.Fprintf(w, "\n%.0f%% of calls were small enough to pass through unfiltered (tokens recorded per event; bytes/4 for older events).\n",
+	ew.printf("\n%.0f%% of calls were small enough to pass through unfiltered "+
+		"(tokens recorded per event; bytes/4 for older events).\n",
 		100*float64(t.small)/float64(t.calls))
-	return nil
+	return ew.err
 }
 
 func num(v any) (int, bool) {
