@@ -60,3 +60,31 @@ func TestReportCleanupApplyRemovesAndCounts(t *testing.T) {
 		t.Fatalf("stray copy still present (err=%v)", err)
 	}
 }
+
+// Without --yes the command only observes the machine (process table, PATH);
+// it must exit 0 and never act. Under `go test` the binary is cli.test, which
+// is not named dfmt, so no real process can be nominated.
+func TestRunCleanupDryRun(t *testing.T) {
+	if rc := runCleanup(nil); rc != 0 {
+		t.Fatalf("dry run rc = %d, want 0", rc)
+	}
+}
+
+func TestRunCleanupFlags(t *testing.T) {
+	if rc := runCleanup([]string{"-h"}); rc != 0 {
+		t.Errorf("-h rc = %d, want 0", rc)
+	}
+	if rc := runCleanup([]string{"--nope"}); rc != 2 {
+		t.Errorf("unknown flag rc = %d, want 2", rc)
+	}
+}
+
+func TestPlanCleanupKeepsGivenBinary(t *testing.T) {
+	plan, err := planCleanup("/some/where/dfmt")
+	if err != nil {
+		t.Skipf("process listing unavailable: %v", err)
+	}
+	if plan.Keep != "/some/where/dfmt" {
+		t.Fatalf("Keep = %q", plan.Keep)
+	}
+}
