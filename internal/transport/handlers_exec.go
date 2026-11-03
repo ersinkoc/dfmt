@@ -40,8 +40,8 @@ type ExecResponse struct {
 	Summary    string                 `json:"summary,omitempty"`
 	Matches    []sandbox.ContentMatch `json:"matches,omitempty"`
 	Vocabulary []string               `json:"vocabulary,omitempty"`
-	DurationMs int                    `json:"duration_ms"`
-	TimedOut   bool                   `json:"timed_out"`
+	DurationMs int                    `json:"duration_ms,omitempty"`
+	TimedOut   bool                   `json:"timed_out,omitempty"`
 	ContentID  string                 `json:"content_id,omitempty"`
 
 	// JobID and Status are the async surface. Status is one of "running",
@@ -190,7 +190,7 @@ func (h *Handlers) runExec(ctx context.Context, bundle Bundle, params ExecParams
 	if !resp.Excerpted {
 		h.markSent(ctx, contentID)
 	}
-	return &ExecResponse{
+	return leanExec(&ExecResponse{
 		Exit:       resp.Exit,
 		Stdout:     stdout,
 		Stderr:     stderr,
@@ -200,7 +200,7 @@ func (h *Handlers) runExec(ctx context.Context, bundle Bundle, params ExecParams
 		DurationMs: resp.DurationMs,
 		TimedOut:   resp.TimedOut,
 		ContentID:  contentID,
-	}, nil
+	}, resp.Excerpted), nil
 }
 
 // redactMatches returns a new slice with Text fields redacted using the

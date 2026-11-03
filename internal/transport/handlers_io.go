@@ -25,8 +25,8 @@ type ReadResponse struct {
 	Content   string                 `json:"content,omitempty"`
 	Summary   string                 `json:"summary,omitempty"`
 	Matches   []sandbox.ContentMatch `json:"matches,omitempty"`
-	Size      int64                  `json:"size"`
-	ReadBytes int64                  `json:"read_bytes"`
+	Size      int64                  `json:"size,omitempty"`
+	ReadBytes int64                  `json:"read_bytes,omitempty"`
 	ContentID string                 `json:"content_id,omitempty"`
 	// The line window this response covers, so the agent can cite file:line
 	// and page forward without recounting. Omitted when zero.
@@ -105,7 +105,7 @@ func (h *Handlers) Read(ctx context.Context, params ReadParams) (_ *ReadResponse
 	if !resp.Excerpted {
 		h.markSent(ctx, contentID)
 	}
-	return &ReadResponse{
+	return leanRead(&ReadResponse{
 		Content:    redContent,
 		Summary:    summary,
 		Matches:    matches,
@@ -115,7 +115,7 @@ func (h *Handlers) Read(ctx context.Context, params ReadParams) (_ *ReadResponse
 		StartLine:  resp.StartLine,
 		EndLine:    resp.EndLine,
 		TotalLines: resp.TotalLines,
-	}, nil
+	}, params, resp.Excerpted), nil
 }
 
 // FetchParams are the parameters for sandbox HTTP fetching.
@@ -138,7 +138,7 @@ type FetchResponse struct {
 	Summary    string                 `json:"summary,omitempty"`
 	Matches    []sandbox.ContentMatch `json:"matches,omitempty"`
 	Vocabulary []string               `json:"vocabulary,omitempty"`
-	TimedOut   bool                   `json:"timed_out"`
+	TimedOut   bool                   `json:"timed_out,omitempty"`
 	ContentID  string                 `json:"content_id,omitempty"`
 }
 
@@ -262,7 +262,7 @@ func (h *Handlers) Fetch(ctx context.Context, params FetchParams) (_ *FetchRespo
 	if !resp.Excerpted {
 		h.markSent(ctx, contentID)
 	}
-	return &FetchResponse{
+	return leanFetch(&FetchResponse{
 		Status:     resp.Status,
 		Headers:    h.redactHeaders(ctx, resp.Headers),
 		Body:       redBody,
@@ -271,7 +271,7 @@ func (h *Handlers) Fetch(ctx context.Context, params FetchParams) (_ *FetchRespo
 		Vocabulary: resp.Vocabulary,
 		TimedOut:   resp.TimedOut,
 		ContentID:  contentID,
-	}, nil
+	}, resp.Excerpted), nil
 }
 
 // Glob performs glob pattern matching via the sandbox.

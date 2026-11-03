@@ -120,24 +120,32 @@ func TestWireDedup_Exec_DifferentBodySendsFull(t *testing.T) {
 	}
 	h := newWireDedupHandlers(t, sb)
 
-	first, err := h.Exec(context.Background(), ExecParams{Code: "echo a", Lang: "bash", Return: "auto"})
-	if err != nil {
-		t.Fatalf("first Exec: %v", err)
+	run := func() *ExecResponse {
+		t.Helper()
+		r, err := h.Exec(context.Background(), ExecParams{Code: "echo a", Lang: "bash", Return: "auto"})
+		if err != nil {
+			t.Fatalf("Exec: %v", err)
+		}
+		return r
+	}
+	run() // first: lean shape carries no content_id (ADR-0033)
+	firstDup := run()
+	if firstDup.ContentID == "" {
+		t.Fatal("repeat of the first body must be deduped and carry its content_id")
 	}
 
 	// Switch the stub's stdout — this simulates a non-deterministic command.
 	sb.execResp.Stdout = "second run output\n"
 	sb.execResp.RawStdout = "second run output\n"
 
-	second, err := h.Exec(context.Background(), ExecParams{Code: "echo a", Lang: "bash", Return: "auto"})
-	if err != nil {
-		t.Fatalf("second Exec: %v", err)
-	}
+	second := run()
 	if second.Stdout == "" {
 		t.Error("different body must produce a full response, not a stripped one")
 	}
-	if second.ContentID == first.ContentID {
-		t.Errorf("different body must produce different ContentIDs; both were %q", first.ContentID)
+	secondDup := run()
+	if secondDup.ContentID == "" || secondDup.ContentID == firstDup.ContentID {
+		t.Errorf("different body must produce different ContentIDs; first=%q second=%q",
+			firstDup.ContentID, secondDup.ContentID)
 	}
 }
 
