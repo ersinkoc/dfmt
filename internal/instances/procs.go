@@ -155,12 +155,27 @@ func parsePS(out string) Snapshot {
 const windowsListScript = `Get-CimInstance Win32_Process | ForEach-Object { '{0}|{1}|{2}|{3}|{4}' -f ` +
 	`$_.ProcessId,$_.ParentProcessId,$_.Name,$_.ExecutablePath,$_.CommandLine }`
 
+// windowsListTimeout is generous on purpose: the first Get-CimInstance on a
+// cold or loaded host (a CI runner, a machine just woken) takes tens of
+// seconds. At 20 s a slow-but-working query was killed, and Windows reports a
+// killed child as a bare "exit status 1".
+const windowsListTimeout = 90 * time.Second
+
 func listWindows() (Snapshot, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), windowsListTimeout)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, "powershell", "-NoProfile", "-NonInteractive",
-		"-Command", windowsListScript).Output()
+	cmd := exec.CommandContext(ctx, "powershell", "-NoProfile", "-NonInteractive",
+		"-Command", windowsListScript)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
 	if err != nil {
+		if ctx.Err() != nil {
+			return Snapshot{}, fmt.Errorf("powershell: no answer within %s", windowsListTimeout)
+		}
+		if msg := strings.TrimSpace(stderr.String()); msg != "" {
+			return Snapshot{}, fmt.Errorf("powershell: %w: %s", err, msg)
+		}
 		return Snapshot{}, fmt.Errorf("powershell: %w", err)
 	}
 	return parseWindows(string(out)), nil
