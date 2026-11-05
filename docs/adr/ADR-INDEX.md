@@ -40,6 +40,7 @@ See [ADR-0000](0000-adr-process.md) for the process governing how ADRs are writt
 | [0032](0032-honest-token-ledger.md) | An Honest Token Ledger | Accepted | Stats gain estimated token totals and the per-session `tools/list` fixed cost; grep/glob are recorded at raw == returned so the ratio is not flattered; `token_savings` documented as cache hits, not DFMT's saving. |
 | [0033](0033-lean-wire-envelope.md) | Lean Wire Envelope | Accepted | Small, whole, unfiltered read/exec/fetch results drop `content_id`, `size`, `read_bytes`, `duration_ms`; `exit` always kept, partial reads keep their line window; summary/excerpt/large responses unchanged. |
 | [0034](0034-single-instance-hygiene.md) | One Installed dfmt, At Most One Daemon | Accepted | `dfmt cleanup` stops stale/duplicate dfmt processes and removes stray copies, identifying dfmt by image content (not name), never killing ancestors, dry run unless `--yes`; wired into update and both installers. |
+| [0035](0035-load-tools-upfront.md) | Ask Hosts to Load dfmt's Tools Upfront | Accepted | `_meta` alwaysLoad on every tool, `instructions` in initialize, and the ToolSearch query in generated blocks, because deferred tools were never loaded by agents (0 dfmt calls in 19 of 21 sessions). |
 
 ## Superseded Decisions
 

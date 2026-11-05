@@ -14,7 +14,7 @@ package transport
 // can use positional indices (0=exec, 1=read, 2=fetch, ...) without
 // pinning to brittle name lookups.
 func mcpToolsBuiltin() []MCPTool {
-	return []MCPTool{
+	tools := []MCPTool{
 		schemaExec(),
 		schemaRead(),
 		schemaFetch(),
@@ -27,6 +27,10 @@ func mcpToolsBuiltin() []MCPTool {
 		schemaEdit(),
 		schemaWrite(),
 	}
+	for i := range tools {
+		tools[i].Meta = mcpAlwaysLoadMeta()
+	}
+	return tools
 }
 
 func schemaExec() MCPTool {

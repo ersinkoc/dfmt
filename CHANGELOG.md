@@ -27,6 +27,19 @@ Internal package shapes (`internal/...`) are NOT covered by SemVer.
 
 ## [Unreleased]
 
+### Fixed
+
+- Agents never used dfmt in most sessions: Claude Code defers MCP tools by
+  default and an agent that does not run `ToolSearch` only ever sees native
+  tools (0 dfmt calls in 19 of 21 sessions across four projects on one
+  machine). `tools/list` now marks every tool `_meta
+  {"anthropic/alwaysLoad": true}`, `initialize` returns short `instructions`,
+  and the generated `CLAUDE.md` / `AGENTS.md` blocks carry the exact
+  `ToolSearch` query. Re-run `dfmt init` (or `dfmt quickstart`) in a project to
+  refresh its block. See ADR-0035.
+- Windows: the process listing behind `dfmt cleanup` had a 20 s limit that a
+  cold `Get-CimInstance` exceeded; it now waits 90 s and says why it failed.
+
 ## [0.10.1] — 2026-11-04
 
 ### Changed

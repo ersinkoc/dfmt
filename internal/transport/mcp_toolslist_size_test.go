@@ -27,7 +27,12 @@ func TestToolsListBytesUnderBudget(t *testing.T) {
 	// capability, never to absorb prose drift. Every earlier addition in
 	// this pass (replace_all, search's type filter, the tag vocabulary,
 	// line-oriented read) was paid for by trimming elsewhere.
-	const toolsListMaxBytes = 6912
+	//
+	// Raised again, 6912 -> 7424 (ADR-0035): `_meta {"anthropic/alwaysLoad":
+	// true}` on each of the 11 tools, 403 bytes in all. Claude Code defers
+	// MCP tools unless asked, and agents that never load a deferred tool never
+	// use it (0 dfmt calls in 19 of 21 sessions measured). Prose is unchanged.
+	const toolsListMaxBytes = 7424
 
 	p := NewMCPProtocol(&Handlers{})
 	resp, err := p.handleToolsList(&MCPRequest{ID: 1, Method: "tools/list"})

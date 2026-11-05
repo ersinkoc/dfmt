@@ -95,6 +95,9 @@ type MCPTool struct {
 	Name        string         `json:"name"`
 	Description string         `json:"description"`
 	InputSchema map[string]any `json:"inputSchema"`
+	// Meta is the MCP `_meta` extension point. dfmt sets Claude Code's
+	// "anthropic/alwaysLoad" here (see mcpAlwaysLoadMeta).
+	Meta map[string]any `json:"_meta,omitempty"`
 }
 
 // MCPInitializeResult is the result of initialization.
@@ -102,7 +105,27 @@ type MCPInitializeResult struct {
 	ProtocolVersion string                `json:"protocolVersion"`
 	Capabilities    MCPServerCapabilities `json:"capabilities"`
 	ServerInfo      MCPServerInfo         `json:"serverInfo"`
+	// Instructions reaches the model at session start even while a host
+	// defers the tools themselves (Claude Code caps it at 4096 chars).
+	Instructions string `json:"instructions,omitempty"`
 }
+
+// mcpServerInstructions is deliberately short: it is paid on every session.
+// It exists because a host that defers MCP tools (Claude Code's tool search,
+// the default) shows the agent only tool NAMES until it loads them, and
+// agents that never load them fall back to native Read/Bash. Measured on
+// this host: 0 dfmt calls in 19 of 21 sessions across four projects.
+const mcpServerInstructions = "dfmt tools replace native Read/Bash/Grep/Glob/Edit/Write/WebFetch in this project: " +
+	"dfmt_read, dfmt_exec, dfmt_grep, dfmt_glob, dfmt_edit, dfmt_write, dfmt_fetch. " +
+	"Pass `intent` (what you need from the output) on read/exec/grep/glob/fetch. " +
+	"If these tools are listed as deferred, load them first with ToolSearch (select:mcp__dfmt__dfmt_exec,mcp__dfmt__dfmt_read,…). " +
+	"Record decisions with dfmt_remember."
+
+// mcpAlwaysLoadMeta asks Claude Code to load a tool's schema upfront instead
+// of deferring it behind ToolSearch (v2.1.285+; other hosts ignore `_meta`).
+// Deferral is on by default there, and an agent that does not search for the
+// tool never uses it — the whole point of dfmt is lost.
+func mcpAlwaysLoadMeta() map[string]any { return map[string]any{"anthropic/alwaysLoad": true} }
 
 // MCPServerCapabilities is what dfmt advertises in the initialize reply.
 // Without a non-empty `tools` field, MCP clients (Claude Code) won't call
@@ -406,6 +429,7 @@ func (m *MCPProtocol) handleInitialize(req *MCPRequest) (*MCPResponse, error) {
 			Name:    "dfmt",
 			Version: version.Current,
 		},
+		Instructions: mcpServerInstructions,
 	}
 
 	return &MCPResponse{

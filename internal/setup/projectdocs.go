@@ -59,6 +59,14 @@ func markersFor(path string) markerStyle {
 	}
 }
 
+// toolSearchLoadQuery is the exact ToolSearch query that loads every dfmt
+// tool. Claude Code defers MCP tools by default, and an agent that never
+// loads them silently falls back to native tools; the instruction files are
+// where it can be told how.
+const toolSearchLoadQuery = "`select:mcp__dfmt__dfmt_exec,mcp__dfmt__dfmt_read,mcp__dfmt__dfmt_grep," +
+	"mcp__dfmt__dfmt_glob,mcp__dfmt__dfmt_edit,mcp__dfmt__dfmt_write,mcp__dfmt__dfmt_fetch," +
+	"mcp__dfmt__dfmt_remember,mcp__dfmt__dfmt_recall,mcp__dfmt__dfmt_search`"
+
 // markdownProjectBlockBody is the canonical DFMT block body for the
 // markdown-style instruction files used by Claude Code (CLAUDE.md) and
 // the two Copilots (.github/copilot-instructions.md). Tool names use backticks so prompt
@@ -88,6 +96,14 @@ var markdownProjectBlockBody = "## Context Discipline\n" +
 	"describing what you need from the output (e.g. \"failing tests\",\n" +
 	"\"error message\", \"imports\"). Without `intent` the tool returns raw\n" +
 	"bytes and the token savings are lost.\n" +
+	"\n" +
+	"If the `dfmt_*` tools are listed as *deferred* (Claude Code's tool\n" +
+	"search), load them before your first tool call by passing this exact\n" +
+	"query to `ToolSearch`:\n" +
+	"\n" +
+	toolSearchLoadQuery + "\n" +
+	"\n" +
+	"Skipping this is why sessions silently fall back to native tools.\n" +
 	"\n" +
 	"On DFMT failure, report it to the user (one short line — which call,\n" +
 	"what error) and then fall back to the native tool so the session is\n" +
@@ -137,6 +153,11 @@ var agentsMdProjectBlockBody = "# Context Discipline — REQUIRED\n" +
 	"Include an `intent` argument on every call, describing what you need\n" +
 	"from the output. The `intent` lets DFMT return the relevant portion of\n" +
 	"a large output without flooding the context.\n" +
+	"\n" +
+	"If the tools are listed as *deferred* (Claude Code's tool search), load\n" +
+	"them first with `ToolSearch`:\n" +
+	"\n" +
+	toolSearchLoadQuery + "\n" +
 	"\n" +
 	"## Rule 2 — On DFMT failure, report and fall back\n" +
 	"\n" +
