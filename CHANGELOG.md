@@ -27,6 +27,8 @@ Internal package shapes (`internal/...`) are NOT covered by SemVer.
 
 ## [Unreleased]
 
+## [0.10.2] — 2026-11-05
+
 ### Fixed
 
 - Agents never used dfmt in most sessions: Claude Code defers MCP tools by
@@ -2471,7 +2473,8 @@ for v0.3.x:
   `privacy.allow_nonlocal_http` not wired — DFMT never
   phones home regardless.
 
-[Unreleased]: https://github.com/ersinkoc/dfmt/compare/v0.10.1...HEAD
+[Unreleased]: https://github.com/ersinkoc/dfmt/compare/v0.10.2...HEAD
+[0.10.2]: https://github.com/ersinkoc/dfmt/releases/tag/v0.10.2
 [0.10.1]: https://github.com/ersinkoc/dfmt/releases/tag/v0.10.1
 [0.10.0]: https://github.com/ersinkoc/dfmt/releases/tag/v0.10.0
 [0.9.5]: https://github.com/ersinkoc/dfmt/releases/tag/v0.9.5
