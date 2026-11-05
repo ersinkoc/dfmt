@@ -24,6 +24,14 @@ describing what you need from the output (e.g. "failing tests",
 "error message", "imports"). Without `intent` the tool returns raw
 bytes and the token savings are lost.
 
+If the `dfmt_*` tools are listed as *deferred* (Claude Code's tool
+search), load them before your first tool call by passing this exact
+query to `ToolSearch`:
+
+`select:mcp__dfmt__dfmt_exec,mcp__dfmt__dfmt_read,mcp__dfmt__dfmt_grep,mcp__dfmt__dfmt_glob,mcp__dfmt__dfmt_edit,mcp__dfmt__dfmt_write,mcp__dfmt__dfmt_fetch,mcp__dfmt__dfmt_remember,mcp__dfmt__dfmt_recall,mcp__dfmt__dfmt_search`
+
+Skipping this is why sessions silently fall back to native tools.
+
 On DFMT failure, report it to the user (one short line — which call,
 what error) and then fall back to the native tool so the session is
 not blocked. The ban is on *silent* fallback — every switch must be

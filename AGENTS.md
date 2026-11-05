@@ -23,6 +23,11 @@ Include an `intent` argument on every call, describing what you need
 from the output. The `intent` lets DFMT return the relevant portion of
 a large output without flooding the context.
 
+If the tools are listed as *deferred* (Claude Code's tool search), load
+them first with `ToolSearch`:
+
+`select:mcp__dfmt__dfmt_exec,mcp__dfmt__dfmt_read,mcp__dfmt__dfmt_grep,mcp__dfmt__dfmt_glob,mcp__dfmt__dfmt_edit,mcp__dfmt__dfmt_write,mcp__dfmt__dfmt_fetch,mcp__dfmt__dfmt_remember,mcp__dfmt__dfmt_recall,mcp__dfmt__dfmt_search`
+
 ## Rule 2 — On DFMT failure, report and fall back
 
 DFMT is a strong preference, not a hard dependency. If a `dfmt_*` tool

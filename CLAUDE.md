@@ -233,6 +233,10 @@ At `MaxIndexDocs` (100k) the index evicts. Two rules there are load-bearing:
 
 The payload always travels in `structuredContent`. Whether `content[0].text` carries it too is decided in `initialize` from `clientInfo.name`: only hosts on `structuredContentClients` (claude-code, cursor, codex) get a one-line digest (`mcpDigest`: `dfmt: exit 0 · 3 lines · first line…`, ≤80 runes of preview; the `dfmt: see structuredContent` sentinel only when there is nothing to summarize) — those hosts render only `content[0].text` to the person, so a fixed sentinel left the terminal showing it for every call; every other or anonymous client gets the serialized payload. It used to be the sentinel for everyone, and Windsurf — which forwards only `content` to the model — saw nothing but the sentinel for every call (issue #1). Add a host to the list only after confirming it reads `structuredContent`; a wrong entry makes dfmt silently unusable there. `DFMT_MCP_LEGACY_CONTENT=1`/`=0` forces either shape. `initialize` echoes the client's protocol revision when supported (it always answered `2024-11-05`, which predates `structuredContent`). A session with no project returns an `isError` result naming the cwd and the `--project` fix, not a bare `-32603`.
 
+### Tools are loaded upfront, not deferred (`mcp.go`, `mcp_schemas.go`, [ADR-0035](docs/adr/0035-load-tools-upfront.md))
+
+Claude Code defers MCP tools by default: the model sees tool *names* until it runs `ToolSearch`, and an agent that never searches never calls dfmt. Measured from Claude Code transcripts on one machine with the daemon healthy throughout: 0 dfmt calls in 19 of 21 sessions across four projects. So `mcpToolsBuiltin` stamps every tool `_meta {"anthropic/alwaysLoad": true}` (v2.1.285+; other hosts ignore `_meta`), `initialize` returns `instructions` (shown to the model even while tools are deferred), and the generated instruction blocks carry the exact `ToolSearch` query (`toolSearchLoadQuery`, one line — a newline inside a `select:` list splits it). The 403 bytes of `_meta` are why `toolsListMaxBytes` is 7424. Do not "trim" `_meta` to save tokens: unloaded tools save nothing. `dfmt setup` does not write a per-server `alwaysLoad` into `~/.claude.json` — the docs show that key only for `.mcp.json`.
+
 ### Per-call project routing (`internal/transport/mcp_project.go`, ADR-0029)
 
 A `dfmt mcp` that finds no project (a host with one global config, e.g. Windsurf) is *unbound*: it connects via `client.NewGlobalClient` — never `NewClient("")`, whose `EnsureProjectInitialized` would scatter `.dfmt/` and instruction files into the host's cwd — and `SetUnbound` makes `tools/list` add a required `project_id` to every tool. Bound sessions do not advertise it (cost, and no use). Every explicit `project_id` is validated in the MCP layer, where it becomes model-controlled: absolute, an existing directory with `.dfmt/` or `.git/`, and after symlink resolution neither `/` nor home. The daemon's loader does none of that — it creates `.dfmt/` in any directory and makes it the sandbox root — so do not move or weaken this check without replacing it.
@@ -344,6 +348,14 @@ Every `dfmt_*` call MUST pass an `intent` parameter — a short phrase
 describing what you need from the output (e.g. "failing tests",
 "error message", "imports"). Without `intent` the tool returns raw
 bytes and the token savings are lost.
+
+If the `dfmt_*` tools are listed as *deferred* (Claude Code's tool
+search), load them before your first tool call by passing this exact
+query to `ToolSearch`:
+
+`select:mcp__dfmt__dfmt_exec,mcp__dfmt__dfmt_read,mcp__dfmt__dfmt_grep,mcp__dfmt__dfmt_glob,mcp__dfmt__dfmt_edit,mcp__dfmt__dfmt_write,mcp__dfmt__dfmt_fetch,mcp__dfmt__dfmt_remember,mcp__dfmt__dfmt_recall,mcp__dfmt__dfmt_search`
+
+Skipping this is why sessions silently fall back to native tools.
 
 On DFMT failure, report it to the user (one short line — which call,
 what error) and then fall back to the native tool so the session is
